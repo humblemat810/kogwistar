@@ -234,10 +234,10 @@ These cannot be satisfied by more local unit-test implementation:
   fail a release promotion.
 - [ ] Make the ready Rust capabilities default only after production evidence.
 - [ ] Complete one full compatibility release with Python rollback retained.
-- [ ] Then satisfy Phase 6: default graph/storage/runtime/server behavior in
-  Rust, Python API tests against Rust, no default legacy-core request path,
-  upgrade/rollback survival, all consumer/E2E gates, and classification of all
-  retained Python as SDK, bridge, integration, or worker code.
+- [ ] Then satisfy the historical Phase 6 Rust-default deployment checks:
+  graph/storage/runtime/server behavior, Python API tests against Rust,
+  upgrade/rollback survival, and all consumer/E2E gates. Under ADR-022 these
+  checks do not retire the independently selectable Python implementation.
 
 Current objective facts: 2 of 8 Rust-target capability flags are ready; 6 are
 not ready; completed production capability canaries are 0 of 8 (0 of 40
@@ -579,8 +579,9 @@ explicit maintainer action.
 
 1. An adopter may run capability canaries through internal/test, 1%, 10%, 50%,
    and 100% with observation windows and zero unexplained correctness mismatches.
-2. An adopter may choose a Rust default switch and retain Python rollback for one
-   compatibility release before any removal decision.
+2. An adopter may choose a Rust default switch while retaining the supported
+   Python implementation. A separate architecture and compatibility decision
+   is required before any removal.
 3. HA, hyperscale, and real customer traffic evaluation remain deployment-specific
    work and are not inferred from this library evidence.
 

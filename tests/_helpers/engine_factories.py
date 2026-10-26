@@ -38,6 +38,8 @@ def _make_engine_pair(
     use_fake: bool = False,
     embedding_kind: str | None = None,
     embedding_function: object | None = None,
+    acl_enabled: bool = False,
+    acl_startup_repair_limit: int = 0,
 ):
     """Build `(kg_engine, conv_engine)` for either backend with configurable embeddings."""
 
@@ -52,12 +54,16 @@ def _make_engine_pair(
             kg_graph_type="knowledge",
             embedding_function=ef,
             backend_factory=build_fake_backend,
+            acl_enabled=acl_enabled,
+            acl_startup_repair_limit=acl_startup_repair_limit,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(Path(tmp_path) / "conv"),
             kg_graph_type="conversation",
             embedding_function=ef,
             backend_factory=build_fake_backend,
+            acl_enabled=acl_enabled,
+            acl_startup_repair_limit=acl_startup_repair_limit,
         )
         _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
@@ -73,11 +79,15 @@ def _make_engine_pair(
                 persist_directory=str(chroma_root),
                 kg_graph_type="knowledge",
                 embedding_function=ef,
+                acl_enabled=acl_enabled,
+                acl_startup_repair_limit=acl_startup_repair_limit,
             )
             conv_engine = GraphKnowledgeEngine(
                 persist_directory=str(chroma_root),
                 kg_graph_type="conversation",
                 embedding_function=ef,
+                acl_enabled=acl_enabled,
+                acl_startup_repair_limit=acl_startup_repair_limit,
             )
         except Exception as exc:
             if embedding_function is None and str(embedding_kind or "").lower() in {
@@ -107,12 +117,16 @@ def _make_engine_pair(
             kg_graph_type="knowledge",
             embedding_function=ef,
             backend=kg_backend,
+            acl_enabled=acl_enabled,
+            acl_startup_repair_limit=acl_startup_repair_limit,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(Path(tmp_path) / "conv_meta"),
             kg_graph_type="conversation",
             embedding_function=ef,
             backend=conv_backend,
+            acl_enabled=acl_enabled,
+            acl_startup_repair_limit=acl_startup_repair_limit,
         )
         _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine

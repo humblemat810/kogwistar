@@ -306,7 +306,7 @@ fn normalize_chroma_distance(metric: DistanceMetric, distance: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::normalize_chroma_distance;
-    use kogwistar_store::DistanceMetric;
+    use kogwistar_store::{DistanceMetric, similarity_from_distance};
 
     #[test]
     fn chroma_distances_match_kogwistar_metric_conventions() {
@@ -320,5 +320,37 @@ mod tests {
         );
         assert_eq!(normalize_chroma_distance(DistanceMetric::L2, 9.0), 3.0);
         assert_eq!(normalize_chroma_distance(DistanceMetric::L2, -1.0), 0.0);
+    }
+
+    #[test]
+    fn chroma_distance_semantics_match_shared_python_contract() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/chroma-vector-distance-semantics-v1.json"
+        )))
+        .expect("shared Chroma vector distance contract");
+        assert_eq!(fixture["schema_version"], 1);
+        for case in fixture["cases"].as_array().expect("cases") {
+            let metric = match case["metric"].as_str() {
+                Some("cosine") => DistanceMetric::Cosine,
+                Some("ip") => DistanceMetric::InnerProduct,
+                Some("l2") => DistanceMetric::L2,
+                other => panic!("unknown metric in shared fixture: {other:?}"),
+            };
+            let normalized = normalize_chroma_distance(
+                metric,
+                case["chroma_distance"].as_f64().expect("Chroma distance"),
+            );
+            assert_eq!(
+                normalized,
+                case["kogwistar_distance"]
+                    .as_f64()
+                    .expect("normalized distance")
+            );
+            assert_eq!(
+                similarity_from_distance(Some(normalized), metric),
+                Some(case["similarity"].as_f64().expect("similarity"))
+            );
+        }
     }
 }

@@ -42,10 +42,10 @@ def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
 
     assert "Keep the native API dependency closure Python-free" in workflow
     assert (
-        'cargo tree --package kogwistar-api --edges normal --prefix none'
+        'cargo tree --package kogwistar-api --edges normal --prefix none --all-features'
         in workflow
     )
-    assert "(kogwistar-python|pyo3) v" in workflow
+    assert "(kogwistar-python|pyo3(-[^ ]+)?|pythonize|cpython|rust-cpython(-[^ ]+)?) v" in workflow
 
 
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
@@ -224,6 +224,10 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     )
     assert manifest_routes == rust_routes
     assert manifest_syscalls == rust_syscalls
+    gate_path = ROOT / "scripts" / "rust_port_release_gate.py"
+    gate_source = gate_path.read_text(encoding="utf-8")
+    assert f"SERVER_DEFERRAL_ROUTE_COUNT_V1 = {len(rust_routes)}" in gate_source
+    assert f"SERVER_DEFERRAL_SYSCALL_COUNT_V1 = {len(rust_syscalls)}" in gate_source
     for group in [*deferrals["route_groups"], deferrals["syscall_group"]]:
         assert group["owner"] == "python"
         assert group["status"] == "intentionally-deferred"

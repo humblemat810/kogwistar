@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "principal": {
+    "id": "alice",
+    "groups": ["reviewers"],
+    "security_scope": "team-a"
+  },
+  "cases": [
+    {
+      "node_id": "node-item-allowed",
+      "mention_span_counts": [1],
+      "acl_records": [
+        {"grain": "node", "mode": "public"},
+        {"grain": "grounding", "target_item_id": "node-item-allowed::mention::0", "mode": "shared", "shared_with_principals": ["alice"]},
+        {"grain": "span", "target_item_id": "node-item-allowed::mention::0::span::0", "mode": "group", "shared_with_groups": ["reviewers"]}
+      ],
+      "expected_visible": true
+    },
+    {
+      "node_id": "node-item-denied-span",
+      "mention_span_counts": [1],
+      "acl_records": [
+        {"grain": "node", "mode": "public"},
+        {"grain": "grounding", "target_item_id": "node-item-denied-span::mention::0", "mode": "public"},
+        {"grain": "span", "target_item_id": "node-item-denied-span::mention::0::span::0", "mode": "private", "owner_id": "bob"}
+      ],
+      "expected_visible": false
+    },
+    {
+      "node_id": "node-item-denied-later-span",
+      "mention_span_counts": [1, 2],
+      "acl_records": [
+        {"grain": "node", "mode": "public"},
+        {"grain": "grounding", "target_item_id": "node-item-denied-later-span::mention::0", "mode": "public"},
+        {"grain": "span", "target_item_id": "node-item-denied-later-span::mention::0::span::0", "mode": "public"},
+        {"grain": "grounding", "target_item_id": "node-item-denied-later-span::mention::1", "mode": "public"},
+        {"grain": "span", "target_item_id": "node-item-denied-later-span::mention::1::span::0", "mode": "public"},
+        {"grain": "span", "target_item_id": "node-item-denied-later-span::mention::1::span::1", "mode": "private", "owner_id": "bob"}
+      ],
+      "expected_visible": false
+    },
+    {
+      "node_id": "node-item-missing-grounding",
+      "mention_span_counts": [1],
+      "acl_records": [
+        {"grain": "node", "mode": "public"},
+        {"grain": "span", "target_item_id": "node-item-missing-grounding::mention::0::span::0", "mode": "public"}
+      ],
+      "expected_visible": false
+    },
+    {
+      "node_id": "node-item-missing-span",
+      "mention_span_counts": [1],
+      "acl_records": [
+        {"grain": "node", "mode": "public"},
+        {"grain": "grounding", "target_item_id": "node-item-missing-span::mention::0", "mode": "public"}
+      ],
+      "expected_visible": false
+    },
+    {
+      "node_id": "node-item-root-mentions",
+      "mentions_storage": "document_root",
+      "mention_span_counts": [1],
+      "acl_records": [
+        {"grain": "node", "mode": "public"},
+        {"grain": "grounding", "target_item_id": "node-item-root-mentions::mention::0", "mode": "public"},
+        {"grain": "span", "target_item_id": "node-item-root-mentions::mention::0::span::0", "mode": "private", "owner_id": "bob"}
+      ],
+      "expected_visible": false
+    }
+  ]
+}

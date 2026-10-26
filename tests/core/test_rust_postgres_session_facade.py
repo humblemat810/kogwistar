@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import uuid
 from types import SimpleNamespace
 
 import threading
@@ -46,7 +48,7 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
 ) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     writer = WriteSubsystem.__new__(WriteSubsystem)
-    writer._e = SimpleNamespace(meta_sqlite=object())
+    writer._e = SimpleNamespace(metadata=object(), meta_sqlite=object())
 
     with pytest.raises(RuntimeError, match="refusing Python persistence fallback"):
         if operation == "add":
@@ -62,6 +64,7 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
             from kogwistar.engine_core.models import PureChromaNode
 
             writer._e = SimpleNamespace(
+                metadata=object(),
                 meta_sqlite=object(),
                 kg_graph_type="knowledge",
                 namespace="test",
@@ -84,6 +87,7 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
             from kogwistar.engine_core.models import PureChromaEdge
 
             writer._e = SimpleNamespace(
+                metadata=object(),
                 meta_sqlite=object(),
                 kg_graph_type="knowledge",
                 namespace="test",
@@ -155,6 +159,7 @@ def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
     writer = WriteSubsystem.__new__(WriteSubsystem)
     updates: list[dict[str, object]] = []
     writer._e = SimpleNamespace(
+        metadata=object(),
         meta_sqlite=object(),
         namespace="default",
         backend=SimpleNamespace(
@@ -796,6 +801,82 @@ def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
         store.graph_projection_vector_query(table="gke_nodes")
 
 
+def test_postgres_meta_facade_validates_batched_graph_vector_matches(monkeypatch):
+    valid_match = {
+        "record": {
+            "id": "n1",
+            "document": '{"id":"n1"}',
+            "metadata": {"namespace": "alpha"},
+            "embedding": [1.0, 0.0],
+        },
+        "distance": 0.25,
+    }
+    results = [[valid_match], []]
+
+    def fake_store_postgres(*, operation, **kwargs):
+        del kwargs
+        assert operation["kind"] == "graph_projection_vector_query_batch"
+        return results
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        fake_store_postgres,
+    )
+    store = RustEnginePostgresMetaStore(dsn="postgresql://example/db", schema="test")
+    assert store.graph_projection_vector_query_batch(
+        embeddings=[[1.0, 0.0], [0.0, 1.0]]
+    ) == [[valid_match], []]
+
+    results[:] = [[{**valid_match, "distance": float("nan")}]]
+    with pytest.raises(RuntimeError, match="batched graph vector query"):
+        store.graph_projection_vector_query_batch(embeddings=[[1.0, 0.0]])
+
+
+def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_available():
+    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set KOGWISTAR_TEST_PG_DSN to run the native PostgreSQL boundary test")
+    psycopg = pytest.importorskip("psycopg")
+    schema = f"rust_vector_batch_{uuid.uuid4().hex}"
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        store.ensure_initialized()
+        store._call("create_graph_schema", embedding_dim=2)
+        for entity_id, embedding in (("x-axis", [1.0, 0.0]), ("y-axis", [0.0, 1.0])):
+            store.upsert_graph_projection(
+                namespace="vector-batch-test",
+                workspace_id=None,
+                graph_space=None,
+                table="gke_nodes",
+                record={
+                    "id": entity_id,
+                    "document": entity_id,
+                    "metadata": {"entity_type": "node"},
+                    "embedding": embedding,
+                },
+                embedding_dim=2,
+            )
+        results = store.graph_projection_vector_query_batch(
+            namespace="vector-batch-test",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            embeddings=[[1.0, 0.0], [0.0, 1.0]],
+            embedding_dim=2,
+            metadata={},
+            metric="cosine",
+            limit=2,
+        )
+        assert [[match["record"]["id"] for match in row] for row in results] == [
+            ["x-axis", "y-axis"],
+            ["y-axis", "x-axis"],
+        ]
+    finally:
+        store.close()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
     operations: list[dict] = []
 
@@ -889,6 +970,7 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
 
     engine = SimpleNamespace(
         meta_sqlite=store,
+        metadata=store,
         backend=Backend(),
         namespace="alpha",
         kg_graph_type="knowledge",
@@ -976,6 +1058,47 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
             "metadata": {"team": "red"},
             "metric": "cosine",
             "limit": 1,
+        }
+    ]
+
+    batch_query_calls: list[dict] = []
+
+    def native_vector_query_batch(**values):
+        batch_query_calls.append(values)
+        return [
+            [
+                {
+                    "record": {
+                        "id": "n1",
+                        "document": native_document,
+                        "metadata": {"namespace": "alpha", "team": "red"},
+                        "embedding": [1.0, 0.0, 0.0],
+                    },
+                    "distance": 0.125,
+                }
+            ],
+            [],
+        ]
+
+    monkeypatch.setattr(store, "graph_projection_vector_query_batch", native_vector_query_batch)
+    batch_hits = reader.query_nodes(
+        query_embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        where={"team": "red"},
+        n_results=1,
+    )
+    assert len(batch_hits) == 1
+    assert batch_hits[0][0].summary == "native"
+    assert batch_query_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "embedding_dim": 3,
+            "metadata": {"team": "red"},
+            "metric": "cosine",
+            "limit": 1,
+            "embeddings": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         }
     ]
 

@@ -1046,38 +1046,43 @@ impl PostgresRunApplicationService {
         {
             return self.repair_orphaned_messages(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/runtime/claim" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_CLAIM_ROUTE {
             return self.claim_runtime_work(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/runtime/results" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE {
             return self.apply_runtime_result(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/runtime/native/execute"
+        if request.method == "POST"
+            && request.path_and_query == INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE
         {
             return self.execute_native_runtime_step(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/conversation/transcript"
+        if request.method == "POST"
+            && request.path_and_query == INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE
         {
             return self.internal_conversation_transcript_effect(&request).await;
         }
         if request.method == "POST"
-            && request.path_and_query == "/internal/conversation/context-snapshot"
+            && request.path_and_query == INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE
         {
             return self.internal_context_snapshot_effect(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/graph/mutations" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_MUTATIONS_ROUTE {
             return self.apply_internal_graph_mutations(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/graph/neighbors" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_NEIGHBORS_ROUTE {
             return self.graph_neighbors_effect(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/graph/find-edges" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
+            return self.graph_vector_query_effect(&request).await;
+        }
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_FIND_EDGES_ROUTE {
             return self.graph_find_edges_effect(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/graph/shortest-path" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_SHORTEST_PATH_ROUTE {
             return self.graph_shortest_path_effect(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == "/internal/graph/k-hop" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_K_HOP_ROUTE {
             return self.graph_k_hop_effect(&request).await;
         }
         if request.method == "POST"

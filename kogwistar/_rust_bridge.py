@@ -4,7 +4,11 @@ import json
 import math
 import os
 import sys
+import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from importlib import import_module
 from typing import Any, Protocol, TypeVar, cast
 
@@ -69,6 +73,107 @@ class RustParityError(RuntimeError):
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
         self.code = code
+
+
+class RustBridgeTrace:
+    """Request-local counts of actual Python-to-extension calls, never payloads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.ffi_calls = 0
+        self.input_bytes = 0
+        self.output_bytes = 0
+        self.transaction_active_calls = 0
+        self.transaction_boundary_calls = 0
+        self.calls_by_method: dict[str, int] = {}
+        self.calls_by_operation: dict[str, int] = {}
+
+    def record_call(self, method: str, args: tuple[object, ...]) -> None:
+        input_bytes = sum(
+            len(value.encode("utf-8")) for value in args if isinstance(value, str)
+        )
+        active = False
+        boundary = False
+        operation_kind: str | None = None
+        if method in {"store_sqlite_json", "store_postgres_json"} and args:
+            try:
+                request = json.loads(args[0]) if isinstance(args[0], str) else None
+            except (TypeError, ValueError):
+                request = None
+            if isinstance(request, dict):
+                active = request.get("transaction_id") is not None
+                operation = request.get("operation")
+                if isinstance(operation, dict):
+                    kind = operation.get("kind")
+                    if isinstance(kind, str):
+                        operation_kind = kind
+                        boundary = kind in {
+                            "begin_transaction",
+                            "commit_transaction",
+                            "rollback_transaction",
+                        }
+        with self._lock:
+            self.ffi_calls += 1
+            self.input_bytes += input_bytes
+            self.transaction_active_calls += int(active)
+            self.transaction_boundary_calls += int(boundary)
+            self.calls_by_method[method] = self.calls_by_method.get(method, 0) + 1
+            if operation_kind is not None:
+                self.calls_by_operation[operation_kind] = (
+                    self.calls_by_operation.get(operation_kind, 0) + 1
+                )
+
+    def record_result(self, result: object) -> None:
+        if isinstance(result, str):
+            with self._lock:
+                self.output_bytes += len(result.encode("utf-8"))
+
+    def snapshot(self) -> JsonObject:
+        with self._lock:
+            return {
+                "ffi_calls": self.ffi_calls,
+                "input_bytes": self.input_bytes,
+                "output_bytes": self.output_bytes,
+                "transaction_active_calls": self.transaction_active_calls,
+                "transaction_boundary_calls": self.transaction_boundary_calls,
+                "calls_by_method": dict(self.calls_by_method),
+                "calls_by_operation": dict(self.calls_by_operation),
+            }
+
+
+_active_bridge_trace: ContextVar[RustBridgeTrace | None] = ContextVar(
+    "kogwistar_rust_bridge_trace", default=None
+)
+
+
+@contextmanager
+def capture_rust_bridge_calls() -> Iterator[RustBridgeTrace]:
+    """Measure a Python bridge scope without changing dispatch or durable effects."""
+    trace = RustBridgeTrace()
+    token = _active_bridge_trace.set(trace)
+    try:
+        yield trace
+    finally:
+        _active_bridge_trace.reset(token)
+
+
+class _TracingRustExtension:
+    def __init__(self, extension: RustExtensionLike, trace: RustBridgeTrace) -> None:
+        self._extension = extension
+        self._trace = trace
+
+    def __getattr__(self, name: str) -> Any:
+        member = getattr(self._extension, name)
+        if not callable(member):
+            return member
+
+        def traced(*args: Any, **kwargs: Any) -> Any:
+            self._trace.record_call(name, args)
+            result = member(*args, **kwargs)
+            self._trace.record_result(result)
+            return result
+
+        return traced
 
 
 def _rust_json_payload(
@@ -435,12 +540,16 @@ def api_cli_health(*, payload: JsonObject) -> str:
 
 def _load_extension() -> RustExtensionLike:
     try:
-        return cast(RustExtensionLike, import_module("kogwistar._rust"))
+        extension = cast(RustExtensionLike, import_module("kogwistar._rust"))
     except ImportError as exc:
         raise RustExtensionUnavailableError(
             "Rust contract mode requires the kogwistar._rust extension. "
             "Install the 'rust' extra and run 'maturin develop'."
         ) from exc
+    trace = _active_bridge_trace.get()
+    if trace is None:
+        return extension
+    return cast(RustExtensionLike, _TracingRustExtension(extension, trace))
 
 
 def _select(

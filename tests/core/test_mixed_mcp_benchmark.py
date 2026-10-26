@@ -57,6 +57,10 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
     assert rust_result["seam_metrics"]["ffi_calls"] > 0
     assert rust_result["seam_metrics"]["transaction_boundaries"] > 0
     assert rust_result["seam_metrics"]["serialized_bytes"] > 0
+    native_trace = rust_result["native_bridge_trace"]
+    assert native_trace["measurement"] == "untimed_isolated_database_replay"
+    assert native_trace["state_digest_matches"] is True
+    assert native_trace["ffi_calls"] == rust_result["seam_metrics"]["ffi_calls"]
 
 
 def test_rust_batched_write_seam_preserves_trace_and_commit_boundaries(
@@ -87,6 +91,7 @@ def test_rust_batched_write_seam_preserves_trace_and_commit_boundaries(
         batched["seam_metrics"]["transaction_boundaries"]
         == ordinary["seam_metrics"]["transaction_boundaries"]
     )
+    assert batched["native_bridge_trace"]["ffi_calls"] == batched["seam_metrics"]["ffi_calls"]
 
 
 def test_native_seam_metrics_require_complete_zero_ffi_attestation() -> None:

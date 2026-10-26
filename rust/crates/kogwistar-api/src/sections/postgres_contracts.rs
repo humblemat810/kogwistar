@@ -15,6 +15,98 @@ fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1,
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct GraphVectorQueryWireRequest {
+    entity_kind: String,
+    query_embeddings: Vec<Vec<f32>>,
+    metric: String,
+    #[serde(default = "default_graph_truth_graph")]
+    truth_graph: String,
+    #[serde(default = "default_graph_vector_n_results")]
+    n_results: usize,
+    #[serde(default, rename = "where")]
+    where_filter: Map<String, Value>,
+    #[serde(default)]
+    include: Option<Vec<String>>,
+}
+
+struct GraphVectorQueryRequest {
+    entity_kind: String,
+    query_embeddings: Vec<Vec<f32>>,
+    metric: DistanceMetric,
+    truth_graph: String,
+    n_results: usize,
+    where_filter: MetadataFilter,
+    include: Vec<String>,
+}
+
+fn default_graph_vector_n_results() -> usize {
+    10
+}
+
+fn default_graph_truth_graph() -> String {
+    "knowledge".to_owned()
+}
+
+fn parse_graph_vector_query_request(body: &[u8]) -> Result<GraphVectorQueryRequest, String> {
+    let wire: GraphVectorQueryWireRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    if !matches!(wire.entity_kind.as_str(), "node" | "edge") {
+        return Err("entity_kind must be 'node' or 'edge'".to_owned());
+    }
+    if wire.truth_graph.trim().is_empty() || wire.truth_graph.len() > 255 {
+        return Err("truth_graph must contain 1 to 255 characters".to_owned());
+    }
+    if wire.query_embeddings.is_empty() || wire.query_embeddings.len() > 32 {
+        return Err("query_embeddings must contain 1 to 32 vectors".to_owned());
+    }
+    if wire
+        .query_embeddings
+        .iter()
+        .any(|embedding| embedding.is_empty() || embedding.len() > 8192)
+    {
+        return Err("each query embedding must contain 1 to 8192 values".to_owned());
+    }
+    if !(1..=1000).contains(&wire.n_results) {
+        return Err("n_results must be between 1 and 1000".to_owned());
+    }
+    if wire
+        .where_filter
+        .iter()
+        .any(|(key, value)| key.starts_with('$') || value.is_object())
+    {
+        return Err("where supports exact scalar/array equality only".to_owned());
+    }
+    let metric = match wire.metric.trim().to_ascii_lowercase().as_str() {
+        "cosine" => DistanceMetric::Cosine,
+        "l2" => DistanceMetric::L2,
+        "ip" | "inner" | "inner_product" | "innerproduct" => {
+            DistanceMetric::InnerProduct
+        }
+        _ => return Err("metric must be cosine, l2, or ip".to_owned()),
+    };
+    let include = wire
+        .include
+        .unwrap_or_else(|| vec!["documents".into(), "embeddings".into(), "metadatas".into()]);
+    if include.iter().any(|field| {
+        !matches!(field.as_str(), "documents" | "embeddings" | "metadatas" | "distances")
+    }) {
+        return Err("include contains an unsupported field".to_owned());
+    }
+    Ok(GraphVectorQueryRequest {
+        entity_kind: wire.entity_kind,
+        query_embeddings: wire.query_embeddings,
+        metric,
+        truth_graph: wire.truth_graph,
+        n_results: wire.n_results,
+        where_filter: MetadataFilter {
+            equals: wire.where_filter.into_iter().collect(),
+        },
+        include,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GraphFindEdgesRequest {
     relation: Option<String>,
     src_label_contains: Option<String>,

@@ -1222,3 +1222,29 @@ failure interrupted the first full CLI run after baseline completion and the
 first batch sample; the remaining two independent batch samples were completed
 without rewriting that progress file. Focused parity evidence is
 `test_rust_batched_write_seam_preserves_trace_and_commit_boundaries`.
+
+### 2026-10-26 bridge-counter cross-check
+
+The benchmark's Rust-authority FFI counter is cross-checked against
+`capture_rust_bridge_calls()` during a separate, untimed replay on a fresh
+temporary SQLite database. Fixture initialization occurs before manual
+instrumentation is attached, so root-event/projection setup cannot inflate the
+measured operation count. The replay must match the timed run's canonical
+state digest, total FFI calls, and per-operation call counts or fail closed.
+This validates that the benchmark's seam accounting corresponds to actual
+Python-to-extension calls without adding trace bookkeeping to measured
+latencies.
+
+On Windows CPython 3.13, Ruff passed and the focused bridge plus mixed-MCP
+regression suites passed **21 tests** in 228.59 seconds, including actual
+extension calls, Python in-process and HTTP modes, Rust-authority parity,
+batched-write commit-boundary parity, and the 1-writer/4-reader visibility
+profiles. The unprivileged run stalled at Windows asyncio/loopback setup; the
+same suites completed with local test access enabled. This is a local
+verification result, not hosted CI evidence. Checklist status and item counts
+are unchanged.
+
+After that full run, the task-local trace test was strengthened to route bridge
+calls through `asyncio.to_thread`. The updated test passed independently under
+CPython 3.12, 3.13, and 3.14. PyPy 3.11 was not verified: the available local
+environment lacks pytest and pydantic, so the test could not be run there.

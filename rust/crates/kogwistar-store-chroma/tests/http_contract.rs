@@ -9,7 +9,11 @@ use tokio::{
     task::JoinHandle,
 };
 
-async fn fake_chroma(request_count: usize) -> (String, JoinHandle<Vec<(String, Value)>>) {
+async fn fake_chroma(
+    request_count: usize,
+    metric: &'static str,
+    query_distance: f64,
+) -> (String, JoinHandle<Vec<(String, Value)>>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind fixture");
@@ -49,11 +53,11 @@ async fn fake_chroma(request_count: usize) -> (String, JoinHandle<Vec<(String, V
                 serde_json::from_slice(body).expect("JSON request body")
             };
             let response = if first_line.contains("/collections HTTP") {
-                json!({"id": "collection-1", "metadata": {"hnsw:space": "cosine"}})
+                json!({"id": "collection-1", "metadata": {"hnsw:space": metric}})
             } else if first_line.contains("/upsert HTTP") || first_line.contains("/delete HTTP") {
                 json!({"updated": 1, "deleted": 1})
             } else if first_line.contains("/query HTTP") {
-                query_response()
+                query_response(query_distance)
             } else {
                 get_response()
             };
@@ -94,19 +98,19 @@ fn get_response() -> Value {
     })
 }
 
-fn query_response() -> Value {
+fn query_response(distance: f64) -> Value {
     json!({
         "ids": [["node-1"]],
         "documents": [["node body"]],
         "metadatas": [[record_metadata()]],
         "embeddings": [[[0.1, 0.2]]],
-        "distances": [[0.25]]
+        "distances": [[distance]]
     })
 }
 
 #[tokio::test]
 async fn chroma_graph_store_uses_scoped_v2_crud_and_vector_routes() {
-    let (endpoint, server) = fake_chroma(6).await;
+    let (endpoint, server) = fake_chroma(6, "cosine", 0.25).await;
     let store = ChromaGraphStore::connect(ChromaStoreConfig {
         endpoint,
         collection: "test-graph".to_owned(),
@@ -168,4 +172,53 @@ async fn chroma_graph_store_uses_scoped_v2_crud_and_vector_routes() {
     );
     assert_eq!(requests[3].1["n_results"], 1);
     assert!(requests[5].0.contains("/delete HTTP"));
+}
+
+#[tokio::test]
+async fn chroma_http_query_normalizes_all_shared_metric_contract_cases() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../contracts/golden/chroma-vector-distance-semantics-v1.json"
+    ))
+    .expect("shared Chroma distance semantics contract");
+    assert_eq!(fixture["schema_version"], 1);
+
+    for case in fixture["cases"].as_array().expect("fixture cases") {
+        let (metric_name, metric) = match case["metric"].as_str().expect("metric") {
+            "cosine" => ("cosine", DistanceMetric::Cosine),
+            "ip" => ("ip", DistanceMetric::InnerProduct),
+            "l2" => ("l2", DistanceMetric::L2),
+            other => panic!("unknown metric {other:?}"),
+        };
+        let chroma_distance = case["chroma_distance"].as_f64().expect("distance");
+        let (endpoint, server) = fake_chroma(2, metric_name, chroma_distance).await;
+        let store = ChromaGraphStore::connect(ChromaStoreConfig {
+            endpoint,
+            collection: "metric-contract".to_owned(),
+            metric,
+            ..Default::default()
+        })
+        .await
+        .expect("connect metric-matched Chroma collection");
+        let matches = store
+            .vector_query(
+                "workspace-a",
+                &VectorQuery {
+                    embedding: vec![0.2, 0.1],
+                    limit: 1,
+                    metadata: MetadataFilter::default(),
+                    metric,
+                },
+            )
+            .await
+            .expect("query metric-matched collection");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].distance,
+            case["kogwistar_distance"]
+                .as_f64()
+                .expect("normalized distance")
+        );
+        let requests = server.await.expect("fixture server");
+        assert_eq!(requests.len(), 2);
+    }
 }

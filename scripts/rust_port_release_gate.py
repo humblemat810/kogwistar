@@ -17,9 +17,10 @@ except ModuleNotFoundError:  # imported as a repository module in unit tests
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 LAYERS = ("core", "parser", "sink", "application")
-SERVER_DEFERRAL_ROUTE_COUNT_V1 = 16
-SERVER_DEFERRAL_SYSCALL_COUNT_V1 = 5
+SERVER_DEFERRAL_ROUTE_COUNT_V1 = 11
+SERVER_DEFERRAL_SYSCALL_COUNT_V1 = 4
 REQUIRED_RUST_OWNERS = {
     "deterministic-contracts",
     "sqlite-meta",
@@ -66,6 +67,40 @@ def _readiness_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def validate_dual_language_support(
+    matrix: dict[str, Any], required_capabilities: set[str]
+) -> list[str]:
+    """Keep Rust promotion from silently retiring the Python implementation."""
+    errors: list[str] = []
+    policy = matrix.get("policy")
+    if not isinstance(policy, dict) or policy.get("python_and_rust_are_maintained") is not True:
+        errors.append("dual-language policy must maintain both Python and Rust")
+    if not isinstance(policy, dict) or policy.get("deprecation_requires_separate_adr") is not True:
+        errors.append("dual-language deprecation requires a separate ADR")
+
+    entries = matrix.get("capabilities")
+    if not isinstance(entries, list):
+        return [*errors, "dual-language capabilities must be an array"]
+    by_id: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            errors.append("dual-language capability entries must have string IDs")
+            continue
+        capability = entry["id"]
+        if capability in by_id:
+            errors.append(f"duplicate dual-language capability {capability}")
+        by_id[capability] = entry
+    for capability, entry in by_id.items():
+        python = entry.get("python")
+        status = python.get("status") if isinstance(python, dict) else None
+        if not isinstance(status, str) or status not in {"enabled", "opt-in"}:
+            errors.append(f"dual-language capability {capability} does not retain Python")
+    for capability in sorted(required_capabilities):
+        if capability not in by_id:
+            errors.append(f"dual-language capability {capability} is missing")
+    return errors
 
 
 def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
@@ -383,6 +418,19 @@ def evaluate_release_gate(
         blockers.append({"gate": "server-deferral", "detail": detail})
 
     ownership = manifest.get("capability_ownership", [])
+    required_support = REQUIRED_RUST_OWNERS | {
+        item["capability"]
+        for item in ownership
+        if isinstance(item, dict) and isinstance(item.get("capability"), str)
+    }
+    try:
+        support_errors = validate_dual_language_support(
+            _load_json(SUPPORT_MATRIX_PATH), required_support
+        )
+    except (OSError, ValueError):
+        support_errors = ["dual-language support matrix is missing or invalid"]
+    for detail in support_errors:
+        blockers.append({"gate": "dual-language-support", "detail": detail})
     active_rust = {
         item.get("capability")
         for item in ownership
@@ -417,6 +465,7 @@ def evaluate_release_gate(
             layer: by_layer.get(layer, {}).get("status", "missing") for layer in LAYERS
         },
         "runtime_performance_status": performance_status,
+        "dual_language_support": {"status": "passed" if not support_errors else "blocked"},
         "server_operation_deferrals": {
             "status": "passed" if not validate_server_operation_deferrals(manifest) else "blocked"
         },

@@ -14,13 +14,14 @@ import subprocess
 import socket
 import statistics
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -49,6 +50,7 @@ class _SeamMetrics:
 
     tool_dispatches: int = 0
     ffi_calls: int = 0
+    ffi_by_operation: dict[str, int] = field(default_factory=dict)
     serialized_bytes: int = 0
     transaction_boundaries: int = 0
     transport_requests: int = 0
@@ -66,6 +68,7 @@ class _SeamMetrics:
             "complete": complete,
             "tool_dispatches": self.tool_dispatches,
             "ffi_calls": self.ffi_calls,
+            "ffi_by_operation": dict(self.ffi_by_operation),
             "serialized_bytes": self.serialized_bytes,
             "transaction_boundaries": self.transaction_boundaries,
             "transport_requests": self.transport_requests,
@@ -111,6 +114,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar._rust_bridge import capture_rust_bridge_calls
 from kogwistar.json_types import JsonObject
 from kogwistar.server.mcp_registry import McpRegistry
 try:
@@ -318,20 +322,6 @@ def _make_registry(
     store_type = RustEngineSQLite if authority == "rust" else EngineSQLite
     store = store_type(path.parent, filename=path.name)
     store.ensure_initialized()
-    if seam_metrics is not None and authority == "rust":
-        native_call = store._call  # type: ignore[attr-defined]
-
-        def counted_native_call(kind: str, **values: object) -> object:
-            seam_metrics.ffi_calls += 1
-            seam_metrics.add_json({"kind": kind, **values})
-            if kind in {"begin_transaction", "commit_transaction", "rollback_transaction"}:
-                seam_metrics.transaction_boundaries += 1
-            elif kind == "batch":
-                # The native batch owns one begin/commit pair inside this call.
-                seam_metrics.transaction_boundaries += 2
-            return native_call(kind, **values)
-
-        store._call = counted_native_call  # type: ignore[method-assign, attr-defined]
 
     def _write_graph_projection(
         target: EngineSQLite | RustEngineSQLite,
@@ -381,6 +371,24 @@ def _make_registry(
                 materialization_status="ready",
             )
     registry = McpRegistry("kogwistar-mixed-workload-benchmark")
+    if seam_metrics is not None and authority == "rust":
+        # Count the measured session/tool trace, not fixture construction.
+        native_call = store._call  # type: ignore[attr-defined]
+
+        def counted_native_call(kind: str, **values: object) -> object:
+            seam_metrics.ffi_calls += 1
+            seam_metrics.ffi_by_operation[kind] = (
+                seam_metrics.ffi_by_operation.get(kind, 0) + 1
+            )
+            seam_metrics.add_json({"kind": kind, **values})
+            if kind in {"begin_transaction", "commit_transaction", "rollback_transaction"}:
+                seam_metrics.transaction_boundaries += 1
+            elif kind == "batch":
+                # The native batch owns one begin/commit pair inside this call.
+                seam_metrics.transaction_boundaries += 2
+            return native_call(kind, **values)
+
+        store._call = counted_native_call  # type: ignore[method-assign, attr-defined]
 
     def write_record_sync(
         index: int,
@@ -1582,6 +1590,17 @@ def _run_one_sync(
             )
     elapsed_ms = (time.perf_counter_ns() - wall_started) / 1_000_000
     state = _final_state(path)
+    bridge_trace = None
+    if mode != "in_process":
+        bridge_trace = _diagnose_rust_authority_trace(
+            path.parent,
+            trace,
+            trace_arguments,
+            batch_write_transactions=mode == "rust_authority_batch_write",
+            expected_state_digest=_digest(state),
+            expected_ffi_calls=seam_metrics.ffi_calls,
+            expected_ffi_by_operation=dict(seam_metrics.ffi_by_operation),
+        )
     return {
         "state_digest": _digest(state),
         "elapsed_ms": elapsed_ms,
@@ -1605,6 +1624,54 @@ def _run_one_sync(
         "seam_metrics": seam_metrics.as_dict(
             scope="python_host_boundary", complete=True
         ),
+        "native_bridge_trace": bridge_trace,
+    }
+
+
+def _diagnose_rust_authority_trace(
+    root: Path,
+    trace: list[WorkloadOperation],
+    trace_arguments: list[dict[str, object]],
+    *,
+    batch_write_transactions: bool,
+    expected_state_digest: str,
+    expected_ffi_calls: int,
+    expected_ffi_by_operation: dict[str, int],
+) -> dict[str, object]:
+    """Cross-check manual FFI accounting on a disposable, untimed replay."""
+    with tempfile.TemporaryDirectory(prefix="kogwistar-bridge-trace-", dir=root) as directory:
+        probe_path = Path(directory) / "probe.sqlite3"
+        registry, store = _make_registry(
+            probe_path,
+            authority="rust",
+            batch_write_transactions=batch_write_transactions,
+        )
+        with capture_rust_bridge_calls() as bridge_trace:
+            with _reuse_rust_store_session(store):
+                for step, arguments in zip(trace, trace_arguments, strict=True):
+                    payload = _call_registry_sync(registry, step["operation"], arguments)
+                    if payload.get("entity_id") != step["expected_entity_id"]:
+                        raise RuntimeError("bridge trace replay returned an unexpected entity id")
+                    if (
+                        step["operation"] == "read_projection"
+                        and payload.get("index") != step["index"]
+                    ):
+                        raise RuntimeError("bridge trace replay returned an unexpected projection index")
+        digest = _digest(_final_state(probe_path))
+        metrics = bridge_trace.snapshot()
+    if digest != expected_state_digest:
+        raise RuntimeError("bridge trace replay changed canonical graph results")
+    if metrics["ffi_calls"] != expected_ffi_calls:
+        raise RuntimeError(
+            "manual seam metrics disagree with observed Rust bridge calls: "
+            f"{expected_ffi_calls} != {metrics['ffi_calls']}; "
+            f"manual operations={expected_ffi_by_operation}; "
+            f"observed operations={metrics['calls_by_operation']}"
+        )
+    return {
+        "measurement": "untimed_isolated_database_replay",
+        "state_digest_matches": True,
+        **metrics,
     }
 
 

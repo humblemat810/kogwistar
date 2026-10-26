@@ -40,6 +40,18 @@ once, while Rust validates and projects every envelope independently. One
 invalid envelope fails the whole batch, so batching does not weaken the
 contract or create partial model-visible output.
 
+The `bridge_crossings` report section is measured after timed samples. The
+request-local bridge trace counts actual extension calls, UTF-8 input/output
+bytes, method names, and storage transaction state without retaining payloads.
+The harness fails if one-envelope projection makes other than one call per
+envelope or if batch projection makes other than one call. On a local CPython
+3.13 run with two envelopes, the per-envelope path made 2 calls (5,608 input
+bytes, 140 output bytes) and the batch path made 1 call (5,611 input bytes,
+143 output bytes), with equal digests. These are crossing counts, not latency
+measurements. The trace sees calls through the Python bridge only; a Rust-native
+server has no Python bridge to instrument, and worker transfers need separate
+accounting.
+
 ## Interpretation
 
 `python_bridge_end_to_end` includes the existing per-envelope PyO3 and JSON

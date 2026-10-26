@@ -262,8 +262,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dependencies="$(cargo tree --package kogwistar-api --edges normal --prefix none)"
-          if grep -E '^(kogwistar-python|pyo3) v' <<< "$dependencies"; then
+          dependencies="$(cargo tree --package kogwistar-api --edges normal --prefix none --all-features)"
+          if grep -E '^(kogwistar-python|pyo3(-[^ ]+)?|pythonize|cpython|rust-cpython(-[^ ]+)?) v' <<< "$dependencies"; then
             echo "kogwistar-api must not depend on the PyO3 bridge or Python binding crate" >&2
             exit 1
           fi

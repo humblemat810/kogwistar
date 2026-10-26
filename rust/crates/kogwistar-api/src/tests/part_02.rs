@@ -356,7 +356,11 @@
             uuid::Uuid::new_v4()
         ));
         let service = SqliteRunApplicationService::open(&path).unwrap();
-        for route in ["/internal/graph/neighbors", "/internal/graph/mutations"] {
+        for route in [
+            "/internal/graph/neighbors",
+            "/internal/graph/vector-query",
+            "/internal/graph/mutations",
+        ] {
             let response = service.execute_sync(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),

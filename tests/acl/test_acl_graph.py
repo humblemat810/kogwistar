@@ -366,6 +366,128 @@ def test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking(tmp_path)
     assert path_summaries == []
 
 
+def test_private_edge_span_hides_edge_even_when_endpoints_are_visible(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    source = _mk_node(node_id="edge-span-source", doc_id="doc::edge-span::source")
+    target = _mk_node(node_id="edge-span-target", doc_id="doc::edge-span::target")
+    edge = _mk_edge(
+        edge_id="edge-private-span",
+        src=source.id,
+        tgt=target.id,
+        doc_id="doc::edge-span::evidence",
+    )
+    for entity in (source, target, edge):
+        entity.metadata.update(
+            {
+                "visibility": "shared",
+                "owner_agent_id": "agent-a",
+                "shared_with_agents": ["agent-b"],
+            }
+        )
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(edge)
+        engine.record_acl(
+            grain="span",
+            truth_graph="knowledge",
+            entity_id=edge.id,
+            target_item_id=f"{edge.id}::mention::0::span::0",
+            version=1,
+            mode="private",
+            owner_id="agent-a",
+        )
+    finally:
+        claims_ctx.reset(token)
+
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        visible_edges = engine.read.get_edges(ids=[edge.id], edge_type=Edge)
+    finally:
+        claims_ctx.reset(token)
+
+    assert engine.decide_acl(
+        grain="edge",
+        truth_graph="knowledge",
+        entity_id=edge.id,
+        principal_id="agent-b",
+        security_scope="tenant-a",
+    ).visible
+    assert visible_edges == []
+
+
+def test_edge_reference_does_not_disclose_private_or_unresolved_edge(
+    tmp_path, monkeypatch
+):
+    engine = _mk_acl_fake_engine(tmp_path)
+    source = _mk_node(node_id="edge-reference-source", doc_id="doc::edge-ref::source")
+    target = _mk_node(node_id="edge-reference-target", doc_id="doc::edge-ref::target")
+    private_edge = _mk_edge(
+        edge_id="edge-private-reference",
+        src=source.id,
+        tgt=target.id,
+        doc_id="doc::edge-ref::private",
+    )
+    parent_edge = _mk_edge(
+        edge_id="edge-visible-parent",
+        src=source.id,
+        tgt=target.id,
+        doc_id="doc::edge-ref::parent",
+    )
+    private_edge.metadata.update(
+        {"visibility": "private", "owner_agent_id": "agent-a"}
+    )
+    parent_edge.metadata.update(
+        {
+            "visibility": "shared",
+            "owner_agent_id": "agent-a",
+            "shared_with_agents": ["agent-b"],
+        }
+    )
+    parent_edge.source_edge_ids = [private_edge.id]
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(private_edge)
+        engine.write.add_edge(parent_edge)
+    finally:
+        claims_ctx.reset(token)
+
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        visible_edges = engine.read.get_edges(edge_type=Edge)
+    finally:
+        claims_ctx.reset(token)
+
+    assert engine.decide_acl(
+        grain="edge",
+        truth_graph="knowledge",
+        entity_id=parent_edge.id,
+        principal_id="agent-b",
+        security_scope="tenant-a",
+    ).visible
+    assert visible_edges == []
+
+    raw_read = engine.read._raw
+    original_get_edges = raw_read.get_edges
+
+    def omit_referenced_edge(ids=None, **kwargs):
+        if ids is not None and private_edge.id in ids:
+            return []
+        return original_get_edges(ids=ids, **kwargs)
+
+    monkeypatch.setattr(raw_read, "get_edges", omit_referenced_edge)
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        assert engine.read.get_edges(ids=[parent_edge.id], edge_type=Edge) == []
+    finally:
+        claims_ctx.reset(token)
+
+
 def test_acceptance_answer_assembly_uses_visible_sources_only(tmp_path):
     engine = _mk_acl_fake_engine(tmp_path)
     visible = _mk_node(node_id="accept-answer-visible", doc_id="doc::answer::visible")

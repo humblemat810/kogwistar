@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "metric": "cosine",
+      "chroma_distance": 0.25,
+      "kogwistar_distance": 0.25,
+      "similarity": 0.75,
+      "python_distance_kind": "distance"
+    },
+    {
+      "metric": "ip",
+      "chroma_distance": 0.2,
+      "kogwistar_distance": -0.8,
+      "similarity": 0.8,
+      "python_distance_kind": "distance"
+    },
+    {
+      "metric": "l2",
+      "chroma_distance": 9.0,
+      "kogwistar_distance": 3.0,
+      "similarity": 0.25,
+      "python_distance_kind": "squared_l2"
+    }
+  ]
+}

@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from kogwistar._rust_bridge import (
     _rust_json_payload,
+    capture_rust_bridge_calls,
     project_graph_model_slice,
     project_graph_model_slices,
 )
@@ -267,6 +268,13 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
         item["payload"] for item in bridge_result
     ]:
         raise RuntimeError("batch and per-envelope bridge projections differ")
+    # Keep tracing out of timed samples so diagnostics cannot skew latency.
+    with capture_rust_bridge_calls() as per_envelope_trace:
+        [project_graph_model_slice(envelope) for envelope in envelopes]
+    with capture_rust_bridge_calls() as batch_trace:
+        project_graph_model_slices(envelopes)
+    if per_envelope_trace.ffi_calls != len(envelopes) or batch_trace.ffi_calls != 1:
+        raise RuntimeError("graph slice bridge crossed the language seam unexpectedly")
     return {
         "schema": "kogwistar-graph-slice-seam-benchmark/v1",
         "model_count": model_count,
@@ -280,6 +288,11 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
         "bridge_batch_projection_digest": _digest(
             [item["payload"] for item in bridge_batch_result]
         ),
+        "bridge_crossings": {
+            "measurement": "untimed_after_latency_samples",
+            "per_envelope": per_envelope_trace.snapshot(),
+            "batch": batch_trace.snapshot(),
+        },
         "python_json_pipeline_digest": _digest(json.loads(python_pipeline_output)),
         "python_raw_json_pipeline_digest": _digest(
             json.loads(python_raw_pipeline_output)

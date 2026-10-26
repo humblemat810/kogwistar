@@ -330,6 +330,18 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
             raise RuntimeError("native graph vector query returned invalid matches")
         return [cast(JsonObject, match) for match in result]
 
+    def graph_projection_vector_query_batch(
+        self, **values: JsonValue
+    ) -> list[list[JsonObject]]:
+        result = self._call("graph_projection_vector_query_batch", **values)
+        if not isinstance(result, list) or not all(
+            isinstance(row, list)
+            and all(_valid_graph_projection_match(match) for match in row)
+            for row in result
+        ):
+            raise RuntimeError("native batched graph vector query returned invalid matches")
+        return [[cast(JsonObject, match) for match in row] for row in result]
+
     def ensure_initialized(self) -> None:
         self._native_session.ensure_initialized()
 

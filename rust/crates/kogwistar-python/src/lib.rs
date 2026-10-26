@@ -417,7 +417,7 @@ enum StoreOperation {
     },
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum SnapshotDistanceMetric {
     #[default]
@@ -3047,6 +3047,22 @@ enum PostgresStoreOperation {
         metric: SnapshotDistanceMetric,
         embedding_dim: usize,
     },
+    GraphProjectionVectorQueryBatch {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        table: String,
+        embeddings: Vec<Vec<f32>>,
+        #[serde(default = "default_list_limit")]
+        limit: usize,
+        #[serde(default)]
+        metadata: BTreeMap<String, Value>,
+        #[serde(default)]
+        metric: SnapshotDistanceMetric,
+        embedding_dim: usize,
+    },
     ExclusiveRawReplay {
         namespace: String,
         after_seq: i64,
@@ -3793,6 +3809,50 @@ async fn postgres_store_operation_json(
                 .map(|item| json!({"record": graph_record_json(item.record), "distance": item.distance}))
                 .collect(),
         )),
+        PostgresStoreOperation::GraphProjectionVectorQueryBatch {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            embeddings,
+            limit,
+            metadata,
+            metric,
+            embedding_dim,
+        } => {
+            let scope = graph_scope(namespace, workspace_id, graph_space);
+            let queries = embeddings
+                .into_iter()
+                .map(|embedding| kogwistar_store::GraphProjectionVectorQuery {
+                    scope: scope.clone(),
+                    table: table.clone(),
+                    query: VectorQuery {
+                        embedding,
+                        limit,
+                        metadata: metadata_filter(metadata.clone()),
+                        metric: metric.into(),
+                    },
+                    embedding_dim,
+                })
+                .collect();
+            Ok(Value::Array(
+                store
+                    .graph_projection_vector_query_batch(queries)
+                    .await?
+                    .into_iter()
+                    .map(|matches| {
+                        Value::Array(
+                            matches
+                                .into_iter()
+                                .map(|item| {
+                                    json!({"record": graph_record_json(item.record), "distance": item.distance})
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ))
+        }
         PostgresStoreOperation::ExclusiveRawReplay {
             namespace,
             after_seq,
@@ -6066,6 +6126,18 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "metric",
             "embedding_dim",
         ][..],
+        "graph_projection_vector_query_batch" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "table",
+            "embeddings",
+            "limit",
+            "metadata",
+            "metric",
+            "embedding_dim",
+        ][..],
         "exclusive_raw_replay" => &["kind", "namespace", "after_seq", "limit"][..],
         "latest_retained_event_seq" => &["kind", "namespace"][..],
         "prune_entity_events_after" => &["kind", "namespace", "to_seq"][..],
@@ -6969,6 +7041,34 @@ mod tests {
         assert_eq!(
             postgres_store_json_impl(&request.to_string())
                 .expect_err("invalid nested retry range must fail before DB dispatch")
+                .0,
+            STORE_INVALID_PAYLOAD
+        );
+    }
+
+    #[test]
+    fn postgres_bridge_accepts_closed_batched_graph_vector_query_contract() {
+        let operation = json!({
+            "kind": "graph_projection_vector_query_batch",
+            "namespace": "default",
+            "workspace_id": null,
+            "graph_space": null,
+            "table": "gke_nodes",
+            "embeddings": [[1.0, 0.0], [0.0, 1.0]],
+            "limit": 3,
+            "metadata": {"team": "red"},
+            "metric": "cosine",
+            "embedding_dim": 2
+        });
+        validate_postgres_operation(&operation).expect("batch operation is allowlisted");
+        serde_json::from_value::<PostgresStoreOperation>(operation.clone())
+            .expect("batch operation matches the typed Rust contract");
+
+        let mut invalid = operation;
+        invalid["unexpected"] = json!(true);
+        assert_eq!(
+            validate_postgres_operation(&invalid)
+                .expect_err("unknown batch fields must be rejected")
                 .0,
             STORE_INVALID_PAYLOAD
         );

@@ -4,6 +4,34 @@ const CYTOSCAPE_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/cytosca
 const D3_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/d3.html"));
 const GO_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/go.html"));
 
+const INTERNAL_RUNTIME_CLAIM_ROUTE: &str = "/internal/runtime/claim";
+const INTERNAL_RUNTIME_RESULTS_ROUTE: &str = "/internal/runtime/results";
+const INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE: &str = "/internal/runtime/native/execute";
+const INTERNAL_GRAPH_MUTATIONS_ROUTE: &str = "/internal/graph/mutations";
+const INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE: &str = "/internal/conversation/transcript";
+const INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE: &str =
+    "/internal/conversation/context-snapshot";
+const INTERNAL_GRAPH_NEIGHBORS_ROUTE: &str = "/internal/graph/neighbors";
+const INTERNAL_GRAPH_VECTOR_QUERY_ROUTE: &str = "/internal/graph/vector-query";
+const INTERNAL_GRAPH_FIND_EDGES_ROUTE: &str = "/internal/graph/find-edges";
+const INTERNAL_GRAPH_SHORTEST_PATH_ROUTE: &str = "/internal/graph/shortest-path";
+const INTERNAL_GRAPH_K_HOP_ROUTE: &str = "/internal/graph/k-hop";
+
+const INTERNAL_APPLICATION_EFFECT_ROUTES: &[&str] = &[
+    INTERNAL_RUNTIME_CLAIM_ROUTE,
+    INTERNAL_RUNTIME_RESULTS_ROUTE,
+    INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE,
+    INTERNAL_DOCUMENT_PROJECTION_ROUTE,
+    INTERNAL_GRAPH_MUTATIONS_ROUTE,
+    INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE,
+    INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE,
+    INTERNAL_GRAPH_NEIGHBORS_ROUTE,
+    INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
+    INTERNAL_GRAPH_FIND_EDGES_ROUTE,
+    INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
+    INTERNAL_GRAPH_K_HOP_ROUTE,
+];
+
 fn rust_native_attested(mut value: Value) -> Value {
     attach_rust_native_seam_attestation(&mut value);
     value

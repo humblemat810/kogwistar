@@ -238,7 +238,6 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if (
             not isinstance(meta, RustEnginePostgresMetaStore)
             or metadata is None
-            or len(query_embeddings) != 1
         ):
             return None
         table = (
@@ -246,34 +245,62 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if entity_kind == "node"
             else cast(ProjectionBackendLike, self._e.backend).edges.name
         )
-        matches = meta.graph_projection_vector_query(
-            namespace=getattr(self._e, "namespace", "default"),
-            workspace_id=None,
-            graph_space=None,
-            table=table,
-            embedding=list(query_embeddings[0]),
-            embedding_dim=int(cast(ProjectionBackendLike, self._e.backend).embedding_dim),
-            metadata=metadata,
-            metric=str(cast(ProjectionBackendLike, self._e.backend).distance),
-            limit=int(n_results),
-        )
-        records = [_json_object(match.get("record") or {}) for match in matches]
+        common_query = {
+            "namespace": getattr(self._e, "namespace", "default"),
+            "workspace_id": None,
+            "graph_space": None,
+            "table": table,
+            "embedding_dim": int(cast(ProjectionBackendLike, self._e.backend).embedding_dim),
+            "metadata": metadata,
+            "metric": str(cast(ProjectionBackendLike, self._e.backend).distance),
+            "limit": int(n_results),
+        }
+        if len(query_embeddings) == 1:
+            matches_by_embedding = [
+                meta.graph_projection_vector_query(
+                    **common_query, embedding=list(query_embeddings[0])
+                )
+            ]
+        else:
+            matches_by_embedding = meta.graph_projection_vector_query_batch(
+                **common_query,
+                embeddings=[list(embedding) for embedding in query_embeddings],
+            )
+        records_by_embedding = [
+            [_json_object(match.get("record") or {}) for match in matches]
+            for matches in matches_by_embedding
+        ]
         effective_include = include or ["documents", "metadatas", "distances"]
         result: JsonObject = {
-            "ids": [[str(record.get("id") or "") for record in records]]
+            "ids": [
+                [str(record.get("id") or "") for record in records]
+                for records in records_by_embedding
+            ]
         }
         if "documents" in effective_include:
-            result["documents"] = [[record.get("document") for record in records]]
+            result["documents"] = [
+                [record.get("document") for record in records]
+                for records in records_by_embedding
+            ]
         if "metadatas" in effective_include:
-            result["metadatas"] = [[_json_object(record.get("metadata") or {}) for record in records]]
+            result["metadatas"] = [
+                [_json_object(record.get("metadata") or {}) for record in records]
+                for records in records_by_embedding
+            ]
         if "embeddings" in effective_include:
-            result["embeddings"] = [_json_embeddings(
-                [normalize_embedding_vector(record.get("embedding")) for record in records]
-            )]
+            result["embeddings"] = [
+                _json_embeddings(
+                    [normalize_embedding_vector(record.get("embedding")) for record in records]
+                )
+                for records in records_by_embedding
+            ]
         if "distances" in effective_include:
             result["distances"] = cast(
                 JsonValue,
-                [[_json_float(match.get("distance", 0.0)) for match in matches]],
+                [
+                    [_json_float(match.get("distance", 0.0)) for match in matches]
+                    for matches in matches_by_embedding
+                ],
             )
         return result
 

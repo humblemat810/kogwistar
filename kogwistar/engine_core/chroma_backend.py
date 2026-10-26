@@ -202,8 +202,6 @@ class ChromaBackend:
     two_stage_projection_capability: TwoStageProjectionCapability
     two_stage_projection_adapter: TwoStageProjectionAdapter | None
     async_two_stage_projection_adapter: AsyncTwoStageProjectionAdapter | None
-    vector_distance_kind = "distance"
-
     def __init__(
         self,
         *,
@@ -217,6 +215,7 @@ class ChromaBackend:
         node_refs_collection: ChromaCollection,
         edge_refs_collection: ChromaCollection,
         persist_directory: str | None = None,
+        distance_metric: str = "cosine",
     ) -> None:
         self._collections: dict[str, ChromaCollection] = {
             "node_index": node_index_collection,
@@ -234,6 +233,14 @@ class ChromaBackend:
             if persist_directory
             else None
         )
+        metric = str(distance_metric).strip().lower()
+        if metric not in {"cosine", "ip", "l2"}:
+            raise ValueError("distance_metric must be one of: cosine, ip, l2")
+        self._vector_distance_kind = "squared_l2" if metric == "l2" else "distance"
+
+    @property
+    def vector_distance_kind(self) -> str:
+        return self._vector_distance_kind
 
     def embedding_storage_scope(self) -> str:
         """Return a stable, secret-free identity for this Chroma directory."""

@@ -736,45 +736,9 @@ pub fn router_with_application(
         .route("/mcp", post(mcp_handler))
         .route("/mcp/conversation", post(mcp_handler))
         .route("/mcp/workflow", post(mcp_handler));
-    router = router
-        .route("/internal/runtime/claim", post(application_effect_handler))
-        .route(
-            "/internal/runtime/results",
-            post(application_effect_handler),
-        );
-    router = router.route(
-        "/internal/runtime/native/execute",
-        post(application_effect_handler),
-    );
-    router = router.route(
-        INTERNAL_DOCUMENT_PROJECTION_ROUTE,
-        post(application_effect_handler),
-    );
-    router = router.route(
-        "/internal/graph/mutations",
-        post(application_effect_handler),
-    );
-    router = router.route(
-        "/internal/conversation/transcript",
-        post(application_effect_handler),
-    );
-    router = router.route(
-        "/internal/conversation/context-snapshot",
-        post(application_effect_handler),
-    );
-    router = router.route(
-        "/internal/graph/neighbors",
-        post(application_effect_handler),
-    );
-    router = router.route(
-        "/internal/graph/find-edges",
-        post(application_effect_handler),
-    );
-    router = router.route(
-        "/internal/graph/shortest-path",
-        post(application_effect_handler),
-    );
-    router = router.route("/internal/graph/k-hop", post(application_effect_handler));
+    for path in INTERNAL_APPLICATION_EFFECT_ROUTES {
+        router = router.route(path, post(application_effect_handler));
+    }
     for &(method, path) in FROZEN_OPENAPI_ROUTES {
         if (method == "GET"
             && matches!(

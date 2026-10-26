@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "principal": {
+    "id": "agent-b",
+    "groups": [],
+    "security_scope": "tenant-a"
+  },
+  "owner_id": "agent-a",
+  "shared_with_principals": ["agent-b"],
+  "cases": [
+    {
+      "edge_id": "edge-private-span",
+      "source_node_id": "source-private-span",
+      "target_node_id": "target-private-span",
+      "source_node_mode": "shared",
+      "target_node_mode": "shared",
+      "mention_span_counts": [1],
+      "private_span": [0, 0],
+      "expected_visible": false
+    },
+    {
+      "edge_id": "edge-hidden-endpoint",
+      "source_node_id": "source-hidden-endpoint",
+      "target_node_id": "target-hidden-endpoint",
+      "source_node_mode": "shared",
+      "target_node_mode": "private",
+      "mention_span_counts": [],
+      "expected_visible": false
+    },
+    {
+      "edge_id": "edge-legacy-visible",
+      "source_node_id": "source-legacy-visible",
+      "target_node_id": "target-legacy-visible",
+      "source_node_mode": "shared",
+      "target_node_mode": "shared",
+      "mention_span_counts": [],
+      "expected_visible": true
+    },
+    {
+      "edge_id": "edge-references-private-edge",
+      "source_node_id": "source-private-reference",
+      "target_node_id": "target-private-reference",
+      "source_node_mode": "shared",
+      "target_node_mode": "shared",
+      "mention_span_counts": [],
+      "source_edge_id": "edge-private-reference",
+      "source_edge_exists": true,
+      "expected_visible": false
+    },
+    {
+      "edge_id": "edge-references-missing-edge",
+      "source_node_id": "source-missing-reference",
+      "target_node_id": "target-missing-reference",
+      "source_node_mode": "shared",
+      "target_node_mode": "shared",
+      "mention_span_counts": [],
+      "source_edge_id": "edge-missing-reference",
+      "source_edge_exists": false,
+      "expected_visible": false
+    }
+  ]
+}

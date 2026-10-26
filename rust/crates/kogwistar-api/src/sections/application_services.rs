@@ -1250,13 +1250,14 @@ impl SqliteRunApplicationService {
         if request.method == "POST"
             && matches!(
                 request.path_and_query.split('?').next(),
-                Some("/internal/graph/find-edges")
-                    | Some("/internal/graph/neighbors")
-                    | Some("/internal/graph/shortest-path")
-                    | Some("/internal/graph/k-hop")
-                    | Some("/internal/conversation/transcript")
-                    | Some("/internal/conversation/context-snapshot")
-                    | Some("/internal/graph/mutations")
+                Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
+                    | Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
+                    | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
+                    | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
+                    | Some(INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE)
+                    | Some(INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE)
+                    | Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
             )
         {
             return effect_error(
@@ -1330,13 +1331,14 @@ impl SqliteRunApplicationService {
         {
             return self.repair_orphaned_messages(&request);
         }
-        if request.method == "POST" && request.path_and_query == "/internal/runtime/claim" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_CLAIM_ROUTE {
             return self.claim_runtime_work(&request);
         }
-        if request.method == "POST" && request.path_and_query == "/internal/runtime/results" {
+        if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE {
             return self.apply_runtime_result(&request);
         }
-        if request.method == "POST" && request.path_and_query == "/internal/runtime/native/execute"
+        if request.method == "POST"
+            && request.path_and_query == INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE
         {
             return self.execute_native_runtime_step(&request);
         }

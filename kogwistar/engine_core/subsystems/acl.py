@@ -1284,12 +1284,17 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 return retry.visible
         return False
 
-    def _edge_visible(self, edge: Edge) -> bool:
+    def _edge_visible(self, edge: Edge, visited: set[str] | None = None) -> bool:
+        edge_id = str(edge.safe_get_id())
+        visited = set() if visited is None else visited
+        if edge_id in visited:
+            return True
+        visited.add(edge_id)
         principal_id, groups, security_scope = self._e.acl.current_principal_context()
         edge_decision = self._e.acl.decide_acl(
             grain="edge",
             truth_graph=self._e.kg_graph_type,
-            entity_id=str(edge.safe_get_id()),
+            entity_id=edge_id,
             principal_id=principal_id,
             principal_groups=groups,
             security_scope=security_scope,
@@ -1305,7 +1310,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                     edge_decision = self._e.acl.decide_acl(
                         grain="edge",
                         truth_graph=self._e.kg_graph_type,
-                        entity_id=str(edge.safe_get_id()),
+                        entity_id=edge_id,
                         principal_id=principal_id,
                         principal_groups=groups,
                         security_scope=security_scope,
@@ -1317,7 +1322,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             decision = self._e.acl.decide_acl(
                 grain="grounding",
                 truth_graph=self._e.kg_graph_type,
-                entity_id=str(edge.safe_get_id()),
+                entity_id=edge_id,
                 target_item_id=grounding_id,
                 principal_id=principal_id,
                 principal_groups=groups,
@@ -1329,7 +1334,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             decision = self._e.acl.decide_acl(
                 grain="span",
                 truth_graph=self._e.kg_graph_type,
-                entity_id=str(edge.safe_get_id()),
+                entity_id=edge_id,
                 target_item_id=span_id,
                 principal_id=principal_id,
                 principal_groups=groups,
@@ -1347,6 +1352,23 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             endpoint_nodes = self._raw.get_nodes(node_type=Node, ids=list(endpoint_ids))
             for endpoint in endpoint_nodes:
                 if not self._node_visible(endpoint):
+                    return False
+        endpoint_edge_ids = tuple(
+            str(item)
+            for item in tuple(getattr(edge, "source_edge_ids", ()) or ())
+            + tuple(getattr(edge, "target_edge_ids", ()) or ())
+            if str(item)
+        )
+        if endpoint_edge_ids:
+            endpoint_edges = self._raw.get_edges(
+                ids=list(endpoint_edge_ids), edge_type=Edge
+            )
+            if {str(item.safe_get_id()) for item in endpoint_edges} != set(
+                endpoint_edge_ids
+            ):
+                return False
+            for endpoint in endpoint_edges:
+                if not self._edge_visible(endpoint, visited):
                     return False
         return True
 

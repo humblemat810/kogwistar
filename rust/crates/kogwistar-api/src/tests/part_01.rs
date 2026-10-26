@@ -1257,6 +1257,264 @@
     }
 
     #[test]
+    fn graph_vector_query_contract_is_batched_bounded_and_closed() {
+        let input = parse_graph_vector_query_request(
+            br#"{"entity_kind":"node","query_embeddings":[[0.1,0.2],[0.3,0.4]],"metric":"ip","where":{"kind":"note"},"n_results":5,"include":["metadatas","distances"]}"#,
+        )
+        .unwrap();
+        assert_eq!(input.entity_kind, "node");
+        assert_eq!(input.query_embeddings.len(), 2);
+        assert_eq!(input.metric, DistanceMetric::InnerProduct);
+        assert_eq!(input.n_results, 5);
+        assert_eq!(input.where_filter.equals.get("kind"), Some(&json!("note")));
+        assert_eq!(input.include, ["metadatas", "distances"]);
+
+        assert!(parse_graph_vector_query_request(
+            br#"{"entity_kind":"document","query_embeddings":[[0.1]],"metric":"cosine"}"#
+        )
+        .is_err());
+        assert!(parse_graph_vector_query_request(
+            br#"{"entity_kind":"node","query_embeddings":[[]],"metric":"cosine"}"#
+        )
+        .is_err());
+        assert!(parse_graph_vector_query_request(
+            br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine","where":{"$gt":2}}"#
+        )
+        .is_err());
+        assert!(parse_graph_vector_query_request(
+            br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine","unknown":true}"#
+        )
+        .is_err());
+        assert!(parse_graph_vector_query_request(
+            br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine","include":["implementation_authority"]}"#
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn graph_vector_query_route_authorizes_and_validates_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "graph_vector_query_contract",
+        )
+        .unwrap();
+        let denied = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine"}"#.to_vec(),
+                principal: json!({"sub":"alice","capabilities":[]}),
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+        let malformed = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine","extra":true}"#.to_vec(),
+                principal: json!({"sub":"alice","capabilities":["read_graph"]}),
+            })
+            .await;
+        assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against a disposable database"]
+    async fn postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available()
+    {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_vector_query_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        let scope = GraphScope {
+            namespace: "vector-query-test".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: None,
+        };
+        for (entity_id, vector, acl_mode, owner) in [
+            ("near-private", vec![1.0, 0.0], "private", Some("bob")),
+            ("visible-public", vec![0.8, 0.6], "public", None),
+        ] {
+            let mut metadata = Map::new();
+            metadata.insert("entity_type".to_owned(), json!("node"));
+            metadata.insert("label".to_owned(), json!(entity_id));
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: entity_id.to_owned(),
+                        document: Some(entity_id.to_owned()),
+                        metadata,
+                        embedding: Some(vector),
+                    },
+                    embedding_dim: 2,
+                })
+                .await
+                .unwrap();
+
+            let mut acl_metadata = Map::new();
+            for (key, value) in [
+                ("entity_type", json!("acl_record")),
+                ("acl_truth_graph", json!("knowledge")),
+                ("acl_target_entity_id", json!(entity_id)),
+                ("acl_target_grain", json!("node")),
+                ("acl_version", json!(1)),
+                ("acl_mode", json!(acl_mode)),
+            ] {
+                acl_metadata.insert(key.to_owned(), value);
+            }
+            if let Some(owner) = owner {
+                acl_metadata.insert("owner_id".to_owned(), json!(owner));
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{entity_id}"),
+                        document: None,
+                        metadata: acl_metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 2,
+                })
+                .await
+                .unwrap();
+        }
+
+        let response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: br#"{"entity_kind":"node","query_embeddings":[[1.0,0.0],[0.0,1.0]],"metric":"cosine","n_results":2}"#.to_vec(),
+                principal: json!({
+                    "sub": "alice",
+                    "ns": "vector-query-test",
+                    "storage_ns": "vector-query-test",
+                    "workspace": "workspace-a",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(
+            result["ids"],
+            json!([["visible-public"], ["visible-public"]])
+        );
+        assert_eq!(
+            result["documents"],
+            json!([["visible-public"], ["visible-public"]])
+        );
+
+        for (edge_id, vector, source_id) in [
+            ("edge-private-endpoint", vec![1.0, 0.0], "near-private"),
+            ("edge-public", vec![0.8, 0.6], "visible-public"),
+        ] {
+            let mut edge_metadata = Map::new();
+            edge_metadata.insert("entity_type".to_owned(), json!("edge"));
+            edge_metadata.insert("source_ids".to_owned(), json!([source_id]));
+            edge_metadata.insert("target_ids".to_owned(), json!(["visible-public"]));
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_edges".to_owned(),
+                    record: GraphRecord {
+                        id: edge_id.to_owned(),
+                        document: Some(edge_id.to_owned()),
+                        metadata: edge_metadata,
+                        embedding: Some(vector),
+                    },
+                    embedding_dim: 2,
+                })
+                .await
+                .unwrap();
+            let mut acl_metadata = Map::new();
+            for (key, value) in [
+                ("entity_type", json!("acl_record")),
+                ("acl_truth_graph", json!("knowledge")),
+                ("acl_target_entity_id", json!(edge_id)),
+                ("acl_target_grain", json!("edge")),
+                ("acl_version", json!(1)),
+                ("acl_mode", json!("public")),
+            ] {
+                acl_metadata.insert(key.to_owned(), value);
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{edge_id}"),
+                        document: None,
+                        metadata: acl_metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 2,
+                })
+                .await
+                .unwrap();
+        }
+        let edge_response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: br#"{"entity_kind":"edge","query_embeddings":[[1.0,0.0],[0.0,1.0]],"metric":"cosine","n_results":2}"#.to_vec(),
+                principal: json!({
+                    "sub": "alice",
+                    "ns": "vector-query-test",
+                    "storage_ns": "vector-query-test",
+                    "workspace": "workspace-a",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(edge_response.status, StatusCode::OK.as_u16());
+        let edge_result: Value = serde_json::from_slice(&edge_response.body).unwrap();
+        assert_eq!(edge_result["ids"], json!([["edge-public"], ["edge-public"]]));
+        assert_eq!(
+            edge_result["documents"],
+            json!([["edge-public"], ["edge-public"]])
+        );
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[test]
     fn graph_traversal_requests_preserve_defaults_and_fail_closed() {
         let shortest: GraphShortestPathRequest =
             serde_json::from_str(r#"{"src_id":"n1","dst_id":"n2"}"#).unwrap();
@@ -1307,7 +1565,7 @@
     }
 
     #[tokio::test]
-    async fn router_exposes_graph_neighbor_effect_route() {
+    async fn router_exposes_graph_read_effect_routes() {
         let service = Arc::new(
             PostgresRunApplicationService::from_dsn(
                 "postgres://unused:unused@127.0.0.1:1/unused",
@@ -1327,23 +1585,71 @@
             },
             service,
         );
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/internal/graph/neighbors")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"rid":"n1"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        for (path, body) in [
+            ("/internal/graph/neighbors", r#"{"rid":"n1"}"#),
+            (
+                "/internal/graph/vector-query",
+                r#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine"}"#,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
-        // The route must reach the application authorization layer. A missing
-        // capability is a 403; a 404 would mean the transport seam is absent.
-        let status = response.status();
-        let body = to_bytes(response.into_body(), 4096).await.unwrap();
-        assert_eq!(status, StatusCode::FORBIDDEN, "body={:?}", body);
+            // A 403 proves the route reached application authorization; 404
+            // would mean the transport seam is missing.
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            assert_eq!(status, StatusCode::FORBIDDEN, "body={:?}", body);
+        }
+    }
+
+    #[tokio::test]
+    async fn internal_effect_route_catalog_is_registered_in_transport() {
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(UnavailableApplicationService),
+        );
+        let unique = INTERNAL_APPLICATION_EFFECT_ROUTES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), INTERNAL_APPLICATION_EFFECT_ROUTES.len());
+
+        for path in INTERNAL_APPLICATION_EFFECT_ROUTES {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(*path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "internal route is missing from Axum transport: {path}"
+            );
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        }
     }
 
     #[tokio::test]

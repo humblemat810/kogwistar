@@ -1617,6 +1617,7 @@ class GraphKnowledgeEngine:
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
                 persist_directory=persist_directory or "./chroma_db",
+                distance_metric=collection_metric,
             )
             if self.persistence_mode == "two_stage" and _is_async_storage_backend(
                 self.backend

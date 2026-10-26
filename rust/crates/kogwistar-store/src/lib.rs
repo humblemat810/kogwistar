@@ -329,11 +329,13 @@ struct GraphAclRule {
     tombstoned: bool,
 }
 
+type GraphAclKey = (String, String, Option<String>);
+
 /// Compact, reusable ACL rules collected independently of graph-record pages.
 /// This is required when a target and its ACL record are in different pages.
 #[derive(Clone, Debug, Default)]
 pub struct GraphAclIndex {
-    rules: BTreeMap<(String, String), GraphAclRule>,
+    rules: BTreeMap<GraphAclKey, GraphAclRule>,
 }
 
 impl GraphAclIndex {
@@ -372,7 +374,7 @@ fn record_field(record: &GraphRecord, field: &str) -> Option<Value> {
             return Some(value.clone());
         }
     }
-    None
+    document.get(field).cloned()
 }
 
 fn value_string(record: &GraphRecord, field: &str) -> Option<String> {
@@ -403,28 +405,23 @@ fn is_acl_record(record: &GraphRecord) -> bool {
     value_string(record, "entity_type").as_deref() == Some("acl_record")
 }
 
-fn acl_rule_for(
-    record: &GraphRecord,
-    truth_graph: &str,
-) -> Option<((String, String), GraphAclRule)> {
+fn acl_rule_for(record: &GraphRecord, truth_graph: &str) -> Option<(GraphAclKey, GraphAclRule)> {
     if !is_acl_record(record)
         || value_string(record, "acl_truth_graph").as_deref() != Some(truth_graph)
     {
         return None;
     }
     let grain = value_string(record, "acl_target_grain")?;
-    if grain != "node" && grain != "edge" {
-        return None;
-    }
-    if value_string(record, "acl_target_item_id").is_some_and(|target_item| !target_item.is_empty())
-    {
+    if !matches!(grain.as_str(), "node" | "edge" | "grounding" | "span") {
         return None;
     }
     let target_id = value_string(record, "acl_target_entity_id")?;
+    let target_item_id = value_string(record, "acl_target_item_id")
+        .filter(|target_item_id| !target_item_id.is_empty());
     let version = record_field(record, "acl_version")?.as_i64()?;
     let mode = value_string(record, "acl_mode")?.to_ascii_lowercase();
     Some((
-        (grain, target_id),
+        (grain, target_id, target_item_id),
         GraphAclRule {
             version,
             mode,
@@ -462,6 +459,72 @@ fn acl_rule_visible(rule: &GraphAclRule, principal: &GraphAclPrincipal) -> bool 
     }
 }
 
+fn indexed_acl_visible(
+    index: &GraphAclIndex,
+    grain: &str,
+    entity_id: &str,
+    target_item_id: Option<&str>,
+    principal: &GraphAclPrincipal,
+) -> bool {
+    let key = (
+        grain.to_owned(),
+        entity_id.to_owned(),
+        target_item_id.map(str::to_owned),
+    );
+    index
+        .rules
+        .get(&key)
+        .is_some_and(|rule| acl_rule_visible(rule, principal))
+}
+
+fn record_array_field(record: &GraphRecord, field: &str) -> Option<Vec<Value>> {
+    let Some(value) = record_field(record, field) else {
+        return Some(Vec::new());
+    };
+    match value {
+        Value::Array(values) => Some(values),
+        Value::String(encoded) => serde_json::from_str::<Value>(&encoded)
+            .ok()?
+            .as_array()
+            .cloned(),
+        Value::Null => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+fn graph_entity_usage_acl_visible(
+    record: &GraphRecord,
+    index: &GraphAclIndex,
+    principal: &GraphAclPrincipal,
+) -> bool {
+    let Some(mentions) = record_array_field(record, "mentions") else {
+        // Malformed mention metadata must not bypass item-level ACL checks.
+        return false;
+    };
+    for (mention_index, mention) in mentions.iter().enumerate() {
+        let Some(span_values) = mention.get("spans").and_then(Value::as_array) else {
+            return false;
+        };
+        let grounding_id = format!("{}::mention::{mention_index}", record.id);
+        if !indexed_acl_visible(
+            index,
+            "grounding",
+            &record.id,
+            Some(&grounding_id),
+            principal,
+        ) {
+            return false;
+        }
+        for span_index in 0..span_values.len() {
+            let span_id = format!("{grounding_id}::span::{span_index}");
+            if !indexed_acl_visible(index, "span", &record.id, Some(&span_id), principal) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Filter graph projections using the same fail-closed ACL rules as Python.
 ///
 /// ACL records are persisted as graph nodes. Missing records deny access, and
@@ -489,23 +552,82 @@ pub fn graph_records_visible_by_acl_with_index(
         if is_acl_record(record) {
             return false;
         }
-        index
-            .rules
-            .get(&(grain.to_owned(), record.id.clone()))
-            .is_some_and(|rule| acl_rule_visible(rule, principal))
+        indexed_acl_visible(index, grain, &record.id, None, principal)
+            && graph_entity_usage_acl_visible(record, index, principal)
     };
-    (
-        nodes
+    let visible_nodes = nodes
+        .iter()
+        .filter(|record| visible(record, "node"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let edge_base_visible = |edge: &GraphRecord| {
+        if !visible(edge, "edge") {
+            return false;
+        }
+        let Some(source_ids) = record_array_field(edge, "source_ids") else {
+            return false;
+        };
+        let Some(target_ids) = record_array_field(edge, "target_ids") else {
+            return false;
+        };
+        let endpoint_ids = source_ids
+            .into_iter()
+            .chain(target_ids)
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        endpoint_ids.into_iter().all(|endpoint_id| {
+            nodes
+                .iter()
+                .find(|node| node.id == endpoint_id && !is_acl_record(node))
+                .is_none_or(|node| visible(node, "node"))
+        })
+    };
+    let mut visible_edge_ids = edges
+        .iter()
+        .filter(|edge| !is_tombstoned(&edge.metadata) && edge_base_visible(edge))
+        .map(|edge| edge.id.clone())
+        .collect::<Vec<_>>();
+    loop {
+        let current = visible_edge_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let next = visible_edge_ids
             .iter()
-            .filter(|record| visible(record, "node"))
+            .filter(|edge_id| {
+                let Some(edge) = edges.iter().find(|edge| edge.id == **edge_id) else {
+                    return false;
+                };
+                let Some(source_edge_ids) = record_array_field(edge, "source_edge_ids") else {
+                    return false;
+                };
+                let Some(target_edge_ids) = record_array_field(edge, "target_edge_ids") else {
+                    return false;
+                };
+                source_edge_ids
+                    .into_iter()
+                    .chain(target_edge_ids)
+                    .filter_map(|value| value.as_str().map(str::to_owned))
+                    .all(|endpoint_id| {
+                        let Some(referenced) =
+                            edges.iter().find(|candidate| candidate.id == endpoint_id)
+                        else {
+                            return false;
+                        };
+                        !is_tombstoned(&referenced.metadata) && current.contains(&referenced.id)
+                    })
+            })
             .cloned()
-            .collect(),
-        edges
-            .iter()
-            .filter(|record| visible(record, "edge"))
-            .cloned()
-            .collect(),
-    )
+            .collect::<Vec<_>>();
+        if next == visible_edge_ids {
+            break;
+        }
+        visible_edge_ids = next;
+    }
+    let visible_edge_ids = visible_edge_ids.into_iter().collect::<BTreeSet<_>>();
+    let visible_edges = edges
+        .iter()
+        .filter(|edge| visible_edge_ids.contains(&edge.id))
+        .cloned()
+        .collect();
+    (visible_nodes, visible_edges)
 }
 
 /// Project already-authorized graph records into the versioned tool-audit
@@ -1521,6 +1643,21 @@ pub enum DistanceMetric {
     InnerProduct,
 }
 
+/// Convert a standardized lower-is-better distance to a higher-is-better score.
+///
+/// Store adapters normalize backend-specific encodings before returning a
+/// [`VectorMatch`]: cosine distance remains `1 - cosine`, L2 is Euclidean
+/// distance, and inner product is represented as negative dot product. This
+/// keeps score policy independent of the selected storage backend.
+pub fn similarity_from_distance(distance: Option<f64>, metric: DistanceMetric) -> Option<f64> {
+    let distance = distance.filter(|value| value.is_finite())?;
+    Some(match metric {
+        DistanceMetric::Cosine => 1.0 - distance,
+        DistanceMetric::L2 => 1.0 / (1.0 + distance.max(0.0)),
+        DistanceMetric::InnerProduct => -distance,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct VectorQuery {
     pub embedding: Vec<f32>,
@@ -2445,6 +2582,27 @@ impl<S: ProjectionReadStore + Send + Sync> ProjectionReadStore for ShadowInspect
 mod tests {
     use super::*;
 
+    #[test]
+    fn standardized_vector_distance_scores_are_backend_neutral() {
+        assert_eq!(
+            similarity_from_distance(Some(0.25), DistanceMetric::Cosine),
+            Some(0.75)
+        );
+        assert_eq!(
+            similarity_from_distance(Some(3.0), DistanceMetric::L2),
+            Some(0.25)
+        );
+        assert_eq!(
+            similarity_from_distance(Some(-0.8), DistanceMetric::InnerProduct),
+            Some(0.8)
+        );
+        assert_eq!(similarity_from_distance(None, DistanceMetric::Cosine), None);
+        assert_eq!(
+            similarity_from_distance(Some(f64::NAN), DistanceMetric::Cosine),
+            None
+        );
+    }
+
     fn edge_record(id: &str, document: Value) -> GraphRecord {
         GraphRecord {
             id: id.to_owned(),
@@ -3110,6 +3268,424 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(node_ids, expected_nodes);
         assert_eq!(edge_ids, expected_edges);
+    }
+
+    #[test]
+    fn graph_node_item_usage_matches_shared_python_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-item-usage-v1.json"
+        )))
+        .expect("valid graph ACL item-use fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        let principal = GraphAclPrincipal {
+            principal_id: fixture["principal"]["id"]
+                .as_str()
+                .expect("principal ID")
+                .to_owned(),
+            groups: fixture["principal"]["groups"]
+                .as_array()
+                .expect("principal groups")
+                .iter()
+                .map(|value| value.as_str().expect("group").to_owned())
+                .collect(),
+            security_scope: fixture["principal"]["security_scope"]
+                .as_str()
+                .map(str::to_owned),
+        };
+        for case in fixture["cases"].as_array().expect("cases") {
+            let node_id = case["node_id"].as_str().expect("node ID");
+            let mention_span_counts = case["mention_span_counts"]
+                .as_array()
+                .expect("mention span counts");
+            let mentions = mention_span_counts
+                .iter()
+                .map(|span_count| {
+                    let span_count = span_count.as_u64().expect("span count") as usize;
+                    serde_json::json!({"spans": vec![serde_json::json!({}); span_count]})
+                })
+                .collect::<Vec<_>>();
+            let mut records = Vec::new();
+            for acl_record in case["acl_records"].as_array().expect("ACL records") {
+                let mut record = GraphRecord::new(format!("acl-{node_id}-{}", records.len()));
+                record
+                    .metadata
+                    .insert("entity_type".into(), "acl_record".into());
+                record
+                    .metadata
+                    .insert("acl_truth_graph".into(), fixture["truth_graph"].clone());
+                record
+                    .metadata
+                    .insert("acl_target_entity_id".into(), node_id.into());
+                record.metadata.insert(
+                    "acl_target_grain".into(),
+                    acl_record["grain"].as_str().expect("ACL grain").into(),
+                );
+                record
+                    .metadata
+                    .insert("acl_version".into(), serde_json::json!(1));
+                record.metadata.insert(
+                    "acl_mode".into(),
+                    acl_record["mode"].as_str().expect("ACL mode").into(),
+                );
+                if let Some(item_id) = acl_record["target_item_id"].as_str() {
+                    record
+                        .metadata
+                        .insert("acl_target_item_id".into(), item_id.into());
+                }
+                if let Some(owner_id) = acl_record["owner_id"].as_str() {
+                    record.metadata.insert("owner_id".into(), owner_id.into());
+                }
+                if acl_record.get("shared_with_principals").is_some()
+                    || acl_record.get("shared_with_groups").is_some()
+                {
+                    record.document = Some(
+                        serde_json::json!({
+                            "properties": {
+                                "shared_with_principals": acl_record
+                                    .get("shared_with_principals")
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!([])),
+                                "shared_with_groups": acl_record
+                                    .get("shared_with_groups")
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::json!([]))
+                            }
+                        })
+                        .to_string(),
+                    );
+                }
+                records.push(record);
+            }
+            let mut target = GraphRecord::new(node_id);
+            let encoded_mentions = serde_json::to_string(&mentions).unwrap();
+            if case["mentions_storage"].as_str() == Some("document_root") {
+                target.document =
+                    Some(serde_json::json!({"mentions": encoded_mentions}).to_string());
+            } else {
+                target.metadata.insert(
+                    "mentions".into(),
+                    serde_json::Value::String(encoded_mentions),
+                );
+            }
+            records.push(target);
+            let (visible, _) = graph_records_visible_by_acl(&records, &[], "knowledge", &principal);
+            let expected = case["expected_visible"]
+                .as_bool()
+                .expect("expected visibility");
+            assert_eq!(
+                visible.iter().any(|record| record.id == node_id),
+                expected,
+                "{node_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_edge_visibility_requires_visible_usage_and_existing_endpoints() {
+        let principal = GraphAclPrincipal {
+            principal_id: "alice".into(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let acl_record = |id: &str, grain: &str, item_id: Option<&str>, mode: &str| {
+            let mut record =
+                GraphRecord::new(format!("acl-{id}-{grain}-{}", item_id.unwrap_or("entity")));
+            record
+                .metadata
+                .insert("entity_type".into(), "acl_record".into());
+            record
+                .metadata
+                .insert("acl_truth_graph".into(), "knowledge".into());
+            record
+                .metadata
+                .insert("acl_target_entity_id".into(), id.into());
+            record
+                .metadata
+                .insert("acl_target_grain".into(), grain.into());
+            record
+                .metadata
+                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert("acl_mode".into(), mode.into());
+            if let Some(item_id) = item_id {
+                record
+                    .metadata
+                    .insert("acl_target_item_id".into(), item_id.into());
+            }
+            record
+        };
+
+        let edge_id = "edge-private-span";
+        let grounding_id = format!("{edge_id}::mention::0");
+        let span_id = format!("{grounding_id}::span::0");
+        let mut edge = GraphRecord::new(edge_id);
+        edge.metadata
+            .insert("source_ids".into(), serde_json::json!(["visible-node"]));
+        edge.metadata
+            .insert("mentions".into(), serde_json::json!([{"spans": [{}]}]));
+        let mut nodes = vec![
+            acl_record(edge_id, "edge", None, "public"),
+            acl_record(edge_id, "grounding", Some(&grounding_id), "public"),
+            acl_record(edge_id, "span", Some(&span_id), "private"),
+            acl_record("visible-node", "node", None, "public"),
+            GraphRecord::new("visible-node"),
+        ];
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &[edge], "knowledge", &principal);
+        assert_eq!(visible_nodes.len(), 1);
+        assert!(
+            visible_edges.is_empty(),
+            "private edge span must hide the edge"
+        );
+
+        let mut endpoint_edge = GraphRecord::new("edge-hidden-endpoint");
+        endpoint_edge
+            .metadata
+            .insert("source_ids".into(), serde_json::json!(["hidden-node"]));
+        nodes = vec![
+            acl_record("edge-hidden-endpoint", "edge", None, "public"),
+            acl_record("hidden-node", "node", None, "private"),
+            GraphRecord::new("hidden-node"),
+        ];
+        let (_, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &[endpoint_edge.clone()], "knowledge", &principal);
+        assert!(
+            visible_edges.is_empty(),
+            "an edge must not disclose an existing hidden endpoint"
+        );
+
+        nodes = vec![
+            acl_record("edge-hidden-endpoint", "edge", None, "public"),
+            acl_record("visible-node", "node", None, "public"),
+            GraphRecord::new("visible-node"),
+        ];
+        endpoint_edge
+            .metadata
+            .insert("source_ids".into(), serde_json::json!(["visible-node"]));
+        let (_, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &[endpoint_edge], "knowledge", &principal);
+        assert_eq!(
+            visible_edges.len(),
+            1,
+            "legacy edges without mention metadata remain readable with visible endpoints"
+        );
+
+        let mut malformed_reference = GraphRecord::new("edge-malformed-reference");
+        malformed_reference
+            .metadata
+            .insert("source_edge_ids".into(), "not-json".into());
+        nodes.push(acl_record(
+            "edge-malformed-reference",
+            "edge",
+            None,
+            "public",
+        ));
+        let (_, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &[malformed_reference], "knowledge", &principal);
+        assert!(
+            visible_edges.is_empty(),
+            "malformed edge-reference metadata must fail closed"
+        );
+    }
+
+    #[test]
+    fn graph_edge_usage_matches_shared_python_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-edge-usage-v1.json"
+        )))
+        .expect("valid graph edge ACL fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        let principal = GraphAclPrincipal {
+            principal_id: fixture["principal"]["id"]
+                .as_str()
+                .expect("principal ID")
+                .to_owned(),
+            groups: BTreeSet::new(),
+            security_scope: fixture["principal"]["security_scope"]
+                .as_str()
+                .map(str::to_owned),
+        };
+        let acl_record = |entity_id: &str, grain: &str, item_id: Option<&str>, mode: &str| {
+            let mut record = GraphRecord::new(format!(
+                "acl-{entity_id}-{grain}-{}",
+                item_id.unwrap_or("entity")
+            ));
+            record
+                .metadata
+                .insert("entity_type".into(), "acl_record".into());
+            record
+                .metadata
+                .insert("acl_truth_graph".into(), fixture["truth_graph"].clone());
+            record
+                .metadata
+                .insert("acl_target_entity_id".into(), entity_id.into());
+            record
+                .metadata
+                .insert("acl_target_grain".into(), grain.into());
+            record
+                .metadata
+                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert("acl_mode".into(), mode.into());
+            if let Some(item_id) = item_id {
+                record
+                    .metadata
+                    .insert("acl_target_item_id".into(), item_id.into());
+            }
+            if mode == "private" {
+                record.metadata.insert(
+                    "owner_id".into(),
+                    fixture["owner_id"].as_str().expect("owner ID").into(),
+                );
+            } else if mode == "shared" {
+                record.metadata.insert(
+                    "shared_with_principals".into(),
+                    fixture["shared_with_principals"].clone(),
+                );
+            }
+            record
+        };
+
+        for case in fixture["cases"].as_array().expect("fixture cases") {
+            let edge_id = case["edge_id"].as_str().expect("edge ID");
+            let source_id = case["source_node_id"].as_str().expect("source ID");
+            let target_id = case["target_node_id"].as_str().expect("target ID");
+            let mut nodes = vec![
+                acl_record(edge_id, "edge", None, "shared"),
+                acl_record(
+                    source_id,
+                    "node",
+                    None,
+                    case["source_node_mode"].as_str().expect("source ACL mode"),
+                ),
+                acl_record(
+                    target_id,
+                    "node",
+                    None,
+                    case["target_node_mode"].as_str().expect("target ACL mode"),
+                ),
+                GraphRecord::new(source_id),
+                GraphRecord::new(target_id),
+            ];
+            let mut edge = GraphRecord::new(edge_id);
+            edge.metadata
+                .insert("source_ids".into(), serde_json::json!([source_id]));
+            edge.metadata
+                .insert("target_ids".into(), serde_json::json!([target_id]));
+            let mut mentions = Vec::new();
+            for (mention_index, span_count) in case["mention_span_counts"]
+                .as_array()
+                .expect("mention span counts")
+                .iter()
+                .enumerate()
+            {
+                let grounding_id = format!("{edge_id}::mention::{mention_index}");
+                nodes.push(acl_record(
+                    edge_id,
+                    "grounding",
+                    Some(&grounding_id),
+                    "public",
+                ));
+                let span_count = span_count.as_u64().expect("span count") as usize;
+                let mut spans = Vec::new();
+                for span_index in 0..span_count {
+                    let span_id = format!("{grounding_id}::span::{span_index}");
+                    let private = case["private_span"].as_array().is_some_and(|indices| {
+                        indices[0].as_u64() == Some(mention_index as u64)
+                            && indices[1].as_u64() == Some(span_index as u64)
+                    });
+                    nodes.push(acl_record(
+                        edge_id,
+                        "span",
+                        Some(&span_id),
+                        if private { "private" } else { "public" },
+                    ));
+                    spans.push(serde_json::json!({}));
+                }
+                mentions.push(serde_json::json!({"spans": spans}));
+            }
+            if !mentions.is_empty() {
+                edge.metadata
+                    .insert("mentions".into(), serde_json::json!(mentions));
+            }
+            let mut edges = vec![edge];
+            if let Some(referenced_edge_id) = case["source_edge_id"].as_str() {
+                edges[0].metadata.insert(
+                    "source_edge_ids".into(),
+                    serde_json::json!([referenced_edge_id]),
+                );
+                if case["source_edge_exists"].as_bool().unwrap_or(true) {
+                    nodes.push(acl_record(referenced_edge_id, "edge", None, "private"));
+                    edges.push(GraphRecord::new(referenced_edge_id));
+                }
+            }
+            let (_, visible_edges) = graph_records_visible_by_acl(
+                &nodes,
+                &edges,
+                fixture["truth_graph"].as_str().expect("truth graph"),
+                &principal,
+            );
+            assert_eq!(
+                visible_edges.iter().any(|record| record.id == edge_id),
+                case["expected_visible"]
+                    .as_bool()
+                    .expect("expected visibility"),
+                "{edge_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn graph_node_malformed_item_usage_fails_closed_but_legacy_absence_remains_readable() {
+        let principal = GraphAclPrincipal {
+            principal_id: "alice".into(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let acl = |node_id: &str| {
+            let mut record = GraphRecord::new(format!("acl-{node_id}"));
+            record
+                .metadata
+                .insert("entity_type".into(), "acl_record".into());
+            record
+                .metadata
+                .insert("acl_truth_graph".into(), "knowledge".into());
+            record
+                .metadata
+                .insert("acl_target_entity_id".into(), node_id.into());
+            record
+                .metadata
+                .insert("acl_target_grain".into(), "node".into());
+            record
+                .metadata
+                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert("acl_mode".into(), "public".into());
+            record
+        };
+        let mut malformed_json = GraphRecord::new("malformed-json");
+        malformed_json
+            .metadata
+            .insert("mentions".into(), "not-json".into());
+        let mut wrong_shape = GraphRecord::new("wrong-shape");
+        wrong_shape
+            .metadata
+            .insert("mentions".into(), serde_json::json!({"unexpected": true}));
+        let legacy_without_mentions = GraphRecord::new("legacy-without-mentions");
+        let nodes = vec![
+            acl("malformed-json"),
+            malformed_json,
+            acl("wrong-shape"),
+            wrong_shape,
+            acl("legacy-without-mentions"),
+            legacy_without_mentions,
+        ];
+
+        let (visible, _) = graph_records_visible_by_acl(&nodes, &[], "knowledge", &principal);
+        let visible_ids = visible
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(visible_ids, BTreeSet::from(["legacy-without-mentions"]));
     }
 
     #[test]

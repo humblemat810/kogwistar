@@ -286,11 +286,11 @@ compatibility window, even when their implementation delegates to Rust:
 - `kogwistar.id_provider`;
 - source-pointer and fuzzy-offset utility modules used by parser consumers.
 
-This ADR does not schedule removal of the Python facade. It remains the supported
-consumer API for the first Rust release and thereafter until a separate versioned
-decision. The legacy pure-Python core fallback remains available through at least
-one full release after Rust becomes default; only that fallback is eligible for
-removal under Phase 6.
+The Python facade and Python implementation remain supported under ADR-022.
+The earlier plan to make the pure-Python core removable after one Rust-default
+release is superseded. Choosing Rust as one deployment's default does not retire
+its selectable Python path; removal requires a separate architecture and
+compatibility decision.
 
 The native extension will expose coarse use cases rather than every backend method.
 Requests and responses cross the boundary as versioned contract values, canonical
@@ -568,20 +568,16 @@ Exit gate:
 
 ### Phase 6: Default switch and convergence (historical target)
 
-Make Rust the default engine, runtime, and server only after canary progression and
-one full compatibility release. The Python package becomes a thin SDK, native
-extension loader, models layer, and optional worker toolkit.
+The original migration target was to make Rust the default engine, runtime,
+and server after canary progression and one compatibility release, with Python
+reduced to an SDK and worker toolkit. ADR-022 supersedes that end state: a
+Rust-default deployment must still retain a supported selectable Python
+implementation. Canary completion and elapsed releases do not authorize
+deleting it. Any retirement requires a separate architecture and compatibility
+decision.
 
-Delete a Python implementation only when:
-
-- Rust has been default for one full release;
-- no unresolved parity mismatch remains;
-- rollback no longer depends on that implementation;
-- replacement docs, diagnostics, and ownership exist;
-- removal is announced as a separate compatibility decision when public imports are
-  affected.
-
-Final completion criteria:
+Historical Rust-default deployment criteria (not dual-language completion
+criteria):
 
 - default deployment executes core graph, storage, runtime, and server behavior in
   Rust;
@@ -690,7 +686,7 @@ storage migration status, and exact consumer versions tested together.
 | GIL/Tokio re-entry deadlocks | Coarse facade, one runtime owner, release GIL, no callback inside transaction |
 | Python resolver ecosystem blocks runtime migration | Versioned worker protocol and lane dispatch |
 | Native wheels complicate installation | Explicit platform matrix, maturin builds, import smoke tests, transition fallback |
-| Two implementations slow feature work | Port by capability, shared contract fixtures, delete legacy only after rollback window |
+| Two implementations slow feature work | Port by capability, share contract fixtures, and keep both supported paths at declared seams under ADR-022 |
 | Rust MCP/LLM libraries lack needed behavior | Keep protocol adapters and Python workers until conformance is demonstrated |
 | Big schema cleanup becomes coupled to port | Require separate ADR and migration for semantic/schema changes |
 | Core-only parity misses consumer breakage | Pin and run all three consumer suites plus cross-repository create/update/tombstone flow |

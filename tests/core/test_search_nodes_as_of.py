@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 pytestmark = [pytest.mark.core, pytest.mark.ci_full]
 
 from kogwistar.engine_core.models import Node
+from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.vector_search import similarity_from_distance
 from tests._kg_factories import kg_document, kg_grounding
 from tests.conftest import _make_engine_pair
@@ -16,6 +20,60 @@ def test_vector_similarity_normalization_is_metric_explicit():
     assert similarity_from_distance(3.0, metric="l2") == 0.25
     assert similarity_from_distance(-0.8, metric="ip", distance_kind="negative_inner_product") == 0.8
     assert similarity_from_distance(0.2, metric="ip", distance_kind="distance") == 0.8
+
+
+def test_chroma_vector_distance_semantics_match_shared_rust_contract():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/chroma-vector-distance-semantics-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["schema_version"] == 1
+    for case in fixture["cases"]:
+        assert similarity_from_distance(
+            case["chroma_distance"],
+            metric=case["metric"],
+            distance_kind=case["python_distance_kind"],
+        ) == pytest.approx(case["similarity"])
+
+
+@pytest.mark.parametrize(
+    ("metric", "expected_distance_kind"),
+    [("cosine", "distance"), ("ip", "distance"), ("l2", "squared_l2")],
+)
+def test_chroma_backend_declares_metric_specific_distance_kind(
+    metric: str, expected_distance_kind: str
+) -> None:
+    backend = ChromaBackend(
+        node_index_collection=object(),
+        node_collection=object(),
+        edge_collection=object(),
+        edge_endpoints_collection=object(),
+        document_collection=object(),
+        domain_collection=object(),
+        node_docs_collection=object(),
+        node_refs_collection=object(),
+        edge_refs_collection=object(),
+        distance_metric=metric,
+    )
+    assert backend.vector_distance_kind == expected_distance_kind
+
+
+def test_chroma_backend_default_metric_preserves_cosine_distance_compatibility() -> None:
+    backend = ChromaBackend(
+        node_index_collection=object(),
+        node_collection=object(),
+        edge_collection=object(),
+        edge_endpoints_collection=object(),
+        document_collection=object(),
+        domain_collection=object(),
+        node_docs_collection=object(),
+        node_refs_collection=object(),
+        edge_refs_collection=object(),
+    )
+    assert backend.vector_distance_kind == "distance"
+    assert similarity_from_distance(0.25, metric="cosine", distance_kind="distance") == 0.75
 
 
 @pytest.mark.ci
@@ -54,8 +112,8 @@ def test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold(
         assert [hit.node.id for hit in hits] == ["N_SCORED"]
         assert hits[0].metric == "cosine"
         assert hits[0].distance_kind == "distance"
-        assert hits[0].raw_distance == 0.0
-        assert hits[0].similarity == 1.0
+        assert hits[0].raw_distance == pytest.approx(0.0)
+        assert hits[0].similarity == pytest.approx(1.0)
 
         assert eng.search_nodes_as_of_scored(
             query="scored vector fixture",
