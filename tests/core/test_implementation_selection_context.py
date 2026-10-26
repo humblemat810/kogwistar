@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from kogwistar._rust_bridge import (
@@ -564,6 +565,26 @@ def test_indexing_boundary_uses_owning_engine_snapshot(
         index_kind="node_embedding",
         op="UPSERT",
     ) == "python"
+
+
+def test_indexing_subsystem_rejects_legacy_only_metadata_alias() -> None:
+    engine = cast(
+        GraphKnowledgeEngine,
+        SimpleNamespace(
+            meta_sqlite=object(),
+            _phase1_enable_index_jobs=True,
+            namespace="default",
+        ),
+    )
+    subsystem = IndexingSubsystem(engine=engine)
+
+    with pytest.raises(TypeError, match="backend-neutral engine.metadata"):
+        subsystem.enqueue_index_job(
+            entity_kind="node",
+            entity_id="node-1",
+            index_kind="node_embedding",
+            op="UPSERT",
+        )
 
 
 def test_graph_engine_captures_selectors_when_constructed(

@@ -44,6 +44,16 @@ snapshot's denominator.
   subsystem does not depend on the legacy alias. Rust formatting, Ruff, and
   `git diff --check` pass. These checks do not close any platform-support or
   capability gate. No checklist IDs, statuses, or denominators changed.
+- 2026-10-27 canonical metadata fail-fast invariant: `IndexingSubsystem` now
+  resolves the backend-neutral `engine.metadata` interface lazily and raises a
+  clear `TypeError` if an invalid engine exposes only the legacy
+  `meta_sqlite` alias. Lazy validation preserves the engine's construction
+  order, where the subsystem is created before metadata is assigned. The
+  implementation-selection, index-worker, and SQLite/PostgreSQL differential
+  suites passed together against the approved live pgvector service (**82
+  passed**, 1 warning). Ruff and `git diff --check` passed. This guards the
+  Python facade contract; it does not close a Rust backend or parity gate, and
+  no checklist IDs, statuses, or denominators changed.
 - 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
   with the repository's `abi3-py312` native extension, six real Python/Rust
   SQLite cases passed in a Linux Docker container: Python-created DB opened and
