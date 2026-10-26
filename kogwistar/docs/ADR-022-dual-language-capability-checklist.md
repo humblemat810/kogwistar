@@ -1096,13 +1096,20 @@ The test writes its public source, private target, private edge, and ACL
 records through `/internal/graph/mutations`, then calls the production `/mcp`
 `kg_neighbors` endpoint as both `owner-a` and `reader-b`. Each result is
 compared to the fixture's expected nodes and edges; the reader must not learn
-the private edge or endpoint through the public source's topology. Evidence:
+the private edge or endpoint through the public source's topology. The Python
+MCP path consumes the same fixture and asserts the same principal-specific
+results, including its async neighbor path. Evidence:
 `tests::postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available`
 passed against the local disposable pgvector service (**1 passed, 0 failed,
-0 skipped**); Rust API test targets compiled, `cargo fmt --check` and
-`git diff --check` passed. This is production-route Rust evidence for one
-traversal/ACL fixture, not complete Python/Rust parity; `DL-08C` remains
-IN PROGRESS and no checklist IDs or denominator changed.
+0 skipped); Rust API test targets compiled, `cargo fmt --check` and
+`git diff --check` passed. `cargo test -p kogwistar-store
+graph_acl_traversal_matches_shared_python_contract` passed (**1 passed**), and
+`tests/mcp/test_chat_mcp_tools.py::test_mcp_neighbors_preserve_acl_visibility_and_hide_topology`
+passed on CPython 3.13 (**1 passed**). Its restricted Windows run stalled at
+asyncio socket-pair setup; the elevated rerun passed, so this was not counted
+as a product failure. This is production-route Rust plus shared-fixture Python
+evidence for one traversal/ACL case, not complete Python/Rust parity;
+`DL-08C` remains IN PROGRESS and no checklist IDs or denominator changed.
 
 ## Completion rule
 
