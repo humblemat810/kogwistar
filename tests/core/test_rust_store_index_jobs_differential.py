@@ -438,7 +438,7 @@ def test_postgres_reconciler_recovers_admitted_result_after_restart_and_lost_ack
     assert persisted.accepted_at is not None
 
     engine = SimpleNamespace(
-        meta_sqlite=reopened,
+        metadata=reopened,
         namespace=namespace,
         _phase1_enable_index_jobs=True,
         _phase1_enable_validation_cache=False,

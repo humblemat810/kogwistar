@@ -32,10 +32,15 @@ snapshot's denominator.
   passed after resolving existing lint findings in the API and Python bridge.
   The Python SQLite cross-language differential group passed **17 tests** after
   correcting its fake engine fixture to expose the canonical `metadata`
-  property used by `IndexingSubsystem.reconcile_indexes`. These checks add
-  local Linux evidence only; Rust formatting and `git diff --check` also pass.
-  They do not close any platform-support or capability gate. No checklist IDs,
-  statuses, or denominators changed.
+  property used by `IndexingSubsystem.reconcile_indexes`. A live Windows
+  CPython 3.13 run against the approved local PostgreSQL/pgvector service then
+  reproduced the same stale fixture in the PostgreSQL recovery case; after the
+  same canonical-property correction, the entire SQLite/PostgreSQL index-job
+  differential module passed (**11 passed**, including live queue concurrency,
+  lease reclaim, and admitted-result recovery). These checks add bounded local
+  evidence only; Rust formatting and `git diff --check` also pass. They do not
+  close any platform-support or capability gate. No checklist IDs, statuses,
+  or denominators changed.
 - 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
   with the repository's `abi3-py312` native extension, six real Python/Rust
   SQLite cases passed in a Linux Docker container: Python-created DB opened and
