@@ -44,6 +44,15 @@ denominator of either snapshot.
   node-only model classes, including workflow runtime state nodes. This protects
   additive model-contract evolution and catches Python/Rust registry drift; it
   does not claim full graph operation or storage parity.
+- Graph-mutation contract parity: Rust now rejects payload/projection ID drift
+  and retry counts outside the PostgreSQL `INTEGER` range, matching the
+  existing Python DTO validator. Evidence: Rust
+  `graph_mutation::tests::graph_mutation_rejects_payload_record_identity_drift`
+  and `graph_mutation::tests::graph_mutation_rejects_retries_outside_postgres_integer_range`
+  (6 focused Rust graph-mutation tests passed); Python
+  `tests/core/test_graph_mutation_contract.py` (15 passed). This closes these
+  two validator mismatches only; broader graph mutation, storage, transaction,
+  and error-taxonomy parity remain open under DL-05.
 - Additive SQL-queue to external graph-projection slice: Rust now has
   `projection_worker::run_graph_projection_jobs_once`, which composes any
   `IndexJobWriteStore` with any `GraphWriteStore`. Its versioned action binds

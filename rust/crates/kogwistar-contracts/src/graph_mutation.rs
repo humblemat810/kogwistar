@@ -103,9 +103,13 @@ pub enum GraphMutationValidationError {
     IndexJobIdentifierEmpty,
     #[error("index job operation must be UPSERT or DELETE")]
     IndexJobOperation,
-    #[error("index job max_retries must not be negative")]
+    #[error("index job max_retries must fit a non-negative PostgreSQL INTEGER")]
     IndexJobRetries,
+    #[error("graph mutation payload id must match the projection record id")]
+    PayloadRecordIdMismatch,
 }
+
+const MAX_POSTGRES_INTEGER: i64 = i32::MAX as i64;
 
 impl GraphMutationBatchV1 {
     /// Validate semantic invariants shared with Python's Pydantic DTO.
@@ -151,6 +155,9 @@ impl GraphMutationBatchV1 {
             if !mutation.payload.is_object() {
                 return Err(GraphMutationValidationError::PayloadObject);
             }
+            if mutation.payload.get("id") != Some(&Value::String(mutation.record.id.clone())) {
+                return Err(GraphMutationValidationError::PayloadRecordIdMismatch);
+            }
             if mutation
                 .record
                 .embedding
@@ -175,7 +182,7 @@ impl GraphMutationBatchV1 {
             if !matches!(job.op.as_str(), "UPSERT" | "DELETE") {
                 return Err(GraphMutationValidationError::IndexJobOperation);
             }
-            if job.max_retries < 0 {
+            if !(0..=MAX_POSTGRES_INTEGER).contains(&job.max_retries) {
                 return Err(GraphMutationValidationError::IndexJobRetries);
             }
         }
@@ -266,6 +273,45 @@ mod tests {
         assert_eq!(
             physical_delete.validate(),
             Err(GraphMutationValidationError::MutationOperation)
+        );
+    }
+
+    #[test]
+    fn graph_mutation_rejects_payload_record_identity_drift() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        ));
+        let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
+        batch.mutations[0].record.id = "different-node".to_owned();
+
+        assert_eq!(
+            batch.validate(),
+            Err(GraphMutationValidationError::PayloadRecordIdMismatch)
+        );
+    }
+
+    #[test]
+    fn graph_mutation_rejects_retries_outside_postgres_integer_range() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        ));
+        let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
+        batch.index_jobs.push(super::GraphIndexJobV1 {
+            job_id: "index-node-1".to_owned(),
+            namespace: "tenant-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: i32::MAX as i64 + 1,
+        });
+
+        assert_eq!(
+            batch.validate(),
+            Err(GraphMutationValidationError::IndexJobRetries)
         );
     }
 }
