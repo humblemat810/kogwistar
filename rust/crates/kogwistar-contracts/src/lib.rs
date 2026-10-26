@@ -41,10 +41,11 @@ pub use graph_model::{
     LifecycleStatus, LlmEdgeV1, LlmEntityFieldsV1, LlmGroundingV1, LlmNodeV1, LlmTextSpanV1,
     MentionVerificationMethod, MentionVerificationV1, NodeId, PYTHON_GRAPH_WIRE_VERSION,
     PersistentEdgeV1, PersistentGraphEntityV1, PersistentNodeV1, PureChromaEdgeV1,
-    PureChromaFieldsV1, PureChromaNodeV1, RequiredNullable, TextSpanV1, TypedGraphEntity,
-    WorkflowEdgeMetadataV1, WorkflowNodeMetadataV1, graph_model_capability_profiles,
-    project_graph_model_slice_from_str, project_graph_model_slices_from_str,
-    validate_graph_model_family_from_str,
+    PureChromaFieldsV1, PureChromaNodeV1, PythonIntegerV1, RawGraphModelEnvelopeV1,
+    RequiredNullable, TextSpanV1, TypedGraphEntity, WorkflowEdgeMetadataV1, WorkflowNodeMetadataV1,
+    graph_model_capability_profiles, project_graph_model_slice_from_str,
+    project_graph_model_slices_from_str, python_level_from_root_from_str,
+    round_trip_raw_graph_model_envelope_from_str, validate_graph_model_family_from_str,
 };
 pub use graph_mutation::{
     GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphMutationValidationError,

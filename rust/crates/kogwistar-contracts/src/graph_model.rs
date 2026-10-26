@@ -445,6 +445,160 @@ pub struct GraphModelEnvelope {
     pub slice: Option<GraphSliceDeclarationV1>,
 }
 
+/// Lossless wire envelope for callers that must forward Python JSON without
+/// passing arbitrary-precision integers through `serde_json::Value`.
+///
+/// This is an additive transport type. Callers that need a typed semantic
+/// view can continue using [`GraphModelEnvelope`]; callers that only need to
+/// validate or forward the canonical payload should retain this raw form.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RawGraphModelEnvelopeV1 {
+    pub schema_version: u16,
+    pub model_class: GraphModelClass,
+    pub payload: Box<RawValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slice: Option<GraphSliceDeclarationV1>,
+}
+
+/// Exact decimal representation of a Python integer at the JSON boundary.
+///
+/// The string is canonicalized (no leading zeroes, except for zero itself) and
+/// remains unbounded. Use `to_i64()` only when adapting to a legacy V1 DTO.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PythonIntegerV1(String);
+
+impl PythonIntegerV1 {
+    pub fn as_decimal_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn to_i64(&self) -> Option<i64> {
+        self.0.parse().ok()
+    }
+}
+
+impl RawGraphModelEnvelopeV1 {
+    pub fn from_json(payload_json: &str) -> Result<Self, GraphModelError> {
+        serde_json::from_str(payload_json)
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
+    }
+
+    /// Serialize the envelope while embedding its payload without reparsing it.
+    pub fn to_json(&self) -> Result<String, GraphModelError> {
+        serde_json::to_string(self)
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
+    }
+
+    pub fn validate_family_v1(&self) -> Result<(), GraphModelError> {
+        validate_graph_model_family_from_str(&self.to_json()?)
+    }
+
+    /// Read Python's level mixin value without narrowing it to Rust `i64`.
+    /// An explicitly present top-level field takes precedence over metadata,
+    /// including explicit null, matching the Python model's synchronization.
+    pub fn level_from_root(&self) -> Result<Option<PythonIntegerV1>, GraphModelError> {
+        let payload: BTreeMap<String, Box<RawValue>> = serde_json::from_str(self.payload.get())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if let Some(raw) = payload.get("level_from_root") {
+            return parse_python_integer_raw(raw.get());
+        }
+        let Some(metadata) = payload.get("metadata") else {
+            return Ok(None);
+        };
+        let metadata: BTreeMap<String, Box<RawValue>> = serde_json::from_str(metadata.get())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        match metadata.get("level_from_root") {
+            Some(raw) => parse_python_integer_raw(raw.get()),
+            None => Ok(None),
+        }
+    }
+}
+
+fn parse_python_integer_raw(raw: &str) -> Result<Option<PythonIntegerV1>, GraphModelError> {
+    let token = raw.trim();
+    if token == "null" {
+        return Ok(None);
+    }
+    let string_input = token.starts_with('"');
+    let decimal = if token == "true" {
+        "1".to_owned()
+    } else if token == "false" {
+        "0".to_owned()
+    } else if token.starts_with('"') {
+        let value: String = serde_json::from_str(token)
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        value.trim().to_owned()
+    } else {
+        token.to_owned()
+    };
+    let (negative, digits) = match decimal.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => match decimal.strip_prefix('+') {
+            Some(rest) => (false, rest),
+            None => (false, decimal.as_str()),
+        },
+    };
+    if !string_input && (digits.contains('.') || digits.contains('e') || digits.contains('E')) {
+        let value = decimal
+            .parse::<f64>()
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if value.is_finite()
+            && value.fract() == 0.0
+            && value >= i64::MIN as f64
+            && value < -(i64::MIN as f64)
+        {
+            return Ok(Some(PythonIntegerV1((value as i64).to_string())));
+        }
+        return Err(GraphModelError::InvalidPayload(
+            "level_from_root must be an integer".to_owned(),
+        ));
+    }
+    let bytes = digits.as_bytes();
+    if bytes.is_empty()
+        || !bytes.iter().enumerate().all(|(index, byte)| match byte {
+            b'0'..=b'9' => true,
+            b'_' => {
+                index > 0
+                    && index + 1 < bytes.len()
+                    && bytes[index - 1].is_ascii_digit()
+                    && bytes[index + 1].is_ascii_digit()
+            }
+            _ => false,
+        })
+    {
+        return Err(GraphModelError::InvalidPayload(
+            "level_from_root must be an integer".to_owned(),
+        ));
+    }
+    let digits = digits.replace('_', "");
+    let digits = digits.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    let canonical = if negative && digits != "0" {
+        format!("-{digits}")
+    } else {
+        digits.to_owned()
+    };
+    Ok(Some(PythonIntegerV1(canonical)))
+}
+
+pub fn round_trip_raw_graph_model_envelope_from_str(
+    payload_json: &str,
+) -> Result<String, GraphModelError> {
+    let envelope = RawGraphModelEnvelopeV1::from_json(payload_json)?;
+    envelope.validate_family_v1()?;
+    envelope.to_json()
+}
+
+pub fn python_level_from_root_from_str(
+    payload_json: &str,
+) -> Result<Option<String>, GraphModelError> {
+    let envelope = RawGraphModelEnvelopeV1::from_json(payload_json)?;
+    envelope.validate_family_v1()?;
+    Ok(envelope
+        .level_from_root()?
+        .map(|value| value.as_decimal_str().to_owned()))
+}
+
 impl GraphModelEnvelope {
     pub fn new(model_class: GraphModelClass, payload: Value) -> Self {
         Self {
@@ -3465,6 +3619,70 @@ mod tests {
         );
         validate_graph_model_family_from_str(&metadata_wire)
             .expect("large metadata fallback integer validates");
+    }
+
+    #[test]
+    fn raw_graph_envelope_round_trip_preserves_python_big_integer_tokens() {
+        let fixture = fixture();
+        let baseline = serde_json::to_string(&fixture["cases"][0]["payload"])
+            .expect("serialize graph payload");
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let payload = baseline.replace(
+            "\"level_from_root\":0",
+            &format!("\"level_from_root\":{huge}"),
+        );
+        let wire =
+            format!("{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{payload}}}");
+
+        let envelope = RawGraphModelEnvelopeV1::from_json(&wire)
+            .expect("raw envelope accepts valid JSON without materializing payload numbers");
+        envelope
+            .validate_family_v1()
+            .expect("raw envelope validates using the shared family contract");
+        let round_trip = envelope.to_json().expect("serialize raw envelope");
+
+        assert!(round_trip.contains(huge));
+        assert_eq!(envelope.payload.get(), payload);
+    }
+
+    #[test]
+    fn raw_graph_envelope_reads_python_integer_without_narrowing_or_losing_precedence() {
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let wire = format!(
+            "{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{{\
+             \"level_from_root\":{huge},\"metadata\":{{\"level_from_root\":7}}}}}}"
+        );
+        let envelope = RawGraphModelEnvelopeV1::from_json(&wire).expect("valid raw envelope");
+        assert_eq!(
+            envelope
+                .level_from_root()
+                .expect("read exact top-level integer")
+                .expect("level is present")
+                .as_decimal_str(),
+            huge
+        );
+
+        let metadata_wire = wire.replace(&format!("\"level_from_root\":{huge},"), "");
+        let metadata_envelope =
+            RawGraphModelEnvelopeV1::from_json(&metadata_wire).expect("valid raw envelope");
+        assert_eq!(
+            metadata_envelope
+                .level_from_root()
+                .expect("read metadata fallback")
+                .expect("metadata level is present")
+                .as_decimal_str(),
+            "7"
+        );
+
+        let null_wire = metadata_wire.replace("\"level_from_root\":7", "\"level_from_root\":null");
+        let null_envelope =
+            RawGraphModelEnvelopeV1::from_json(&null_wire).expect("valid raw envelope");
+        assert_eq!(
+            null_envelope
+                .level_from_root()
+                .expect("explicit null is valid"),
+            None
+        );
     }
 
     #[test]

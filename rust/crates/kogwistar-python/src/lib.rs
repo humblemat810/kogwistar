@@ -6480,6 +6480,18 @@ fn validate_graph_model_family(payload_json: &str) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn round_trip_raw_graph_model_envelope(payload_json: &str) -> PyResult<String> {
+    contracts::round_trip_raw_graph_model_envelope_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
+fn graph_model_level_from_root(payload_json: &str) -> PyResult<Option<String>> {
+    contracts::python_level_from_root_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 fn project_graph_model_slice(payload_json: &str) -> PyResult<String> {
     contracts::project_graph_model_slice_from_str(payload_json)
         .map_err(|error| RustContractValueError::new_err(error.to_string()))
@@ -6730,6 +6742,11 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(stable_id_json, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_json, module)?)?;
     module.add_function(wrap_pyfunction!(validate_graph_model_family, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        round_trip_raw_graph_model_envelope,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(graph_model_level_from_root, module)?)?;
     module.add_function(wrap_pyfunction!(project_graph_model_slice, module)?)?;
     module.add_function(wrap_pyfunction!(project_graph_model_slices, module)?)?;
     module.add_function(wrap_pyfunction!(supported_graph_model_classes, module)?)?;

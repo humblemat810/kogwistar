@@ -46,6 +46,16 @@ def test_strict_json_integer_contract_matches_shared_rust_fixture() -> None:
             normalize_json_value(int(case["literal"]))
 
 
+def test_unbounded_integers_are_opt_in_for_raw_graph_envelope_seams() -> None:
+    value = {"payload": {"level_from_root": 2**200}}
+
+    with pytest.raises(ValueError, match="outside the Rust JSON number range"):
+        normalize_json_value(value)
+
+    normalized = normalize_json_value(value, allow_unbounded_integers=True)
+    assert normalized == value
+
+
 def test_strict_json_rejects_non_finite_numbers_and_non_string_keys() -> None:
     fixture = _fixture()
     for value in fixture["non_finite_values"]:

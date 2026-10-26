@@ -9,12 +9,19 @@ from collections.abc import Mapping
 from kogwistar.json_types import JsonObject, JsonValue
 
 
-def normalize_json_value(value: object, *, field: str = "value") -> JsonValue:
+def normalize_json_value(
+    value: object,
+    *,
+    field: str = "value",
+    allow_unbounded_integers: bool = False,
+) -> JsonValue:
     """Copy supported Python values into the lossless JSON contract domain."""
     if value is None or isinstance(value, (bool, str)):
         return value
     if isinstance(value, int):
-        if value < -(1 << 63) or value > (1 << 64) - 1:
+        if not allow_unbounded_integers and (
+            value < -(1 << 63) or value > (1 << 64) - 1
+        ):
             raise ValueError(f"{field} integer is outside the Rust JSON number range")
         return value
     if isinstance(value, float):
@@ -23,7 +30,11 @@ def normalize_json_value(value: object, *, field: str = "value") -> JsonValue:
         return value
     if isinstance(value, (list, tuple)):
         return [
-            normalize_json_value(item, field=f"{field}[{index}]")
+            normalize_json_value(
+                item,
+                field=f"{field}[{index}]",
+                allow_unbounded_integers=allow_unbounded_integers,
+            )
             for index, item in enumerate(value)
         ]
     if isinstance(value, Mapping):
@@ -31,7 +42,11 @@ def normalize_json_value(value: object, *, field: str = "value") -> JsonValue:
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{field} contains a non-string object key")
-            normalized[key] = normalize_json_value(item, field=f"{field}.{key}")
+            normalized[key] = normalize_json_value(
+                item,
+                field=f"{field}.{key}",
+                allow_unbounded_integers=allow_unbounded_integers,
+            )
         return normalized
     raise TypeError(f"{field} contains a non-JSON value ({type(value).__name__})")
 

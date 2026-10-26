@@ -54,6 +54,8 @@ class RustExtensionLike(Protocol):
     def canonical_entity_event(self, payload: str) -> str: ...
     def replay_entity_events(self, payload: str) -> str: ...
     def validate_graph_model_family(self, payload: str) -> None: ...
+    def round_trip_raw_graph_model_envelope(self, payload: str) -> str: ...
+    def graph_model_level_from_root(self, payload: str) -> str | None: ...
     def project_graph_model_slice(self, payload: str) -> str: ...
     def project_graph_model_slices(self, payload: str) -> str: ...
 
@@ -191,6 +193,25 @@ def _rust_json_payload(
         normalized,
         ensure_ascii=ensure_ascii,
         separators=separators,
+        allow_nan=False,
+    )
+
+
+def _raw_graph_model_json_payload(value: JsonObject) -> str:
+    """Serialize a graph envelope without narrowing Python integer tokens."""
+
+    try:
+        normalized = normalize_json_value(
+            value,
+            field="Rust graph-model payload",
+            allow_unbounded_integers=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RustParityError(f"Rust graph-model payload violates strict JSON: {exc}") from exc
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        separators=(",", ":"),
         allow_nan=False,
     )
 
@@ -411,12 +432,48 @@ def validate_graph_model_family(payload: JsonObject) -> None:
     extension = _load_extension()
     try:
         extension.validate_graph_model_family(
-            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
+            _raw_graph_model_json_payload(payload)
         )
     except Exception as exc:
         raise RustParityError(
             f"Rust graph-model contract validation failed: {exc}"
         ) from exc
+
+
+def round_trip_raw_graph_model_envelope(payload_json: str) -> str:
+    """Validate and forward a graph envelope without materializing JSON values.
+
+    This narrow raw-string path preserves Python arbitrary-precision integer
+    tokens. It is intentionally separate from object-based bridge calls, whose
+    strict JSON domain remains bounded to Rust's native JSON number range.
+    """
+
+    if not isinstance(payload_json, str):
+        raise TypeError("raw graph envelope must be supplied as a JSON string")
+    extension = _load_extension()
+    try:
+        return extension.round_trip_raw_graph_model_envelope(payload_json)
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust raw graph-envelope round trip failed: {exc}"
+        ) from exc
+
+
+def graph_model_level_from_root(payload_json: str) -> str | None:
+    """Read the exact Python integer level from a raw graph envelope."""
+
+    if not isinstance(payload_json, str):
+        raise TypeError("raw graph envelope must be supplied as a JSON string")
+    extension = _load_extension()
+    try:
+        level = extension.graph_model_level_from_root(payload_json)
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust graph-model level extraction failed: {exc}"
+        ) from exc
+    if level is not None and not isinstance(level, str):
+        raise RustParityError("native graph-model level extraction returned an invalid type")
+    return level
 
 
 def project_graph_model_slice(payload: JsonObject) -> JsonObject:

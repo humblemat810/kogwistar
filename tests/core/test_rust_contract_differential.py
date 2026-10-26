@@ -14,7 +14,12 @@ from pydantic import BaseModel
 from kogwistar import shortids
 from kogwistar.acl.models import ACLEdge, ACLNode
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
-from kogwistar._rust_bridge import RustParityError
+from kogwistar._rust_bridge import (
+    RustParityError,
+    graph_model_level_from_root,
+    round_trip_raw_graph_model_envelope,
+    validate_graph_model_family,
+)
 from kogwistar.engine_core.in_memory_backend import (
     _matches_where,
     _matches_where_python,
@@ -501,7 +506,6 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     monkeypatch: pytest.MonkeyPatch, large_level: int
 ) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
-    from kogwistar import _rust
 
     payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
     payload["level_from_root"] = large_level
@@ -518,7 +522,32 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
         ensure_ascii=False,
     )
     assert str(large_level) in wire
-    _rust.validate_graph_model_family(wire)
+    validate_graph_model_family(
+        {"schema_version": 1, "model_class": "node", "payload": python_payload}
+    )
+
+    round_trip = round_trip_raw_graph_model_envelope(wire)
+    assert json.loads(round_trip) == json.loads(wire)
+    assert round_trip.count(str(large_level)) == 2
+    assert graph_model_level_from_root(wire) == str(large_level)
+
+    metadata_only = copy.deepcopy(python_payload)
+    metadata_only.pop("level_from_root")
+    metadata_only["metadata"]["level_from_root"] = large_level
+    metadata_wire = json.dumps(
+        {"schema_version": 1, "model_class": "node", "payload": metadata_only},
+        ensure_ascii=False,
+    )
+    assert graph_model_level_from_root(metadata_wire) == str(large_level)
+
+    explicit_null = copy.deepcopy(python_payload)
+    explicit_null["level_from_root"] = None
+    explicit_null["metadata"]["level_from_root"] = large_level
+    null_wire = json.dumps(
+        {"schema_version": 1, "model_class": "node", "payload": explicit_null},
+        ensure_ascii=False,
+    )
+    assert graph_model_level_from_root(null_wire) is None
 
 
 @pytest.mark.requires_rust
