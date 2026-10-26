@@ -827,7 +827,10 @@ def test_async_runtime_dispatches_frozen_operation_version(tmp_path, monkeypatch
 def test_async_runtime_legacy_python_default_completes_without_native_loader(
     tmp_path, monkeypatch
 ):
-    """Async legacy runtime selection must not acquire a Rust dependency implicitly."""
+    """New async mirror of `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_legacy_python_default_completes_without_native_loader`.
+
+    Async legacy runtime selection must not acquire a Rust dependency implicitly.
+    """
 
     for selector in (
         "KOGWISTAR_IMPL_MODE",

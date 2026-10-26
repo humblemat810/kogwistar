@@ -61,8 +61,14 @@ def test_pypy_ci_excludes_native_extension_tests() -> None:
         "      - name: Run PyPy 3.11 CI tests",
         "      - name: Post Set up Python",
     )
+    runner = (WORKFLOW.parents[2] / "scripts" / "run_pypy311_ci.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "not requires_rust" in pypy_tests
+    for marker in ("requires_rust", "requires_langgraph", "requires_pgvector"):
+        assert f"not {marker}" in pypy_tests
+        assert f"not {marker}" in runner
 
 
 def test_ci_declares_the_supported_interpreter_matrix() -> None:

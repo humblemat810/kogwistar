@@ -7,8 +7,29 @@ decision by itself does not prove an implementation gate. Update this file as
 each capability is implemented; record its implementation, backend, interpreter,
 and CI evidence rather than assigning one percentage to the whole port.
 
+## Scope accounting
+
+Use commit `6130d04` as the fixed comparison baseline for the checklist snapshot
+from approximately 18 hours earlier: **130 items** (96 PASS, 32 IN PROGRESS,
+2 NOT STARTED). The current inventory has **177 items** (135 PASS, 42 IN
+PROGRESS). Only one previously unfinished baseline item, `DL-16G`, has moved to
+PASS. The 47 IDs added since the baseline currently contain 38 PASS and 9
+unfinished items. Do not present the current 177-item percentage as progress
+against the 130-item baseline; report baseline completion and later-added scope
+separately. This accounting note adds no checklist item and does not change the
+denominator of either snapshot.
+
 ## Latest verification update (2026-10-26)
 
+- The provider-free PyPy 3.11.13 / PyPy 7.3.20 Docker run passes the hosted
+  PyPy job's marker selection: **1,138 passed, 202 skipped, 1,400 deselected**
+  in 268.55s. It used a container-local source snapshot because the Windows
+  bind mount blocked on `p9_client_rpc`; this is local runtime evidence, not a
+  hosted GitHub runner result. The run exposed and fixed missing native and
+  optional-backend marker exclusions in the local runner, PyPy-fragile dotted
+  monkeypatch targets, and an MCP test that initialized its lazy engine while
+  patching it. Focused PyPy regressions passed **31 tests**. The fresh-venv
+  install path is covered by a runner contract test.
 - Selector fallback evidence for existing `DL-15`: unset component selectors
   inherit global `KOGWISTAR_IMPL_MODE=rust` and fail closed when the native
   extension is unavailable across server, contracts, runtime, graph-store, and

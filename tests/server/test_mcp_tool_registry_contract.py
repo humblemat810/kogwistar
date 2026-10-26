@@ -137,7 +137,9 @@ def test_production_sync_context_is_knowledge_only_and_unknown_fails_closed(monk
     def forbidden_engine_access():
         raise AssertionError("non-knowledge tool opened the knowledge engine")
 
-    monkeypatch.setattr(mcp_tools.engine, "get", forbidden_engine_access)
+    # Patch the lazy factory itself; attribute proxying would initialize the
+    # resource before the tested non-knowledge tool path is entered.
+    monkeypatch.setattr(mcp_tools.engine, "_factory", forbidden_engine_access)
     mcp_tools.TOOL_NAMESPACE["test_wisdom_tool"] = {NameSpace.WISDOM.value}
     mcp_tools.TOOL_NAMESPACE["test_workflow_tool"] = {NameSpace.WORKFLOW.value}
     try:

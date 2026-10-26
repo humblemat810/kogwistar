@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,8 +62,10 @@ def _design(monkeypatch, version: str, environment_id: str | None = None):
         id="start",
         metadata=metadata,
     )
+    design_module = importlib.import_module("kogwistar.runtime.design")
     monkeypatch.setattr(
-        "kogwistar.runtime.design.load_workflow_design",
+        design_module,
+        "load_workflow_design",
         lambda **_kwargs: (start, {start.id: start}, {start.id: []}, {start.id: []}),
     )
     return start
@@ -84,8 +87,10 @@ def test_workflow_admission_accepts_registered_historical_version(monkeypatch) -
     start = _design(monkeypatch, "v1")
     nodes = {start.id: start}
     adjacency = {start.id: []}
+    design_module = importlib.import_module("kogwistar.runtime.design")
     monkeypatch.setattr(
-        "kogwistar.runtime.design.load_workflow_design",
+        design_module,
+        "load_workflow_design",
         lambda **_kwargs: (start, nodes, adjacency, {start.id: []}),
     )
 

@@ -16,6 +16,32 @@ ABI_AUDIT = ROOT / "scripts" / "pypy_ffi_symbol_audit.py"
 DLOPEN_PROBE = ROOT / "scripts" / "pypy_native_extension_dlopen.py"
 
 
+def test_pypy_local_runner_installs_dependencies_into_requested_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import run_pypy311_ci as runner
+
+    calls: list[list[str]] = []
+
+    def check_call(command: list[str], **_: object) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(runner.subprocess, "check_call", check_call)
+    monkeypatch.setattr(runner.subprocess, "call", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        runner.sys,
+        "argv",
+        [str(ROOT / "scripts" / "run_pypy311_ci.py"), "--venv", str(tmp_path / "pypy")],
+    )
+    monkeypatch.delenv("KOGWISTAR_PYPY_VENV_ACTIVE", raising=False)
+
+    assert runner.main() == 0
+    assert calls[0][1:3] == ["-m", "venv"]
+    assert calls[1][1:5] == ["-m", "pip", "install", "--upgrade"]
+    assert calls[2][1:5] == ["-m", "pip", "install", "-r"]
+    assert calls[2][-1] == str(ROOT / "requirements-pypy-3.11-experimental.txt")
+
+
 def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
