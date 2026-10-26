@@ -146,9 +146,11 @@ def _reconciler(meta: _Meta, *, fail: bool = False) -> IndexingSubsystem:
 def _job(*, claim_token: str | None, max_retries: int = 3) -> SimpleNamespace:
     return SimpleNamespace(
         job_id="job-1",
+        namespace="test",
         entity_kind="node",
         entity_id="node-1",
         index_kind="node_docs",
+        coalesce_key="node:node-1:node_docs",
         op="UPSERT",
         payload_json="{}",
         retry_count=0,

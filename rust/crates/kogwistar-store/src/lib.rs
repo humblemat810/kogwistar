@@ -4,6 +4,7 @@ use kogwistar_contracts::{
     ConversationTurnV1, EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope,
     ToolAuditContractError, ToolAuditItemV1,
 };
+use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -1831,8 +1832,9 @@ pub struct IndexJob {
 /// Unlike [`IndexJob`], this type intentionally carries no lease token,
 /// acknowledgement state, retry counters, or accepted-result fields. Queue
 /// authority stays with the worker while providers receive only work context.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct IndexJobProviderInput {
+    pub schema_version: u32,
     pub job_id: String,
     pub namespace: String,
     pub entity_kind: String,
@@ -1846,6 +1848,7 @@ pub struct IndexJobProviderInput {
 impl From<&IndexJob> for IndexJobProviderInput {
     fn from(job: &IndexJob) -> Self {
         Self {
+            schema_version: 1,
             job_id: job.job_id.clone(),
             namespace: job.namespace.clone(),
             entity_kind: job.entity_kind.clone(),

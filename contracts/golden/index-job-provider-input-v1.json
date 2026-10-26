@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "job_id": "job-1",
+  "namespace": "workspace",
+  "entity_kind": "node",
+  "entity_id": "node-1",
+  "index_kind": "node_embedding",
+  "coalesce_key": "node:node-1:embedding",
+  "op": "UPSERT",
+  "payload_json": "{\"embedding_model\":\"test\"}"
+}

@@ -619,6 +619,11 @@ denominator of either snapshot.
   was the sandbox denying asyncio's local Proactor socketpair before the worker
   ran, not a code hang. Ruff and `git diff --check` pass. This evidence
   supersedes the earlier async-unverified note in the DL-07I table row above.
+- Python and Rust provider inputs now share
+  `contracts/golden/index-job-provider-input-v1.json`; the contract includes a
+  schema version and matching fields, and excludes claim/lease/result state.
+  Python fixture test passed and Rust `provider_input_matches_shared_python_golden_without_claim_authority`
+  passed as part of the **15-test** engine library suite.
 
 ## Completion rule
 

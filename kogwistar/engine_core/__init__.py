@@ -53,6 +53,10 @@ from kogwistar.engine_core.conversation_contracts import (
     ConversationTurnV1,
 )
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.engine_core.index_job_provider import (
+    EmbeddingJobProviderInput,
+    embedding_job_provider_input,
+)
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
 from kogwistar.engine_core.multimodal import (
@@ -197,6 +201,7 @@ __all__ = [
     "EnginePostgresConfig",
     "EnginePostgresMetaStore",
     "EngineSQLite",
+    "EmbeddingJobProviderInput",
     "EngineType",
     "EntityEventEnvelope",
     "ExtractSubsystem",
@@ -211,6 +216,7 @@ __all__ = [
     "IndexJob",
     "IndexJobRow",
     "IndexingSubsystem",
+    "embedding_job_provider_input",
     "IngestSubsystem",
     "JobQueueItem",
     "JobQueueSubsystem",

@@ -167,6 +167,40 @@ mod tests {
     use kogwistar_store::{IndexJobReadStore, NewIndexJob};
     use kogwistar_store_memory::InMemoryStore;
 
+    #[test]
+    fn provider_input_matches_shared_python_golden_without_claim_authority() {
+        let job = IndexJob {
+            job_id: "job-1".to_owned(),
+            namespace: "workspace".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            coalesce_key: "node:node-1:embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            status: "DOING".to_owned(),
+            lease_until: Some(serde_json::json!(123)),
+            next_run_at: None,
+            max_retries: 5,
+            retry_count: 2,
+            last_error: None,
+            payload_json: Some("{\"embedding_model\":\"test\"}".to_owned()),
+            created_at: serde_json::json!(1),
+            updated_at: serde_json::json!(2),
+            claim_token: Some("must-not-cross-provider-boundary".to_owned()),
+            claim_attempts: 3,
+            accepted_result_json: Some("must-not-cross-provider-boundary".to_owned()),
+            accepted_result_sha256: Some("must-not-cross-provider-boundary".to_owned()),
+            accepted_at: Some(serde_json::json!(3)),
+        };
+        let actual = serde_json::to_value(IndexJobProviderInput::from(&job)).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/index-job-provider-input-v1.json"
+        )))
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+
     async fn enqueue(store: &InMemoryStore, max_retries: i64) {
         store
             .enqueue_index_job(NewIndexJob {
@@ -193,7 +227,9 @@ mod tests {
             30,
             Some("ns"),
             |input| async move {
+                assert_eq!(input.schema_version, 1);
                 assert_eq!(input.job_id, "job-1");
+                assert_eq!(input.namespace, "ns");
                 assert_eq!(input.entity_id, "node-1");
                 assert_eq!(input.payload_json.as_deref(), Some("{}"));
                 Ok("{\"embedding\":[1,0]}".to_owned())
