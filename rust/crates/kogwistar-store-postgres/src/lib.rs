@@ -7277,6 +7277,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available()
+    -> PostgresStoreResult<()> {
+        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
+            eprintln!("KOGWISTAR_TEST_PG_DSN absent; arbitrary-precision PostgreSQL test skipped");
+            return Ok(());
+        };
+        let schema = test_schema("arbitrary_precision");
+        let store = PostgresStore::from_dsn(&dsn, &schema)?;
+        store.ensure_schema().await?;
+        store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await?;
+
+        let integer = "1606938044258990275541962092341162602522202993782792835301376";
+        let entity_id = "large-level-node";
+        let payload: Value = serde_json::from_str(&format!(
+            r#"{{"id":"{entity_id}","level_from_root":{integer}}}"#
+        ))?;
+        let metadata: Map<String, Value> =
+            serde_json::from_str(&format!(r#"{{"level_from_root":{integer}}}"#))?;
+        let namespace = format!("large-integer-{}", std::process::id());
+        let scope = kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        store
+            .apply_graph_mutation(kogwistar_store::GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("event-{entity_id}"),
+                op: "ADD".to_owned(),
+                payload,
+                record: kogwistar_store::GraphRecord {
+                    id: entity_id.to_owned(),
+                    document: Some("arbitrary precision integration probe".to_owned()),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await?;
+
+        let read = GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![entity_id.to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 1,
+        };
+        let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+        let rows = reopened.graph_projection_records(read).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            serde_json::to_string(&rows[0].metadata["level_from_root"])?,
+            integer
+        );
+        let events = reopened.replay_raw_events(&namespace, 0, 10).await?;
+        assert_eq!(events.len(), 1);
+        assert!(events[0].payload_json.contains(integer));
+        let event_payload: Value = serde_json::from_str(&events[0].payload_json)?;
+        assert_eq!(
+            serde_json::to_string(&event_payload)?,
+            format!(r#"{{"id":"{entity_id}","level_from_root":{integer}}}"#)
+        );
+
+        let cleanup = reopened.client().await?;
+        cleanup
+            .batch_execute(&format!(
+                "DROP SCHEMA {} CASCADE",
+                Tables::new(&schema)?.quoted_schema
+            ))
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_available()
     -> PostgresStoreResult<()> {
         let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
