@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,8 @@ def test_graph_mutation_shared_invalid_cases_are_rejected_by_python() -> None:
             payload["mutations"][0]["record"]["embedding"] = [True, 0]
         elif case_id == "embedding_numeric_string":
             payload["mutations"][0]["record"]["embedding"] = ["1", 0]
+        elif case_id == "embedding_non_finite":
+            payload["mutations"][0]["record"]["embedding"] = [math.nan, 0]
         elif case_id == "embedding_dim_boolean":
             payload["mutations"][0]["embedding_dim"] = True
         elif case_id in {

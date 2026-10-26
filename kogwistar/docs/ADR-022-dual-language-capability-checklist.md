@@ -45,8 +45,9 @@ denominator of either snapshot.
   additive model-contract evolution and catches Python/Rust registry drift; it
   does not claim full graph operation or storage parity.
 - Graph-mutation contract parity: Rust and Python reject payload/projection ID
-  drift, retry counts outside the PostgreSQL `INTEGER` range, and coercive JSON
-  values (booleans or numeric strings in numeric fields). The versioned
+  drift, non-finite embedding vectors, retry counts outside the PostgreSQL
+  `INTEGER` range, and coercive JSON values (booleans or numeric strings in
+  numeric fields). The versioned
   `contracts/golden/graph-mutation-invalid-v1.json` is consumed by both Python
   and Rust, so these malformed cases cannot silently drift apart. Evidence:
   Rust `graph_mutation::tests::graph_mutation_invalid_cases_match_shared_python_fixture`
@@ -56,7 +57,7 @@ denominator of either snapshot.
   confirm conversion helpers invoke validation before producing store effects.
   The facade-to-PyO3 pre-dispatch regression
   `tests/core/test_rust_postgres_session_facade.py::test_postgres_graph_mutation_batch_rejects_invalid_contract_before_native_call`
-  passes all 6 invalid cases, and native bridge test
+  passes all 7 invalid cases, and native bridge test
   `postgres_bridge_rejects_coercive_graph_numbers_before_dispatch` passes
   without reaching a database connection.
   This protects these invalid cases and the API conversion boundary only;

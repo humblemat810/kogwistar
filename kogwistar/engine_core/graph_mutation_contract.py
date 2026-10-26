@@ -7,6 +7,7 @@ command atomically.
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
@@ -101,6 +102,10 @@ class GraphMutationPayload(BaseModel):
             raise GraphMutationContractError(
                 "embedding dimension does not match vector length"
             )
+        if self.record.embedding is not None and any(
+            not math.isfinite(value) for value in self.record.embedding
+        ):
+            raise GraphMutationContractError("embedding values must be finite")
         return self
 
 

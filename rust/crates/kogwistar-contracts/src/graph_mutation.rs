@@ -99,6 +99,8 @@ pub enum GraphMutationValidationError {
     PayloadObject,
     #[error("graph mutation embedding dimension does not match vector length")]
     EmbeddingDimension,
+    #[error("graph mutation embedding values must be finite")]
+    EmbeddingNonFinite,
     #[error("index job identifiers must not be empty")]
     IndexJobIdentifierEmpty,
     #[error("index job operation must be UPSERT or DELETE")]
@@ -157,6 +159,14 @@ impl GraphMutationBatchV1 {
             }
             if mutation.payload.get("id") != Some(&Value::String(mutation.record.id.clone())) {
                 return Err(GraphMutationValidationError::PayloadRecordIdMismatch);
+            }
+            if mutation
+                .record
+                .embedding
+                .as_ref()
+                .is_some_and(|embedding| embedding.iter().any(|value| !value.is_finite()))
+            {
+                return Err(GraphMutationValidationError::EmbeddingNonFinite);
             }
             if mutation
                 .record
@@ -291,6 +301,15 @@ mod tests {
 
         for case in invalid["cases"].as_array().unwrap() {
             let case_id = case.as_str().unwrap();
+            if case_id == "embedding_non_finite" {
+                let mut batch: GraphMutationBatchV1 = serde_json::from_str(baseline).unwrap();
+                batch.mutations[0].record.embedding = Some(vec![f32::NAN, 0.0]);
+                assert_eq!(
+                    batch.validate(),
+                    Err(GraphMutationValidationError::EmbeddingNonFinite)
+                );
+                continue;
+            }
             let mut value: Value = serde_json::from_str(baseline).unwrap();
             match case_id {
                 "payload_record_id_mismatch" => {

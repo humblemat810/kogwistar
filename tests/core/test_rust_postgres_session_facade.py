@@ -413,6 +413,7 @@ def test_postgres_graph_mutation_batch_uses_one_native_boundary(
         {"payload": {"id": "different-id"}},
         {"record": {"id": "node-1", "embedding": [True]}, "embedding_dim": 1},
         {"record": {"id": "node-1", "embedding": ["1"]}, "embedding_dim": 1},
+        {"record": {"id": "node-1", "embedding": [float("nan")]}, "embedding_dim": 1},
         {"embedding_dim": False},
     ],
 )

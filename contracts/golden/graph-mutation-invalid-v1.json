@@ -7,6 +7,7 @@
     "index_retries_above_postgres_integer",
     "embedding_boolean",
     "embedding_numeric_string",
+    "embedding_non_finite",
     "embedding_dim_boolean",
     "index_retries_boolean"
   ]
