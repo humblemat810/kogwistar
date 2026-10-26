@@ -151,14 +151,8 @@ impl GraphReadStore for ChromaGraphStore {
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
         let mut matches = decode_matches(&payload)?;
-        if query.metric == DistanceMetric::InnerProduct {
-            for item in &mut matches {
-                item.distance -= 1.0;
-            }
-        } else if query.metric == DistanceMetric::L2 {
-            for item in &mut matches {
-                item.distance = item.distance.max(0.0).sqrt();
-            }
+        for item in &mut matches {
+            item.distance = normalize_chroma_distance(query.metric, item.distance);
         }
         Ok(matches)
     }
@@ -296,5 +290,35 @@ fn field_array(payload: &Value, field: &str, nested: bool) -> Vec<Value> {
             .unwrap_or_default()
     } else {
         values
+    }
+}
+
+fn normalize_chroma_distance(metric: DistanceMetric, distance: f64) -> f64 {
+    match metric {
+        DistanceMetric::Cosine => distance,
+        // Chroma reports 1 - inner_product; Kogwistar orders by negative dot product.
+        DistanceMetric::InnerProduct => distance - 1.0,
+        // Chroma reports squared L2 while Kogwistar's public metric is Euclidean L2.
+        DistanceMetric::L2 => distance.max(0.0).sqrt(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_chroma_distance;
+    use kogwistar_store::DistanceMetric;
+
+    #[test]
+    fn chroma_distances_match_kogwistar_metric_conventions() {
+        assert_eq!(
+            normalize_chroma_distance(DistanceMetric::Cosine, 0.25),
+            0.25
+        );
+        assert_eq!(
+            normalize_chroma_distance(DistanceMetric::InnerProduct, 0.2),
+            -0.8
+        );
+        assert_eq!(normalize_chroma_distance(DistanceMetric::L2, 9.0), 3.0);
+        assert_eq!(normalize_chroma_distance(DistanceMetric::L2, -1.0), 0.0);
     }
 }
