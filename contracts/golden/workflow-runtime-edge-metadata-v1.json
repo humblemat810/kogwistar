@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "model_class": "workflow_runtime_edge",
+  "baseline_fixture": "python-graph-model-payloads-v1.json#edge",
+  "cases": [
+    {
+      "id": "required_relation_only",
+      "metadata": {"relation": "next"},
+      "valid": true
+    },
+    {
+      "id": "custom_entity_type_compatibility",
+      "metadata": {"relation": "next", "entity_type": "legacy-edge-kind"},
+      "valid": true
+    },
+    {
+      "id": "nullable_optional_identifiers",
+      "metadata": {"relation": "next", "conversation_id": null, "run_id": null},
+      "valid": true
+    },
+    {
+      "id": "string_optional_identifiers",
+      "metadata": {"relation": "next", "conversation_id": "conversation-1", "run_id": "run-1"},
+      "valid": true
+    },
+    {
+      "id": "missing_relation",
+      "metadata": {"entity_type": "conversation_edge"},
+      "valid": false
+    },
+    {
+      "id": "null_entity_type",
+      "metadata": {"relation": "next", "entity_type": null},
+      "valid": false
+    },
+    {
+      "id": "invalid_run_id_shape",
+      "metadata": {"relation": "next", "run_id": []},
+      "valid": false
+    },
+    {
+      "id": "numeric_relation",
+      "metadata": {"relation": 1},
+      "valid": false
+    },
+    {
+      "id": "numeric_run_id",
+      "metadata": {"relation": "next", "run_id": 2},
+      "valid": false
+    }
+  ]
+}

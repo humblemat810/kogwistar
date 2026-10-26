@@ -2526,28 +2526,26 @@ mod tests {
 
     #[test]
     fn workflow_runtime_edge_matches_python_metadata_defaults_and_requirements() {
-        let mut payload = fixture()["cases"][1]["payload"].clone();
-        payload["metadata"] = serde_json::json!({"relation": "next"});
-        GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload.clone())
-            .validate_family_v1()
-            .expect("Python's omitted entity_type default remains a valid wire payload");
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-runtime-edge-metadata-v1.json"
+        )))
+        .expect("valid shared workflow runtime edge metadata contract");
+        assert_eq!(contract["schema_version"], 1);
 
-        payload["metadata"] = serde_json::json!({"entity_type": "legacy-edge-kind"});
-        assert!(
-            GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload)
-                .validate_family_v1()
-                .is_err(),
-            "relation is required by the Python metadata model"
-        );
-
-        let mut payload = fixture()["cases"][1]["payload"].clone();
-        payload["metadata"] = serde_json::json!({"relation": "next", "run_id": []});
-        assert!(
-            GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload)
-                .validate_family_v1()
-                .is_err(),
-            "optional string metadata must reject incompatible shapes"
-        );
+        let baseline = fixture()["cases"][1]["payload"].clone();
+        for case in contract["cases"].as_array().expect("contract cases") {
+            let mut payload = baseline.clone();
+            payload["metadata"] = case["metadata"].clone();
+            let result = GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload)
+                .validate_family_v1();
+            assert_eq!(
+                result.is_ok(),
+                case["valid"].as_bool().expect("validity flag"),
+                "workflow runtime edge metadata case {}",
+                case["id"]
+            );
+        }
     }
 
     #[test]

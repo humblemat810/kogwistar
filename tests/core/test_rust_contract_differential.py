@@ -106,6 +106,14 @@ PROJECTION_CHECKPOINT_FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
+WORKFLOW_RUNTIME_EDGE_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-runtime-edge-metadata-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -705,57 +713,42 @@ def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch
 def test_workflow_runtime_edge_metadata_matches_python_model_contract() -> None:
     from kogwistar import _rust
 
+    fixture = WORKFLOW_RUNTIME_EDGE_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
     base_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
 
-    def payload_with_metadata(metadata: dict[str, object]) -> dict[str, object]:
+    for case in fixture["cases"]:
+        metadata = case["metadata"]
         payload = copy.deepcopy(base_edge)
         payload["metadata"] = metadata
-        python_payload = WorkflowRuntimeEdge.model_validate(payload).model_dump(
-            field_mode="backend", dump_format="json"
-        )
-        assert python_payload["metadata"].get("relation") == metadata["relation"]
-        assert python_payload["metadata"].get("entity_type") == metadata.get(
-            "entity_type"
-        )
-        return python_payload
-
-    for metadata in (
-        {"relation": "next"},
-        {"relation": "next", "entity_type": "legacy-edge-kind"},
-        {"relation": "next", "run_id": "run-2"},
-    ):
-        python_payload = payload_with_metadata(metadata)
-        _rust.validate_graph_model_family(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "model_class": "workflow_runtime_edge",
-                    "payload": python_payload,
-                },
-                ensure_ascii=False,
+        if case["valid"]:
+            python_payload = WorkflowRuntimeEdge.model_validate(payload).model_dump(
+                field_mode="backend", dump_format="json"
             )
-        )
-
-    for metadata in (
-        {"entity_type": "conversation_edge"},
-        {"relation": "next", "run_id": []},
-        {"relation": 1},
-    ):
-        payload = copy.deepcopy(base_edge)
-        payload["metadata"] = metadata
-        with pytest.raises(Exception):
-            WorkflowRuntimeEdge.model_validate(payload)
-        with pytest.raises(Exception):
             _rust.validate_graph_model_family(
                 json.dumps(
                     {
                         "schema_version": 1,
-                        "model_class": "workflow_runtime_edge",
-                        "payload": payload,
+                        "model_class": fixture["model_class"],
+                        "payload": python_payload,
                     },
                     ensure_ascii=False,
                 )
             )
+        else:
+            with pytest.raises(Exception):
+                WorkflowRuntimeEdge.model_validate(payload)
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "model_class": fixture["model_class"],
+                            "payload": payload,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
 
 
 @pytest.mark.requires_rust
