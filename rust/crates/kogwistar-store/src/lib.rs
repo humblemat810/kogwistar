@@ -492,6 +492,13 @@ fn record_array_field(record: &GraphRecord, field: &str) -> Option<Vec<Value>> {
     }
 }
 
+fn record_string_array_field(record: &GraphRecord, field: &str) -> Option<Vec<String>> {
+    record_array_field(record, field)?
+        .into_iter()
+        .map(|value| value.as_str().map(str::to_owned))
+        .collect()
+}
+
 fn graph_entity_usage_acl_visible(
     record: &GraphRecord,
     index: &GraphAclIndex,
@@ -564,17 +571,13 @@ pub fn graph_records_visible_by_acl_with_index(
         if !visible(edge, "edge") {
             return false;
         }
-        let Some(source_ids) = record_array_field(edge, "source_ids") else {
+        let Some(source_ids) = record_string_array_field(edge, "source_ids") else {
             return false;
         };
-        let Some(target_ids) = record_array_field(edge, "target_ids") else {
+        let Some(target_ids) = record_string_array_field(edge, "target_ids") else {
             return false;
         };
-        let endpoint_ids = source_ids
-            .into_iter()
-            .chain(target_ids)
-            .filter_map(|value| value.as_str().map(str::to_owned))
-            .collect::<Vec<_>>();
+        let endpoint_ids = source_ids.into_iter().chain(target_ids);
         endpoint_ids.into_iter().all(|endpoint_id| {
             nodes
                 .iter()
@@ -595,16 +598,17 @@ pub fn graph_records_visible_by_acl_with_index(
                 let Some(edge) = edges.iter().find(|edge| edge.id == **edge_id) else {
                     return false;
                 };
-                let Some(source_edge_ids) = record_array_field(edge, "source_edge_ids") else {
+                let Some(source_edge_ids) = record_string_array_field(edge, "source_edge_ids")
+                else {
                     return false;
                 };
-                let Some(target_edge_ids) = record_array_field(edge, "target_edge_ids") else {
+                let Some(target_edge_ids) = record_string_array_field(edge, "target_edge_ids")
+                else {
                     return false;
                 };
                 source_edge_ids
                     .into_iter()
                     .chain(target_edge_ids)
-                    .filter_map(|value| value.as_str().map(str::to_owned))
                     .all(|endpoint_id| {
                         let Some(referenced) =
                             edges.iter().find(|candidate| candidate.id == endpoint_id)
@@ -3485,6 +3489,72 @@ mod tests {
         assert!(
             visible_edges.is_empty(),
             "malformed edge-reference metadata must fail closed"
+        );
+    }
+
+    #[test]
+    fn graph_edge_visibility_fails_closed_on_non_string_endpoint_ids() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-malformed-endpoint-v1.json"
+        )))
+        .expect("valid malformed endpoint ACL fixture");
+        let edge_id = "malformed-endpoint-edge";
+        let endpoint_id = fixture["source_endpoint_id"].as_str().unwrap();
+        let acl_record = |id: &str, grain: &str, mode: &str| {
+            let mut record = GraphRecord::new(format!("acl-{id}-{grain}"));
+            record
+                .metadata
+                .insert("entity_type".into(), "acl_record".into());
+            record
+                .metadata
+                .insert("acl_truth_graph".into(), fixture["truth_graph"].clone());
+            record
+                .metadata
+                .insert("acl_target_entity_id".into(), id.into());
+            record
+                .metadata
+                .insert("acl_target_grain".into(), grain.into());
+            record
+                .metadata
+                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert("acl_mode".into(), mode.into());
+            if mode == "private" {
+                record
+                    .metadata
+                    .insert("owner_id".into(), "someone-else".into());
+            }
+            record
+        };
+
+        let mut edge = GraphRecord::new(edge_id);
+        edge.metadata.insert(
+            "source_ids".into(),
+            serde_json::json!([fixture["source_endpoint_value"]]),
+        );
+        edge.metadata
+            .insert("target_ids".into(), serde_json::json!([]));
+        let nodes = vec![
+            acl_record(edge_id, "edge", "public"),
+            acl_record(endpoint_id, "node", "private"),
+            GraphRecord::new(endpoint_id),
+        ];
+        let principal = GraphAclPrincipal {
+            principal_id: fixture["principal"]["id"].as_str().unwrap().into(),
+            groups: BTreeSet::new(),
+            security_scope: fixture["principal"]["security_scope"]
+                .as_str()
+                .map(str::to_owned),
+        };
+        let (_, visible_edges) = graph_records_visible_by_acl(
+            &nodes,
+            &[edge],
+            fixture["truth_graph"].as_str().unwrap(),
+            &principal,
+        );
+        assert_eq!(
+            !visible_edges.is_empty(),
+            fixture["expected_edge_visible"].as_bool().unwrap()
         );
     }
 

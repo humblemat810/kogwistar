@@ -23,6 +23,17 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-26)
 
+- Additional malformed edge-endpoint parity: Rust graph ACL projection previously
+  discarded non-string endpoint values and could expose an edge without checking
+  a corresponding hidden endpoint. It now fails closed for non-string node and
+  edge endpoint arrays. Python rejects the same malformed endpoint at its
+  Pydantic model boundary. The shared negative contract is
+  `contracts/golden/graph-acl-malformed-endpoint-v1.json`. Evidence:
+  `graph_edge_visibility_fails_closed_on_non_string_endpoint_ids` (Rust store:
+  1 passed) and `tests/acl/test_acl_graph.py::test_numeric_endpoint_is_rejected_before_acl_projection`
+  (Python CPython 3.13: 1 passed), Ruff, Rust formatting, and `git diff --check`.
+  This is added evidence under existing `DL-08C`; no item ID or denominator
+  changed.
 - Additional graph ACL principal identity parity: Python and Rust now consume
   `contracts/golden/graph-acl-principal-identity-v1.json` for claim precedence,
   malformed-claim fallback, empty-identity fallback, trimming, and case

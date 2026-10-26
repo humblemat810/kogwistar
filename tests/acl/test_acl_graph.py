@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from kogwistar.acl.graph import ACLGraph, ACLRecord, ACLTarget
 from kogwistar.conversation.agentic_answering import _engine_get_nodes
@@ -44,7 +46,7 @@ def _mk_node(*, node_id: str, doc_id: str) -> Node:
     )
 
 
-def _mk_edge(*, edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
+def _mk_edge(*, edge_id: str, src: str | int, tgt: str, doc_id: str) -> Edge:
     return Edge(
         id=edge_id,
         label=edge_id,
@@ -409,6 +411,23 @@ def test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking(tmp_path)
     assert hidden.id not in ranked_ids
     assert topology == []
     assert path_summaries == []
+
+
+def test_numeric_endpoint_is_rejected_before_acl_projection():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-acl-malformed-endpoint-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["expected_edge_visible"] is False
+    with pytest.raises(ValidationError):
+        _mk_edge(
+            edge_id="malformed-endpoint-edge",
+            src=fixture["source_endpoint_value"],
+            tgt="endpoint-target",
+            doc_id="doc::malformed-endpoint::edge",
+        )
 
 
 def test_private_edge_span_hides_edge_even_when_endpoints_are_visible(tmp_path):

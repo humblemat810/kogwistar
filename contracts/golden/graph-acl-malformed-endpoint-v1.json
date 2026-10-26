@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "principal": {
+    "id": "reader",
+    "groups": [],
+    "security_scope": "tenant-a"
+  },
+  "source_endpoint_value": 123,
+  "source_endpoint_id": "123",
+  "expected_edge_visible": false
+}
