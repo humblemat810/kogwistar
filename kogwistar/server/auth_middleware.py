@@ -565,6 +565,26 @@ def get_current_capabilities() -> set[str]:
     return out
 
 
+def get_current_principal_groups() -> tuple[str, ...]:
+    """Return normalized group claims used by graph ACL decisions.
+
+    Keep this aligned with Rust's authenticated-principal projection: only
+    ``groups`` and ``principal_groups`` grant group membership, never roles.
+    """
+    claims = claims_ctx.get() or {}
+    groups: set[str] = set()
+    for claim_name in ("groups", "principal_groups"):
+        raw = claims.get(claim_name)
+        if isinstance(raw, str):
+            values = raw.split(",")
+        elif isinstance(raw, list):
+            values = [value for value in raw if isinstance(value, str)]
+        else:
+            continue
+        groups.update(value.strip().lower() for value in values if value.strip())
+    return tuple(sorted(groups))
+
+
 def has_explicit_capabilities_claim() -> bool:
     claims = claims_ctx.get() or {}
     return "capabilities" in claims or "caps" in claims
@@ -744,6 +764,7 @@ __all__ = [
     "describe_storage_security_mapping",
     "get_current_agent_id",
     "get_current_capabilities",
+    "get_current_principal_groups",
     "get_current_namespaces",
     "get_current_role",
     "get_current_subject",

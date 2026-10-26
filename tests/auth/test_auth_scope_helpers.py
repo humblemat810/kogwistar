@@ -7,6 +7,7 @@ from kogwistar.server.auth_middleware import (
     claims_ctx,
     describe_storage_security_mapping,
     get_current_capabilities,
+    get_current_principal_groups,
     get_execution_namespace,
     get_security_scope,
     get_security_scope_parts,
@@ -69,6 +70,20 @@ def test_capability_helpers_use_claim_capabilities():
         assert require_capability({"workflow.run.read", "workflow.run.write"}) == "workflow.run.read"
         with pytest.raises(Exception):
             require_capability("workflow.admin")
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_principal_group_helper_matches_rust_claim_projection():
+    token = claims_ctx.set(
+        {
+            "groups": " Reviewers, Ops ",
+            "principal_groups": ["reviewers", "Auditors", 42],
+            "roles": ["admin"],
+        }
+    )
+    try:
+        assert get_current_principal_groups() == ("auditors", "ops", "reviewers")
     finally:
         claims_ctx.reset(token)
 

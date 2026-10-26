@@ -328,6 +328,51 @@ def test_acceptance_scope_isolation_and_user_specific_visible_sets(tmp_path):
     }
 
 
+def test_normal_acl_read_uses_authenticated_group_claims(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    group_node = _mk_node(node_id="accept-group-visible", doc_id="doc::group::visible")
+    group_node.metadata.update(
+        {
+            "visibility": "group",
+            "owner_agent_id": "agent-a",
+            "shared_with_groups": ["reviewers"],
+        }
+    )
+    owner_token = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        engine.write.add_node(group_node)
+    finally:
+        claims_ctx.reset(owner_token)
+
+    reviewer_token = claims_ctx.set(
+        {
+            "agent_id": "agent-b",
+            "groups": ["Reviewers"],
+            "security_scope": "tenant-a",
+            "ns": "knowledge",
+        }
+    )
+    try:
+        assert group_node.id in {node.id for node in engine.read.get_nodes(node_type=Node)}
+    finally:
+        claims_ctx.reset(reviewer_token)
+
+    unrelated_token = claims_ctx.set(
+        {
+            "agent_id": "agent-b",
+            "groups": ["guests"],
+            "security_scope": "tenant-a",
+            "ns": "knowledge",
+        }
+    )
+    try:
+        assert group_node.id not in {node.id for node in engine.read.get_nodes(node_type=Node)}
+    finally:
+        claims_ctx.reset(unrelated_token)
+
+
 def test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking(tmp_path):
     engine = _mk_acl_fake_engine(tmp_path)
     visible = _mk_node(node_id="accept-topology-visible", doc_id="doc::topology::visible")
