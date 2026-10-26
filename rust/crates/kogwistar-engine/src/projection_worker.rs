@@ -470,8 +470,27 @@ mod tests {
         let mut record = GraphRecord::new("node-1");
         record.document = Some("current node".to_owned());
         record.metadata.insert("kind".to_owned(), json!("node"));
-        record.embedding = Some(vec![1.0, 0.0]);
+        record.embedding = Some(vec![0.25, 0.75]);
         record
+    }
+
+    #[tokio::test]
+    async fn projection_action_matches_shared_python_wire_fixture() {
+        let queue = InMemoryStore::new();
+        enqueue(&queue, "UPSERT").await;
+        let job = queue
+            .claim_index_jobs(1, 30, Some("workspace"))
+            .await
+            .unwrap()
+            .remove(0);
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-projection-action-v1.json"
+        ))
+        .trim();
+
+        assert_eq!(action_value(&job, Some(&candidate())).to_string(), fixture);
+        assert!(parse_action(&job, fixture).is_ok());
     }
 
     #[tokio::test]

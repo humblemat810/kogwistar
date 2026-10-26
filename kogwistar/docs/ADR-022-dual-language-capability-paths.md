@@ -114,6 +114,13 @@ the PostgreSQL transaction. The worker durably admits a versioned projection
 action before applying it, reuses that action after a projection failure, and
 acknowledges the queue only after the upsert/delete succeeds. The PostgreSQL
 queue remains the authority; the Chroma records are a derived projection.
+The accepted action is a versioned JSON wire contract shared through
+`contracts/golden/graph-projection-action-v1.json`: Rust produces and consumes
+it, while Python's standalone strict decoder verifies the exact persisted-byte
+digest and queue binding before interpreting the action. The existing Python
+index worker is intentionally unchanged and does not yet execute this action
+contract. JSON object key order is not a semantic requirement; the digest
+always covers the original serialized bytes.
 
 This worker is not yet wired into Rust HTTP backend selection. Its current
 contract also does not fence an older in-flight projection against a newer

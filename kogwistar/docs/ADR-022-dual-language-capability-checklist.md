@@ -29,8 +29,12 @@ denominator of either snapshot.
   matching stored SHA-256 digest; missing or mismatched integrity metadata
   fails the job before graph mutation. A projection failure retries from the
   accepted action without rerunning the provider, and queue completion follows
-  the graph upsert/delete. Evidence: `cargo test -p kogwistar-engine --offline`
-  (**12 unit tests and 1 backend-composition test passed**) and
+  the graph upsert/delete. The Python `decode_projection_action` and Rust
+  serializer/parser both consume `contracts/golden/graph-projection-action-v1.json`;
+  Python rejects schema, queue-binding, digest, and f32-range mismatches.
+  Evidence: `cargo test -p kogwistar-engine --offline`
+  (**13 unit tests and 1 backend-composition test passed**), focused Python
+  contract tests (**9 passed**), Ruff, and
   `cargo fmt --all -- --check` on Windows. The compile-time composition test
   proves `PostgresStore` can supply the durable index queue while
   `ChromaGraphStore` supplies graph projection; it does not run live PostgreSQL
