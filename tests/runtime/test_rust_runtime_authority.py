@@ -16,6 +16,7 @@ import pytest
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
+from kogwistar.runtime.rust_worker import RustRuntimeWorker
 from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
     RustRuntimeAuthority,
@@ -341,6 +342,9 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
 
     runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.workflow_engine = object()
+    runtime.conversation_engine = SimpleNamespace(
+        read=SimpleNamespace(get_nodes=lambda **_kwargs: [])
+    )
     runtime.step_resolver = resolver
     runtime.predicate_registry = {}
     runtime.max_workers = 1
@@ -406,6 +410,189 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
         status = httpx.get(f"{base_url}/api/workflow/runs/run-live", timeout=10)
         assert status.status_code == 200
         assert status.json()["status"] == "succeeded"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+@pytest.mark.integration
+def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server(
+    tmp_path: Path,
+) -> None:
+    """Exercise actual Python callbacks on both sides of a Rust-native step."""
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live authority test")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    sqlite_path = tmp_path / "mixed-language.sqlite3"
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "sqlite",
+            "KOGWISTAR_META_SQLITE_PATH": str(sqlite_path),
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+        }
+    )
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust SQLite server did not become ready")
+
+        resolver = MappingStepResolver()
+        callbacks: list[str] = []
+
+        @resolver.register("application.before")
+        def before(ctx):
+            callbacks.append("before")
+            assert ctx.state_view["counter"] == 4
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"python_before_seen": True})],
+            )
+
+        @resolver.register("application.after")
+        def after(ctx):
+            callbacks.append("after")
+            assert ctx.state_view["counter"] == 5
+            assert ctx.state_view["python_before_seen"] is True
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"python_after_seen": True})],
+            )
+
+        headers = {"x-kogwistar-roles": "reader"}
+        submitted = httpx.post(
+            f"{base_url}/api/workflow/runs",
+            headers=headers,
+            json={
+                "run_id": "mixed-live-run",
+                "workflow_id": "mixed-live-workflow",
+                "conversation_id": "mixed-live-conversation",
+                "initial_state": {"counter": 4},
+                "runtime_kind": "sync",
+                "start_node_id": "python-before",
+                "node_ops": {
+                    "python-before": "application.before",
+                    "native-middle": "rust-native/increment-counter",
+                    "python-after": "application.after",
+                },
+                "runtime_routes": [
+                    {
+                        "source_node_id": "python-before",
+                        "target_node_id": "native-middle",
+                        "join_mask": 0,
+                    },
+                    {
+                        "source_node_id": "native-middle",
+                        "target_node_id": "python-after",
+                        "join_mask": 0,
+                    },
+                ],
+            },
+            timeout=10,
+        )
+        assert submitted.status_code == 202, submitted.text
+
+        with RustRuntimeWorker.from_step_resolver(
+            base_url=base_url,
+            worker_id="python-worker",
+            journal_path=tmp_path / "python-worker.sqlite",
+            step_resolver=resolver,
+            headers=headers,
+        ) as worker:
+            python_before_work = worker.claim(run_id="mixed-live-run")
+            assert len(python_before_work) == 1
+            assert python_before_work[0]["step_id"] == "python-before"
+            first_result = worker.process(python_before_work[0])
+            assert first_result["event_seq"] > 0
+
+            native_claim = httpx.post(
+                f"{base_url}/internal/runtime/claim",
+                headers=headers,
+                json={
+                    "claimed_by": "rust-native-worker",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["rust-native-worker"],
+                    "run_id": "mixed-live-run",
+                },
+                timeout=10,
+            )
+            assert native_claim.status_code == 200, native_claim.text
+            native_work = native_claim.json()["work"]
+            assert len(native_work) == 1
+            native_item = native_work[0]
+            assert native_item["step_id"] == "native-middle"
+            assert native_item["payload"]["state"]["python_before_seen"] is True
+            native_result = httpx.post(
+                f"{base_url}/internal/runtime/native/execute",
+                headers=headers,
+                json={
+                    "handoff": {
+                        "message_id": native_item["message_id"],
+                        "claimed_by": native_item["claimed_by"],
+                        "run_id": native_item["run_id"],
+                        "step_id": native_item["step_id"],
+                        "correlation_id": native_item["correlation_id"],
+                    },
+                    "payload": native_item["payload"],
+                },
+                timeout=10,
+            )
+            assert native_result.status_code == 200, native_result.text
+
+            python_after_work = worker.claim(run_id="mixed-live-run")
+            assert len(python_after_work) == 1
+            assert python_after_work[0]["step_id"] == "python-after"
+            assert python_after_work[0]["payload"]["state"]["counter"] == 5
+            assert python_after_work[0]["payload"]["state"]["python_before_seen"] is True
+            final_result = worker.process(python_after_work[0])
+            assert final_result["event_seq"] > first_result["event_seq"]
+
+        assert callbacks == ["before", "after"]
+        status = httpx.get(
+            f"{base_url}/api/workflow/runs/mixed-live-run",
+            headers=headers,
+            timeout=10,
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "succeeded"
+        checkpoints = httpx.get(
+            f"{base_url}/api/workflow/runs/mixed-live-run/checkpoints",
+            headers=headers,
+            timeout=10,
+        )
+        assert checkpoints.status_code == 200, checkpoints.text
+        final_state = checkpoints.json()["checkpoints"][-1]["state"]
+        assert final_state["counter"] == 5
+        assert final_state["python_before_seen"] is True
+        assert final_state["python_after_seen"] is True
     finally:
         process.terminate()
         try:
@@ -1124,7 +1311,9 @@ def test_resume_effect_uses_existing_update_and_route_semantics(
         "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
         lambda **_kwargs: {"gate": 0, "done": 0},
     )
-    resolver = MappingStepResolver()
+    resolver = MappingStepResolver(
+        default=lambda _ctx: RunSuccess(conversation_node_id=None)
+    )
     resolver.set_state_schema({"items": "a"})
     runtime = SimpleNamespace(
         workflow_engine=object(),
@@ -1237,7 +1426,9 @@ def test_resume_rejects_current_graph_drift_before_state_change(
 
     runtime = SimpleNamespace(
         workflow_engine=object(),
-        step_resolver=MappingStepResolver(),
+        step_resolver=MappingStepResolver(
+            default=lambda _ctx: RunSuccess(conversation_node_id=None)
+        ),
         predicate_registry={},
         max_workers=1,
         cancel_requested=None,
