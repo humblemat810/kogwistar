@@ -2061,9 +2061,9 @@ pub trait IndexJobReadStore: Send + Sync {
     ) -> impl Future<Output = StoreResult<Vec<IndexJob>>> + Send;
 }
 
-/// Durable index-job state machine.  `None` token intentionally retains the
-/// legacy Python administrative behaviour; supplied tokens protect stale
-/// workers after a lease reclaim.
+/// Durable index-job state machine. `None` token intentionally retains the
+/// legacy Python administrative behavior. A supplied token authorizes queue
+/// mutations only while it matches the current claim and its lease is live.
 pub trait IndexJobWriteStore: IndexJobReadStore {
     fn enqueue_index_job(
         &self,

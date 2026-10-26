@@ -563,7 +563,13 @@ impl IndexJobWriteStore for InMemoryStore {
             return Ok(false);
         };
         if row.status != "DOING"
-            || claim_token.is_some_and(|token| row.claim_token.as_deref() != Some(token))
+            || claim_token.is_some_and(|token| {
+                row.claim_token.as_deref() != Some(token)
+                    || row
+                        .lease_until
+                        .as_ref()
+                        .is_none_or(|lease_until| timestamp_i64(lease_until) < now)
+            })
         {
             return Ok(false);
         }
@@ -653,7 +659,13 @@ impl IndexJobWriteStore for InMemoryStore {
             .index_jobs
             .get_mut(job_id)
             && row.status == "DOING"
-            && claim_token.is_none_or(|token| row.claim_token.as_deref() == Some(token))
+            && claim_token.is_none_or(|token| {
+                row.claim_token.as_deref() == Some(token)
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+            })
         {
             if final_ {
                 row.status = "FAILED".to_owned();
@@ -680,7 +692,13 @@ impl IndexJobWriteStore for InMemoryStore {
             .index_jobs
             .get_mut(job_id)
             && row.status == "DOING"
-            && claim_token.is_none_or(|token| row.claim_token.as_deref() == Some(token))
+            && claim_token.is_none_or(|token| {
+                row.claim_token.as_deref() == Some(token)
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+            })
         {
             row.retry_count += 1;
             row.last_error = Some(error.chars().take(2000).collect());
@@ -740,7 +758,13 @@ impl IndexJobWriteStore for InMemoryStore {
             + 1;
         if let Some(row) = state.index_jobs.get_mut(job_id)
             && row.status == "DOING"
-            && claim_token.is_none_or(|token| row.claim_token.as_deref() == Some(token))
+            && claim_token.is_none_or(|token| {
+                row.claim_token.as_deref() == Some(token)
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+            })
         {
             row.status = "PENDING".to_owned();
             row.lease_until = None;
@@ -1778,6 +1802,52 @@ mod tests {
         assert_eq!(capability, GraphAuthorityCapability::SingleMutation);
         assert!(capability.supports_single_mutation());
         assert!(!capability.supports_atomic_index_jobs());
+    }
+
+    #[test]
+    fn expired_claim_token_cannot_mutate_queue_state() {
+        let store = InMemoryStore::new();
+        for job_id in ["done", "failed", "retried", "requeued"] {
+            block_on(store.enqueue_index_job(NewIndexJob {
+                job_id: job_id.to_owned(),
+                namespace: "ns".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: job_id.to_owned(),
+                index_kind: "test".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }))
+            .unwrap();
+        }
+        let claims = block_on(store.claim_index_jobs(4, -1, Some("ns"))).unwrap();
+        let tokens = claims
+            .iter()
+            .map(|claim| (claim.job_id.as_str(), claim.claim_token.as_deref().unwrap()))
+            .collect::<BTreeMap<_, _>>();
+
+        assert!(!block_on(store.mark_index_job_done("done", Some(tokens["done"]))).unwrap());
+        block_on(store.mark_index_job_failed("failed", "late", true, Some(tokens["failed"])))
+            .unwrap();
+        block_on(store.bump_retry_and_requeue("retried", "late", 0, Some(tokens["retried"])))
+            .unwrap();
+        block_on(store.requeue_index_job_at_tail(
+            "requeued",
+            "{}".to_owned(),
+            0,
+            Some(tokens["requeued"]),
+        ))
+        .unwrap();
+
+        let reclaimed = block_on(store.claim_index_jobs(4, 30, Some("ns"))).unwrap();
+        assert_eq!(reclaimed.len(), 4);
+        assert!(reclaimed.iter().all(|claim| claim.retry_count == 0));
+        assert!(
+            reclaimed.iter().all(|claim| {
+                claim.claim_token.as_deref() != Some(tokens[claim.job_id.as_str()])
+            })
+        );
+        assert!(block_on(store.mark_index_job_done("done", None)).unwrap());
     }
 
     fn event(event_id: &str, entity_id: &str) -> NewEntityEvent {

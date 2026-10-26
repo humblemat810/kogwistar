@@ -934,9 +934,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 """
                 UPDATE index_jobs
                 SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=?
-                WHERE job_id=? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                WHERE job_id=? AND status='DOING'
+                  AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                (now, job_id, claim_token, claim_token),
+                (now, job_id, claim_token, claim_token, now),
             )
             return bool(result.rowcount)
 
@@ -1009,9 +1010,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     claim_token = NULL,
                     last_error = ?,
                     updated_at = ?
-                WHERE job_id = ? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                WHERE job_id = ? AND status='DOING'
+                  AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                (1 if final else 0, (error or "")[:2000], now, job_id, claim_token, claim_token),
+                (1 if final else 0, (error or "")[:2000], now, job_id, claim_token, claim_token, now),
             )
 
     def bump_retry_and_requeue(
@@ -1038,9 +1040,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     claim_token = NULL,
                     next_run_at = CASE WHEN (retry_count + 1) >= max_retries THEN NULL ELSE ? END,
                     updated_at = ?
-                WHERE job_id = ? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                WHERE job_id = ? AND status='DOING'
+                  AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                ((error or "")[:2000], next_run_at, now, job_id, claim_token, claim_token),
+                ((error or "")[:2000], next_run_at, now, job_id, claim_token, claim_token, now),
             )
 
     def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
@@ -1072,9 +1075,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 UPDATE index_jobs
                 SET status='PENDING', lease_until=NULL, claim_token=NULL, next_run_at=?,
                     payload_json=?, created_at=?, updated_at=?
-                WHERE job_id=? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                    WHERE job_id=? AND status='DOING'
+                      AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                (next_run_at, payload_json, tail_position, now, job_id, claim_token, claim_token),
+                    (next_run_at, payload_json, tail_position, now, job_id, claim_token, claim_token, now),
             )
 
     def list_index_jobs(

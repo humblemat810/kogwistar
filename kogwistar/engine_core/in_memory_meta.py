@@ -478,7 +478,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return False
-            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return False
             job.status = "DONE"
             job.lease_until = None
@@ -537,7 +544,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return
-            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return
             if final:
                 job.status = "FAILED"
@@ -555,7 +569,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return
-            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return
             job.retry_count += 1
             job.last_error = str(error or "")[:2000]
@@ -580,7 +601,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         next_run_at = now + max(0, int(delay_seconds))
         with self.transaction() as txn:
             job = txn.state.index_jobs.get(str(job_id))
-            if job is None or job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job is None or job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return
             tail_position = max(
                 (item.created_at for item in txn.state.index_jobs.values()),

@@ -2943,7 +2943,8 @@ fn mark_index_job_done(
     job_id: &str,
     claim_token: Option<&str>,
 ) -> SqliteStoreResult<bool> {
-    Ok(conn.execute("UPDATE index_jobs SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=?1 WHERE job_id=?2 AND status='DOING' AND (?3 IS NULL OR claim_token=?3)", params![unix_epoch_seconds(), job_id, claim_token])? != 0)
+    let now = unix_epoch_seconds();
+    Ok(conn.execute("UPDATE index_jobs SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=?1 WHERE job_id=?2 AND status='DOING' AND (?3 IS NULL OR (claim_token=?3 AND lease_until IS NOT NULL AND lease_until>=?1))", params![now, job_id, claim_token])? != 0)
 }
 fn index_job_result(
     conn: &Connection,
@@ -3003,7 +3004,8 @@ fn mark_index_job_failed(
     final_: bool,
     claim_token: Option<&str>,
 ) -> SqliteStoreResult<()> {
-    conn.execute("UPDATE index_jobs SET status=CASE WHEN ?1 THEN 'FAILED' ELSE status END,lease_until=NULL,claim_token=NULL,last_error=?2,updated_at=?3 WHERE job_id=?4 AND status='DOING' AND (?5 IS NULL OR claim_token=?5)", params![final_, truncate_error(error), unix_epoch_seconds(), job_id, claim_token])?;
+    let now = unix_epoch_seconds();
+    conn.execute("UPDATE index_jobs SET status=CASE WHEN ?1 THEN 'FAILED' ELSE status END,lease_until=NULL,claim_token=NULL,last_error=?2,updated_at=?3 WHERE job_id=?4 AND status='DOING' AND (?5 IS NULL OR (claim_token=?5 AND lease_until IS NOT NULL AND lease_until>=?3))", params![final_, truncate_error(error), now, job_id, claim_token])?;
     Ok(())
 }
 fn bump_retry_and_requeue(
@@ -3014,7 +3016,7 @@ fn bump_retry_and_requeue(
     claim_token: Option<&str>,
 ) -> SqliteStoreResult<()> {
     let now = unix_epoch_seconds();
-    conn.execute("UPDATE index_jobs SET retry_count=retry_count+1,last_error=?1,status=CASE WHEN retry_count+1>=max_retries THEN 'FAILED' ELSE 'PENDING' END,lease_until=NULL,claim_token=NULL,next_run_at=CASE WHEN retry_count+1>=max_retries THEN NULL ELSE ?2 END,updated_at=?3 WHERE job_id=?4 AND status='DOING' AND (?5 IS NULL OR claim_token=?5)", params![truncate_error(error), now+delay_seconds.max(0), now, job_id, claim_token])?;
+    conn.execute("UPDATE index_jobs SET retry_count=retry_count+1,last_error=?1,status=CASE WHEN retry_count+1>=max_retries THEN 'FAILED' ELSE 'PENDING' END,lease_until=NULL,claim_token=NULL,next_run_at=CASE WHEN retry_count+1>=max_retries THEN NULL ELSE ?2 END,updated_at=?3 WHERE job_id=?4 AND status='DOING' AND (?5 IS NULL OR (claim_token=?5 AND lease_until IS NOT NULL AND lease_until>=?3))", params![truncate_error(error), now+delay_seconds.max(0), now, job_id, claim_token])?;
     Ok(())
 }
 fn renew_index_job_lease(
@@ -3039,7 +3041,7 @@ fn requeue_index_job_at_tail(
         [now],
         |row| row.get(0),
     )?;
-    conn.execute("UPDATE index_jobs SET status='PENDING',lease_until=NULL,claim_token=NULL,next_run_at=?1,payload_json=?2,created_at=?3,updated_at=?4 WHERE job_id=?5 AND status='DOING' AND (?6 IS NULL OR claim_token=?6)", params![now+delay_seconds.max(0),payload_json,tail,now,job_id,claim_token])?;
+    conn.execute("UPDATE index_jobs SET status='PENDING',lease_until=NULL,claim_token=NULL,next_run_at=?1,payload_json=?2,created_at=?3,updated_at=?4 WHERE job_id=?5 AND status='DOING' AND (?6 IS NULL OR (claim_token=?6 AND lease_until IS NOT NULL AND lease_until>=?4))", params![now+delay_seconds.max(0),payload_json,tail,now,job_id,claim_token])?;
     Ok(())
 }
 fn list_index_jobs(
@@ -5208,6 +5210,57 @@ mod tests {
             )
             .unwrap();
         assert_eq!(table_count, 0);
+    }
+
+    #[test]
+    fn expired_claim_token_cannot_mutate_queue_state() {
+        let (store, path) = store("expired-index-claim");
+        for job_id in ["done", "failed", "retried", "requeued"] {
+            store
+                .enqueue_index_job(NewIndexJob {
+                    job_id: job_id.to_owned(),
+                    namespace: "ns".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: job_id.to_owned(),
+                    index_kind: "test".to_owned(),
+                    op: "UPSERT".to_owned(),
+                    payload_json: None,
+                    max_retries: 3,
+                })
+                .unwrap();
+        }
+        let claims = store.claim_index_jobs(4, -1, Some("ns")).unwrap();
+        let tokens = claims
+            .iter()
+            .map(|claim| (claim.job_id.as_str(), claim.claim_token.as_deref().unwrap()))
+            .collect::<BTreeMap<_, _>>();
+
+        assert!(
+            !store
+                .mark_index_job_done("done", Some(tokens["done"]))
+                .unwrap()
+        );
+        store
+            .mark_index_job_failed("failed", "late", true, Some(tokens["failed"]))
+            .unwrap();
+        store
+            .bump_retry_and_requeue("retried", "late", 0, Some(tokens["retried"]))
+            .unwrap();
+        store
+            .requeue_index_job_at_tail("requeued", "{}".to_owned(), 0, Some(tokens["requeued"]))
+            .unwrap();
+
+        let reclaimed = store.claim_index_jobs(4, 30, Some("ns")).unwrap();
+        assert_eq!(reclaimed.len(), 4);
+        assert!(reclaimed.iter().all(|claim| claim.retry_count == 0));
+        assert!(
+            reclaimed.iter().all(|claim| {
+                claim.claim_token.as_deref() != Some(tokens[claim.job_id.as_str()])
+            })
+        );
+        assert!(store.mark_index_job_done("done", None).unwrap());
+        drop(store);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

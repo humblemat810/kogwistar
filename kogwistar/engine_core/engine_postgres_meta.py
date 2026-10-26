@@ -897,7 +897,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         with self.transaction() as conn:
             result = conn.execute(
                 sa.text(
-                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))"
+                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))"
                 ),
                 {"job_id": job_id, "claim_token": claim_token},
             )
@@ -982,7 +982,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         claim_token=NULL,
                         last_error=:err,
                         updated_at=NOW()
-                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))
+                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))
                     """
                 ),
                 {"job_id": job_id, "err": (error or "")[:2000], "final": bool(final), "claim_token": claim_token},
@@ -1022,7 +1022,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                             ELSE NOW() + (:delay || ' seconds')::interval
                         END,
                         updated_at = NOW()
-                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))
+                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))
                     """
                 ),
                 {"job_id": job_id, "err": (error or "")[:2000], "delay": delay, "claim_token": claim_token},
@@ -1053,7 +1053,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         payload_json=:payload_json,
                         created_at=(SELECT COALESCE(MAX(created_at), NOW()) + INTERVAL '1 microsecond' FROM {ij}),
                         updated_at=NOW()
-                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))
+                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))
                     """
                 ),
                 {

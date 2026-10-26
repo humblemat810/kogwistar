@@ -5719,7 +5719,7 @@ async fn mark_index_job_done<C>(
 where
     C: GenericClient + Sync,
 {
-    Ok(client.execute(&format!("UPDATE {} SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE job_id=$1 AND status='DOING' AND ($2::TEXT IS NULL OR claim_token=$2)",tables.index_jobs), &[&job_id,&claim_token]).await.map_err(backend)?!=0)
+    Ok(client.execute(&format!("UPDATE {} SET status='DONE',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE job_id=$1 AND status='DOING' AND ($2::TEXT IS NULL OR (claim_token=$2 AND lease_until IS NOT NULL AND lease_until>=NOW()))",tables.index_jobs), &[&job_id,&claim_token]).await.map_err(backend)?!=0)
 }
 async fn index_job_result<C>(
     client: &C,
@@ -5784,7 +5784,7 @@ async fn mark_index_job_failed<C>(
 where
     C: GenericClient + Sync,
 {
-    client.execute(&format!("UPDATE {} SET status=CASE WHEN $1 THEN 'FAILED' ELSE status END,lease_until=NULL,claim_token=NULL,last_error=$2,updated_at=NOW() WHERE job_id=$3 AND status='DOING' AND ($4::TEXT IS NULL OR claim_token=$4)",tables.index_jobs), &[&final_,&truncate_error(error),&job_id,&claim_token]).await.map_err(backend)?;
+    client.execute(&format!("UPDATE {} SET status=CASE WHEN $1 THEN 'FAILED' ELSE status END,lease_until=NULL,claim_token=NULL,last_error=$2,updated_at=NOW() WHERE job_id=$3 AND status='DOING' AND ($4::TEXT IS NULL OR (claim_token=$4 AND lease_until IS NOT NULL AND lease_until>=NOW()))",tables.index_jobs), &[&final_,&truncate_error(error),&job_id,&claim_token]).await.map_err(backend)?;
     Ok(())
 }
 async fn bump_retry_and_requeue<C>(
@@ -5799,7 +5799,7 @@ where
     C: GenericClient + Sync,
 {
     let delay = delay.max(0).to_string();
-    client.execute(&format!("UPDATE {} SET retry_count=retry_count+1,last_error=$1,status=CASE WHEN retry_count+1>=max_retries THEN 'FAILED' ELSE 'PENDING' END,lease_until=NULL,claim_token=NULL,next_run_at=CASE WHEN retry_count+1>=max_retries THEN NULL ELSE NOW()+($2::TEXT||' seconds')::interval END,updated_at=NOW() WHERE job_id=$3 AND status='DOING' AND ($4::TEXT IS NULL OR claim_token=$4)",tables.index_jobs), &[&truncate_error(error),&delay,&job_id,&claim_token]).await.map_err(backend)?;
+    client.execute(&format!("UPDATE {} SET retry_count=retry_count+1,last_error=$1,status=CASE WHEN retry_count+1>=max_retries THEN 'FAILED' ELSE 'PENDING' END,lease_until=NULL,claim_token=NULL,next_run_at=CASE WHEN retry_count+1>=max_retries THEN NULL ELSE NOW()+($2::TEXT||' seconds')::interval END,updated_at=NOW() WHERE job_id=$3 AND status='DOING' AND ($4::TEXT IS NULL OR (claim_token=$4 AND lease_until IS NOT NULL AND lease_until>=NOW()))",tables.index_jobs), &[&truncate_error(error),&delay,&job_id,&claim_token]).await.map_err(backend)?;
     Ok(())
 }
 async fn renew_index_job_lease<C>(
@@ -5827,7 +5827,7 @@ where
     C: GenericClient + Sync,
 {
     let delay = delay.max(0).to_string();
-    client.execute(&format!("UPDATE {} SET status='PENDING',lease_until=NULL,claim_token=NULL,next_run_at=NOW()+($1::TEXT||' seconds')::interval,payload_json=$2,created_at=(SELECT COALESCE(MAX(created_at),NOW())+INTERVAL '1 microsecond' FROM {}),updated_at=NOW() WHERE job_id=$3 AND status='DOING' AND ($4::TEXT IS NULL OR claim_token=$4)",tables.index_jobs,tables.index_jobs), &[&delay,&payload_json,&job_id,&claim_token]).await.map_err(backend)?;
+    client.execute(&format!("UPDATE {} SET status='PENDING',lease_until=NULL,claim_token=NULL,next_run_at=NOW()+($1::TEXT||' seconds')::interval,payload_json=$2,created_at=(SELECT COALESCE(MAX(created_at),NOW())+INTERVAL '1 microsecond' FROM {}),updated_at=NOW() WHERE job_id=$3 AND status='DOING' AND ($4::TEXT IS NULL OR (claim_token=$4 AND lease_until IS NOT NULL AND lease_until>=NOW()))",tables.index_jobs,tables.index_jobs), &[&delay,&payload_json,&job_id,&claim_token]).await.map_err(backend)?;
     Ok(())
 }
 #[allow(clippy::too_many_arguments)]
