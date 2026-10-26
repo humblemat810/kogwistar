@@ -6,6 +6,7 @@ import json
 import pytest
 
 from kogwistar._rust_bridge import (
+    RustParityError,
     api_health,
     capture_rust_bridge_calls,
     graph_model_capability_profiles,
@@ -81,6 +82,43 @@ def test_bridge_trace_preserves_python_mode_and_transaction_metadata(
     assert metrics["transaction_boundary_calls"] == 1
     assert metrics["transaction_active_calls"] == 1
     assert "postgresql://local/test" not in repr(metrics)
+
+
+def test_postgres_graph_mutation_bridge_preserves_unbounded_integers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecordingExtension(_ExtensionStub):
+        payload: str | None = None
+
+        def store_postgres_json(self, payload: str) -> str:
+            self.payload = payload
+            return "null"
+
+    extension = RecordingExtension()
+    monkeypatch.setattr("kogwistar._rust_bridge.import_module", lambda _name: extension)
+    value = 1 << 200
+
+    assert store_postgres(
+        dsn="postgresql://local/test",
+        schema="test",
+        operation={
+            "kind": "graph_mutation",
+            "record": {"id": "n1", "metadata": {"level_from_root": value}},
+        },
+    ) is None
+
+    assert extension.payload is not None
+    operation = json.loads(extension.payload)["operation"]
+    assert operation["record"]["metadata"]["level_from_root"] == value
+
+    with pytest.raises(RustParityError):
+        store_postgres(
+            dsn="postgresql://local/test",
+            schema="test",
+            operation={"kind": "read_graph", "limit": value},
+        )
+    # Rejected generic payloads must not cross the native boundary.
+    assert json.loads(extension.payload)["operation"]["kind"] == "graph_mutation"
 
 
 def test_bridge_trace_is_local_to_each_async_task(monkeypatch: pytest.MonkeyPatch) -> None:

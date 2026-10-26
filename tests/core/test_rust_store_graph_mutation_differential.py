@@ -206,6 +206,52 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
     )["documents"] == [edge.summary for edge in edges]
 
 
+@pytest.mark.parametrize("level", [1 << 200, -(1 << 200)])
+def test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None, level: int
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    meta.ensure_initialized()
+
+    base_payload = next(
+        case["payload"]
+        for case in PYTHON_GRAPH_MODEL_FIXTURE["cases"]
+        if case["kind"] == "node"
+    )
+    node_payload = json.loads(json.dumps(base_payload))
+    node_payload["id"] = "arbitrary-precision-level"
+    node_payload["level_from_root"] = level
+    node_payload["metadata"]["level_from_root"] = level
+    node = Node.model_validate(node_payload)
+    payload = node.model_dump(field_mode="backend", dump_format="json")
+    mutation = _mutation(
+        event_id=f"node-level-{level}",
+        op="ADD",
+        id=node.id,
+        document=node.summary,
+        metadata=node.metadata,
+        embedding=list(node.embedding or []),
+    )
+    mutation["payload"] = payload
+
+    _rust(dsn, schema, mutation)
+
+    event_payload = next(
+        json.loads(event[4])
+        for event in meta.iter_entity_events(namespace="alpha", from_seq=1)
+        if json.loads(event[4]).get("id") == node.id
+    )
+    restored = Node.model_validate(event_payload)
+    assert restored.level_from_root == level
+    assert restored.metadata["level_from_root"] == level
+
+    row = backend.node_get(ids=[node.id], include=["documents", "metadatas"])
+    assert row["metadatas"][0]["level_from_root"] == level
+
+
 def test_graph_mutation_scope_vector_contract_and_fault_rollback(
     sa_engine, pg_dsn: str | None, pg_schema: str | None
 ) -> None:

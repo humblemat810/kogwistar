@@ -198,17 +198,17 @@ def _rust_json_payload(
     )
 
 
-def _raw_graph_model_json_payload(value: JsonObject) -> str:
-    """Serialize a graph envelope without narrowing Python integer tokens."""
+def _lossless_graph_json_payload(value: JsonObject) -> str:
+    """Serialize graph contract envelopes without narrowing Python integers."""
 
     try:
         normalized = normalize_json_value(
             value,
-            field="Rust graph-model payload",
+            field="Rust graph contract payload",
             allow_unbounded_integers=True,
         )
     except (TypeError, ValueError) as exc:
-        raise RustParityError(f"Rust graph-model payload violates strict JSON: {exc}") from exc
+        raise RustParityError(f"Rust graph payload violates strict JSON: {exc}") from exc
     return json.dumps(
         normalized,
         ensure_ascii=False,
@@ -327,19 +327,28 @@ def store_postgres(
     assert_transaction_entry_allowed()
     try:
         extension = _load_extension()
+        payload = {
+            "dsn": _postgres_dsn_for_rust(dsn),
+            "schema": schema,
+            "context_id": context_id,
+            "transaction_id": transaction_id,
+            "operation": operation,
+        }
+        # Graph records preserve Python's arbitrary-precision integer values.
+        # Keep this exception scoped to the graph mutation ABI; other store
+        # operations continue to use the bounded shared Rust JSON contract.
+        payload_json = (
+            _lossless_graph_json_payload(payload)
+            if operation.get("kind") == "graph_mutation"
+            else _rust_json_payload(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
         return json.loads(
             extension.store_postgres_json(
-                _rust_json_payload(
-                    {
-                        "dsn": _postgres_dsn_for_rust(dsn),
-                        "schema": schema,
-                        "context_id": context_id,
-                        "transaction_id": transaction_id,
-                        "operation": operation,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload_json
             )
         )
     except Exception as exc:
@@ -433,7 +442,7 @@ def validate_graph_model_family(payload: JsonObject) -> None:
     extension = _load_extension()
     try:
         extension.validate_graph_model_family(
-            _raw_graph_model_json_payload(payload)
+            _lossless_graph_json_payload(payload)
         )
     except Exception as exc:
         raise RustParityError(
