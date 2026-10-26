@@ -372,6 +372,7 @@ pub fn execute_native_step_with_registry(
         });
     };
     let output = handler(request)?;
+    validate_standard_result_state(request, &output)?;
     let successors =
         authoritative_runtime_successors(&request.runtime_routes, &request.node_id, &[])?;
     Ok(RecordedWorkerSuccessEffect {
@@ -411,6 +412,61 @@ pub fn execute_native_step_with_registry(
             trace
         }],
     })
+}
+
+fn validate_standard_result_state(
+    request: &RuntimeNativeStepRequest,
+    output: &NativeOperationOutput,
+) -> Result<(), RuntimeNativeExecutionError> {
+    let Some(result) = output.result.as_ref().and_then(Value::as_object) else {
+        return Ok(());
+    };
+    if !result.contains_key("workflow_status") {
+        return Ok(());
+    }
+    let final_state = result.get("final_state").ok_or_else(|| {
+        RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "standard workflow result is missing final_state".to_owned(),
+        }
+    })?;
+    if result
+        .get("workflow_status")
+        .and_then(Value::as_str)
+        != Some("succeeded")
+    {
+        return Err(RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "successful native effect must report workflow_status=succeeded".to_owned(),
+        });
+    }
+
+    let reducer_payload = json!({
+        "state": &request.state,
+        "state_update": &output.state_update,
+        "update": null,
+        "state_schema": {},
+    });
+    let expected_state = kogwistar_contracts::apply_state_update_from_str(
+        &reducer_payload.to_string(),
+    )
+    .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
+        operation: request.operation.clone(),
+        reason: format!("native operation returned an invalid state update: {error}"),
+    })?;
+    let expected_state: Value = serde_json::from_str(&expected_state).map_err(|error| {
+        RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: format!("native state reducer returned invalid JSON: {error}"),
+        }
+    })?;
+    if final_state != &expected_state {
+        return Err(RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "result.final_state does not match the operation state_update".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 impl RuntimeStepExecutePayload {

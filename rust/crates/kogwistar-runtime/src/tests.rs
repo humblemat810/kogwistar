@@ -526,6 +526,47 @@
     }
 
     #[test]
+    fn native_registry_rejects_standard_result_that_disagrees_with_state_update() {
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register("app/inconsistent", "v1", |_| {
+                Ok(NativeOperationOutput {
+                    state_update: vec![RecordedStateUpdate::Pair((
+                        "u".to_owned(),
+                        Map::from_iter([("count".to_owned(), json!(2))]),
+                    ))],
+                    result: Some(json!({
+                        "workflow_status": "succeeded",
+                        "final_state": {"count": 1},
+                    })),
+                })
+            })
+            .unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "app/inconsistent".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::from_iter([("count".to_owned(), json!(1))]),
+            runtime_routes: Vec::new(),
+        };
+
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::OperationFailed { operation, reason })
+                if operation == "app/inconsistent"
+                    && reason.contains("final_state does not match")
+        ));
+    }
+
+    #[test]
     fn native_request_legacy_wire_defaults_state_without_changing_routing() {
         let request: RuntimeNativeStepRequest = serde_json::from_value(json!({
             "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
