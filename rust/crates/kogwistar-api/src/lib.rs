@@ -14406,10 +14406,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_native_runtime_route_uses_shared_result_reducer() {
-        use axum::body::{Body, to_bytes};
-        use axum::http::Request;
         use std::time::{SystemTime, UNIX_EPOCH};
-        use tower::ServiceExt;
 
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -14426,42 +14423,36 @@ mod tests {
             },
             Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+        let base_url = format!("http://{address}");
 
-        let submit = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/workflow/runs")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"counter":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/increment-counter","finish":"rust-native/emit-result"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0}]}"#,
-                    ))
-                    .unwrap(),
+        let submit = client
+            .post(format!("{base_url}/api/workflow/runs"))
+            .header("x-kogwistar-roles", "reader")
+            .header("content-type", "application/json")
+            .body(
+                r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"counter":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/increment-counter","finish":"rust-native/emit-result"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0}]}"#,
             )
+            .send()
             .await
             .unwrap();
         assert_eq!(submit.status(), StatusCode::ACCEPTED);
 
-        let claim = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/internal/runtime/claim")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
-                    ))
-                    .unwrap(),
+        let claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .header("content-type", "application/json")
+            .body(
+                r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
             )
+            .send()
             .await
             .unwrap();
         assert_eq!(claim.status(), StatusCode::OK);
-        let claim_body = to_bytes(claim.into_body(), 16_384).await.unwrap();
-        let work = serde_json::from_slice::<Value>(&claim_body).unwrap()["work"][0].clone();
+        let work = claim.json::<Value>().await.unwrap()["work"][0].clone();
         assert_eq!(work["payload"]["op"], "rust-native/increment-counter");
         assert_eq!(
             work["payload"]["executor_target"],
@@ -14471,119 +14462,78 @@ mod tests {
 
         let mut malformed_version_payload = work["payload"].clone();
         malformed_version_payload["op_version"] = json!(2);
-        let malformed_version = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/internal/runtime/native/execute")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        serde_json::to_vec(&json!({
-                            "handoff": {
-                                "message_id": work["message_id"],
-                                "claimed_by": work["claimed_by"],
-                                "run_id": work["run_id"],
-                                "step_id": work["step_id"],
-                                "correlation_id": work["correlation_id"]
-                            },
-                            "payload": malformed_version_payload
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
+        let malformed_version = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": work["message_id"],
+                    "claimed_by": work["claimed_by"],
+                    "run_id": work["run_id"],
+                    "step_id": work["step_id"],
+                    "correlation_id": work["correlation_id"]
+                },
+                "payload": malformed_version_payload
+            }))
+            .send()
             .await
             .unwrap();
         assert_eq!(malformed_version.status(), StatusCode::CONFLICT);
 
-        let execute = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/internal/runtime/native/execute")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        serde_json::to_vec(&json!({
-                            "handoff": {
-                                "message_id": work["message_id"],
-                                "claimed_by": work["claimed_by"],
-                                "run_id": work["run_id"],
-                                "step_id": work["step_id"],
-                                "correlation_id": work["correlation_id"]
-                            },
-                            "payload": work["payload"]
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
+        let execute = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": work["message_id"],
+                    "claimed_by": work["claimed_by"],
+                    "run_id": work["run_id"],
+                    "step_id": work["step_id"],
+                    "correlation_id": work["correlation_id"]
+                },
+                "payload": work["payload"]
+            }))
+            .send()
             .await
             .unwrap();
         let execute_status = execute.status();
-        let execute_body = to_bytes(execute.into_body(), 16_384).await.unwrap();
-        assert_eq!(
-            execute_status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&execute_body)
-        );
+        let execute_body = execute.text().await.unwrap();
+        assert_eq!(execute_status, StatusCode::OK, "{}", execute_body);
         assert_eq!(
             store.get_server_run("native-run").unwrap().unwrap().status,
             "running"
         );
-        let continuation_claim = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/internal/runtime/claim")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
-                    ))
-                    .unwrap(),
+        let continuation_claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .header("content-type", "application/json")
+            .body(
+                r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
             )
+            .send()
             .await
             .unwrap();
         assert_eq!(continuation_claim.status(), StatusCode::OK);
-        let continuation_body = to_bytes(continuation_claim.into_body(), 16_384)
-            .await
-            .unwrap();
-        let continuation =
-            serde_json::from_slice::<Value>(&continuation_body).unwrap()["work"][0].clone();
+        let continuation = continuation_claim.json::<Value>().await.unwrap()["work"][0].clone();
         assert_eq!(continuation["payload"]["op"], "rust-native/emit-result");
         assert_eq!(
             continuation["payload"]["executor_target"],
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
         );
-        let continuation_execute = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/internal/runtime/native/execute")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        serde_json::to_vec(&json!({
-                            "handoff": {
-                                "message_id": continuation["message_id"],
-                                "claimed_by": continuation["claimed_by"],
-                                "run_id": continuation["run_id"],
-                                "step_id": continuation["step_id"],
-                                "correlation_id": continuation["correlation_id"]
-                            },
-                            "payload": continuation["payload"]
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
+        let continuation_execute = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": continuation["message_id"],
+                    "claimed_by": continuation["claimed_by"],
+                    "run_id": continuation["run_id"],
+                    "step_id": continuation["step_id"],
+                    "correlation_id": continuation["correlation_id"]
+                },
+                "payload": continuation["payload"]
+            }))
+            .send()
             .await
             .unwrap();
         assert_eq!(continuation_execute.status(), StatusCode::OK);
@@ -14624,7 +14574,8 @@ mod tests {
                 && event.payload_json.contains("rust-native")
         }));
 
-        drop(app);
+        server.abort();
+        let _ = server.await;
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
