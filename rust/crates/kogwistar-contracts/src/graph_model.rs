@@ -2115,6 +2115,22 @@ pub struct PersistentGraphEntityV2 {
     pub raw_payload: Box<RawValue>,
 }
 
+impl PersistentGraphEntityV2 {
+    pub fn as_node(&self) -> Option<&PersistentNodeV1> {
+        match &self.entity {
+            PersistentGraphEntityV1::Node(node) => Some(node),
+            PersistentGraphEntityV1::Edge(_) => None,
+        }
+    }
+
+    pub fn as_edge(&self) -> Option<&PersistentEdgeV1> {
+        match &self.entity {
+            PersistentGraphEntityV1::Node(_) => None,
+            PersistentGraphEntityV1::Edge(edge) => Some(edge),
+        }
+    }
+}
+
 /// Typed metadata contracts for graph families whose Python models extend the
 /// persistent Node/Edge shape. These are validation views only; they are not
 /// serialized into the legacy payload or used by storage.
@@ -2558,6 +2574,12 @@ pub trait HasLevel: HasMetadata {
     fn level_from_root(&self) -> Option<i64>;
 }
 
+/// Exact Python-compatible hierarchy value for additive graph-model views.
+/// `HasLevel` remains the legacy bounded interface for source compatibility.
+pub trait HasExactLevel {
+    fn exact_level_from_root(&self) -> Option<&PythonIntegerV1>;
+}
+
 impl GraphEntity for GraphNodePayload {
     fn graph_entity_kind(&self) -> GraphEntityKind {
         GraphEntityKind::Node
@@ -2902,6 +2924,49 @@ impl HasLevel for PersistentNodeV1 {
 impl HasLevel for PersistentEdgeV1 {
     fn level_from_root(&self) -> Option<i64> {
         self.core.effective_level()
+    }
+}
+
+impl GraphEntity for PersistentGraphEntityV2 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        self.entity.graph_entity_kind()
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.entity.graph_entity_id()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        self.entity.graph_entity_label()
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        self.entity.graph_entity_summary()
+    }
+}
+
+impl HasMetadata for PersistentGraphEntityV2 {
+    fn metadata(&self) -> &BTreeMap<String, Value> {
+        match &self.entity {
+            PersistentGraphEntityV1::Node(node) => node.metadata(),
+            PersistentGraphEntityV1::Edge(edge) => edge.metadata(),
+        }
+    }
+}
+
+impl HasLifecycle for PersistentGraphEntityV2 {}
+
+impl HasLevel for PersistentGraphEntityV2 {
+    fn level_from_root(&self) -> Option<i64> {
+        self.level_from_root
+            .as_ref()
+            .and_then(PythonIntegerV1::to_i64)
+    }
+}
+
+impl HasExactLevel for PersistentGraphEntityV2 {
+    fn exact_level_from_root(&self) -> Option<&PythonIntegerV1> {
+        self.level_from_root.as_ref()
     }
 }
 
@@ -3980,6 +4045,76 @@ mod tests {
         };
         assert_eq!(edge.source_node_ids().unwrap().len(), 1);
         assert_eq!(edge.relation(), Some("supports"));
+    }
+
+    #[test]
+    fn persistent_v2_keeps_shared_entity_capabilities_and_exact_hierarchy_level() {
+        fn assert_common_capabilities<T>()
+        where
+            T: GraphEntity + HasMetadata + HasLifecycle + HasLevel + HasExactLevel,
+        {
+        }
+
+        assert_common_capabilities::<PersistentGraphEntityV2>();
+
+        let fixture = fixture();
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let huge_number: Value = serde_json::from_str(huge).expect("arbitrary JSON integer");
+
+        for (case_index, model_class, expected_id) in [
+            (0, GraphModelClass::Node, "parity-node"),
+            (1, GraphModelClass::Edge, "parity-edge"),
+        ] {
+            let mut payload = fixture["cases"][case_index]["payload"].clone();
+            let object = payload.as_object_mut().expect("entity payload object");
+            object.insert("level_from_root".to_owned(), huge_number.clone());
+            object
+                .get_mut("metadata")
+                .and_then(Value::as_object_mut)
+                .expect("entity metadata object")
+                .insert("level_from_root".to_owned(), huge_number.clone());
+            let payload_json = serde_json::to_string(&payload).expect("serialize graph payload");
+            let envelope_json = format!(
+                "{{\"schema_version\":1,\"model_class\":{},\"payload\":{payload_json}}}",
+                serde_json::to_string(&model_class).expect("serialize model class")
+            );
+            let decoded = RawGraphModelEnvelopeV1::from_json(&envelope_json)
+                .expect("raw envelope parses")
+                .decode_persistent_v2()
+                .expect("V2 entity validates");
+
+            assert_eq!(decoded.graph_entity_id(), Some(expected_id));
+            assert_eq!(
+                decoded
+                    .metadata()
+                    .get("lifecycle_status")
+                    .and_then(Value::as_str),
+                Some("active")
+            );
+            assert_eq!(
+                decoded.level_from_root(),
+                None,
+                "legacy i64 view stays bounded"
+            );
+            assert_eq!(
+                decoded
+                    .exact_level_from_root()
+                    .expect("exact level remains available")
+                    .as_decimal_str(),
+                huge
+            );
+
+            match model_class {
+                GraphModelClass::Node => assert!(decoded.as_node().is_some()),
+                GraphModelClass::Edge => {
+                    let edge = decoded
+                        .as_edge()
+                        .expect("edge variant exposes edge capability");
+                    assert_eq!(edge.relation(), Some("supports"));
+                }
+                _ => unreachable!("only persistent nodes and edges are tested"),
+            }
+        }
     }
 
     #[test]
