@@ -35,9 +35,11 @@ denominator of either snapshot.
   model class names, entity kinds, capability profiles, and edge/node family
   pairs in one versioned fixture. Pure Rust compares its capability report and
   registry resolution to it; Python compares model inheritance and the adapter
-  registry to the same fixture, independent of a Rust extension. Evidence:
-  `cargo test -p kogwistar-contracts --offline` (**69 passed**) and focused
-  Python fixture/native parity tests (**2 passed**). The fixture also requires
+  registry and concrete model-to-wire mappings to the same fixture, independent
+  of a Rust extension. Evidence:
+  `cargo test -p kogwistar-contracts --offline` (**69 passed**) and
+  `tests/core/test_graph_model_adapter.py` (**28 passed on CPython 3.13 and
+  3.14**). The fixture also requires
   a unique edge/node pair for every edge class and explicitly enumerates
   node-only model classes, including workflow runtime state nodes. This protects
   additive model-contract evolution and catches Python/Rust registry drift; it

@@ -391,6 +391,7 @@ def test_graph_model_capability_contract_matches_shared_fixture() -> None:
         expected = group["capabilities"]
         for model_class in group["classes"]:
             model = python_models[model_class]
+            assert graph_model_class_for(model.model_construct()) == model_class
             actual = {
                 "graph_entity": issubclass(model, engine_models.GraphEntityBase),
                 "edge_entity": issubclass(model, EdgeMixin),
