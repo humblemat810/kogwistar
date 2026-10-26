@@ -37,7 +37,9 @@ denominator of either snapshot.
   schema, queue-binding, digest, and f32-range mismatches.
   Evidence: `cargo test -p kogwistar-engine --offline`
   (**13 unit tests and 1 backend-composition test passed**), focused Python
-  projection-action/worker tests (**30 passed**), Ruff, and
+  projection-action/worker tests (**34 passed**), including sync and async
+  adapter regressions proving explicit `False` upsert results are retried and
+  not acknowledged; Ruff, and
   `cargo fmt --all -- --check` on Windows. The compile-time composition test
   proves `PostgresStore` can supply the durable index queue while
   `ChromaGraphStore` supplies graph projection; it does not run live PostgreSQL

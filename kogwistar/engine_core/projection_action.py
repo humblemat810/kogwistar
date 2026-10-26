@@ -67,7 +67,7 @@ class ProjectionAction:
 
 
 class ProjectionGraphStore(Protocol):
-    """Python execution seam matching Rust's generic graph write capability."""
+    """Graph adapter; raise on write errors and treat delete-missing as success."""
 
     def upsert_graph_record(self, namespace: str, record: ProjectionRecord) -> object: ...
 
@@ -223,7 +223,9 @@ def apply_projection_action(
         graph.delete_graph_record(action.namespace, action.entity_id)
     else:
         assert action.record is not None
-        graph.upsert_graph_record(action.namespace, action.record)
+        applied = graph.upsert_graph_record(action.namespace, action.record)
+        if applied is False:
+            raise _fail("graph store rejected projection upsert")
     return action
 
 
@@ -239,5 +241,7 @@ async def apply_projection_action_async(
         await graph.delete_graph_record(action.namespace, action.entity_id)
     else:
         assert action.record is not None
-        await graph.upsert_graph_record(action.namespace, action.record)
+        applied = await graph.upsert_graph_record(action.namespace, action.record)
+        if applied is False:
+            raise _fail("graph store rejected projection upsert")
     return action

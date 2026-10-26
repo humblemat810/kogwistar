@@ -71,29 +71,39 @@ class _Indexing:
 
 
 class _ProjectionStore:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, reject_upsert: bool = False, delete_missing: bool = False
+    ) -> None:
+        self.reject_upsert = reject_upsert
+        self.delete_missing = delete_missing
         self.upserts: list[tuple[str, object]] = []
         self.deletes: list[tuple[str, str]] = []
 
-    def upsert_graph_record(self, namespace: str, record: object) -> None:
+    def upsert_graph_record(self, namespace: str, record: object) -> bool | None:
         self.upserts.append((namespace, record))
+        return False if self.reject_upsert else None
 
     def delete_graph_record(self, namespace: str, entity_id: str) -> bool:
         self.deletes.append((namespace, entity_id))
-        return True
+        return not self.delete_missing
 
 
 class _AsyncProjectionStore:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, reject_upsert: bool = False, delete_missing: bool = False
+    ) -> None:
+        self.reject_upsert = reject_upsert
+        self.delete_missing = delete_missing
         self.upserts: list[tuple[str, object]] = []
         self.deletes: list[tuple[str, str]] = []
 
-    async def upsert_graph_record(self, namespace: str, record: object) -> None:
+    async def upsert_graph_record(self, namespace: str, record: object) -> bool | None:
         self.upserts.append((namespace, record))
+        return False if self.reject_upsert else None
 
     async def delete_graph_record(self, namespace: str, entity_id: str) -> bool:
         self.deletes.append((namespace, entity_id))
-        return True
+        return not self.delete_missing
 
 
 def _engine(meta: _Meta, *, fail: bool = False) -> SimpleNamespace:
@@ -192,6 +202,44 @@ def test_sync_worker_applies_rust_projection_action_before_ack() -> None:
     assert len(graph.upserts) == 1
     assert graph.upserts[0][0] == "workspace"
     assert getattr(graph.upserts[0][1], "id") == "node-1"
+
+
+def test_sync_worker_retries_when_graph_store_rejects_projection_upsert() -> None:
+    meta = _Meta(_admitted_projection_job(claim_token="claim-1"))
+    graph = _ProjectionStore(reject_upsert=True)
+    worker = IndexJobWorker(
+        engine=_engine(meta), namespace="workspace", projection_store=graph
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.done == 0
+    assert metrics.retried == 1
+    assert meta.done == []
+    assert meta.retried == [("projection-job", "claim-1")]
+
+
+def test_sync_worker_acknowledges_delete_when_record_is_already_absent() -> None:
+    job = _admitted_projection_job(claim_token="claim-1")
+    job.op = "DELETE"
+    action = json.loads(job.accepted_result_json)
+    action.update(operation="DELETE", record=None)
+    job.accepted_result_json = json.dumps(action, separators=(",", ":"))
+    job.accepted_result_sha256 = hashlib.sha256(
+        job.accepted_result_json.encode("utf-8")
+    ).hexdigest()
+    meta = _Meta(job)
+    graph = _ProjectionStore(delete_missing=True)
+    worker = IndexJobWorker(
+        engine=_engine(meta), namespace="workspace", projection_store=graph
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.done == 1
+    assert metrics.retried == 0
+    assert meta.done == [("projection-job", "claim-1")]
+    assert graph.deletes == [("workspace", "node-1")]
 
 
 def test_sync_worker_does_not_ack_projection_action_without_store() -> None:
@@ -293,6 +341,50 @@ def test_async_worker_applies_rust_projection_action_before_ack() -> None:
         assert len(graph.upserts) == 1
         assert graph.upserts[0][0] == "workspace"
         assert getattr(graph.upserts[0][1], "id") == "node-1"
+
+    asyncio.run(run())
+
+
+def test_async_worker_retries_when_graph_store_rejects_projection_upsert() -> None:
+    async def run() -> None:
+        meta = _Meta(_admitted_projection_job(claim_token="claim-1"))
+        graph = _AsyncProjectionStore(reject_upsert=True)
+        worker = AsyncIndexJobWorker(
+            engine=_engine(meta), namespace="workspace", projection_store=graph
+        )
+
+        metrics = await worker.tick()
+
+        assert metrics.done == 0
+        assert metrics.retried == 1
+        assert meta.done == []
+        assert meta.retried == [("projection-job", "claim-1")]
+
+    asyncio.run(run())
+
+
+def test_async_worker_acknowledges_delete_when_record_is_already_absent() -> None:
+    async def run() -> None:
+        job = _admitted_projection_job(claim_token="claim-1")
+        job.op = "DELETE"
+        action = json.loads(job.accepted_result_json)
+        action.update(operation="DELETE", record=None)
+        job.accepted_result_json = json.dumps(action, separators=(",", ":"))
+        job.accepted_result_sha256 = hashlib.sha256(
+            job.accepted_result_json.encode("utf-8")
+        ).hexdigest()
+        meta = _Meta(job)
+        graph = _AsyncProjectionStore(delete_missing=True)
+        worker = AsyncIndexJobWorker(
+            engine=_engine(meta), namespace="workspace", projection_store=graph
+        )
+
+        metrics = await worker.tick()
+
+        assert metrics.done == 1
+        assert metrics.retried == 0
+        assert meta.done == [("projection-job", "claim-1")]
+        assert graph.deletes == [("workspace", "node-1")]
 
     asyncio.run(run())
 
