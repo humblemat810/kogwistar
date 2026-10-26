@@ -69,6 +69,16 @@ snapshot's denominator.
   reproduced before the fix and is now contained by the same regression test.
   This is bounded Windows CPython 3.13 evidence, not full platform parity. No
   checklist IDs, statuses, or denominators changed.
+- 2026-10-27 `DL-07I` lease/result-admission refresh: the socket-enabled Windows
+  CPython 3.13 run of `tests/core/test_claim_result.py` passed **9 tests** with
+  the live pgvector service. This includes expired-token denial for complete,
+  fail, retry, and requeue across Python and Rust on the same PostgreSQL
+  schema, plus legacy tokenless administrative completion. The companion
+  sync/async worker callback suite passed **35 tests**, and the rebuilt-native
+  SQLite/PostgreSQL interoperability group passed **82 tests**. These are
+  current bounded evidence for queue authority, not completion of the full
+  indexing lifecycle or all supported runtimes/backends; `DL-07I` remains
+  **IN PROGRESS**. No checklist IDs, statuses, or denominators changed.
 - 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
   with the repository's `abi3-py312` native extension, six real Python/Rust
   SQLite cases passed in a Linux Docker container: Python-created DB opened and
