@@ -238,6 +238,58 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
     assert regresses.value.code == "KOGWISTAR_STORE_CURSOR_REGRESSES"
 
 
+def test_python_and_rust_sqlite_event_handoff_preserves_arbitrary_precision_json(
+    tmp_path: Path,
+) -> None:
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+    positive = 1 << 200
+    negative = -(1 << 200)
+    python_payload = json.dumps(
+        {"metadata": {"positive": positive, "negative": negative}},
+        separators=(",", ":"),
+    )
+
+    assert db.append_entity_event(
+        namespace="integer-handoff",
+        event_id="python-large-integers",
+        entity_kind="node",
+        entity_id="python-node",
+        op="UPSERT",
+        payload_json=python_payload,
+    ) == 1
+    replay = _rust(
+        db.db_path,
+        {
+            "kind": "exclusive_raw_replay",
+            "namespace": "integer-handoff",
+            "after_seq": 0,
+            "limit": 10,
+        },
+    )
+    assert json.loads(replay[0]["payload_json"]) == json.loads(python_payload)
+
+    rust_payload = json.dumps(
+        {"metadata": {"positive": negative, "negative": positive}},
+        separators=(",", ":"),
+    )
+    appended = _rust(
+        db.db_path,
+        {
+            "kind": "raw_append",
+            "namespace": "integer-handoff",
+            "event_id": "rust-large-integers",
+            "entity_kind": "node",
+            "entity_id": "rust-node",
+            "op": "UPSERT",
+            "payload_json": rust_payload,
+        },
+    )
+    assert appended["seq"] == 2
+    python_events = list(db.iter_entity_events(namespace="integer-handoff", from_seq=2))
+    assert json.loads(python_events[0][4]) == json.loads(rust_payload)
+
+
 def test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible(
     tmp_path: Path,
 ) -> None:
