@@ -807,11 +807,19 @@ impl GraphModelEnvelope {
         }
         let level_field_present = self.payload.get("level_from_root").is_some();
         match self.model_class {
-            GraphModelClass::Node => serde_json::from_value(typed_decode_view(&self.payload))
-                .map(|payload: PersistentNodeV1| {
-                    payload.into_validated(self.model_class, level_field_present)
-                })
-                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?,
+            GraphModelClass::Node => {
+                if has_edge_fields(&self.payload) {
+                    return Err(GraphModelError::InvalidEntityFields {
+                        model_class: self.model_class,
+                        reason: "node model payload contains edge-only fields",
+                    });
+                }
+                serde_json::from_value(typed_decode_view(&self.payload))
+                    .map(|payload: PersistentNodeV1| {
+                        payload.into_validated(self.model_class, level_field_present)
+                    })
+                    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?
+            }
             GraphModelClass::Edge => {
                 for field in [
                     "source_ids",
@@ -3561,6 +3569,13 @@ mod tests {
         let wrongly_tagged = GraphModelEnvelope::new(GraphModelClass::Node, edge_payload);
         assert!(matches!(
             wrongly_tagged.inspect(),
+            Err(GraphModelError::InvalidEntityFields {
+                reason: "node model payload contains edge-only fields",
+                ..
+            })
+        ));
+        assert!(matches!(
+            wrongly_tagged.decode_persistent_v1(),
             Err(GraphModelError::InvalidEntityFields {
                 reason: "node model payload contains edge-only fields",
                 ..

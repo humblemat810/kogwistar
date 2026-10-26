@@ -1,8 +1,8 @@
 //! Async-first storage contracts. Shadow handles expose reads only.
 use kogwistar_contracts::{
     ContextSnapshotV1, ConversationContractError, ConversationSummaryV1, ConversationTranscriptV1,
-    ConversationTurnV1, EntityEventEnvelope, GraphEntityKind, GraphModelEnvelope,
-    ToolAuditContractError, ToolAuditItemV1,
+    ConversationTurnV1, EntityEventEnvelope, GraphEntityKind, GraphModelClass, GraphModelEnvelope,
+    PersistentGraphEntityV1, ToolAuditContractError, ToolAuditItemV1,
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -1301,11 +1301,6 @@ pub fn validate_typed_graph_mutation(
     envelope: &GraphModelEnvelope,
 ) -> StoreResult<()> {
     validate_graph_mutation(mutation)?;
-    envelope
-        .validate_family_v1()
-        .map_err(|error| StoreError::InvalidEntityEventPayload {
-            message: error.to_string(),
-        })?;
     let expected_kind = match mutation.entity_kind.as_str() {
         "node" => GraphEntityKind::Node,
         "edge" => GraphEntityKind::Edge,
@@ -1316,6 +1311,34 @@ pub fn validate_typed_graph_mutation(
                     mutation.entity_kind
                 ),
             });
+        }
+    };
+    let entity_id = match envelope.model_class {
+        GraphModelClass::Node | GraphModelClass::Edge => {
+            let entity = envelope.decode_persistent_v1().map_err(|error| {
+                StoreError::InvalidEntityEventPayload {
+                    message: error.to_string(),
+                }
+            })?;
+            match entity {
+                PersistentGraphEntityV1::Node(node) => node.core.id,
+                PersistentGraphEntityV1::Edge(edge) => edge.core.id,
+            }
+        }
+        _ => {
+            envelope.validate_family_v1().map_err(|error| {
+                StoreError::InvalidEntityEventPayload {
+                    message: error.to_string(),
+                }
+            })?;
+            match envelope
+                .inspect()
+                .map_err(|error| StoreError::InvalidEntityEventPayload {
+                    message: error.to_string(),
+                })? {
+                kogwistar_contracts::TypedGraphEntity::Node(node) => node.common.id,
+                kogwistar_contracts::TypedGraphEntity::Edge(edge) => edge.common.id,
+            }
         }
     };
     if envelope.model_class.entity_kind() != expected_kind {
@@ -1331,15 +1354,6 @@ pub fn validate_typed_graph_mutation(
             message: "typed graph mutation payload differs from its model envelope".to_owned(),
         });
     }
-    let entity_id =
-        match envelope
-            .inspect()
-            .map_err(|error| StoreError::InvalidEntityEventPayload {
-                message: error.to_string(),
-            })? {
-            kogwistar_contracts::TypedGraphEntity::Node(node) => node.common.id,
-            kogwistar_contracts::TypedGraphEntity::Edge(edge) => edge.common.id,
-        };
     if entity_id.as_deref() != Some(mutation.record.id.as_str()) {
         return Err(StoreError::InvalidEntityEventPayload {
             message: "typed graph mutation record id differs from its model envelope".to_owned(),
