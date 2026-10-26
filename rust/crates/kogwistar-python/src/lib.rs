@@ -6492,6 +6492,12 @@ fn graph_model_level_from_root(payload_json: &str) -> PyResult<Option<String>> {
 }
 
 #[pyfunction]
+fn decode_persistent_graph_model_v2(payload_json: &str) -> PyResult<String> {
+    contracts::decode_persistent_graph_model_v2_from_str(payload_json)
+        .map_err(|error| RustContractValueError::new_err(error.to_string()))
+}
+
+#[pyfunction]
 fn project_graph_model_slice(payload_json: &str) -> PyResult<String> {
     contracts::project_graph_model_slice_from_str(payload_json)
         .map_err(|error| RustContractValueError::new_err(error.to_string()))
@@ -6747,6 +6753,7 @@ fn _rust(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add_function(wrap_pyfunction!(graph_model_level_from_root, module)?)?;
+    module.add_function(wrap_pyfunction!(decode_persistent_graph_model_v2, module)?)?;
     module.add_function(wrap_pyfunction!(project_graph_model_slice, module)?)?;
     module.add_function(wrap_pyfunction!(project_graph_model_slices, module)?)?;
     module.add_function(wrap_pyfunction!(supported_graph_model_classes, module)?)?;

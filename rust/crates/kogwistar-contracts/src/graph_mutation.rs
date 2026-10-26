@@ -249,6 +249,36 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_precision_json_preserves_graph_payload_and_projection_metadata() {
+        let mut value: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        value["mutations"][0]["payload"]["level_from_root"] = serde_json::json!(1);
+        value["mutations"][0]["record"]["metadata"]["level_from_root"] = serde_json::json!(1);
+        let safe_json = serde_json::to_string(&value).unwrap();
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let raw_json = safe_json.replace(
+            "\"level_from_root\":1",
+            &format!("\"level_from_root\":{huge}"),
+        );
+        let batch: GraphMutationBatchV1 = serde_json::from_str(&raw_json).unwrap();
+        let mutation = &batch.mutations[0];
+
+        assert!(
+            serde_json::to_string(&mutation.payload)
+                .unwrap()
+                .contains(huge)
+        );
+        assert!(
+            serde_json::to_string(&mutation.record.metadata)
+                .unwrap()
+                .contains(huge)
+        );
+    }
+
+    #[test]
     fn graph_mutation_semantic_validation_matches_python_contract() {
         let fixture = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

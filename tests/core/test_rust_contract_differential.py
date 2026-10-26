@@ -16,6 +16,7 @@ from kogwistar.acl.models import ACLEdge, ACLNode
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar._rust_bridge import (
     RustParityError,
+    decode_persistent_graph_model_v2,
     graph_model_level_from_root,
     round_trip_raw_graph_model_envelope,
     validate_graph_model_family,
@@ -530,6 +531,12 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     assert json.loads(round_trip) == json.loads(wire)
     assert round_trip.count(str(large_level)) == 2
     assert graph_model_level_from_root(wire) == str(large_level)
+    decoded = decode_persistent_graph_model_v2(wire)
+    assert decoded["schema_version"] == 2
+    assert decoded["model_class"] == "node"
+    assert decoded["level_from_root"] == str(large_level)
+    assert decoded["entity"]["id"] == python_payload["id"]
+    assert decoded["entity"]["level_from_root"] is None
 
     metadata_only = copy.deepcopy(python_payload)
     metadata_only.pop("level_from_root")

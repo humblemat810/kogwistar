@@ -56,6 +56,7 @@ class RustExtensionLike(Protocol):
     def validate_graph_model_family(self, payload: str) -> None: ...
     def round_trip_raw_graph_model_envelope(self, payload: str) -> str: ...
     def graph_model_level_from_root(self, payload: str) -> str | None: ...
+    def decode_persistent_graph_model_v2(self, payload: str) -> str: ...
     def project_graph_model_slice(self, payload: str) -> str: ...
     def project_graph_model_slices(self, payload: str) -> str: ...
 
@@ -474,6 +475,30 @@ def graph_model_level_from_root(payload_json: str) -> str | None:
     if level is not None and not isinstance(level, str):
         raise RustParityError("native graph-model level extraction returned an invalid type")
     return level
+
+
+def decode_persistent_graph_model_v2(payload_json: str) -> JsonObject:
+    """Decode a persistent graph entity with lossless hierarchy-level output."""
+
+    if not isinstance(payload_json, str):
+        raise TypeError("raw graph envelope must be supplied as a JSON string")
+    extension = _load_extension()
+    try:
+        decoded = json.loads(extension.decode_persistent_graph_model_v2(payload_json))
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust persistent graph-model V2 decode failed: {exc}"
+        ) from exc
+    if (
+        not isinstance(decoded, dict)
+        or decoded.get("schema_version") != 2
+        or not isinstance(decoded.get("model_class"), str)
+        or not isinstance(decoded.get("entity"), dict)
+        or decoded.get("level_from_root") is not None
+        and not isinstance(decoded.get("level_from_root"), str)
+    ):
+        raise RustParityError("native persistent graph-model V2 decode returned an invalid shape")
+    return cast(JsonObject, decoded)
 
 
 def project_graph_model_slice(payload: JsonObject) -> JsonObject:

@@ -512,6 +512,88 @@ impl RawGraphModelEnvelopeV1 {
             None => Ok(None),
         }
     }
+
+    /// Decode persistent graph fields while keeping Python's unbounded
+    /// hierarchy level available without narrowing it to the legacy V1 `i64`.
+    /// The typed V1 view uses `null` only when that field is outside `i64`;
+    /// `level_from_root` and `raw_payload` retain its exact representations.
+    pub fn decode_persistent_v2(&self) -> Result<PersistentGraphEntityV2, GraphModelError> {
+        if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
+            return Err(GraphModelError::UnsupportedVersion(self.schema_version));
+        }
+        if !matches!(
+            self.model_class,
+            GraphModelClass::Node | GraphModelClass::Edge
+        ) {
+            return Err(GraphModelError::StrictModelClassUnsupported {
+                model_class: self.model_class,
+            });
+        }
+
+        self.validate_family_v1()?;
+        let level_from_root = self.level_from_root()?;
+        let payload = persistent_payload_for_v1_decode(self.payload.get())?;
+        let entity = GraphModelEnvelope::new(self.model_class, payload).decode_persistent_v1()?;
+        Ok(PersistentGraphEntityV2 {
+            entity,
+            level_from_root,
+            raw_payload: self.payload.clone(),
+        })
+    }
+}
+
+fn persistent_payload_for_v1_decode(raw_payload: &str) -> Result<Value, GraphModelError> {
+    let fields = serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw_payload)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    let mut sanitized = String::from("{");
+    for (index, (key, raw_value)) in fields.iter().enumerate() {
+        if index > 0 {
+            sanitized.push(',');
+        }
+        sanitized.push_str(
+            &serde_json::to_string(key)
+                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?,
+        );
+        sanitized.push(':');
+        if key == "level_from_root" && level_requires_lossless_sidecar(raw_value.get())? {
+            sanitized.push_str("null");
+        } else if key == "metadata" {
+            sanitized.push_str(&metadata_without_exact_level(raw_value.get())?);
+        } else {
+            sanitized.push_str(raw_value.get());
+        }
+    }
+    sanitized.push('}');
+    serde_json::from_str(&sanitized)
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
+}
+
+fn metadata_without_exact_level(raw_metadata: &str) -> Result<String, GraphModelError> {
+    let Ok(fields) = serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw_metadata) else {
+        return Ok(raw_metadata.to_owned());
+    };
+    let mut sanitized = String::from("{");
+    for (index, (key, raw_value)) in fields.iter().enumerate() {
+        if index > 0 {
+            sanitized.push(',');
+        }
+        sanitized.push_str(
+            &serde_json::to_string(key)
+                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?,
+        );
+        sanitized.push(':');
+        if key == "level_from_root" && level_requires_lossless_sidecar(raw_value.get())? {
+            sanitized.push_str("null");
+        } else {
+            sanitized.push_str(raw_value.get());
+        }
+    }
+    sanitized.push('}');
+    Ok(sanitized)
+}
+
+fn level_requires_lossless_sidecar(raw_level: &str) -> Result<bool, GraphModelError> {
+    Ok(parse_python_integer_raw(raw_level)?.is_some_and(|level| level.to_i64().is_none()))
 }
 
 fn parse_python_integer_raw(raw: &str) -> Result<Option<PythonIntegerV1>, GraphModelError> {
@@ -587,6 +669,32 @@ pub fn round_trip_raw_graph_model_envelope_from_str(
     let envelope = RawGraphModelEnvelopeV1::from_json(payload_json)?;
     envelope.validate_family_v1()?;
     envelope.to_json()
+}
+
+/// Decode a persistent raw graph envelope into an additive, versioned
+/// language-neutral result. Arbitrary-size hierarchy levels are decimal
+/// strings; the legacy entity payload keeps its existing V1 shape.
+pub fn decode_persistent_graph_model_v2_from_str(
+    payload_json: &str,
+) -> Result<String, GraphModelError> {
+    let envelope = RawGraphModelEnvelopeV1::from_json(payload_json)?;
+    let decoded = envelope.decode_persistent_v2()?;
+    let entity = match &decoded.entity {
+        PersistentGraphEntityV1::Node(node) => serde_json::to_value(node),
+        PersistentGraphEntityV1::Edge(edge) => serde_json::to_value(edge),
+    }
+    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    let level_from_root = decoded
+        .level_from_root
+        .as_ref()
+        .map(|value| value.as_decimal_str());
+    serde_json::to_string(&serde_json::json!({
+        "schema_version": 2,
+        "model_class": envelope.model_class.wire_name(),
+        "entity": entity,
+        "level_from_root": level_from_root,
+    }))
+    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
 }
 
 pub fn python_level_from_root_from_str(
@@ -671,14 +779,16 @@ impl GraphModelEnvelope {
                         reason: "node model payload contains edge-only fields",
                     });
                 }
-                let payload: GraphNodePayload = serde_json::from_value(self.payload.clone())
-                    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+                let payload: GraphNodePayload =
+                    serde_json::from_value(typed_decode_view(&self.payload))
+                        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
                 payload.validate(self.model_class)?;
                 Ok(TypedGraphEntity::Node(payload))
             }
             GraphEntityKind::Edge => {
-                let payload: GraphEdgePayload = serde_json::from_value(self.payload.clone())
-                    .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+                let payload: GraphEdgePayload =
+                    serde_json::from_value(typed_decode_view(&self.payload))
+                        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
                 payload.validate(self.model_class)?;
                 Ok(TypedGraphEntity::Edge(payload))
             }
@@ -694,7 +804,7 @@ impl GraphModelEnvelope {
         }
         let level_field_present = self.payload.get("level_from_root").is_some();
         match self.model_class {
-            GraphModelClass::Node => serde_json::from_value(self.payload.clone())
+            GraphModelClass::Node => serde_json::from_value(typed_decode_view(&self.payload))
                 .map(|payload: PersistentNodeV1| {
                     payload.into_validated(self.model_class, level_field_present)
                 })
@@ -709,7 +819,7 @@ impl GraphModelEnvelope {
                 ] {
                     require_wire_field(&self.payload, field)?;
                 }
-                serde_json::from_value(self.payload.clone())
+                serde_json::from_value(typed_decode_view(&self.payload))
                     .map(|payload: PersistentEdgeV1| {
                         payload.into_validated(self.model_class, level_field_present)
                     })
@@ -819,8 +929,9 @@ impl GraphModelEnvelope {
                 reason: "family node payload contains edge-only fields",
             });
         }
-        let mut payload: PersistentNodeV1 = serde_json::from_value(self.payload.clone())
-            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        let mut payload: PersistentNodeV1 =
+            serde_json::from_value(typed_decode_view(&self.payload))
+                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
         payload.core.normalize_shared_mixin_fields(
             self.model_class,
             self.payload.get("level_from_root").is_some(),
@@ -839,8 +950,9 @@ impl GraphModelEnvelope {
         ] {
             require_wire_field(&self.payload, field)?;
         }
-        let mut edge: PersistentEdgeV1 = serde_json::from_value(self.payload.clone())
-            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        let mut edge: PersistentEdgeV1 =
+            serde_json::from_value(typed_decode_view(&self.payload))
+                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
         edge.core.normalize_shared_mixin_fields(
             self.model_class,
             self.payload.get("level_from_root").is_some(),
@@ -951,9 +1063,42 @@ fn validate_metadata<T: for<'de> Deserialize<'de>>(
     model_class: GraphModelClass,
     metadata: &BTreeMap<String, Value>,
 ) -> Result<T, GraphModelError> {
-    serde_json::from_value(Value::Object(metadata.clone().into_iter().collect())).map_err(|error| {
+    let mut value = Value::Object(metadata.clone().into_iter().collect());
+    normalize_unbounded_integer_tokens(&mut value);
+    let json = serde_json::to_string(&value).map_err(|error| {
+        GraphModelError::InvalidPayload(format!("{model_class:?} metadata: {error}"))
+    })?;
+    serde_json::from_str(&json).map_err(|error| {
         GraphModelError::InvalidPayload(format!("{model_class:?} metadata: {error}"))
     })
+}
+
+fn typed_decode_view(value: &Value) -> Value {
+    let mut normalized = value.clone();
+    normalize_unbounded_integer_tokens(&mut normalized);
+    normalized
+}
+
+fn normalize_unbounded_integer_tokens(value: &mut Value) {
+    match value {
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(normalize_unbounded_integer_tokens),
+        Value::Object(fields) => fields
+            .values_mut()
+            .for_each(normalize_unbounded_integer_tokens),
+        Value::Number(number) if number.as_i64().is_none() && number.as_u64().is_none() => {
+            let raw = number.to_string();
+            if python_integer_text_is_nonnegative(&raw).is_some()
+                || raw
+                    .strip_prefix('-')
+                    .is_some_and(|digits| python_integer_text_is_nonnegative(digits).is_some())
+            {
+                *value = Value::String(raw);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn raw_metadata(
@@ -1095,7 +1240,8 @@ fn python_integer_input(value: &Value) -> Option<bool> {
                 number.as_f64().and_then(|number| {
                     (number.is_finite() && number.fract() == 0.0).then_some(number >= 0.0)
                 })
-            }),
+            })
+            .or_else(|| python_integer_text_is_nonnegative(&number.to_string())),
         Value::String(value) => python_integer_text_is_nonnegative(value),
         Value::Bool(_) => Some(true),
         _ => None,
@@ -1962,6 +2108,15 @@ pub struct PersistentEdgeV1 {
 pub enum PersistentGraphEntityV1 {
     Node(PersistentNodeV1),
     Edge(PersistentEdgeV1),
+}
+
+/// Additive persistent graph view that keeps hierarchy levels outside the
+/// legacy signed-64-bit field while retaining the unmodified source payload.
+#[derive(Clone, Debug)]
+pub struct PersistentGraphEntityV2 {
+    pub entity: PersistentGraphEntityV1,
+    pub level_from_root: Option<PythonIntegerV1>,
+    pub raw_payload: Box<RawValue>,
 }
 
 /// Typed metadata contracts for graph families whose Python models extend the
@@ -3049,7 +3204,7 @@ mod tests {
             assert_eq!(
                 result.is_ok(),
                 case["valid"].as_bool().expect("validity flag"),
-                "workflow design metadata case {}",
+                "workflow design metadata case {}: {result:?}",
                 case["id"]
             );
         }
@@ -3683,6 +3838,91 @@ mod tests {
                 .expect("explicit null is valid"),
             None
         );
+    }
+
+    #[test]
+    fn persistent_v2_keeps_unbounded_level_and_lossless_payload_without_changing_v1() {
+        let fixture = fixture();
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let baseline = serde_json::to_string(&fixture["cases"][0]["payload"])
+            .expect("serialize graph payload");
+        let payload = baseline.replace(
+            "\"level_from_root\":0",
+            &format!("\"level_from_root\":{huge}"),
+        );
+        let wire =
+            format!("{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{payload}}}");
+        let raw = RawGraphModelEnvelopeV1::from_json(&wire).expect("valid raw envelope");
+        let decoded = raw
+            .decode_persistent_v2()
+            .expect("typed V2 decoder retains the Python integer");
+
+        assert_eq!(
+            decoded
+                .level_from_root
+                .as_ref()
+                .expect("level remains available")
+                .as_decimal_str(),
+            huge
+        );
+        assert!(decoded.raw_payload.get().contains(huge));
+        let PersistentGraphEntityV1::Node(node) = decoded.entity else {
+            panic!("node envelope must decode as a node");
+        };
+        assert_eq!(node.core.level_from_root, None);
+
+        let ordinary_wire =
+            format!("{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{baseline}}}");
+        let ordinary = RawGraphModelEnvelopeV1::from_json(&ordinary_wire)
+            .expect("ordinary level envelope")
+            .decode_persistent_v2()
+            .expect("ordinary level remains compatible");
+        assert_eq!(
+            ordinary
+                .level_from_root
+                .expect("ordinary level is present")
+                .as_decimal_str(),
+            "0"
+        );
+        let PersistentGraphEntityV1::Node(node) = ordinary.entity else {
+            panic!("node envelope must decode as a node");
+        };
+        assert_eq!(node.core.level_from_root, Some(0));
+    }
+
+    #[test]
+    fn persistent_v2_reads_unbounded_metadata_level_without_narrowing() {
+        let fixture = fixture();
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let mut payload = fixture["cases"][0]["payload"].clone();
+        let object = payload.as_object_mut().expect("fixture payload object");
+        object.remove("level_from_root");
+        object
+            .get_mut("metadata")
+            .and_then(Value::as_object_mut)
+            .expect("metadata object")
+            .insert("level_from_root".to_owned(), Value::Number(7.into()));
+        let payload = serde_json::to_string(&payload)
+            .expect("serialize graph payload")
+            .replace(
+                "\"level_from_root\":7",
+                &format!("\"level_from_root\":{huge}"),
+            );
+        let wire =
+            format!("{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{payload}}}");
+        let decoded = RawGraphModelEnvelopeV1::from_json(&wire)
+            .expect("valid raw envelope")
+            .decode_persistent_v2()
+            .expect("metadata level remains available");
+
+        assert_eq!(
+            decoded
+                .level_from_root
+                .expect("metadata level is present")
+                .as_decimal_str(),
+            huge
+        );
+        assert!(decoded.raw_payload.get().contains(huge));
     }
 
     #[test]

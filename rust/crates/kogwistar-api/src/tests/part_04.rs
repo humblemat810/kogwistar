@@ -823,6 +823,32 @@
     }
 
     #[test]
+    fn v1_graph_mutation_preserves_arbitrary_integer_tokens_through_store_dto() {
+        let mut body: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        body["mutations"][0]["payload"]["level_from_root"] = json!(1);
+        body["mutations"][0]["record"]["metadata"]["level_from_root"] = json!(1);
+        let safe = serde_json::to_string(&body).unwrap();
+        let huge = "1606938044258990275541962092341162602522202993782792835301376";
+        let wire = safe.replace(
+            "\"level_from_root\":1",
+            &format!("\"level_from_root\":{huge}"),
+        );
+        let input: GraphMutationBatchInput = serde_json::from_str(&wire).unwrap();
+        let mutations = graph_mutation_batch_value(input).unwrap();
+
+        assert!(serde_json::to_string(&mutations[0].payload)
+            .unwrap()
+            .contains(huge));
+        assert!(serde_json::to_string(&mutations[0].record.metadata)
+            .unwrap()
+            .contains(huge));
+    }
+
+    #[test]
     fn graph_mutation_index_intents_are_explicit_and_scope_checked() {
         let mut body: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
