@@ -16,6 +16,42 @@ def _fixture() -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def test_graph_mutation_shared_invalid_cases_are_rejected_by_python() -> None:
+    root = Path(__file__).resolve().parents[2]
+    invalid_path = root / "contracts/golden/graph-mutation-invalid-v1.json"
+    invalid_fixture = json.loads(invalid_path.read_text(encoding="utf-8"))
+    assert invalid_fixture["schema_version"] == 1
+
+    for case_id in invalid_fixture["cases"]:
+        payload = _fixture()
+        if case_id == "payload_record_id_mismatch":
+            payload["mutations"][0]["record"]["id"] = "different-node"
+        elif case_id in {
+            "index_retries_negative",
+            "index_retries_above_postgres_integer",
+        }:
+            payload["index_jobs"] = [
+                {
+                    "job_id": "index-node-1",
+                    "namespace": "tenant-a",
+                    "entity_kind": "node",
+                    "entity_id": "node-1",
+                    "index_kind": "node_embedding",
+                    "op": "UPSERT",
+                    "max_retries": (
+                        -1
+                        if case_id == "index_retries_negative"
+                        else 2_147_483_648
+                    ),
+                }
+            ]
+        else:
+            raise AssertionError(f"unknown graph mutation invalid case: {case_id}")
+
+        with pytest.raises(GraphMutationContractError):
+            validate_graph_mutation_batch(payload)
+
+
 def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     batch = validate_graph_mutation_batch(_fixture())
 

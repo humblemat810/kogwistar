@@ -277,41 +277,56 @@ mod tests {
     }
 
     #[test]
-    fn graph_mutation_rejects_payload_record_identity_drift() {
-        let fixture = include_str!(concat!(
+    fn graph_mutation_invalid_cases_match_shared_python_fixture() {
+        let baseline = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-mutation-batch-v1.json"
         ));
-        let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
-        batch.mutations[0].record.id = "different-node".to_owned();
-
-        assert_eq!(
-            batch.validate(),
-            Err(GraphMutationValidationError::PayloadRecordIdMismatch)
-        );
-    }
-
-    #[test]
-    fn graph_mutation_rejects_retries_outside_postgres_integer_range() {
-        let fixture = include_str!(concat!(
+        let invalid: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../contracts/golden/graph-mutation-batch-v1.json"
-        ));
-        let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
-        batch.index_jobs.push(super::GraphIndexJobV1 {
-            job_id: "index-node-1".to_owned(),
-            namespace: "tenant-a".to_owned(),
-            entity_kind: "node".to_owned(),
-            entity_id: "node-1".to_owned(),
-            index_kind: "node_embedding".to_owned(),
-            op: "UPSERT".to_owned(),
-            payload_json: None,
-            max_retries: i32::MAX as i64 + 1,
-        });
+            "/../../../contracts/golden/graph-mutation-invalid-v1.json"
+        )))
+        .unwrap();
+        assert_eq!(invalid["schema_version"], 1);
 
-        assert_eq!(
-            batch.validate(),
-            Err(GraphMutationValidationError::IndexJobRetries)
-        );
+        for case in invalid["cases"].as_array().unwrap() {
+            let case_id = case.as_str().unwrap();
+            let mut value: Value = serde_json::from_str(baseline).unwrap();
+            match case_id {
+                "payload_record_id_mismatch" => {
+                    value["mutations"][0]["record"]["id"] =
+                        Value::String("different-node".to_owned());
+                }
+                "index_retries_negative" | "index_retries_above_postgres_integer" => {
+                    let max_retries = if case_id == "index_retries_negative" {
+                        -1
+                    } else {
+                        i64::from(i32::MAX) + 1
+                    };
+                    value["index_jobs"] = serde_json::json!([{
+                        "job_id": "index-node-1",
+                        "namespace": "tenant-a",
+                        "entity_kind": "node",
+                        "entity_id": "node-1",
+                        "index_kind": "node_embedding",
+                        "op": "UPSERT",
+                        "max_retries": max_retries
+                    }]);
+                }
+                _ => panic!("unknown graph mutation invalid case: {case_id}"),
+            }
+
+            let batch: GraphMutationBatchV1 = serde_json::from_value(value).unwrap();
+            let error = batch.validate().unwrap_err();
+            match case_id {
+                "payload_record_id_mismatch" => {
+                    assert_eq!(error, GraphMutationValidationError::PayloadRecordIdMismatch)
+                }
+                "index_retries_negative" | "index_retries_above_postgres_integer" => {
+                    assert_eq!(error, GraphMutationValidationError::IndexJobRetries)
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
