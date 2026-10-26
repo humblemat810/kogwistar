@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import kogwistar.server_mcp_with_admin as server
@@ -14,7 +15,7 @@ from tests.server.test_chat_server_api import (
     _runtime_success_runner,
     _token_header,
 )
-from kogwistar.server.syscall_api import SyscallRequest, create_syscall_router
+from kogwistar.server.syscall_api import create_syscall_router
 from tests.server.test_chat_server_api import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
@@ -210,16 +211,19 @@ def test_syscall_receive_message_matches_shared_wire_fixture():
         conversation_namespace="conversation",
         workflow_namespaces={"workflow"},
     )
-    dispatch = next(route.endpoint for route in router.routes if route.path.endswith("/{op}"))
-    response = dispatch(
-        op="receive_message",
-        inp=SyscallRequest(
-            version="v1",
-            op="receive_message",
-            args={"conversation_id": "conversation-1", "limit": 0},
-        ),
-    )
-    payload = response.model_dump(mode="json")
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={
+                "version": "v1",
+                "op": "receive_message",
+                "args": {"conversation_id": "conversation-1", "limit": 0},
+            },
+        )
+    assert response.status_code == 200
+    payload = response.json()
     assert payload["version"] == "v1"
     assert payload["op"] == "receive_message"
     assert payload["status"] == "ok"
