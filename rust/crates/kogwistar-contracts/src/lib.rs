@@ -1732,6 +1732,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn typed_state_update_rejects_unknown_modes_without_changing_legacy_bridge() {
+        let payload = Map::from_iter([("items".to_owned(), serde_json::json!([2]))]);
+        let error =
+            apply_state_update_pairs(serde_json::json!({"items": [1]}), [("unknown", &payload)])
+                .expect_err("typed native deltas must reject unknown modes");
+        assert_eq!(
+            error.code(),
+            "KOGWISTAR_CONTRACT_STATE_UPDATE_MODE_UNSUPPORTED"
+        );
+
+        let initial = serde_json::json!({"items": [1]});
+        let legacy = apply_state_update_values(
+            initial.clone(),
+            &serde_json::json!([["unknown", {"items": [2]}]]),
+            None,
+            None,
+        )
+        .expect("the legacy JSON bridge continues ignoring unknown modes");
+        assert_eq!(legacy, initial);
+    }
+
     proptest! {
         #[test]
         fn short_id_json_round_trip_preserves_order(
