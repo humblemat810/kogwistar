@@ -4292,6 +4292,17 @@ mod tests {
         ));
 
         let node_payload = fixture_payload(0);
+        let wrong_edge_envelope =
+            GraphModelEnvelope::new(GraphModelClass::Edge, node_payload.clone());
+        let wrong_edge_mutation = typed_mutation("node", node_payload);
+        let error = validate_typed_graph_mutation(&wrong_edge_mutation, &wrong_edge_envelope)
+            .expect_err("malformed edge family must fail before the later kind mismatch");
+        assert!(matches!(
+            error,
+            StoreError::InvalidEntityEventPayload { message } if message.contains("source_ids")
+        ));
+
+        let node_payload = fixture_payload(0);
         let mut node_mutation = typed_mutation("node", node_payload.clone());
         node_mutation.record.id = "different-id".to_owned();
         let node_envelope = GraphModelEnvelope::new(GraphModelClass::Node, node_payload);
