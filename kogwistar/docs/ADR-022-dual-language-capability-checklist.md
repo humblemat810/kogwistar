@@ -600,6 +600,26 @@ denominator of either snapshot.
 | DL-16CI | PASS (Rust projection-read wire validation and route parity) | The Python facade now validates the complete native graph-projection record shape (`id`, `document`, object `metadata`, and nullable finite numeric embedding) and vector-match shape (valid record plus finite numeric distance) before exposing native results to graph reconstruction. Malformed Rust responses fail at the language boundary instead of leaking into downstream model parsing or retrieval logic. Evidence: `tests/core/test_rust_postgres_session_facade.py::test_postgres_meta_facade_validates_native_graph_read_shapes` rejects missing required fields, non-finite embeddings, and non-finite distances; `test_read_subsystem_routes_simple_base_reads_to_native_projection` verifies Node/Edge hydration, native Node/Edge vector queries, and `search_nodes_as_of_scored()` preserving raw distance and normalized similarity without Python fallback, while unsupported nested filters retain Python behavior and tombstone-aware historical retrieval stays on the compatible backend path; full facade plus checklist validator (**37 passed**), Ruff, and `git diff --check` passed on Windows CPython 3.13. Behavior tests use deterministic native-response fixtures; live mixed-language PostgreSQL read-after-write remains a separate Docker-dependent verification. |
 | DL-16CJ | PASS (dual-store execution-session facade contract) | `RustEnginePostgresMetaStore` no longer assigns a `RustPostgresSession` object over the inherited `RustEngineSQLite.session()` context-manager API. It implements the shared `session()` context behavior and exposes the worker through the explicit `native_session` property. A synchronized active-scope count keeps the shared native store open across overlapping threads and closes it only when the final scope exits. Evidence: `tests/core/test_rust_postgres_session_facade.py::test_postgres_meta_facade_session_context_is_nested_and_reopenable` verifies nested lifetime, close, and reopen behavior; `::test_postgres_meta_facade_keeps_store_open_for_overlapping_threads` proves an exiting scope cannot close a store used by another thread; full facade plus checklist validator (**38 passed**), targeted Pyright for `rust_postgres_session.py` and `subsystems/read.py` (**0 errors**), Ruff, and `git diff --check` pass on Windows CPython 3.13. This reconciles the facade API and its scoped concurrent lifetime; it does not prove cross-process transaction or database parity. |
 
+### Latest DL-07I Evidence Update
+
+- Added the Rust `IndexJobProviderInput` DTO and additive safe APIs
+  `run_index_jobs_once_with_provider_input` and
+  `run_graph_projection_jobs_once_with_provider_input`. In-repository normal
+  provider/composition tests now use these APIs; the existing full-`IndexJob`
+  APIs remain source-compatible for downstream callers and are documented as
+  legacy because they expose claim metadata.
+- `cargo test -p kogwistar-engine`: **14 unit tests and 2 integration tests
+  passed; 1 PostgreSQL integration test intentionally ignored**. The fake-
+  Chroma integration passed with loopback access enabled. `cargo fmt --all`
+  passed.
+- Python workers provide a typed minimal embedding DTO without claim tokens.
+  The complete `tests/core/test_index_job_worker_claim_tokens.py` module passes
+  (**35 passed** with Windows local socket access), including sync/async
+  mutable-dict regressions and async cancellation. The earlier apparent stall
+  was the sandbox denying asyncio's local Proactor socketpair before the worker
+  ran, not a code hang. Ruff and `git diff --check` pass. This evidence
+  supersedes the earlier async-unverified note in the DL-07I table row above.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

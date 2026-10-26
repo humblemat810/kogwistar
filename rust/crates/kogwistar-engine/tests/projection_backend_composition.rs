@@ -142,22 +142,25 @@ async fn projection_worker_composes_queue_and_chroma_without_shared_transaction(
     .await
     .expect("connect fake Chroma");
 
-    let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
-        &queue,
-        &graph,
-        1,
-        30,
-        Some("workspace-a"),
-        |_job| async {
-            let mut record = GraphRecord::new("node-1");
-            record.document = Some("projected document".to_owned());
-            record.metadata.insert("kind".to_owned(), json!("node"));
-            record.embedding = Some(vec![0.25, 0.75]);
-            Ok(record)
-        },
-    )
-    .await
-    .expect("project queued item");
+    let summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace-a"),
+            |input| async move {
+                assert_eq!(input.namespace, "workspace-a");
+                assert_eq!(input.entity_id, "node-1");
+                let mut record = GraphRecord::new("node-1");
+                record.document = Some("projected document".to_owned());
+                record.metadata.insert("kind".to_owned(), json!("node"));
+                record.embedding = Some(vec![0.25, 0.75]);
+                Ok(record)
+            },
+        )
+        .await
+        .expect("project queued item");
 
     assert_eq!(summary.claimed, 1);
     assert_eq!(summary.projected, 1);
@@ -221,25 +224,26 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
     .expect("connect fake Chroma");
     let provider_calls = Arc::new(AtomicUsize::new(0));
     let first_provider_calls = Arc::clone(&provider_calls);
-    let first_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
-        &queue,
-        &graph,
-        1,
-        30,
-        Some("workspace-a"),
-        move |_job| {
-            first_provider_calls.fetch_add(1, Ordering::SeqCst);
-            async {
-                let mut record = GraphRecord::new("node-1");
-                record.document = Some("durable queue projection".to_owned());
-                record.metadata.insert("kind".to_owned(), json!("node"));
-                record.embedding = Some(vec![0.5, 0.5]);
-                Ok(record)
-            }
-        },
-    )
-    .await
-    .expect("first PostgreSQL-to-Chroma projection attempt");
+    let first_summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace-a"),
+            move |_input| {
+                first_provider_calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    let mut record = GraphRecord::new("node-1");
+                    record.document = Some("durable queue projection".to_owned());
+                    record.metadata.insert("kind".to_owned(), json!("node"));
+                    record.embedding = Some(vec![0.5, 0.5]);
+                    Ok(record)
+                }
+            },
+        )
+        .await
+        .expect("first PostgreSQL-to-Chroma projection attempt");
     assert_eq!(first_summary.retried, 1);
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
 
@@ -247,24 +251,25 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
     // must survive the delay so the provider is not invoked again.
     std::thread::sleep(Duration::from_millis(1_100));
     let second_provider_calls = Arc::clone(&provider_calls);
-    let second_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
-        &queue,
-        &graph,
-        1,
-        30,
-        Some("workspace-a"),
-        move |_job| {
-            second_provider_calls.fetch_add(1, Ordering::SeqCst);
-            async {
-                let mut record = GraphRecord::new("node-1");
-                record.document = Some("unexpected provider replay".to_owned());
-                record.embedding = Some(vec![0.0, 1.0]);
-                Ok(record)
-            }
-        },
-    )
-    .await
-    .expect("replay accepted result after Chroma recovers");
+    let second_summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace-a"),
+            move |_job| {
+                second_provider_calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    let mut record = GraphRecord::new("node-1");
+                    record.document = Some("unexpected provider replay".to_owned());
+                    record.embedding = Some(vec![0.0, 1.0]);
+                    Ok(record)
+                }
+            },
+        )
+        .await
+        .expect("replay accepted result after Chroma recovers");
     assert_eq!(second_summary.reused, 1);
     assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
     assert_eq!(

@@ -4,7 +4,9 @@
 //! vector projection remain caller-owned capabilities, so Python and Rust
 //! providers can use the same lease, retry, and idempotency contract.
 
-use kogwistar_store::{IndexJob, IndexJobWriteStore, StoreError, StoreResult};
+use kogwistar_store::{
+    IndexJob, IndexJobProviderInput, IndexJobWriteStore, StoreError, StoreResult,
+};
 use sha2::{Digest, Sha256};
 use std::future::Future;
 
@@ -32,6 +34,42 @@ fn result_digest(result_json: &str) -> String {
 /// Claim and process one bounded batch of jobs using a caller-supplied result
 /// provider. The provider is never given queue mutation authority.
 pub async fn run_index_jobs_once<S, F, Fut>(
+    store: &S,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    provider: F,
+) -> StoreResult<IndexWorkerSummary>
+where
+    S: IndexJobWriteStore,
+    F: FnMut(IndexJob) -> Fut,
+    Fut: Future<Output = StoreResult<String>>,
+{
+    run_index_jobs_once_inner(store, limit, lease_seconds, namespace, provider).await
+}
+
+/// Safe provider boundary: the callback cannot access claim/lease tokens or
+/// queue transition state through its input. The legacy full-row API remains
+/// available for source compatibility; new implementations should use this.
+pub async fn run_index_jobs_once_with_provider_input<S, F, Fut>(
+    store: &S,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    mut provider: F,
+) -> StoreResult<IndexWorkerSummary>
+where
+    S: IndexJobWriteStore,
+    F: FnMut(IndexJobProviderInput) -> Fut,
+    Fut: Future<Output = StoreResult<String>>,
+{
+    run_index_jobs_once_inner(store, limit, lease_seconds, namespace, move |job| {
+        provider(IndexJobProviderInput::from(&job))
+    })
+    .await
+}
+
+async fn run_index_jobs_once_inner<S, F, Fut>(
     store: &S,
     limit: usize,
     lease_seconds: i64,
@@ -149,9 +187,18 @@ mod tests {
     async fn admits_provider_result_and_marks_claim_done() {
         let store = InMemoryStore::new();
         enqueue(&store, 3).await;
-        let summary = run_index_jobs_once(&store, 1, 30, Some("ns"), |_job| async {
-            Ok("{\"embedding\":[1,0]}".to_owned())
-        })
+        let summary = run_index_jobs_once_with_provider_input(
+            &store,
+            1,
+            30,
+            Some("ns"),
+            |input| async move {
+                assert_eq!(input.job_id, "job-1");
+                assert_eq!(input.entity_id, "node-1");
+                assert_eq!(input.payload_json.as_deref(), Some("{}"));
+                Ok("{\"embedding\":[1,0]}".to_owned())
+            },
+        )
         .await
         .unwrap();
         assert_eq!(summary.accepted, 1);
@@ -191,7 +238,7 @@ mod tests {
         let task_store = store.clone();
         let task = tokio::spawn(async move {
             let mut started_tx = Some(started_tx);
-            run_index_jobs_once(&task_store, 1, 0, Some("ns"), move |_job| {
+            run_index_jobs_once_with_provider_input(&task_store, 1, 0, Some("ns"), move |_input| {
                 let signal = started_tx.take();
                 async move {
                     if let Some(signal) = signal {
@@ -259,12 +306,13 @@ mod tests {
         // become reclaimable rather than relying on a timing race.
         std::thread::sleep(std::time::Duration::from_secs(1));
         let mut provider_calls = 0;
-        let summary = run_index_jobs_once(&store, 1, 30, Some("ns"), |_job| {
-            provider_calls += 1;
-            async { Ok("{\"embedding\":[0,1]}".to_owned()) }
-        })
-        .await
-        .unwrap();
+        let summary =
+            run_index_jobs_once_with_provider_input(&store, 1, 30, Some("ns"), |_input| {
+                provider_calls += 1;
+                async { Ok("{\"embedding\":[0,1]}".to_owned()) }
+            })
+            .await
+            .unwrap();
 
         assert_eq!(provider_calls, 0);
         assert_eq!(summary.accepted, 0);
@@ -334,9 +382,13 @@ mod tests {
                 .await
                 .unwrap();
 
-            let summary = run_index_jobs_once(&store, 1, 30, Some("ns"), move |_| async {
-                panic!("accepted opaque result must not rerun its provider")
-            })
+            let summary = run_index_jobs_once_with_provider_input(
+                &store,
+                1,
+                30,
+                Some("ns"),
+                move |_| async { panic!("accepted opaque result must not rerun its provider") },
+            )
             .await
             .unwrap();
             assert_eq!(summary.existing, 1, "case {}", case["name"]);

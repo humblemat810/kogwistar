@@ -1826,6 +1826,38 @@ pub struct IndexJob {
     pub accepted_at: Option<Value>,
 }
 
+/// Minimal queue context passed to result-provider callbacks.
+///
+/// Unlike [`IndexJob`], this type intentionally carries no lease token,
+/// acknowledgement state, retry counters, or accepted-result fields. Queue
+/// authority stays with the worker while providers receive only work context.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexJobProviderInput {
+    pub job_id: String,
+    pub namespace: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub index_kind: String,
+    pub coalesce_key: String,
+    pub op: String,
+    pub payload_json: Option<String>,
+}
+
+impl From<&IndexJob> for IndexJobProviderInput {
+    fn from(job: &IndexJob) -> Self {
+        Self {
+            job_id: job.job_id.clone(),
+            namespace: job.namespace.clone(),
+            entity_kind: job.entity_kind.clone(),
+            entity_id: job.entity_id.clone(),
+            index_kind: job.index_kind.clone(),
+            coalesce_key: job.coalesce_key.clone(),
+            op: job.op.clone(),
+            payload_json: job.payload_json.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcceptedIndexJobResult {
     pub status: String,

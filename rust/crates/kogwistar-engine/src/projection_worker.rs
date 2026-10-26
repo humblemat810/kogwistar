@@ -6,7 +6,8 @@
 //! result after a crash between admission and projection.
 
 use kogwistar_store::{
-    GraphRecord, GraphWriteStore, IndexJob, IndexJobWriteStore, StoreError, StoreResult,
+    GraphRecord, GraphWriteStore, IndexJob, IndexJobProviderInput, IndexJobWriteStore, StoreError,
+    StoreResult,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -230,6 +231,51 @@ async fn retry_or_fail<Q: IndexJobWriteStore>(
 /// for non-delete jobs. Its result is durably admitted before the projection
 /// write; retries reuse that result, and queue completion follows projection.
 pub async fn run_graph_projection_jobs_once<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    provider: F,
+) -> StoreResult<ProjectionWorkerSummary>
+where
+    Q: IndexJobWriteStore,
+    G: GraphWriteStore,
+    F: FnMut(IndexJob) -> Fut,
+    Fut: Future<Output = StoreResult<GraphRecord>>,
+{
+    run_graph_projection_jobs_once_inner(queue, graph, limit, lease_seconds, namespace, provider)
+        .await
+}
+
+/// Safe provider boundary that withholds the queue claim token and transition
+/// metadata. The full-row API remains available for source compatibility.
+pub async fn run_graph_projection_jobs_once_with_provider_input<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    mut provider: F,
+) -> StoreResult<ProjectionWorkerSummary>
+where
+    Q: IndexJobWriteStore,
+    G: GraphWriteStore,
+    F: FnMut(IndexJobProviderInput) -> Fut,
+    Fut: Future<Output = StoreResult<GraphRecord>>,
+{
+    run_graph_projection_jobs_once_inner(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        namespace,
+        move |job| provider(IndexJobProviderInput::from(&job)),
+    )
+    .await
+}
+
+async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
     queue: &Q,
     graph: &G,
     limit: usize,
@@ -503,13 +549,19 @@ mod tests {
         };
         let provider_calls = Arc::new(AtomicUsize::new(0));
         let calls = provider_calls.clone();
-        let first =
-            run_graph_projection_jobs_once(&queue, &graph, 1, 30, Some("workspace"), move |_job| {
+        let first = run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace"),
+            move |_input| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 async { Ok(candidate()) }
-            })
-            .await
-            .unwrap();
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(first.retried, 1);
         assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
         let saved = queue
@@ -520,7 +572,7 @@ mod tests {
         assert!(saved[0].accepted_result_json.is_some());
 
         std::thread::sleep(std::time::Duration::from_millis(1_100));
-        let second = run_graph_projection_jobs_once(
+        let second = run_graph_projection_jobs_once_with_provider_input(
             &queue,
             &graph,
             1,
@@ -554,7 +606,7 @@ mod tests {
         let queue = InMemoryStore::new();
         enqueue(&queue, "DELETE").await;
         let graph = InMemoryStore::new();
-        let summary = run_graph_projection_jobs_once(
+        let summary = run_graph_projection_jobs_once_with_provider_input(
             &queue,
             &graph,
             1,
@@ -613,7 +665,7 @@ mod tests {
             .await
             .unwrap();
 
-        let summary = run_graph_projection_jobs_once(
+        let summary = run_graph_projection_jobs_once_with_provider_input(
             &queue,
             &InMemoryStore::new(),
             1,
@@ -655,7 +707,7 @@ mod tests {
             .unwrap();
 
         let graph = InMemoryStore::new();
-        let summary = run_graph_projection_jobs_once(
+        let summary = run_graph_projection_jobs_once_with_provider_input(
             &queue,
             &graph,
             1,
