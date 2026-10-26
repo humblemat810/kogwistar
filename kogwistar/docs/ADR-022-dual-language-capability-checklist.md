@@ -65,6 +65,17 @@ snapshot's denominator.
   `security_scope_projection_matches_shared_python_contract` each pass. This
   adds scoped-read parity evidence under `DL-08C`; the item remains IN PROGRESS
   and the checklist denominator is unchanged.
+- Additional graph-model capability invariant: the Rust capability-profile test
+  now derives graph-entity, edge, metadata, lifecycle, and level capabilities
+  from the actual Python model inheritance for all 26 registered model classes,
+  then compares every field with the native Rust profile. It also checks every
+  registered node/edge family pair, including extraction and flattened pairs,
+  to ensure the edge retains the node capabilities and adds edge incidence.
+  Evidence: `tests/core/test_rust_contract_differential.py::test_native_graph_capabilities_match_python_model_inheritance`
+  passed on Windows CPython 3.13 with the native extension; Ruff passed. This
+  adds a cross-language invariant under existing `DL-16`; specialized payload
+  validation and production conversion remain open, and the checklist
+  denominator is unchanged.
 - Additional graph ACL principal identity parity: Python and Rust now consume
   `contracts/golden/graph-acl-principal-identity-v1.json` for claim precedence,
   malformed-claim fallback, empty-identity fallback, trimming, and case

@@ -21,14 +21,25 @@ from kogwistar.engine_core.in_memory_backend import (
 )
 from kogwistar.engine_core.graph_contracts import SUPPORTED_GRAPH_MODEL_CLASSES
 from kogwistar.engine_core.models import (
+    AssocFlattenedLLMEdge,
+    AssocFlattenedLLMNode,
+    ChromaMixin,
     Edge,
+    EdgeMixin,
     FlattenedLLMEdge,
+    FlattenedLLMNode,
+    GraphEntityBase,
     Grounding,
     LLMEdge,
+    LLMEdgeExtraction,
     LLMNode,
+    LLMNodeExtraction,
+    LevelAwareMixin,
+    PureChromaEdge,
     PureChromaNode,
     Node,
     Span,
+    TombstoneMixin,
     DocNode,
 )
 from kogwistar.id_provider import stable_id
@@ -165,6 +176,84 @@ def test_native_graph_model_registry_matches_python_seam() -> None:
     from kogwistar import _rust
 
     assert tuple(_rust.supported_graph_model_classes()) == SUPPORTED_GRAPH_MODEL_CLASSES
+
+
+@pytest.mark.requires_rust
+def test_native_graph_capabilities_match_python_model_inheritance() -> None:
+    """Keep Rust capability profiles tied to Python's actual model MROs."""
+    from kogwistar import _rust
+
+    python_models: dict[str, type[BaseModel]] = {
+        "node": Node,
+        "edge": Edge,
+        "acl_node": ACLNode,
+        "acl_edge": ACLEdge,
+        "conversation_node": ConversationNode,
+        "conversation_edge": ConversationEdge,
+        "workflow_node": WorkflowNode,
+        "workflow_edge": WorkflowEdge,
+        "workflow_run_node": WorkflowRunNode,
+        "workflow_step_exec_node": WorkflowStepExecNode,
+        "workflow_checkpoint_node": WorkflowCheckpointNode,
+        "workflow_completed_node": WorkflowCompletedNode,
+        "workflow_cancelled_node": WorkflowCancelledNode,
+        "workflow_failed_node": WorkflowFailedNode,
+        "workflow_runtime_edge": WorkflowRuntimeEdge,
+        "pure_chroma_node": PureChromaNode,
+        "pure_chroma_edge": PureChromaEdge,
+        "doc_node": DocNode,
+        "llm_node": LLMNode,
+        "llm_edge": LLMEdge,
+        "llm_node_extraction": LLMNodeExtraction,
+        "llm_edge_extraction": LLMEdgeExtraction,
+        "flattened_llm_node": FlattenedLLMNode,
+        "flattened_llm_edge": FlattenedLLMEdge,
+        "assoc_flattened_llm_node": AssocFlattenedLLMNode,
+        "assoc_flattened_llm_edge": AssocFlattenedLLMEdge,
+    }
+    profiles = {
+        profile["model_class"]: profile
+        for profile in json.loads(_rust.graph_model_capability_profiles())
+    }
+    assert tuple(python_models) == SUPPORTED_GRAPH_MODEL_CLASSES
+    assert set(profiles) == set(python_models)
+
+    for model_class, model in python_models.items():
+        profile = profiles[model_class]
+        assert profile["entity_kind"] == (
+            "edge" if issubclass(model, EdgeMixin) else "node"
+        ), model_class
+        expected_capabilities = {
+            "graph_entity": issubclass(model, GraphEntityBase),
+            "edge_entity": issubclass(model, EdgeMixin),
+            "metadata": issubclass(model, ChromaMixin),
+            "lifecycle": issubclass(model, TombstoneMixin),
+            "level": issubclass(model, LevelAwareMixin),
+        }
+        for capability, expected in expected_capabilities.items():
+            assert profile[capability] is expected, f"{model_class}.{capability}"
+
+    edge_node_pairs = (
+        ("edge", "node"),
+        ("acl_edge", "acl_node"),
+        ("conversation_edge", "conversation_node"),
+        ("workflow_edge", "workflow_node"),
+        ("workflow_runtime_edge", "workflow_run_node"),
+        ("pure_chroma_edge", "pure_chroma_node"),
+        ("llm_edge", "llm_node"),
+        ("llm_edge_extraction", "llm_node_extraction"),
+        ("flattened_llm_edge", "flattened_llm_node"),
+        ("assoc_flattened_llm_edge", "assoc_flattened_llm_node"),
+    )
+    inherited = ("graph_entity", "metadata", "lifecycle", "level")
+    for edge_class, node_class in edge_node_pairs:
+        edge_profile = profiles[edge_class]
+        node_profile = profiles[node_class]
+        assert edge_profile["edge_entity"] is True, edge_class
+        for capability in inherited:
+            assert edge_profile[capability] is node_profile[capability], (
+                f"{edge_class} must retain {node_class}.{capability}"
+            )
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
