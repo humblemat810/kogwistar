@@ -1,8 +1,8 @@
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_design_capability_mutates_and_undoes_when_dsn_available() {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_design_write_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();

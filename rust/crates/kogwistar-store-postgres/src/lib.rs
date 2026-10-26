@@ -7018,11 +7018,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_integration_event_store_core() -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; PostgreSQL integration skipped");
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("core");
         let store = PostgresStore::from_dsn(&dsn, &schema)?;
         store.ensure_schema().await?;
@@ -7188,12 +7187,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn document_projection_upsert_reopens_and_retries_idempotently_when_dsn_available()
     -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; document projection integration skipped");
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("document_projection");
         let store = PostgresStore::from_dsn(&dsn, &schema)?;
         store.ensure_schema().await?;
@@ -7277,12 +7275,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available()
     -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; arbitrary-precision PostgreSQL test skipped");
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("arbitrary_precision");
         let store = PostgresStore::from_dsn(&dsn, &schema)?;
         store.ensure_schema().await?;
@@ -7382,12 +7379,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_available()
     -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; graph batch rollback integration skipped");
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("graph_batch_rollback");
         let store = PostgresStore::from_dsn(&dsn, &schema)?;
         store.ensure_schema().await?;
@@ -7485,11 +7481,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available()
     -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("recorded_runtime");
         let store = PostgresStore::from_dsn(&dsn, &schema)?;
         let tables = Tables::new(&schema)?;
@@ -7787,11 +7783,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn python_created_schema_is_read_and_written_when_dsn_available()
     -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("python");
         let store = PostgresStore::from_dsn(&dsn, &schema)?;
         let tables = Tables::new(&schema)?;
@@ -7827,11 +7823,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn auth_store_links_python_user_and_retries_identity_when_dsn_available()
     -> PostgresStoreResult<()> {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return Ok(());
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = test_schema("auth_identity");
         let quoted_schema = quote_identifier(&schema)?;
         let base_config = dsn

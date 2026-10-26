@@ -36,10 +36,22 @@ snapshot's denominator.
   serializing an internal request and reparsing its response. The internal JSON
   route remains compatible. Authorization is bound to the request principal;
   optional syscall fields reject invalid types before storage access. The
-  focused Rust snapshot suite passed **8 tests**. The elevated Windows Rust
-  workspace library run passed **326 tests with 2 intentionally ignored**;
-  PostgreSQL integration cases return early without `KOGWISTAR_TEST_PG_DSN`,
-  so this is not a live-database parity claim. No checklist item changed status.
+  focused Rust snapshot suite passed **8 tests**. A subsequent elevated Windows
+  workspace run with `KOGWISTAR_TEST_PG_DSN` set passed **326 tests with 2
+  intentionally ignored**, exercising all 15 DSN-conditional API/PostgreSQL
+  test functions against the existing local pgvector container. The explicit
+  ignored cases are the optional vector-query integration and the manual SQLite
+  serving-scale probe. This exposed a test-accounting flaw: the DSN-dependent
+  functions returned normally when the variable was absent, so Cargo counted
+  them as passes without touching PostgreSQL. They are now marked ignored by
+  default and require the DSN when explicitly selected. Rust CI starts a
+  `pgvector/pgvector:pg17` service, sets `KOGWISTAR_TEST_PG_DSN`, and opts into
+  ignored tests while excluding only the manual SQLite scale probe and a
+  separate cross-store Chroma integration. Both the ordinary no-DSN workspace
+  library run (database cases visibly ignored) and the full all-targets run
+  against the local pgvector service passed on Windows. In the live run, all 15
+  database-dependent test functions executed rather than returning early. No
+  dual-language capability status or checklist denominator changed.
 - 2026-10-27 public-route cutover audit: `POST /api/conversations` must remain
   deferred for now. Python creation constructs the conversation-start
   `ConversationNode` and calls `conversation_engine.write.add_node`; the normal

@@ -590,10 +590,10 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available() {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_graph_mutation_{}", uuid::Uuid::new_v4().simple());
         let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
@@ -1244,11 +1244,10 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available() {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; document route integration skipped");
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_document_{}", uuid::Uuid::new_v4().simple());
         let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
@@ -1383,12 +1382,12 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_design_history_folds_and_repairs_projection_when_dsn_available() {
         use kogwistar_store_postgres::NewRawEntityEvent;
 
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_design_history_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
@@ -1477,12 +1476,12 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_service_events_fold_authoritative_history_when_dsn_available() {
         use kogwistar_store_postgres::NewRawEntityEvent;
 
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_service_events_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();

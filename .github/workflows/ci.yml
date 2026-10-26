@@ -242,6 +242,22 @@ jobs:
   rust:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: kogwistar
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: kogwistar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kogwistar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      KOGWISTAR_TEST_PG_DSN: postgres://postgres:kogwistar@localhost:5432/kogwistar
     defaults:
       run:
         working-directory: rust
@@ -269,7 +285,11 @@ jobs:
           fi
 
       - name: Test Rust workspace
-        run: cargo test --workspace --all-targets --locked
+        run: >-
+          cargo test --workspace --all-targets --locked --
+          --include-ignored
+          --skip runtime_serving_lookup_scale_probe
+          --skip postgres_queue_projects_to_chroma_without_cross_store_transaction
 
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

@@ -597,11 +597,10 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available() {
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; latest snapshot integration skipped");
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_snapshot_route_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
@@ -752,16 +751,15 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
      {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use tower::ServiceExt;
 
-        let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
-            eprintln!("KOGWISTAR_TEST_PG_DSN absent; conversation route integration skipped");
-            return;
-        };
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_conversation_detail_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
