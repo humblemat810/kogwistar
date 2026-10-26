@@ -206,7 +206,7 @@ def test_python_slice_envelope_keeps_canonical_payload_and_manifest() -> None:
     )
     envelope = build_graph_model_slice_envelope(node, field_mode="llm_in")
     assert envelope["payload"] == node.model_dump(
-        field_mode="backend", dump_format="json"
+        field_mode=("backend", "llm_in"), dump_format="json"
     )
     assert envelope["slice"]["mode"] == "llm_in"
     assert envelope["slice"]["manifest"]["schema_version"] == 1
@@ -322,6 +322,26 @@ def test_built_rust_extension_projects_python_slice_envelope() -> None:
             assert result["mode"] == mode
             expected = project_with_manifest(type(model), model, mode)
             assert result["payload"] == expected, mode
+
+
+@pytest.mark.requires_rust
+def test_built_rust_extension_matches_all_registered_model_slice_modes() -> None:
+    """Every mapped model must keep Pydantic-extension field visibility in Rust."""
+    native = pytest.importorskip("kogwistar._rust")
+
+    for model_class in _python_graph_models_by_wire_name().values():
+        # A null-valued instance exercises field inclusion/exclusion without
+        # coupling this contract test to each model's domain validation rules.
+        model = model_class.model_construct(
+            **{field_name: None for field_name in model_class.model_fields}
+        )
+        for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
+            envelope = build_graph_model_slice_envelope(model, field_mode=mode)
+            result = json.loads(native.project_graph_model_slice(json.dumps(envelope)))
+            expected = model.model_dump(field_mode=mode, dump_format="json")
+            assert result["model_class"] == envelope["model_class"]
+            assert result["mode"] == mode
+            assert result["payload"] == expected, (type(model).__name__, mode)
 
 
 @pytest.mark.requires_rust
@@ -451,9 +471,9 @@ def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
         envelope = build_graph_model_slice_envelope(node, field_mode=mode)
         assert envelope["slice"]["mode"] == mode
-        assert envelope["payload"] == node.model_dump(
-            field_mode="backend", dump_format="json"
-        )
+        source_modes = "backend" if mode == "backend" else ("backend", mode)
+        expected_source = node.model_dump(field_mode=source_modes, dump_format="json")
+        assert envelope["payload"] == expected_source
 
 
 def test_python_contract_mode_does_not_cross_native_boundary(

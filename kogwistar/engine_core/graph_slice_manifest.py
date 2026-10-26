@@ -174,10 +174,13 @@ def project_with_manifest(
     if mode not in SLICE_MODES:
         raise ValueError(f"unsupported graph slice mode: {mode}")
     manifest = build_slice_manifest(model)
-    # The Rust consumer receives the canonical/backend payload and applies a
-    # requested public or LLM projection after crossing the language seam.
+    # A backend-only dump cannot reconstruct fields intentionally excluded
+    # from storage, so ask pydantic-extension for both source and target modes
+    # in one serialization before applying the Rust-style projection.
+    source_modes = "backend" if mode == "backend" else ("backend", mode)
+    source_payload = value.model_dump(dump_format="json", field_mode=source_modes)
     return _project_value(
-        value.model_dump(dump_format="json", field_mode="backend"), manifest, mode
+        source_payload, manifest, mode
     )
 
 

@@ -45,6 +45,9 @@ GraphModelClassName = Literal[
 ]
 
 GraphWireFieldMode = Literal["backend", "frontend", "dto", "llm", "llm_in"]
+GraphWireFieldSelection = GraphWireFieldMode | tuple[
+    GraphWireFieldMode, GraphWireFieldMode
+]
 GraphWireDumpFormat = Literal["python", "json"]
 GRAPH_MODEL_ENVELOPE_VERSION = 1
 
@@ -126,6 +129,21 @@ def build_graph_model_envelope(
     bridge without exposing the Python object itself.
     """
 
+    return _build_graph_model_envelope(
+        model,
+        field_mode=field_mode,
+        exclude=exclude,
+        dump_format=dump_format,
+    )
+
+
+def _build_graph_model_envelope(
+    model: ModeSlicingMixin,
+    *,
+    field_mode: GraphWireFieldSelection,
+    exclude: set[str] | list[str] | None = None,
+    dump_format: GraphWireDumpFormat = "json",
+) -> GraphModelEnvelopeDict:
     model_class = graph_model_class_for(model)
     try:
         if dump_format == "json":
@@ -154,10 +172,22 @@ def build_graph_model_slice_envelope(
     *,
     field_mode: GraphWireFieldMode,
 ) -> GraphModelSliceEnvelopeDict:
-    """Build a canonical envelope plus an explicit projection declaration."""
+    """Build a backend-preserving source payload plus a projection declaration.
+
+    Some graph models have fields that are visible only in non-backend modes.
+    Serialize the union of backend and requested-mode fields in one
+    pydantic-extension dump; the Rust projection then applies the requested
+    mode before returning data to its consumer. A backend-only source payload
+    cannot reconstruct those model-visible fields after they have been omitted.
+    """
+
+    source_modes: GraphWireFieldSelection = (
+        field_mode if field_mode == "backend" else ("backend", field_mode)
+    )
+    envelope = _build_graph_model_envelope(model, field_mode=source_modes)
 
     return {
-        **build_graph_model_envelope(model, field_mode="backend"),
+        **envelope,
         "slice": {
             "schema_version": 1,
             "mode": field_mode,
