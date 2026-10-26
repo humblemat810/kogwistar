@@ -410,6 +410,61 @@
     }
 
     #[test]
+    fn native_registry_rejects_unregistered_version_before_handler_from_shared_fixture() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-operation-version-admission-v1.json"
+        )))
+        .unwrap();
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&handler_calls);
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register(
+                fixture["operation"].as_str().unwrap(),
+                fixture["registered_version"].as_str().unwrap(),
+                move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: None,
+                    })
+                },
+            )
+            .unwrap();
+
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: fixture["operation"].as_str().unwrap().to_owned(),
+            op_version: fixture["requested_version"].as_str().unwrap().to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+        };
+
+        let admitted = execute_native_step_with_registry(&request, &registry).is_ok();
+        assert_eq!(admitted, fixture["expected"]["admitted"]);
+        assert_eq!(
+            handler_calls.load(Ordering::SeqCst),
+            fixture["expected"]["handler_invocations"]
+                .as_u64()
+                .unwrap() as usize
+        );
+    }
+
+    #[test]
     fn native_request_legacy_wire_defaults_state_without_changing_routing() {
         let request: RuntimeNativeStepRequest = serde_json::from_value(json!({
             "executor_target": RUST_NATIVE_EXECUTOR_TARGET,

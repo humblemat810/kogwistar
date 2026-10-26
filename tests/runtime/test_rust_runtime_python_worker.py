@@ -351,17 +351,33 @@ def test_numpy_worker_result_must_be_explicitly_projected_to_json() -> None:
 
 
 def test_python_worker_rejects_operation_version_mismatch_before_execution() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-operation-version-admission-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     resolver = MappingStepResolver()
     calls: list[str] = []
 
-    @resolver.register("start", version="v1")
+    @resolver.register(fixture["operation"], version=fixture["registered_version"])
     def execute(_ctx):
         calls.append("executed")
         return RunSuccess(conversation_node_id=None, state_update=[])
 
-    with pytest.raises(RustWorkerError, match="registers 'v1'"):
-        RustStepResolverAdapter(resolver)(_adapter_work(op_version="v2"))
-    assert calls == []
+    with pytest.raises(
+        RustWorkerError,
+        match=f"registers '{fixture['registered_version']}'",
+    ):
+        RustStepResolverAdapter(resolver)(
+            _adapter_work(
+                op=fixture["operation"],
+                op_version=fixture["requested_version"],
+            )
+        )
+    assert len(calls) == fixture["expected"]["handler_invocations"]
 
 
 @pytest.mark.parametrize(
