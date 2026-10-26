@@ -622,7 +622,7 @@ impl PostgresRunApplicationService {
         groups.sort();
         groups.dedup();
         let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
+            principal_id: graph_acl_principal_id(&request.principal),
             groups: groups.into_iter().collect(),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
@@ -796,7 +796,7 @@ impl PostgresRunApplicationService {
         groups.sort();
         groups.dedup();
         let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
+            principal_id: graph_acl_principal_id(&request.principal),
             groups: groups.into_iter().collect(),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
@@ -1000,7 +1000,7 @@ impl PostgresRunApplicationService {
         groups.sort();
         groups.dedup();
         let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
+            principal_id: graph_acl_principal_id(&request.principal),
             groups: groups.into_iter().collect(),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
@@ -1095,7 +1095,7 @@ impl PostgresRunApplicationService {
         groups.sort();
         groups.dedup();
         let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
+            principal_id: graph_acl_principal_id(&request.principal),
             groups: groups.into_iter().collect(),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
@@ -1196,7 +1196,7 @@ impl PostgresRunApplicationService {
         groups.sort();
         groups.dedup();
         let principal = GraphAclPrincipal {
-            principal_id: principal_subject(&request.principal),
+            principal_id: graph_acl_principal_id(&request.principal),
             groups: groups.into_iter().collect(),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };

@@ -67,16 +67,16 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def current_principal_context(self) -> tuple[str, tuple[str, ...], str | None]:
         try:
             from ...server.auth_middleware import (
-                get_current_agent_id,
+                get_current_acl_principal_id,
                 get_current_principal_groups,
                 get_security_scope,
             )
 
-            principal_id = str(get_current_agent_id() or "").strip().lower()
+            principal_id = get_current_acl_principal_id()
             principal_groups = get_current_principal_groups()
             security_scope = str(get_security_scope() or "").strip().lower() or None
         except Exception:
-            principal_id = ""
+            principal_id = "system"
             principal_groups = ()
             security_scope = None
         return principal_id or "system", principal_groups, security_scope

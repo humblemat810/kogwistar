@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "agent_identity_precedes_user_subject",
+      "claims": {"agent_id": "Agent-A", "sub": "user@example.test"},
+      "expected_principal_id": "agent-a"
+    },
+    {
+      "name": "actor_identity_is_legacy_agent_fallback",
+      "claims": {"actor_id": "Actor-B", "sub": "user@example.test"},
+      "expected_principal_id": "actor-b"
+    },
+    {
+      "name": "subject_precedes_user_id",
+      "claims": {"sub": " User@Example.Test ", "user_id": "user-row-3"},
+      "expected_principal_id": "user@example.test"
+    },
+    {
+      "name": "user_id_is_last_string_fallback",
+      "claims": {"user_id": "User-Row-4"},
+      "expected_principal_id": "user-row-4"
+    },
+    {
+      "name": "malformed_agent_claim_falls_through_to_subject",
+      "claims": {"agent_id": 42, "sub": "user-5"},
+      "expected_principal_id": "user-5"
+    },
+    {
+      "name": "empty_identity_uses_legacy_system_principal",
+      "claims": {},
+      "expected_principal_id": "system"
+    }
+  ]
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from kogwistar.server.auth_middleware import (
-    get_current_agent_id,
+    get_current_acl_principal_id,
     get_current_principal_groups,
     get_security_scope,
 )
@@ -35,7 +35,7 @@ def current_acl_context(
     owner_id: str | None = None,
 ) -> AclContext:
     return AclContext(
-        principal_id=str(get_current_agent_id() or "system"),
+        principal_id=get_current_acl_principal_id(),
         principal_groups=get_current_principal_groups(),
         security_scope=str(get_security_scope() or "").strip().lower() or None,
         acl_enabled=bool(acl_enabled),

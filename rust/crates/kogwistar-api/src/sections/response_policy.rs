@@ -344,6 +344,16 @@ fn principal_subject(principal: &Value) -> String {
         .to_ascii_lowercase()
 }
 
+fn graph_acl_principal_id(principal: &Value) -> String {
+    ["agent_id", "actor_id", "sub", "user_id"]
+        .into_iter()
+        .find_map(|name| principal.get(name).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("system")
+        .to_ascii_lowercase()
+}
+
 fn principal_role(principal: &Value) -> String {
     principal
         .get("role")
@@ -657,7 +667,7 @@ fn conversation_graph_scope_and_acl_principal(
     groups.sort();
     groups.dedup();
     let acl_principal = GraphAclPrincipal {
-        principal_id: principal_subject(request_principal),
+        principal_id: graph_acl_principal_id(request_principal),
         groups: groups.into_iter().collect(),
         security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
     };

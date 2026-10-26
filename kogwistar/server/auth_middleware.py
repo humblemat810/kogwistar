@@ -614,6 +614,16 @@ def get_current_agent_id() -> str | None:
     return agent_id or None
 
 
+def get_current_acl_principal_id() -> str:
+    """Return the canonical ACL principal using the Python/Rust wire contract."""
+    claims = claims_ctx.get() or {}
+    for claim_name in ("agent_id", "actor_id", "sub", "user_id"):
+        value = claims.get(claim_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return "system"
+
+
 def _normalize_namespaces(
     expected: set[NameSpace] | NameSpace | set[str] | str,
 ) -> set[str]:
@@ -763,6 +773,7 @@ __all__ = [
     "current_role",
     "describe_storage_security_mapping",
     "get_current_agent_id",
+    "get_current_acl_principal_id",
     "get_current_capabilities",
     "get_current_principal_groups",
     "get_current_namespaces",

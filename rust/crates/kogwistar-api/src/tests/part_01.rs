@@ -25,6 +25,26 @@
         );
         assert_eq!(acl.security_scope.as_deref(), Some("tenant-a"));
     }
+
+    #[test]
+    fn graph_acl_principal_identity_matches_shared_python_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-principal-identity-v1.json"
+        )))
+        .expect("valid ACL principal identity fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        for case in fixture["cases"].as_array().expect("identity cases") {
+            assert_eq!(
+                graph_acl_principal_id(&case["claims"]),
+                case["expected_principal_id"]
+                    .as_str()
+                    .expect("expected principal ID"),
+                "{}",
+                case["name"].as_str().expect("case name")
+            );
+        }
+    }
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use kogwistar_contracts::native_seam_attestation_is_valid;
