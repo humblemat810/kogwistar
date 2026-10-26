@@ -7292,9 +7292,18 @@ mod tests {
 
         let integer = "1606938044258990275541962092341162602522202993782792835301376";
         let entity_id = "large-level-node";
-        let payload: Value = serde_json::from_str(&format!(
-            r#"{{"id":"{entity_id}","level_from_root":{integer}}}"#
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/python-graph-model-payloads-v1.json"
         ))?;
+        let payload_json = fixture["cases"][0]["canonical_json"]
+            .as_str()
+            .expect("shared Python node fixture")
+            .replace("\"id\":\"parity-node\"", &format!("\"id\":\"{entity_id}\""))
+            .replace(
+                "\"level_from_root\":0",
+                &format!("\"level_from_root\":{integer}"),
+            );
+        let payload: Value = serde_json::from_str(&payload_json)?;
         let metadata: Map<String, Value> =
             serde_json::from_str(&format!(r#"{{"level_from_root":{integer}}}"#))?;
         let namespace = format!("large-integer-{}", std::process::id());
@@ -7339,10 +7348,27 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(events[0].payload_json.contains(integer));
         let event_payload: Value = serde_json::from_str(&events[0].payload_json)?;
+        assert_eq!(event_payload["id"], entity_id);
         assert_eq!(
-            serde_json::to_string(&event_payload)?,
-            format!(r#"{{"id":"{entity_id}","level_from_root":{integer}}}"#)
+            serde_json::to_string(&event_payload["level_from_root"])?,
+            integer
         );
+        let envelope_wire = format!(
+            r#"{{"schema_version":1,"model_class":"node","payload":{}}}"#,
+            events[0].payload_json
+        );
+        let decoded = kogwistar_contracts::RawGraphModelEnvelopeV1::from_json(&envelope_wire)
+            .expect("persisted Python-shaped node parses")
+            .decode_persistent_v2()
+            .expect("persisted node retains its exact typed hierarchy level");
+        assert_eq!(
+            decoded
+                .level_from_root
+                .as_ref()
+                .map(|level| level.as_decimal_str()),
+            Some(integer)
+        );
+        assert!(decoded.raw_payload.get().contains(integer));
 
         let cleanup = reopened.client().await?;
         cleanup

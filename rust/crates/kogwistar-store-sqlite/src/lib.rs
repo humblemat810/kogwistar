@@ -6689,7 +6689,17 @@ mod tests {
     fn arbitrary_precision_event_payload_survives_reopen_and_typed_replay() {
         let (store, path) = store("arbitrary-precision-event");
         let integer = "1606938044258990275541962092341162602522202993782792835301376";
-        let payload = format!(r#"{{"level_from_root":{integer}}}"#);
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let payload = fixture["cases"][0]["canonical_json"]
+            .as_str()
+            .expect("shared Python node fixture")
+            .replace(
+                "\"level_from_root\":0",
+                &format!("\"level_from_root\":{integer}"),
+            );
         store
             .append_raw_entity_event("ns", raw_event("large-level", &payload))
             .unwrap();
@@ -6703,6 +6713,19 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&replayed[0].payload).unwrap(),
             payload
+        );
+        let envelope_wire =
+            format!(r#"{{"schema_version":1,"model_class":"node","payload":{payload}}}"#);
+        let decoded = kogwistar_contracts::RawGraphModelEnvelopeV1::from_json(&envelope_wire)
+            .unwrap()
+            .decode_persistent_v2()
+            .expect("replayed Python-shaped node retains its exact typed hierarchy level");
+        assert_eq!(
+            decoded
+                .level_from_root
+                .as_ref()
+                .map(|level| level.as_decimal_str()),
+            Some(integer)
         );
         drop(reopened);
         fs::remove_file(path).unwrap();
