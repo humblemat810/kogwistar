@@ -23,6 +23,27 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-26)
 
+- 2026-10-27 public-route cutover audit: `POST /api/conversations` must remain
+  deferred for now. Python creation constructs the conversation-start
+  `ConversationNode` and calls `conversation_engine.write.add_node`; the normal
+  single-stage `_add_node_impl` computes an embedding when absent, rejects a
+  missing/invalid embedding, and persists the vector projection alongside the
+  canonical write. The Rust public route currently has no matching configured
+  embedding-provider path. Removing this route from `PENDING_SERVER_CUTOVER_ROUTES`
+  and writing a metadata-only start node would therefore violate Python
+  persistence/indexing semantics even if the response and node metadata looked
+  equivalent. Before cutover, either the selected implementation must produce
+  the same embedding under an explicit provider contract, or a mixed request
+  must pass a validated, dimension-checked embedding to the Rust transaction
+  owner; either route also needs parity for deterministic start-node identity,
+  authorization scope, event/projection atomicity, and response shape. Evidence:
+  `kogwistar/server/chat_api.py::create_conversation`,
+  `kogwistar/conversation/service.py::_create_conversation_primitive`,
+  `kogwistar/engine_core/subsystems/write.py::_add_node_impl`, and
+  `rust/crates/kogwistar-api/src/cutover.rs::PENDING_SERVER_CUTOVER_ROUTES`.
+  This adds a cutover prerequisite to existing server-route parity accounting;
+  it does not add a checklist ID or change any denominator/status.
+
 - Additional Unicode group-claim parity: Python's authenticated group projection
   uses Unicode lowercase; Rust's graph ACL request projection now does the same
   rather than ASCII-only lowercase. The shared identity/group fixture includes
