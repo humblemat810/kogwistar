@@ -1656,6 +1656,16 @@ impl GraphEntityCoreV1 {
                 reason: "persistent entity requires at least one grounding",
             });
         }
+        if self
+            .properties
+            .as_ref()
+            .is_some_and(|value| !valid_graph_properties(value))
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "properties must contain only scalars, scalar lists, or scalar maps",
+            });
+        }
         for grounding in &self.mentions {
             grounding.validate(model_class)?;
         }
@@ -1682,6 +1692,25 @@ impl GraphEntityCoreV1 {
     fn effective_level(&self) -> Option<i64> {
         self.level_from_root
     }
+}
+
+fn is_json_primitive(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)
+    )
+}
+
+fn valid_graph_properties(value: &Value) -> bool {
+    let Some(properties) = value.as_object() else {
+        return false;
+    };
+    properties.values().all(|value| match value {
+        scalar if is_json_primitive(scalar) => true,
+        Value::Array(items) => items.iter().all(is_json_primitive),
+        Value::Object(items) => items.values().all(is_json_primitive),
+        _ => false,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2848,6 +2877,17 @@ mod tests {
                         .as_object_mut()
                         .expect("edge payload object")
                         .remove("relation");
+                }
+                "properties_not_mapping" => {
+                    payload["properties"] = serde_json::json!(["not", "a", "mapping"]);
+                }
+                "properties_nested_mapping" => {
+                    payload["properties"] = serde_json::json!({
+                        "invalid": {"nested": {"value": 1}}
+                    });
+                }
+                "properties_nested_list" if kind == "edge" => {
+                    payload["properties"] = serde_json::json!({"invalid": [[1]]});
                 }
                 _ => panic!("unexpected graph-model invalid fixture: {case_id}"),
             }

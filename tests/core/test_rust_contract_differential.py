@@ -400,6 +400,12 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
             payload["source_edge_ids"] = [""]
         elif mutation == "missing_relation" and kind == "edge":
             payload.pop("relation")
+        elif mutation == "properties_not_mapping":
+            payload["properties"] = ["not", "a", "mapping"]
+        elif mutation == "properties_nested_mapping":
+            payload["properties"] = {"invalid": {"nested": {"value": 1}}}
+        elif mutation == "properties_nested_list" and kind == "edge":
+            payload["properties"] = {"invalid": [[1]]}
         else:
             raise AssertionError(f"unknown graph-model parity fixture: {case_id}")
 

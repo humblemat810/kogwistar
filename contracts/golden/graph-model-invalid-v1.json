@@ -10,6 +10,10 @@
     "edge.invalid_redirect_id",
     "edge.empty_node_endpoint_id",
     "edge.empty_edge_endpoint_id",
-    "edge.missing_relation"
+    "edge.missing_relation",
+    "node.properties_not_mapping",
+    "edge.properties_not_mapping",
+    "node.properties_nested_mapping",
+    "edge.properties_nested_list"
   ]
 }
