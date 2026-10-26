@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "explicit_unicode_scope_and_namespaces",
+      "claims": {
+        "ns": ["workflow"],
+        "storage_ns": " ÄStore ",
+        "execution_ns": " ÜExec ",
+        "tenant": " ÄTenant ",
+        "workspace": " ÜWorkspace ",
+        "project": " ÖProject ",
+        "security_scope": " ÄScope "
+      },
+      "expected": {
+        "storage_namespace": "ästore",
+        "execution_namespace": "üexec",
+        "security_scope": "äscope",
+        "security_scope_path": "äscope",
+        "tenant": "ätenant",
+        "workspace": "üworkspace",
+        "project": "öproject"
+      }
+    },
+    {
+      "name": "derived_unicode_scope_and_namespace_fallback",
+      "claims": {
+        "ns": ["workflow", "docs"],
+        "storage_ns": " ",
+        "execution_ns": "",
+        "tenant": " ÄTenant ",
+        "workspace": " ÜWorkspace ",
+        "project": " ÖProject ",
+        "security_scope": "*"
+      },
+      "expected": {
+        "storage_namespace": "docs",
+        "execution_namespace": "docs",
+        "security_scope": "ätenant/üworkspace/öproject",
+        "security_scope_path": "ätenant/üworkspace/öproject",
+        "tenant": "ätenant",
+        "workspace": "üworkspace",
+        "project": "öproject"
+      }
+    }
+  ]
+}

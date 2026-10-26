@@ -611,46 +611,56 @@ fn security_scope_value(principal: &Value) -> Value {
         .unwrap_or_else(|| "default".to_owned());
     let storage_namespace = principal["storage_ns"]
         .as_str()
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(&default_namespace)
-        .to_ascii_lowercase();
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| default_namespace.clone());
     let execution_namespace = principal["execution_ns"]
         .as_str()
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(&default_namespace)
-        .to_ascii_lowercase();
-    let tenant = principal["tenant"]
-        .as_str()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let workspace = principal["workspace"]
-        .as_str()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let project = principal["project"]
-        .as_str()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| default_namespace.clone());
+    let normalized_component = |name: &str| {
+        principal[name]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase)
+            .unwrap_or_default()
+    };
+    let tenant = normalized_component("tenant");
+    let workspace = normalized_component("workspace");
+    let project = normalized_component("project");
     let scope_path = [tenant.as_str(), workspace.as_str(), project.as_str()]
         .into_iter()
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>()
         .join("/");
-    let security_scope = ["security_scope", "tenant", "scope"]
+    let security_scope_path = principal["security_scope"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "*")
+        .map(str::to_lowercase)
+        .unwrap_or_else(|| scope_path.clone());
+    let selected_security_scope = ["security_scope", "tenant", "scope"]
         .into_iter()
         .find_map(|name| {
             principal[name]
                 .as_str()
-                .filter(|value| !value.is_empty() && *value != "*")
+                .filter(|value| !value.is_empty())
+                .map(str::trim)
+                .map(str::to_lowercase)
         })
-        .map(str::to_ascii_lowercase)
-        .or_else(|| (!scope_path.is_empty()).then(|| scope_path.clone()))
+        .filter(|value| !value.is_empty() && value != "*");
+    let security_scope = selected_security_scope
+        .or_else(|| (!security_scope_path.is_empty()).then(|| security_scope_path.clone()))
         .unwrap_or_else(|| default_namespace.clone());
     json!({
         "storage_namespace": storage_namespace,
         "execution_namespace": execution_namespace,
         "security_scope": security_scope,
-        "security_scope_path": scope_path,
+        "security_scope_path": security_scope_path,
         "tenant": tenant,
         "workspace": workspace,
         "project": project,

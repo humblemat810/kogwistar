@@ -188,3 +188,22 @@ def test_security_scope_parts_support_tenant_workspace_project():
         assert mapping["project"] == "project-a"
     finally:
         claims_ctx.reset(token)
+
+
+def test_security_scope_projection_matches_shared_rust_contract():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "auth-scope-projection-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+    for case in fixture["cases"]:
+        token = claims_ctx.set(case["claims"])
+        try:
+            mapping = describe_storage_security_mapping()
+            for key, expected in case["expected"].items():
+                assert mapping[key] == expected, case["name"]
+        finally:
+            claims_ctx.reset(token)

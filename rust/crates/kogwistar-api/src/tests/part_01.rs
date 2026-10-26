@@ -67,6 +67,22 @@
             );
         }
     }
+
+    #[test]
+    fn security_scope_projection_matches_shared_python_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/auth-scope-projection-v1.json"
+        )))
+        .expect("valid auth scope projection fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        for case in fixture["cases"].as_array().expect("scope cases") {
+            let actual = security_scope_value(&case["claims"]);
+            for (key, expected) in case["expected"].as_object().expect("expected mapping") {
+                assert_eq!(actual[key], *expected, "{}: {key}", case["name"]);
+            }
+        }
+    }
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use kogwistar_contracts::native_seam_attestation_is_valid;

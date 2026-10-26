@@ -52,6 +52,19 @@ snapshot's denominator.
   (Python CPython 3.13: 1 passed), Ruff, Rust formatting, and `git diff --check`.
   This is added evidence under existing `DL-08C`; no item ID or denominator
   changed.
+- Additional security-scope projection parity: Rust previously ASCII-lowercased
+  tenant/workspace/project, storage/execution namespaces, and explicit scope,
+  and reported the derived path even when Python reports an explicit
+  `security_scope`. Rust now trims and Unicode-lowercases these values and
+  matches Python's explicit-versus-derived `security_scope_path` and namespace
+  fallback behavior. The shared
+  `contracts/golden/auth-scope-projection-v1.json` covers explicit and derived
+  Unicode scopes. Evidence: Python
+  `tests/auth/test_auth_scope_helpers.py::test_security_scope_projection_matches_shared_rust_contract`
+  and Rust
+  `security_scope_projection_matches_shared_python_contract` each pass. This
+  adds scoped-read parity evidence under `DL-08C`; the item remains IN PROGRESS
+  and the checklist denominator is unchanged.
 - Additional graph ACL principal identity parity: Python and Rust now consume
   `contracts/golden/graph-acl-principal-identity-v1.json` for claim precedence,
   malformed-claim fallback, empty-identity fallback, trimming, and case
