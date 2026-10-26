@@ -54,6 +54,11 @@ denominator of either snapshot.
   API conversion tests `internal_graph_mutation_contract_requires_atomic_versioned_batches`
   and `graph_mutation_index_intents_are_explicit_and_scope_checked` (2 passed)
   confirm conversion helpers invoke validation before producing store effects.
+  The facade-to-PyO3 pre-dispatch regression
+  `tests/core/test_rust_postgres_session_facade.py::test_postgres_graph_mutation_batch_rejects_invalid_contract_before_native_call`
+  passes all 6 invalid cases, and native bridge test
+  `postgres_bridge_rejects_coercive_graph_numbers_before_dispatch` passes
+  without reaching a database connection.
   This protects these invalid cases and the API conversion boundary only;
   broader graph mutation, storage, transaction, and error-taxonomy parity
   remain open under DL-05.

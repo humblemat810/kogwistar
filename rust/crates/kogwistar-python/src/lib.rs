@@ -6975,6 +6975,70 @@ mod tests {
     }
 
     #[test]
+    fn postgres_bridge_rejects_coercive_graph_numbers_before_dispatch() {
+        let operations = [
+            json!({
+                "kind": "graph_mutation",
+                "namespace": "default",
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": "event-1",
+                "op": "ADD",
+                "record": {"id": "node-1", "embedding": [true]},
+                "payload": {"id": "node-1"},
+                "embedding_dim": 1
+            }),
+            json!({
+                "kind": "graph_mutation",
+                "namespace": "default",
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": "event-1",
+                "op": "ADD",
+                "record": {"id": "node-1", "embedding": ["1"]},
+                "payload": {"id": "node-1"},
+                "embedding_dim": 1
+            }),
+            json!({
+                "kind": "graph_mutation",
+                "namespace": "default",
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": "event-1",
+                "op": "ADD",
+                "record": {"id": "node-1"},
+                "payload": {"id": "node-1"},
+                "embedding_dim": true
+            }),
+            json!({
+                "kind": "enqueue_index_job",
+                "job_id": "job-1",
+                "namespace": "default",
+                "entity_kind": "node",
+                "entity_id": "node-1",
+                "index_kind": "node_docs",
+                "op": "UPSERT",
+                "max_retries": true
+            }),
+        ];
+
+        for operation in operations {
+            let request = json!({
+                "dsn": "postgresql://invalid/unreachable",
+                "schema": "unused",
+                "context_id": "unused-context",
+                "operation": operation
+            });
+            assert_eq!(
+                postgres_store_json_impl(&request.to_string())
+                    .expect_err("coercive numeric values must fail before DB dispatch")
+                    .0,
+                STORE_INVALID_PAYLOAD
+            );
+        }
+    }
+
+    #[test]
     fn sqlite_session_close_releases_cached_handle() {
         let path =
             std::env::temp_dir().join(format!("kogwistar-python-close-{}.db", std::process::id()));
