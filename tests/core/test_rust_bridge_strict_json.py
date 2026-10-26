@@ -124,3 +124,40 @@ def test_explicit_rust_selectors_fail_closed_without_native_extension(
 
     with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
         invoke()
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    [
+        lambda: api_health(payload={}, python_value={"ok": True}),
+        lambda: contract_canonical_json(value={"value": 1}, python_value='{"value":1}'),
+        lambda: runtime_apply_state_update(payload={"updates": []}, python_value=[]),
+        lambda: store_memory_read(
+            snapshot={}, operation={"kind": "list_nodes"}, python_value=[], store="graph"
+        ),
+        lambda: store_memory_read(
+            snapshot={}, operation={"kind": "list_jobs"}, python_value=[], store="meta"
+        ),
+    ],
+    ids=["server", "contracts", "runtime", "graph-store", "meta-store"],
+)
+def test_global_rust_selector_fails_closed_when_component_selectors_are_unset(
+    monkeypatch: pytest.MonkeyPatch, invoke
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    for selector in (
+        "KOGWISTAR_IMPL_SERVER",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        invoke()

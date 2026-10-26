@@ -9,6 +9,14 @@ and CI evidence rather than assigning one percentage to the whole port.
 
 ## Latest verification update (2026-10-26)
 
+- Selector fallback evidence for existing `DL-15`: unset component selectors
+  inherit global `KOGWISTAR_IMPL_MODE=rust` and fail closed when the native
+  extension is unavailable across server, contracts, runtime, graph-store, and
+  meta-store bridge calls. Evidence:
+  `tests/core/test_rust_bridge_strict_json.py` (**15 passed**), Ruff, and
+  `git diff --check` on Windows CPython 3.13. This verifies selector fallback
+  behavior, not the entire state-changing call-site inventory; `DL-15` and
+  `DL-15C` remain in progress.
 - Additional bounded evidence for `DL-15C`: a captured Python selection remains
   authoritative after live selectors change to Rust across contract
   serialization, runtime state updates, graph-store reads, and server health;
