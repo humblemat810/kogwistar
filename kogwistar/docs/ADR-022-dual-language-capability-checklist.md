@@ -24,14 +24,22 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-27)
 
-- 2026-10-27 `DL-07E` Linux Rust-store evidence: in `rust:1.97-bookworm`,
-  `cargo test --locked -p kogwistar-store-sqlite --lib -- --test-threads=1`
-  passed **29 tests, 1 intentionally ignored**, including POSIX file identity,
-  path replacement, and process-authority checks. Strict Clippy passed for
-  `kogwistar-store-sqlite --all-targets` with `-D warnings`. This verifies the
-  Linux Rust store only; Linux Python/Rust cross-process interoperability and
-  the required Ubuntu CI matrix are still unverified, so `DL-07E` remains
-  **IN PROGRESS**. No checklist IDs or denominators changed.
+- 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
+  with the repository's `abi3-py312` native extension, six real Python/Rust
+  SQLite cases passed in a Linux Docker container: Python-created DB opened and
+  read/written by Rust, repeated Python/Rust commit visibility, direct
+  cross-process authority rejection in both directions, and hard-link alias
+  rejection in both directions. The Python Node/Edge payload round-trip through
+  the Rust graph mutation bridge also passed against the existing PostgreSQL
+  17.11 pgvector container using an isolated test schema. These are local Linux
+  results, not Ubuntu GitHub CI or macOS/PyPy results; `DL-07E` remains
+  **IN PROGRESS** pending the required CI/platform and remaining lifecycle
+  evidence. No checklist IDs, statuses, or denominators changed.
+- 2026-10-27 Linux native-store complement: `cargo test --locked -p
+  kogwistar-store-sqlite --lib -- --test-threads=1` passed **29 tests, 1
+  intentionally ignored**, including POSIX identity, replacement, and process
+  authority checks. Strict Clippy passed for `kogwistar-store-sqlite
+  --all-targets` with `-D warnings`.
 - 2026-10-27 `DL-16A` model-contract closure: Python Node/Edge to Rust V2
   hierarchy-level differential passed **8 cases**, including positive and
   negative integers beyond 64 bits. A live PostgreSQL graph mutation/reopen
