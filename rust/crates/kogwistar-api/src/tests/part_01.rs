@@ -46,10 +46,7 @@
         }
         for case in fixture["group_cases"].as_array().expect("group cases") {
             let claims = &case["claims"];
-            let groups = ["groups", "principal_groups"]
-                .into_iter()
-                .flat_map(|name| principal_strings(claims, name))
-                .collect::<BTreeSet<_>>();
+            let (_, acl) = conversation_graph_scope_and_acl_principal(claims);
             let expected = case["expected_groups"]
                 .as_array()
                 .expect("expected groups")
@@ -57,7 +54,7 @@
                 .map(|value| value.as_str().expect("group").to_owned())
                 .collect::<BTreeSet<_>>();
             assert_eq!(
-                groups,
+                acl.groups,
                 expected,
                 "{}",
                 case["name"].as_str().expect("case name")
