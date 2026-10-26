@@ -134,9 +134,11 @@ class AsyncIndexJobWorker:
                     # Match the Rust worker: an admitted result is the
                     # idempotency record, so replay only finalizes the queue.
                     accepted_result = self._value(job, "accepted_result_json")
-                    if isinstance(accepted_result, str) and is_projection_action_payload(
-                        accepted_result
-                    ):
+                    is_projection_action = (
+                        accepted_result is not None
+                        and is_projection_action_payload(accepted_result)
+                    )
+                    if is_projection_action:
                         if self.projection_store is None:
                             raise RuntimeError(
                                 "accepted graph projection action requires projection_store"

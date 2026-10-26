@@ -198,12 +198,14 @@ def decode_projection_action(
     )
 
 
-def is_projection_action_payload(result_json: str) -> bool:
+def is_projection_action_payload(result_json: object) -> bool:
     """Recognize projection actions and reject malformed accepted-result JSON.
 
     Legacy accepted results are JSON objects too. Invalid JSON must not be
     mistaken for an opaque legacy result and acknowledged without projection.
     """
+    if not isinstance(result_json, str):
+        raise _fail("accepted index-job result must be serialized JSON")
     try:
         value = json.loads(result_json)
     except (TypeError, ValueError):

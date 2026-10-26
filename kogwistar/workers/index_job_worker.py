@@ -285,9 +285,11 @@ class IndexJobWorker:
                     # before losing the queue acknowledgement.  Do not repeat
                     # projection/provider work when the durable result exists.
                     accepted_result = self._job_value(job, "accepted_result_json")
-                    if isinstance(accepted_result, str) and is_projection_action_payload(
-                        accepted_result
-                    ):
+                    is_projection_action = (
+                        accepted_result is not None
+                        and is_projection_action_payload(accepted_result)
+                    )
+                    if is_projection_action:
                         if self.projection_store is None:
                             raise RuntimeError(
                                 "accepted graph projection action requires projection_store"
