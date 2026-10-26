@@ -168,6 +168,39 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return None
         return cast(dict[str, JsonValue], dict(where))
 
+    @staticmethod
+    def _native_vector_filter(
+        where: object,
+    ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]] | None:
+        """Parse flat equality filters plus the ACL wrapper's metadata exclusions."""
+        if where is None:
+            return {}, {}
+        if not isinstance(where, dict):
+            return None
+        clauses = where.get("$and")
+        if "$and" in where:
+            if set(where) != {"$and"} or not isinstance(clauses, list):
+                return None
+        else:
+            clauses = [where]
+        equal: dict[str, JsonValue] = {}
+        not_equal: dict[str, JsonValue] = {}
+        for clause in clauses:
+            if not isinstance(clause, dict):
+                return None
+            for key, value in clause.items():
+                if not isinstance(key, str) or key.startswith("$"):
+                    return None
+                if isinstance(value, dict):
+                    if set(value) != {"$ne"} or key in equal or key in not_equal:
+                        return None
+                    not_equal[key] = cast(JsonValue, value["$ne"])
+                else:
+                    if key in equal or key in not_equal:
+                        return None
+                    equal[key] = cast(JsonValue, value)
+        return equal, not_equal
+
     def _rust_postgres_projection_get(
         self,
         *,
@@ -234,12 +267,13 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "metadata", None)
-        metadata = self._native_equality_filter(where)
+        filters = self._native_vector_filter(where)
         if (
             not isinstance(meta, RustEnginePostgresMetaStore)
-            or metadata is None
+            or filters is None
         ):
             return None
+        metadata, metadata_not_equals = filters
         table = (
             cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
@@ -256,16 +290,26 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "limit": int(n_results),
         }
         if len(query_embeddings) == 1:
-            matches_by_embedding = [
-                meta.graph_projection_vector_query(
-                    **common_query, embedding=list(query_embeddings[0])
-                )
-            ]
+            query = {**common_query, "embedding": list(query_embeddings[0])}
+            if metadata_not_equals:
+                matches_by_embedding = [
+                    meta.graph_projection_vector_query_excluding_metadata(
+                        **query, metadata_not_equals=metadata_not_equals
+                    )
+                ]
+            else:
+                matches_by_embedding = [meta.graph_projection_vector_query(**query)]
         else:
-            matches_by_embedding = meta.graph_projection_vector_query_batch(
+            query = {
                 **common_query,
-                embeddings=[list(embedding) for embedding in query_embeddings],
-            )
+                "embeddings": [list(embedding) for embedding in query_embeddings],
+            }
+            if metadata_not_equals:
+                matches_by_embedding = meta.graph_projection_vector_query_batch_excluding_metadata(
+                    **query, metadata_not_equals=metadata_not_equals
+                )
+            else:
+                matches_by_embedding = meta.graph_projection_vector_query_batch(**query)
         records_by_embedding = [
             [_json_object(match.get("record") or {}) for match in matches]
             for matches in matches_by_embedding

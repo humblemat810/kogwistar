@@ -1133,6 +1133,22 @@ verified by this slice. This narrows one ranking discrepancy but does not
 prove full vector authorization or cross-language parity; `DL-08C` remains
 IN PROGRESS and no checklist IDs or denominator changed.
 
+The Rust-backed Python/PostgreSQL seam now preserves this ACL exclusion instead
+of falling back to Python: `ReadSubsystem` recognizes the ACL wrapper's flat
+`$ne` and generated `$and` filter shape, then calls an additive Rust vector
+operation carrying `metadata_not_equals`. Rust applies the exclusion in SQL
+before top-k ranking (`IS DISTINCT FROM` also excludes records with no such
+metadata key). Calls without exclusions retain the legacy operation payload.
+Evidence: `test_read_subsystem_routes_simple_base_reads_to_native_projection`
+passes through `ACLAwareReadSubsystem` and asserts the Python vector backend is
+not called; `test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_available`
+passed against the local Docker pgvector service with a deliberately closer ACL
+record; `postgres_bridge_accepts_closed_batched_graph_vector_query_contract`
+passed for the backward-compatible bridge contract; Rust bridge `cargo check`,
+Rust storage tests, Ruff, and `git diff --check` passed. This closes the
+identified native-query fallback for this bounded ACL exclusion only; it does
+not close `DL-08C` or broaden its completion score.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

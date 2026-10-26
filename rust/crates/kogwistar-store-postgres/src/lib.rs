@@ -796,8 +796,23 @@ impl PostgresStore {
         &self,
         query: GraphProjectionVectorQuery,
     ) -> PostgresStoreResult<Vec<VectorMatch>> {
+        self.graph_projection_vector_query_excluding_metadata(query, BTreeMap::new())
+            .await
+    }
+
+    pub async fn graph_projection_vector_query_excluding_metadata(
+        &self,
+        query: GraphProjectionVectorQuery,
+        metadata_not_equals: BTreeMap<String, Value>,
+    ) -> PostgresStoreResult<Vec<VectorMatch>> {
         let client = self.client().await?;
-        graph_projection_vector_query(&**client, &self.tables, query).await
+        graph_projection_vector_query(
+            &**client,
+            &self.tables,
+            query,
+            &metadata_not_equals,
+        )
+        .await
     }
 
     /// Execute multiple same-scope nearest-neighbor searches in one database
@@ -806,11 +821,26 @@ impl PostgresStore {
         &self,
         queries: Vec<GraphProjectionVectorQuery>,
     ) -> PostgresStoreResult<Vec<Vec<VectorMatch>>> {
+        self.graph_projection_vector_query_batch_excluding_metadata(queries, BTreeMap::new())
+            .await
+    }
+
+    pub async fn graph_projection_vector_query_batch_excluding_metadata(
+        &self,
+        queries: Vec<GraphProjectionVectorQuery>,
+        metadata_not_equals: BTreeMap<String, Value>,
+    ) -> PostgresStoreResult<Vec<Vec<VectorMatch>>> {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
         let client = self.client().await?;
-        graph_projection_vector_query_batch(&**client, &self.tables, queries).await
+        graph_projection_vector_query_batch(
+            &**client,
+            &self.tables,
+            queries,
+            &metadata_not_equals,
+        )
+        .await
     }
 
     pub async fn append_raw_entity_event(
@@ -1774,7 +1804,13 @@ impl PostgresUnitOfWork<'_> {
         &self,
         query: GraphProjectionVectorQuery,
     ) -> PostgresStoreResult<Vec<VectorMatch>> {
-        graph_projection_vector_query(&self.transaction, &self.tables, query).await
+        graph_projection_vector_query(
+            &self.transaction,
+            &self.tables,
+            query,
+            &BTreeMap::new(),
+        )
+        .await
     }
 
     pub async fn project_lane_message(
@@ -3615,6 +3651,15 @@ fn graph_filter_sql(
     filter: &kogwistar_store::MetadataFilter,
     start: usize,
 ) -> PostgresStoreResult<(String, Vec<String>)> {
+    graph_filter_sql_with_exclusions(scope, filter, &BTreeMap::new(), start)
+}
+
+fn graph_filter_sql_with_exclusions(
+    scope: &kogwistar_store::GraphScope,
+    filter: &kogwistar_store::MetadataFilter,
+    metadata_not_equals: &BTreeMap<String, Value>,
+    start: usize,
+) -> PostgresStoreResult<(String, Vec<String>)> {
     let scope_pairs = graph_scope_pairs(scope)?;
     let legacy_default =
         scope.namespace == "default" && scope.workspace_id.is_none() && scope.graph_space.is_none();
@@ -3622,8 +3667,10 @@ fn graph_filter_sql(
         .equals
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()));
-    let mut clauses = Vec::with_capacity(scope_pairs.len() + filter.equals.len());
-    let mut values = Vec::with_capacity(scope_pairs.len() + filter.equals.len());
+    let mut clauses =
+        Vec::with_capacity(scope_pairs.len() + filter.equals.len() + metadata_not_equals.len());
+    let mut values =
+        Vec::with_capacity(scope_pairs.len() + filter.equals.len() + metadata_not_equals.len());
     for (index, (key, value)) in scope_pairs.into_iter().chain(filter_pairs).enumerate() {
         let key_index = start + index;
         let value_json = serde_json::to_string(&value).expect("JSON value serializes");
@@ -3639,6 +3686,15 @@ fn graph_filter_sql(
             clauses.push(exact);
         }
         values.push(key);
+    }
+    for (key, value) in metadata_not_equals {
+        let key_index = start + values.len();
+        let value_json = serde_json::to_string(value).expect("JSON value serializes");
+        clauses.push(format!(
+            "metadata -> ${key_index}::TEXT IS DISTINCT FROM {}::JSONB",
+            sql_text_literal(&value_json)
+        ));
+        values.push(key.clone());
     }
     Ok((clauses.join(" AND "), values))
 }
@@ -4143,6 +4199,7 @@ async fn graph_projection_vector_query<C>(
     client: &C,
     tables: &Tables,
     query: GraphProjectionVectorQuery,
+    metadata_not_equals: &BTreeMap<String, Value>,
 ) -> PostgresStoreResult<Vec<VectorMatch>>
 where
     C: GenericClient + Sync,
@@ -4156,7 +4213,12 @@ where
     }
     finite_vector(&query.query.embedding)?;
     let table = graph_table(tables, &query.table)?;
-    let (filter_sql, mut values) = graph_filter_sql(&query.scope, &query.query.metadata, 1)?;
+    let (filter_sql, mut values) = graph_filter_sql_with_exclusions(
+        &query.scope,
+        &query.query.metadata,
+        metadata_not_equals,
+        1,
+    )?;
     let vector_sql = format!(
         "{}::vector",
         sql_text_literal(&vector_literal(&query.query.embedding))
@@ -4201,6 +4263,7 @@ async fn graph_projection_vector_query_batch<C>(
     client: &C,
     tables: &Tables,
     queries: Vec<GraphProjectionVectorQuery>,
+    metadata_not_equals: &BTreeMap<String, Value>,
 ) -> PostgresStoreResult<Vec<Vec<VectorMatch>>>
 where
     C: GenericClient + Sync,
@@ -4240,7 +4303,12 @@ where
             sql_text_literal(&vector_literal(&query.query.embedding))
         ));
     }
-    let (filter_sql, mut values) = graph_filter_sql(&first.scope, &first.query.metadata, 1)?;
+    let (filter_sql, mut values) = graph_filter_sql_with_exclusions(
+        &first.scope,
+        &first.query.metadata,
+        metadata_not_equals,
+        1,
+    )?;
     let limit_index = values.len() + 1;
     values.push(
         i64::try_from(first.query.limit)

@@ -3044,6 +3044,8 @@ enum PostgresStoreOperation {
         #[serde(default)]
         metadata: BTreeMap<String, Value>,
         #[serde(default)]
+        metadata_not_equals: BTreeMap<String, Value>,
+        #[serde(default)]
         metric: SnapshotDistanceMetric,
         embedding_dim: usize,
     },
@@ -3059,6 +3061,8 @@ enum PostgresStoreOperation {
         limit: usize,
         #[serde(default)]
         metadata: BTreeMap<String, Value>,
+        #[serde(default)]
+        metadata_not_equals: BTreeMap<String, Value>,
         #[serde(default)]
         metric: SnapshotDistanceMetric,
         embedding_dim: usize,
@@ -3789,11 +3793,11 @@ async fn postgres_store_operation_json(
             embedding,
             limit,
             metadata,
+            metadata_not_equals,
             metric,
             embedding_dim,
-        } => Ok(Value::Array(
-            store
-                .graph_projection_vector_query(kogwistar_store::GraphProjectionVectorQuery {
+        } => {
+            let query = kogwistar_store::GraphProjectionVectorQuery {
                     scope: graph_scope(namespace, workspace_id, graph_space),
                     table,
                     query: VectorQuery {
@@ -3803,12 +3807,21 @@ async fn postgres_store_operation_json(
                         metric: metric.into(),
                     },
                     embedding_dim,
-                })
-                .await?
+                };
+            let matches = if metadata_not_equals.is_empty() {
+                store.graph_projection_vector_query(query).await?
+            } else {
+                store
+                    .graph_projection_vector_query_excluding_metadata(query, metadata_not_equals)
+                    .await?
+            };
+            Ok(Value::Array(
+                matches
                 .into_iter()
                 .map(|item| json!({"record": graph_record_json(item.record), "distance": item.distance}))
                 .collect(),
-        )),
+            ))
+        }
         PostgresStoreOperation::GraphProjectionVectorQueryBatch {
             namespace,
             workspace_id,
@@ -3817,6 +3830,7 @@ async fn postgres_store_operation_json(
             embeddings,
             limit,
             metadata,
+            metadata_not_equals,
             metric,
             embedding_dim,
         } => {
@@ -3835,10 +3849,18 @@ async fn postgres_store_operation_json(
                     embedding_dim,
                 })
                 .collect();
-            Ok(Value::Array(
+            let matches_by_embedding = if metadata_not_equals.is_empty() {
+                store.graph_projection_vector_query_batch(queries).await?
+            } else {
                 store
-                    .graph_projection_vector_query_batch(queries)
+                    .graph_projection_vector_query_batch_excluding_metadata(
+                        queries,
+                        metadata_not_equals,
+                    )
                     .await?
+            };
+            Ok(Value::Array(
+                matches_by_embedding
                     .into_iter()
                     .map(|matches| {
                         Value::Array(
@@ -6125,6 +6147,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "embedding",
             "limit",
             "metadata",
+            "metadata_not_equals",
             "metric",
             "embedding_dim",
         ][..],
@@ -6137,6 +6160,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "embeddings",
             "limit",
             "metadata",
+            "metadata_not_equals",
             "metric",
             "embedding_dim",
         ][..],

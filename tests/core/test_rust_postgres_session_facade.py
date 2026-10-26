@@ -16,6 +16,7 @@ from kogwistar.engine_core.rust_postgres_session import (
     _RustPostgresTransactionToken,
 )
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
+from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
 from kogwistar.implementation_selection import (
@@ -842,7 +843,11 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
     try:
         store.ensure_initialized()
         store._call("create_graph_schema", embedding_dim=2)
-        for entity_id, embedding in (("x-axis", [1.0, 0.0]), ("y-axis", [0.0, 1.0])):
+        for entity_id, embedding, entity_type in (
+            ("x-axis", [1.0, 0.0], "node"),
+            ("y-axis", [0.0, 1.0], "node"),
+            ("internal-acl", [0.999, 0.001], "acl_record"),
+        ):
             store.upsert_graph_projection(
                 namespace="vector-batch-test",
                 workspace_id=None,
@@ -851,7 +856,7 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
                 record={
                     "id": entity_id,
                     "document": entity_id,
-                    "metadata": {"entity_type": "node"},
+                    "metadata": {"entity_type": entity_type, "team": "red"},
                     "embedding": embedding,
                 },
                 embedding_dim=2,
@@ -863,7 +868,7 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
             table="gke_nodes",
             embeddings=[[1.0, 0.0], [0.0, 1.0]],
             embedding_dim=2,
-            metadata={},
+            metadata={"entity_type": "node"},
             metric="cosine",
             limit=2,
         )
@@ -871,6 +876,19 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
             ["x-axis", "y-axis"],
             ["y-axis", "x-axis"],
         ]
+        acl_filtered = store.graph_projection_vector_query_batch_excluding_metadata(
+            namespace="vector-batch-test",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            embeddings=[[1.0, 0.0]],
+            embedding_dim=2,
+            metadata={"team": "red"},
+            metadata_not_equals={"entity_type": "acl_record"},
+            metric="cosine",
+            limit=1,
+        )
+        assert [match["record"]["id"] for match in acl_filtered[0]] == ["x-axis"]
     finally:
         store.close()
         with psycopg.connect(dsn, autocommit=True) as connection:
@@ -1060,6 +1078,49 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
             "limit": 1,
         }
     ]
+
+    acl_filter_calls: list[dict] = []
+
+    def native_vector_query_excluding_metadata(**values):
+        acl_filter_calls.append(values)
+        return native_vector_query(**{key: value for key, value in values.items() if key != "metadata_not_equals"})
+
+    monkeypatch.setattr(
+        store,
+        "graph_projection_vector_query_excluding_metadata",
+        native_vector_query_excluding_metadata,
+    )
+    acl_reader = ACLAwareReadSubsystem(engine, reader)
+    monkeypatch.setattr(acl_reader, "_node_visible", lambda _node: True)
+    acl_hits = acl_reader.query_nodes(
+        query_embeddings=[1.0, 0.0, 0.0],
+        where={"team": "red"},
+        n_results=1,
+    )
+    assert len(acl_hits) == 1
+    assert acl_filter_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "embedding_dim": 3,
+            "metadata": {"team": "red"},
+            "metric": "cosine",
+            "limit": 1,
+            "embedding": [1.0, 0.0, 0.0],
+            "metadata_not_equals": {"entity_type": "acl_record"},
+        }
+    ]
+    acl_only_hits = acl_reader.query_nodes(
+        query_embeddings=[1.0, 0.0, 0.0],
+        n_results=1,
+    )
+    assert len(acl_only_hits) == 1
+    assert acl_filter_calls[-1]["metadata"] == {}
+    assert acl_filter_calls[-1]["metadata_not_equals"] == {
+        "entity_type": "acl_record"
+    }
 
     batch_query_calls: list[dict] = []
 
