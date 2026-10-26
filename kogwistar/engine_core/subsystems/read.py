@@ -30,6 +30,7 @@ from ..models import Document, Edge, Node
 from ..types import GraphEntityKind
 from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
+from ...implementation_selection import implementation_selection_bound
 from .base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -201,6 +202,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     equal[key] = cast(JsonValue, value)
         return equal, not_equal
 
+    @implementation_selection_bound
     def _rust_postgres_projection_get(
         self,
         *,
@@ -210,12 +212,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         limit: int | None,
         include: list[str],
     ) -> dict[str, JsonValue] | None:
+        from kogwistar._rust_bridge import meta_store_implementation_mode
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "metadata", None)
         metadata = self._native_equality_filter(where)
         if (
             not isinstance(meta, RustEnginePostgresMetaStore)
+            or meta_store_implementation_mode() != "rust"
             or metadata is None
             or limit is None
             # Native projection reads are id-sorted while the legacy backend
@@ -255,6 +259,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return result
 
+    @implementation_selection_bound
     def _rust_postgres_projection_query(
         self,
         *,
@@ -264,12 +269,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         n_results: int,
         include: list[str],
     ) -> dict[str, JsonValue] | None:
+        from kogwistar._rust_bridge import meta_store_implementation_mode
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "metadata", None)
         filters = self._native_vector_filter(where)
         if (
             not isinstance(meta, RustEnginePostgresMetaStore)
+            or meta_store_implementation_mode() != "rust"
             or filters is None
         ):
             return None

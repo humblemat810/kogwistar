@@ -913,6 +913,80 @@ def test_native_vector_filter_accepts_only_lossless_supported_forms():
     ) is None
 
 
+def test_frozen_python_meta_selection_never_dispatches_to_rust_projection(
+    monkeypatch,
+):
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    snapshot = capture_implementation_selection()
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    native_calls: list[str] = []
+
+    def reject_native(**_values):
+        native_calls.append("rust")
+        raise AssertionError("frozen Python selection invoked Rust metadata authority")
+
+    monkeypatch.setattr(store, "graph_projection_records", reject_native)
+    monkeypatch.setattr(store, "graph_projection_vector_query", reject_native)
+    monkeypatch.setattr(store, "graph_projection_vector_query_batch", reject_native)
+
+    python_node = build_entity_node(
+        node_id="python-node",
+        doc_id="doc-python",
+        summary="Python-owned result",
+        metadata={"namespace": "alpha"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    with use_mode("backend"):
+        python_document = python_node.model_dump_json()
+
+    class Backend:
+        nodes = SimpleNamespace(name="gke_nodes")
+        edges = SimpleNamespace(name="gke_edges")
+        documents = SimpleNamespace(name="gke_documents")
+        embedding_dim = 3
+        distance = "cosine"
+
+        def node_get(self, **_values):
+            return {
+                "ids": ["python-node"],
+                "documents": [python_document],
+                "metadatas": [{"namespace": "alpha"}],
+                "embeddings": [[1.0, 0.0, 0.0]],
+            }
+
+        def node_query(self, **_values):
+            return {
+                "ids": [["python-node"]],
+                "documents": [[python_document]],
+                "metadatas": [[{"namespace": "alpha"}]],
+                "embeddings": [[[1.0, 0.0, 0.0]]],
+                "distances": [[0.0]],
+            }
+
+    engine = SimpleNamespace(
+        meta_sqlite=store,
+        metadata=store,
+        backend=Backend(),
+        namespace="alpha",
+        kg_graph_type="knowledge",
+        _implementation_selection_snapshot=snapshot,
+        _filter_items_by_resolve_mode=lambda items, _mode: items,
+    )
+    reader = ReadSubsystem(engine)
+
+    assert reader._node_get_raw(
+        ids=["python-node"], limit=1, include=["documents", "metadatas"]
+    )["ids"] == ["python-node"]
+    results = reader.query_nodes(
+        query_embeddings=[1.0, 0.0, 0.0], n_results=1
+    )
+    assert results[0][0].summary == "Python-owned result"
+    assert native_calls == []
+
+
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
     operations: list[dict] = []
 
@@ -954,6 +1028,7 @@ def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypa
 
 
 def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatch):
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     store = RustEnginePostgresMetaStore(
         dsn="postgresql://example/db", schema="test"
     )
