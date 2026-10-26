@@ -14574,6 +14574,42 @@ mod tests {
                 && event.payload_json.contains("rust-native")
         }));
 
+        // A non-native operation must keep the legacy Python-worker lane and
+        // must not acquire native executor metadata implicitly.
+        let legacy_submit = client
+            .post(format!("{base_url}/api/workflow/runs"))
+            .header("x-kogwistar-roles", "reader")
+            .header("content-type", "application/json")
+            .json(&json!({
+                "run_id": "legacy-run",
+                "workflow_id": "legacy-workflow",
+                "conversation_id": "legacy-conversation",
+                "initial_state": {"seed": 1},
+                "runtime_kind": "sync",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "application.process"}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy_submit.status(), StatusCode::ACCEPTED);
+        let legacy_claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "claimed_by": "python-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["python-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(legacy_claim.status(), StatusCode::OK);
+        let legacy_work = legacy_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        assert_eq!(legacy_work["payload"]["op"], "application.process");
+        assert!(legacy_work["payload"].get("executor_target").is_none());
+
         server.abort();
         let _ = server.await;
         drop(store);
