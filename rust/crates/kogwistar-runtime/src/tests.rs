@@ -600,7 +600,7 @@
             execute_native_step_with_registry(&request, &registry),
             Err(RuntimeNativeExecutionError::OperationFailed { operation, reason })
                 if operation == "app/custom-result"
-                    && reason.contains("unsupported state update mode")
+                    && reason.contains("unsupported state-update mode")
         ));
     }
 

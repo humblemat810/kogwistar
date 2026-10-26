@@ -421,27 +421,10 @@ fn validate_native_output_state(
     let expected_state = if output.state_update.is_empty() {
         None
     } else {
-        for update in &output.state_update {
-            let (mode, _) = update.parts();
-            if !matches!(mode, "u" | "a" | "e") {
-                return Err(RuntimeNativeExecutionError::OperationFailed {
-                    operation: request.operation.clone(),
-                    reason: format!("native operation returned unsupported state update mode {mode:?}"),
-                });
-            }
-        }
-        let state_update = serde_json::to_value(&output.state_update).map_err(|error| {
-            RuntimeNativeExecutionError::OperationFailed {
-                operation: request.operation.clone(),
-                reason: format!("native operation returned an invalid state update: {error}"),
-            }
-        })?;
         Some(
-            kogwistar_contracts::apply_state_update_values(
+            kogwistar_contracts::apply_state_update_pairs(
                 Value::Object(request.state.clone()),
-                &state_update,
-                None,
-                None,
+                output.state_update.iter().map(RecordedStateUpdate::parts),
             )
             .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
                 operation: request.operation.clone(),

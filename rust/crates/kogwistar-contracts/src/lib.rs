@@ -126,6 +126,8 @@ pub enum ContractError {
     StateUpdatePayloadMustBeObject,
     #[error("state-update append target must be a list")]
     StateUpdateTargetMustBeList,
+    #[error("unsupported state-update mode: {mode:?}")]
+    StateUpdateModeUnsupported { mode: String },
     #[error("Either update or state_update can be used")]
     StateUpdateConflict,
     #[error("event envelope must be a JSON object")]
@@ -185,6 +187,9 @@ impl ContractError {
             Self::StateUpdateItemMustBePair => "KOGWISTAR_CONTRACT_STATE_UPDATE_ITEM_TYPE",
             Self::StateUpdatePayloadMustBeObject => "KOGWISTAR_CONTRACT_STATE_UPDATE_PAYLOAD_TYPE",
             Self::StateUpdateTargetMustBeList => "KOGWISTAR_CONTRACT_STATE_UPDATE_TARGET_TYPE",
+            Self::StateUpdateModeUnsupported { .. } => {
+                "KOGWISTAR_CONTRACT_STATE_UPDATE_MODE_UNSUPPORTED"
+            }
             Self::StateUpdateConflict => "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT",
             Self::EventEnvelopeMustBeObject => "KOGWISTAR_CONTRACT_EVENT_ENVELOPE_TYPE",
             Self::EventTypeMissing => "KOGWISTAR_CONTRACT_EVENT_TYPE_MISSING",
@@ -452,6 +457,56 @@ fn state_update_entries(value: &Value) -> Result<&Vec<Value>, ContractError> {
         .ok_or(ContractError::StateUpdateItemMustBePair)
 }
 
+fn apply_state_update_entry(
+    state: &mut Value,
+    mode: &str,
+    payload: &Map<String, Value>,
+) -> Result<(), ContractError> {
+    match mode {
+        "a" => {
+            for (key, value) in payload {
+                state_list_mut(state_object_mut(state)?, key)?.push(value.clone());
+            }
+        }
+        "u" => {
+            for (key, value) in payload {
+                state_object_mut(state)?.insert(key.clone(), value.clone());
+            }
+        }
+        "e" => {
+            for (key, value) in payload {
+                extend_json_list(
+                    state_list_mut(state_object_mut(state)?, key)?,
+                    value.clone(),
+                )?;
+            }
+        }
+        // Preserve the historical JSON bridge behavior. New typed callers
+        // validate the mode vocabulary before folding through this helper.
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Apply already-typed runtime deltas directly, rejecting unsupported modes.
+/// This avoids serializing Rust-owned delta DTOs back through JSON at the
+/// native runtime boundary while sharing the same fold semantics.
+pub fn apply_state_update_pairs<'a, I>(mut state: Value, updates: I) -> Result<Value, ContractError>
+where
+    I: IntoIterator<Item = (&'a str, &'a Map<String, Value>)>,
+{
+    state_object_mut(&mut state)?;
+    for (mode, payload) in updates {
+        if !matches!(mode, "u" | "a" | "e") {
+            return Err(ContractError::StateUpdateModeUnsupported {
+                mode: mode.to_owned(),
+            });
+        }
+        apply_state_update_entry(&mut state, mode, payload)?;
+    }
+    Ok(state)
+}
+
 /// Apply the JSON subset of the Python runtime's `u`/`a`/`e` state reducer.
 /// The bridge keeps Python ownership for non-JSON values and preserves in-place
 /// mutation by updating the caller's existing dict after this fold succeeds.
@@ -499,27 +554,7 @@ pub fn apply_state_update_values(
         let Some(payload) = pair[1].as_object() else {
             return Err(ContractError::StateUpdatePayloadMustBeObject);
         };
-        match mode {
-            "a" => {
-                for (key, value) in payload {
-                    state_list_mut(state_object_mut(&mut state)?, key)?.push(value.clone());
-                }
-            }
-            "u" => {
-                for (key, value) in payload {
-                    state_object_mut(&mut state)?.insert(key.clone(), value.clone());
-                }
-            }
-            "e" => {
-                for (key, value) in payload {
-                    extend_json_list(
-                        state_list_mut(state_object_mut(&mut state)?, key)?,
-                        value.clone(),
-                    )?;
-                }
-            }
-            _ => {}
-        }
+        apply_state_update_entry(&mut state, mode, payload)?;
     }
     if json_truthy(&update_value) {
         let Some(update) = update_value.as_object() else {
@@ -1673,6 +1708,27 @@ mod tests {
             )
             .unwrap();
             assert_eq!(in_memory, result, "in-memory case {}", case["name"]);
+            if case["update"].is_null() || case["update"].as_object().is_some_and(Map::is_empty) {
+                let typed_updates: Vec<(String, Map<String, Value>)> = case["state_update"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|item| {
+                        (
+                            item[0].as_str().unwrap().to_owned(),
+                            serde_json::from_value(item[1].clone()).unwrap(),
+                        )
+                    })
+                    .collect();
+                let typed = apply_state_update_pairs(
+                    case["state"].clone(),
+                    typed_updates
+                        .iter()
+                        .map(|(mode, payload)| (mode.as_str(), payload)),
+                )
+                .unwrap();
+                assert_eq!(typed, result, "typed case {}", case["name"]);
+            }
         }
     }
 
