@@ -44,5 +44,12 @@
     ["flattened_llm_edge", "flattened_llm_node"],
     ["assoc_flattened_llm_edge", "assoc_flattened_llm_node"]
   ],
-  "node_only_classes": ["doc_node"]
+  "node_only_classes": [
+    "doc_node",
+    "workflow_step_exec_node",
+    "workflow_checkpoint_node",
+    "workflow_completed_node",
+    "workflow_cancelled_node",
+    "workflow_failed_node"
+  ]
 }

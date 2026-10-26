@@ -3178,10 +3178,54 @@ mod tests {
             .collect();
         assert_eq!(actual, expected);
 
-        for pair in fixture["edge_node_pairs"]
+        let edge_pairs = fixture["edge_node_pairs"]
             .as_array()
-            .expect("edge/node pairs")
-        {
+            .expect("edge/node pairs");
+        let paired_edges: BTreeSet<_> = edge_pairs
+            .iter()
+            .map(|pair| pair[0].as_str().expect("edge model name"))
+            .collect();
+        let registered_edges: BTreeSet<_> = expected
+            .values()
+            .filter(|profile| profile.entity_kind == GraphEntityKind::Edge)
+            .map(|profile| profile.model_class.as_str())
+            .collect();
+        assert_eq!(
+            paired_edges.len(),
+            edge_pairs.len(),
+            "edge pairs must be unique"
+        );
+        assert_eq!(paired_edges, registered_edges);
+
+        let paired_nodes: BTreeSet<_> = edge_pairs
+            .iter()
+            .map(|pair| pair[1].as_str().expect("node model name"))
+            .collect();
+        assert_eq!(
+            paired_nodes.len(),
+            edge_pairs.len(),
+            "node pairs must be unique"
+        );
+        let node_only: BTreeSet<_> = fixture["node_only_classes"]
+            .as_array()
+            .expect("node-only classes")
+            .iter()
+            .map(|model| model.as_str().expect("node-only class name"))
+            .collect();
+        let registered_nodes: BTreeSet<_> = expected
+            .values()
+            .filter(|profile| profile.entity_kind == GraphEntityKind::Node)
+            .map(|profile| profile.model_class.as_str())
+            .collect();
+        assert_eq!(
+            registered_nodes
+                .difference(&paired_nodes)
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            node_only
+        );
+
+        for pair in edge_pairs {
             let edge_name = pair[0].as_str().expect("edge model name");
             let node_name = pair[1].as_str().expect("node model name");
             let edge = GraphModelClass::all()

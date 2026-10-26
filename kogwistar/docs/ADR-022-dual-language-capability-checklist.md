@@ -37,9 +37,11 @@ denominator of either snapshot.
   registry resolution to it; Python compares model inheritance and the adapter
   registry to the same fixture, independent of a Rust extension. Evidence:
   `cargo test -p kogwistar-contracts --offline` (**69 passed**) and focused
-  Python fixture/native parity tests (**2 passed**). This protects additive
-  model-contract evolution and catches Python/Rust registry drift; it does not
-  claim full graph operation or storage parity.
+  Python fixture/native parity tests (**2 passed**). The fixture also requires
+  a unique edge/node pair for every edge class and explicitly enumerates
+  node-only model classes, including workflow runtime state nodes. This protects
+  additive model-contract evolution and catches Python/Rust registry drift; it
+  does not claim full graph operation or storage parity.
 - Additive SQL-queue to external graph-projection slice: Rust now has
   `projection_worker::run_graph_projection_jobs_once`, which composes any
   `IndexJobWriteStore` with any `GraphWriteStore`. Its versioned action binds

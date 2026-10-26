@@ -401,7 +401,27 @@ def test_graph_model_capability_contract_matches_shared_fixture() -> None:
             assert group["entity_kind"] == ("edge" if actual["edge_entity"] else "node")
             assert actual == expected, model_class
 
-    for edge_name, node_name in fixture["edge_node_pairs"]:
+    edge_node_pairs = fixture["edge_node_pairs"]
+    paired_edges = [edge_name for edge_name, _ in edge_node_pairs]
+    paired_nodes = [node_name for _, node_name in edge_node_pairs]
+    registered_edges = {
+        model_class
+        for group in fixture["profiles"]
+        if group["entity_kind"] == "edge"
+        for model_class in group["classes"]
+    }
+    registered_nodes = {
+        model_class
+        for group in fixture["profiles"]
+        if group["entity_kind"] == "node"
+        for model_class in group["classes"]
+    }
+    assert len(paired_edges) == len(set(paired_edges))
+    assert set(paired_edges) == registered_edges
+    assert len(paired_nodes) == len(set(paired_nodes))
+    assert registered_nodes - set(paired_nodes) == set(fixture["node_only_classes"])
+
+    for edge_name, node_name in edge_node_pairs:
         edge_model = python_models[edge_name]
         node_model = python_models[node_name]
         edge_mixins = {
