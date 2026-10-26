@@ -7,7 +7,9 @@ that a new Python subclass cannot silently receive the wrong Rust contract.
 
 from __future__ import annotations
 
-from typing import Literal, TypedDict, cast
+from typing import Literal, cast
+
+from typing_extensions import TypedDict
 
 from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
