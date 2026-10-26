@@ -591,6 +591,7 @@ def test_sync_batch_adapter_cannot_mutate_claim_identity_or_ack_token() -> None:
         ) -> dict[str, BaseException | None]:
             for job in jobs:
                 assert isinstance(job, dict)
+                assert "claim_token" not in job
                 job["job_id"] = "attacker-job"
                 job["claim_token"] = "attacker-token"
             return {"job-1": None, "job-2": None}
@@ -628,6 +629,7 @@ def test_async_batch_adapter_cannot_mutate_claim_identity_or_ack_token() -> None
         ) -> dict[str, BaseException | None]:
             for job in jobs:
                 assert isinstance(job, dict)
+                assert "claim_token" not in job
                 job["job_id"] = "attacker-job"
                 job["claim_token"] = "attacker-token"
             return {"job-1": None, "job-2": None}

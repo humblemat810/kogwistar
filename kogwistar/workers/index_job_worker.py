@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import signal
 import sys
@@ -16,6 +15,7 @@ from ..engine_core.projection_action import (
     apply_projection_action,
     is_projection_action_payload,
 )
+from ..engine_core.index_job_provider import embedding_job_provider_input
 from ..implementation_selection import implementation_selection_bound
 
 if TYPE_CHECKING:
@@ -183,10 +183,10 @@ class IndexJobWorker:
                 batch_results: dict[str, BaseException | None] | None = None
                 if batch_fn is not None and len(unit) > 1:
                     try:
-                        # Batch adapters may call third-party providers. Give
-                        # them detached rows so mutation cannot change the
-                        # identity/token used below for admission or ack.
-                        batch_results = batch_fn(copy.deepcopy(unit))
+                        # Adapters receive only embedding inputs, never lease
+                        # tokens or other queue-authority fields.
+                        provider_inputs = [embedding_job_provider_input(job) for job in unit]
+                        batch_results = batch_fn(provider_inputs)
                     except Exception as exc:
                         # A provider/adapter batch failure is per-job failure,
                         # not a worker-process failure or batch transaction.

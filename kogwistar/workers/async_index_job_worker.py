@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import inspect
 import json
 import time
@@ -15,6 +14,7 @@ from ..engine_core.projection_action import (
     apply_projection_action_async,
     is_projection_action_payload,
 )
+from ..engine_core.index_job_provider import embedding_job_provider_input
 from ..implementation_selection import implementation_selection_bound
 
 if TYPE_CHECKING:
@@ -123,9 +123,10 @@ class AsyncIndexJobWorker:
                 try:
                     if not inspect.iscoroutinefunction(batch_apply):
                         raise RuntimeError("async embedding batch handler must be awaitable")
-                    # Keep provider-facing objects separate from the claimed
-                    # rows used later for result association and queue ack.
-                    batch_results = await batch_apply(copy.deepcopy(unit))
+                    # Expose only embedding inputs; lease tokens stay in the
+                    # worker's original claimed rows for acknowledgement.
+                    provider_inputs = [embedding_job_provider_input(job) for job in unit]
+                    batch_results = await batch_apply(provider_inputs)
                 except Exception as exc:
                     batch_results = {
                         str(self._value(job, "job_id")): exc for job in unit
