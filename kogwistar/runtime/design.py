@@ -394,10 +394,24 @@ def validate_workflow_design(
     # - If resolver exposes `.ops`, validate declared workflow ops against it.
     # - If resolver is only a callable (e.g. def resolve_step(op): ...), skip `.ops` validation.
     if resolver is not None:
+        def uses_python_worker(node: WorkflowNode) -> bool:
+            target = (getattr(node, "metadata", None) or {}).get(
+                "wf_executor_target"
+            )
+            op = _node_op(node)
+            if target not in {None, "python-worker", "rust-native"}:
+                raise ValueError(f"workflow node has unsupported executor target {target!r}")
+            if target == "python-worker" and op.startswith("rust-native/"):
+                raise ValueError("rust-native operation names cannot target the Python worker")
+            if target == "rust-native":
+                return False
+            return not (target is None and op.startswith("rust-native/"))
+
+        python_nodes = [node for node in nodes.values() if uses_python_worker(node)]
         resolver_ops = getattr(resolver, "ops", None)
         if resolver_ops is not None:
             if unknown_ops := (
-                set(_node_op(i) for i in nodes.values()) - set(resolver_ops)
+                set(_node_op(node) for node in python_nodes) - set(resolver_ops)
             ):
                 raise Exception(f"workflow_contains unregistered ops {unknown_ops}")
         elif not callable(resolver):
@@ -409,7 +423,7 @@ def validate_workflow_design(
         can_resolve_versions = callable(supports_version) or callable(
             resolve_version
         ) or callable(resolve_async_version)
-        for node in nodes.values():
+        for node in python_nodes:
             op = _node_op(node)
             if not op:
                 continue

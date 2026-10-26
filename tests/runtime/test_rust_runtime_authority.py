@@ -499,9 +499,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
                 "start_node_id": "python-before",
                 "node_ops": {
                     "python-before": "application.before",
-                    "native-middle": "rust-native/increment-counter",
+                    "native-middle": "increment-counter",
                     "python-after": "application.after",
                 },
+                "node_executor_targets": {"native-middle": "rust-native"},
                 "runtime_routes": [
                     {
                         "source_node_id": "python-before",
@@ -630,9 +631,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
                 "start_node_id": "python-before",
                 "node_ops": {
                     "python-before": "application.async_before",
-                    "native-middle": "rust-native/increment-counter",
+                    "native-middle": "increment-counter",
                     "python-after": "application.async_after",
                 },
+                "node_executor_targets": {"native-middle": "rust-native"},
                 "runtime_routes": [
                     {
                         "source_node_id": "python-before",
@@ -1090,7 +1092,11 @@ def test_freeze_runtime_plan_preserves_route_alias_fanout_and_join_mask(
         label="Start",
         op="choose",
         fanout=True,
-        metadata={"wf_start": True, "wf_op": "choose"},
+        metadata={
+            "wf_start": True,
+            "wf_op": "choose",
+            "wf_executor_target": "rust-native",
+        },
     )
     join = SimpleNamespace(
         id="wf|join",
@@ -1136,6 +1142,7 @@ def test_freeze_runtime_plan_preserves_route_alias_fanout_and_join_mask(
     assert plan["node_ops"] == {"wf|start": "choose", "wf|join": "join"}
     assert plan["node_versions"] == {"wf|start": "v1", "wf|join": "v1"}
     assert plan["node_environment_ids"] == {}
+    assert plan["node_executor_targets"] == {"wf|start": "rust-native"}
     assert plan["runtime_routes"] == [
         {
             "edge_id": "edge-1",
@@ -1501,7 +1508,13 @@ def test_resume_effect_rejects_runtime_plumbing_state() -> None:
     authority = RustRuntimeAuthority.__new__(RustRuntimeAuthority)
     authority.runtime = SimpleNamespace()
 
-    for key in ("_deps", "dream_deps", "_rt_node_ops", "_rt_join"):
+    for key in (
+        "_deps",
+        "dream_deps",
+        "_rt_node_ops",
+        "_rt_node_executor_targets",
+        "_rt_join",
+    ):
         try:
             authority._client_result_effect(
                 workflow_id="wf-1",

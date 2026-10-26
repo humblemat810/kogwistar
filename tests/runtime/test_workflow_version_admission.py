@@ -102,6 +102,37 @@ def test_workflow_admission_accepts_registered_historical_version(monkeypatch) -
     ) == (start, nodes, adjacency)
 
 
+def test_workflow_admission_leaves_rust_target_operation_to_rust_registry(
+    monkeypatch,
+) -> None:
+    start = _design(monkeypatch, "v1")
+    start.metadata["wf_op"] = "native-only-operation"
+    start.metadata["wf_executor_target"] = "rust-native"
+
+    assert validate_workflow_design(
+        workflow_engine=object(),
+        workflow_id="wf-native-admission",
+        predicate_registry={},
+        resolver=_VersionResolver(set()),
+    )[0] is start
+
+
+def test_workflow_admission_rejects_unregistered_python_target_operation(
+    monkeypatch,
+) -> None:
+    start = _design(monkeypatch, "v1")
+    start.metadata["wf_op"] = "native-only-operation"
+    start.metadata["wf_executor_target"] = "python-worker"
+
+    with pytest.raises(Exception, match="unregistered ops"):
+        validate_workflow_design(
+            workflow_engine=object(),
+            workflow_id="wf-python-admission",
+            predicate_registry={},
+            resolver=_VersionResolver(set()),
+        )
+
+
 def test_legacy_callable_resolver_remains_valid_for_default_version(monkeypatch) -> None:
     start = _design(monkeypatch, "v1")
 
@@ -172,7 +203,35 @@ def test_legacy_workflow_metadata_keeps_environment_field_absent() -> None:
     )
 
     assert "wf_environment_id" not in metadata
+    assert "wf_executor_target" not in metadata
     assert metadata["wf_version"] == _OPERATION_VERSION_FIXTURE["legacy_default"]
+
+
+@pytest.mark.parametrize("target", ["python-worker", "rust-native"])
+def test_workflow_metadata_accepts_explicit_executor_target(target: str) -> None:
+    metadata = WorkflowNodeMetadata.model_validate(
+        {"workflow_id": "wf", "wf_op": "compute", "wf_executor_target": target}
+    )
+
+    assert metadata.wf_executor_target == target
+
+
+def test_workflow_metadata_rejects_unknown_executor_target() -> None:
+    with pytest.raises(ValueError, match="wf_executor_target"):
+        WorkflowNodeMetadata.model_validate(
+            {"workflow_id": "wf", "wf_op": "compute", "wf_executor_target": "gpu"}
+        )
+
+
+def test_workflow_metadata_rejects_legacy_native_operation_targeted_to_python() -> None:
+    with pytest.raises(ValueError, match="cannot target the Python worker"):
+        WorkflowNodeMetadata.model_validate(
+            {
+                "workflow_id": "wf",
+                "wf_op": "rust-native/compute",
+                "wf_executor_target": "python-worker",
+            }
+        )
 
 
 @pytest.mark.parametrize("version", _OPERATION_VERSION_FIXTURE["valid"])

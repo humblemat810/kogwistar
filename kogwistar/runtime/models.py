@@ -12,6 +12,8 @@ from pydantic import (
 from ..engine_core.models import Edge, Node
 from ..json_types import JsonValue
 
+WorkflowExecutorTarget: TypeAlias = Literal["python-worker", "rust-native"]
+
 
 class WorkflowNodeMetadata(BaseModel):
     """
@@ -26,6 +28,8 @@ class WorkflowNodeMetadata(BaseModel):
       - wf_version: version of the wf_op implementation selected by the resolver;
         the exact version is part of the frozen execution/replay contract
       - wf_environment_id: required worker/runtime dependency environment
+      - wf_executor_target: optional per-node worker implementation; omitted
+        preserves legacy operation-prefix routing and Python-worker defaults
       - wf_fanout: allow multiple outgoing edges to fire in parallel
       - wf_start: marks the start node in this workflow_id
       - wf_terminal: marks terminal node
@@ -39,6 +43,7 @@ class WorkflowNodeMetadata(BaseModel):
     wf_op: str = "noop"
     wf_version: StrictStr = "v1"
     wf_environment_id: str | None = None
+    wf_executor_target: WorkflowExecutorTarget | None = None
     wf_start: bool = False
     wf_terminal: bool = False
     wf_fanout: bool = False
@@ -66,6 +71,15 @@ class WorkflowNodeMetadata(BaseModel):
             or self.wf_environment_id != self.wf_environment_id.strip()
         ):
             raise ValueError("wf_environment_id must be non-empty and canonical")
+        if self.wf_executor_target not in {None, "python-worker", "rust-native"}:
+            raise ValueError("wf_executor_target must be python-worker or rust-native")
+        if (
+            self.wf_executor_target == "python-worker"
+            and self.wf_op.startswith("rust-native/")
+        ):
+            raise ValueError(
+                "rust-native operation names cannot target the Python worker"
+            )
         return self
 
 
@@ -119,6 +133,8 @@ class WorkflowNode(Node):
         v2 = metadata.model_dump()
         if metadata.wf_environment_id is None:
             v2.pop("wf_environment_id", None)
+        if metadata.wf_executor_target is None:
+            v2.pop("wf_executor_target", None)
         v.update(v2)
         return v
 

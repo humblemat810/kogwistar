@@ -100,6 +100,7 @@ def freeze_runtime_plan(
     )
     node_versions: dict[str, str] = {}
     node_environment_ids: dict[str, str] = {}
+    node_executor_targets: dict[str, str] = {}
     resolver = runtime.step_resolver
     registered_versions = getattr(resolver, "op_versions", {})
     registered_environments = getattr(resolver, "op_environment_ids", {})
@@ -107,6 +108,19 @@ def freeze_runtime_plan(
     environment_for_version = getattr(resolver, "environment_for_version", None)
     for node_id, node in nodes.items():
         metadata = getattr(node, "metadata", None) or {}
+        target = metadata.get("wf_executor_target")
+        op = str(getattr(node, "op", "") or "noop")
+        if target not in {None, "python-worker", "rust-native"}:
+            raise RustRuntimeAuthorityError(
+                f"workflow node {node_id!r} has unsupported executor target {target!r}"
+            )
+        if target == "python-worker" and op.startswith("rust-native/"):
+            raise RustRuntimeAuthorityError(
+                f"workflow node {node_id!r} cannot route a rust-native operation to Python"
+            )
+        rust_native = target == "rust-native" or (
+            target is None and op.startswith("rust-native/")
+        )
         version = str(metadata.get("wf_version") or metadata.get("wf.version") or "v1")
         environment_id_value = metadata.get("wf_environment_id") or metadata.get(
             "wf.environment_id"
@@ -114,8 +128,10 @@ def freeze_runtime_plan(
         environment_id = (
             str(environment_id_value).strip() if environment_id_value is not None else None
         )
-        op = str(getattr(node, "op", "") or "noop")
-        if callable(supports_version):
+        if rust_native:
+            version_is_registered = True
+            declared_version = version
+        elif callable(supports_version):
             version_is_registered = bool(supports_version(op, version))
             declared_version = version if version_is_registered else "unregistered"
         else:
@@ -130,7 +146,9 @@ def freeze_runtime_plan(
                 f"workflow node {node_id!r} requires {op!r} version {version!r}, "
                 f"but the Python resolver registers {declared_version!r}"
             )
-        if callable(environment_for_version):
+        if rust_native:
+            declared_environment = environment_id
+        elif callable(environment_for_version):
             declared_environment = environment_for_version(op, version)
         else:
             declared_environment = (
@@ -148,6 +166,8 @@ def freeze_runtime_plan(
         node_versions[str(node_id)] = version
         if environment_id is not None:
             node_environment_ids[str(node_id)] = environment_id
+        if target is not None:
+            node_executor_targets[str(node_id)] = target
     node_ids = [str(node_id) for node_id in nodes]
     join_node_ids = sorted(
         str(node_id)
@@ -187,7 +207,7 @@ def freeze_runtime_plan(
                     "source_fanout": bool(getattr(source, "fanout", False)),
                 }
             )
-    return {
+    plan = {
         "start_node_id": str(start.id),
         "start_join_mask": int(may_reach.get(str(start.id), 0)),
         "join_node_ids": join_node_ids,
@@ -199,6 +219,9 @@ def freeze_runtime_plan(
         "node_environment_ids": node_environment_ids,
         "runtime_routes": routes,
     }
+    if node_executor_targets:
+        plan["node_executor_targets"] = node_executor_targets
+    return plan
 
 
 class _RunDependencyRegistry:
@@ -372,6 +395,7 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
         state.pop("_rt_node_ops", None)
         state.pop("_rt_node_versions", None)
         state.pop("_rt_node_environment_ids", None)
+        state.pop("_rt_node_executor_targets", None)
         if dependencies:
             state["_deps"] = dependencies
         return state
@@ -612,11 +636,15 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
         stored_environment_ids = contract.get("node_environment_ids")
         if not isinstance(stored_environment_ids, dict):
             stored_environment_ids = {}
+        stored_executor_targets = contract.get("node_executor_targets")
+        if not isinstance(stored_executor_targets, dict):
+            stored_executor_targets = {}
         if (
             contract.get("runtime_routes") != plan["runtime_routes"]
             or contract.get("node_ops") != plan["node_ops"]
             or stored_versions != plan["node_versions"]
             or stored_environment_ids != plan["node_environment_ids"]
+            or stored_executor_targets != plan.get("node_executor_targets", {})
         ):
             raise RustRuntimeAuthorityError(
                 "current Python workflow differs from the run's frozen resume contract"
@@ -826,6 +854,7 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
         state.pop("_rt_node_ops", None)
         state.pop("_rt_node_versions", None)
         state.pop("_rt_node_environment_ids", None)
+        state.pop("_rt_node_executor_targets", None)
         if dependencies:
             state["_deps"] = dependencies
         return state
