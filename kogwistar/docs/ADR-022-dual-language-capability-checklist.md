@@ -826,6 +826,23 @@ snapshot's denominator.
   specific wire-contract discrepancy and establishes a reusable shared-fixture
   pattern for future cross-language model contracts.
 
+- Follow-up runtime-node parity audit found Rust had checked only
+  `entity_type`, allowing incomplete run/step/checkpoint/terminal metadata that
+  Python rejects, while rejecting omitted entity-type defaults that Python
+  accepts. Rust now validates required fields, known defaults, step sequence
+  constraints, optional status/duration fields, and failed-node error lists
+  while retaining extra metadata and accepting the Python model's omitted
+  default entity type. Python integer coercions are retained for runtime
+  counters, including booleans, integral floats, underscored numeric strings,
+  and large integer strings; these are covered by the fixture.
+  Evidence: the Rust and Python/native differential tests both consume
+  `contracts/golden/workflow-runtime-node-metadata-v1.json`; the complete
+  contracts crate (**72 passed**) and complete differential module (**97
+  passed**) passed on Windows CPython 3.13, along with Ruff, rustfmt, and
+  `git diff --check`. The rebuilt extension's final environment install step
+  reported Windows access denied, but the generated extension was loaded by
+  the passing differential run. DL-16 remains in progress.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

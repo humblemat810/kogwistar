@@ -773,17 +773,126 @@ fn validate_workflow_runtime_metadata(
     metadata: &BTreeMap<String, Value>,
     expected_entity_type: &str,
 ) -> Result<(), GraphModelError> {
-    let actual = metadata
+    let string_field = |field: &str, required: bool| {
+        metadata.get(field).is_some_and(Value::is_string)
+            || (!required && !metadata.contains_key(field))
+    };
+    let integer_field = |field: &str, required: bool| {
+        metadata
+            .get(field)
+            .is_some_and(|value| python_integer_input(value).is_some())
+            || (!required && !metadata.contains_key(field))
+    };
+    let entity_type_valid = metadata
         .get("entity_type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if actual != expected_entity_type {
+        .is_none_or(|actual| actual.as_str() == Some(expected_entity_type));
+    let fields_valid = match model_class {
+        GraphModelClass::WorkflowRunNode => {
+            ["workflow_id", "run_id", "conversation_id", "turn_node_id"]
+                .into_iter()
+                .all(|field| string_field(field, true))
+                && string_field("workflow_version", false)
+                && string_field("status", false)
+        }
+        GraphModelClass::WorkflowStepExecNode => {
+            [
+                "run_id",
+                "workflow_id",
+                "workflow_node_id",
+                "op",
+                "result_json",
+            ]
+            .into_iter()
+            .all(|field| string_field(field, true))
+                && integer_field("step_seq", true)
+                && integer_field("duration_ms", false)
+                && string_field("status", false)
+                && metadata
+                    .get("step_seq")
+                    .and_then(python_integer_input)
+                    .is_some_and(|nonnegative| nonnegative)
+        }
+        GraphModelClass::WorkflowCheckpointNode => {
+            ["run_id", "workflow_id", "state_json"]
+                .into_iter()
+                .all(|field| string_field(field, true))
+                && integer_field("step_seq", true)
+                && metadata
+                    .get("step_seq")
+                    .and_then(python_integer_input)
+                    .is_some_and(|nonnegative| nonnegative)
+        }
+        GraphModelClass::WorkflowCompletedNode
+        | GraphModelClass::WorkflowCancelledNode
+        | GraphModelClass::WorkflowFailedNode => {
+            ["workflow_id", "run_id", "conversation_id"]
+                .into_iter()
+                .all(|field| string_field(field, true))
+                && integer_field("accepted_step_seq", true)
+                && (model_class != GraphModelClass::WorkflowFailedNode
+                    || metadata.get("errors").is_none_or(|errors| {
+                        errors
+                            .as_array()
+                            .is_some_and(|items| items.iter().all(Value::is_string))
+                    }))
+        }
+        _ => false,
+    };
+    if !entity_type_valid || !fields_valid {
         return Err(GraphModelError::InvalidEntityFields {
             model_class,
-            reason: "workflow runtime metadata has an unexpected entity_type",
+            reason: "invalid workflow runtime node metadata",
         });
     }
     Ok(())
+}
+
+fn python_integer_input(value: &Value) -> Option<bool> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .map(|number| number >= 0)
+            .or_else(|| number.as_u64().map(|_| true))
+            .or_else(|| {
+                number.as_f64().and_then(|number| {
+                    (number.is_finite() && number.fract() == 0.0).then_some(number >= 0.0)
+                })
+            }),
+        Value::String(value) => python_integer_text_is_nonnegative(value),
+        Value::Bool(_) => Some(true),
+        _ => None,
+    }
+}
+
+fn python_integer_text_is_nonnegative(value: &str) -> Option<bool> {
+    let value = value.trim();
+    let (negative, digits) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    if digits.is_empty() {
+        return None;
+    }
+
+    let mut previous_was_digit = false;
+    let mut nonzero_digit = false;
+    let mut digit_count = 0;
+    for byte in digits.bytes() {
+        match byte {
+            b'0'..=b'9' => {
+                previous_was_digit = true;
+                nonzero_digit |= byte != b'0';
+                digit_count += 1;
+            }
+            b'_' if previous_was_digit => previous_was_digit = false,
+            _ => return None,
+        }
+    }
+    if !previous_was_digit || digit_count == 0 {
+        return None;
+    }
+    Some(!negative || !nonzero_digit)
 }
 
 fn validate_workflow_runtime_edge_metadata(
@@ -2549,6 +2658,31 @@ mod tests {
     }
 
     #[test]
+    fn workflow_runtime_node_metadata_matches_python_model_contract() {
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-runtime-node-metadata-v1.json"
+        )))
+        .expect("valid shared workflow runtime node metadata contract");
+        assert_eq!(contract["schema_version"], 1);
+
+        let baseline = fixture()["cases"][0]["payload"].clone();
+        for case in contract["cases"].as_array().expect("contract cases") {
+            let model_class: GraphModelClass = serde_json::from_value(case["model_class"].clone())
+                .expect("known runtime node model class");
+            let mut payload = baseline.clone();
+            payload["metadata"] = case["metadata"].clone();
+            let result = GraphModelEnvelope::new(model_class, payload).validate_family_v1();
+            assert_eq!(
+                result.is_ok(),
+                case["valid"].as_bool().expect("validity flag"),
+                "workflow runtime node metadata case {}",
+                case["id"]
+            );
+        }
+    }
+
+    #[test]
     fn persistent_graph_invalid_cases_match_shared_python_rejection_fixture() {
         let baseline: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3496,20 +3630,42 @@ mod tests {
     #[test]
     fn workflow_runtime_subtypes_preserve_node_edge_shape_and_metadata_tag() {
         let fixture = fixture();
+        let runtime_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-runtime-node-metadata-v1.json"
+        )))
+        .expect("valid shared workflow runtime node metadata contract");
         let node_payload = fixture["cases"][0]["payload"].clone();
-        for (model_class, entity_type) in [
-            (GraphModelClass::WorkflowRunNode, "workflow_run"),
-            (GraphModelClass::WorkflowStepExecNode, "workflow_step_exec"),
+        for (model_class, wire_name) in [
+            (GraphModelClass::WorkflowRunNode, "workflow_run_node"),
+            (
+                GraphModelClass::WorkflowStepExecNode,
+                "workflow_step_exec_node",
+            ),
             (
                 GraphModelClass::WorkflowCheckpointNode,
-                "workflow_checkpoint",
+                "workflow_checkpoint_node",
             ),
-            (GraphModelClass::WorkflowCompletedNode, "workflow_completed"),
-            (GraphModelClass::WorkflowCancelledNode, "workflow_cancelled"),
-            (GraphModelClass::WorkflowFailedNode, "workflow_failed"),
+            (
+                GraphModelClass::WorkflowCompletedNode,
+                "workflow_completed_node",
+            ),
+            (
+                GraphModelClass::WorkflowCancelledNode,
+                "workflow_cancelled_node",
+            ),
+            (GraphModelClass::WorkflowFailedNode, "workflow_failed_node"),
         ] {
             let mut payload = node_payload.clone();
-            payload["metadata"] = serde_json::json!({"entity_type": entity_type});
+            payload["metadata"] = runtime_contract["cases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|case| {
+                    case["model_class"] == wire_name && case["valid"].as_bool() == Some(true)
+                })
+                .expect("shared fixture has valid runtime-node case")["metadata"]
+                .clone();
             assert!(
                 GraphModelEnvelope::new(model_class, payload)
                     .validate_family_v1()
@@ -3519,7 +3675,7 @@ mod tests {
         }
 
         let mut edge_payload = fixture["cases"][1]["payload"].clone();
-        edge_payload["metadata"] = serde_json::json!({"entity_type": "conversation_edge"});
+        edge_payload["metadata"] = serde_json::json!({"relation": "next"});
         assert!(
             GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, edge_payload)
                 .validate_family_v1()

@@ -114,6 +114,14 @@ WORKFLOW_RUNTIME_EDGE_METADATA_FIXTURE = json.loads(
         / "workflow-runtime-edge-metadata-v1.json"
     ).read_text(encoding="utf-8")
 )
+WORKFLOW_RUNTIME_NODE_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-runtime-node-metadata-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -749,6 +757,53 @@ def test_workflow_runtime_edge_metadata_matches_python_model_contract() -> None:
                         ensure_ascii=False,
                     )
                 )
+
+
+@pytest.mark.requires_rust
+def test_workflow_runtime_node_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    fixture = WORKFLOW_RUNTIME_NODE_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
+    base_node = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    model_by_class: dict[str, type[BaseModel]] = {
+        "workflow_run_node": WorkflowRunNode,
+        "workflow_step_exec_node": WorkflowStepExecNode,
+        "workflow_checkpoint_node": WorkflowCheckpointNode,
+        "workflow_completed_node": WorkflowCompletedNode,
+        "workflow_cancelled_node": WorkflowCancelledNode,
+        "workflow_failed_node": WorkflowFailedNode,
+    }
+
+    for case in fixture["cases"]:
+        model_class = case["model_class"]
+        payload = copy.deepcopy(base_node)
+        payload["metadata"] = case["metadata"]
+        if case["valid"]:
+            python_payload = (
+                model_by_class[model_class]
+                .model_validate(payload)
+                .model_dump(field_mode="backend", dump_format="json")
+            )
+            rust_payload = python_payload
+        else:
+            with pytest.raises(Exception):
+                model_by_class[model_class].model_validate(payload)
+            rust_payload = payload
+
+        envelope = json.dumps(
+            {
+                "schema_version": 1,
+                "model_class": model_class,
+                "payload": rust_payload,
+            },
+            ensure_ascii=False,
+        )
+        if case["valid"]:
+            _rust.validate_graph_model_family(envelope)
+        else:
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(envelope)
 
 
 @pytest.mark.requires_rust
