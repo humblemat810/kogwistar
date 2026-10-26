@@ -6686,6 +6686,29 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_precision_event_payload_survives_reopen_and_typed_replay() {
+        let (store, path) = store("arbitrary-precision-event");
+        let integer = "1606938044258990275541962092341162602522202993782792835301376";
+        let payload = format!(r#"{{"level_from_root":{integer}}}"#);
+        store
+            .append_raw_entity_event("ns", raw_event("large-level", &payload))
+            .unwrap();
+        drop(store);
+
+        let reopened = SqliteStore::open(&path).unwrap();
+        let raw = reopened.replay_raw_events("ns", 0, 1).unwrap();
+        assert_eq!(raw[0].payload_json, payload);
+
+        let replayed = block_on(EventReadStore::replay_events(&reopened, "ns", 0, 1)).unwrap();
+        assert_eq!(
+            serde_json::to_string(&replayed[0].payload).unwrap(),
+            payload
+        );
+        drop(reopened);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn accepted_index_job_result_is_first_live_claim_wins() {
         let (store, path) = store("accepted-result");
         store
