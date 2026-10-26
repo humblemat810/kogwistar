@@ -565,6 +565,13 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        self.apply_runtime_result_input(input).await
+    }
+
+    async fn apply_runtime_result_input(
+        &self,
+        input: RuntimeWorkerResultRequest,
+    ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,

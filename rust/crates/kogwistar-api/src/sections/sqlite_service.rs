@@ -973,6 +973,13 @@ impl SqliteRunApplicationService {
                 );
             }
         };
+        self.apply_runtime_result_input(input)
+    }
+
+    fn apply_runtime_result_input(
+        &self,
+        input: RuntimeWorkerResultRequest,
+    ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -1233,13 +1240,6 @@ impl SqliteRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        let internal = ApiEffectRequest {
-            contract_version: request.contract_version,
-            method: "POST".to_owned(),
-            path_and_query: "/internal/runtime/results".to_owned(),
-            body: serde_json::to_vec(&result).expect("native runtime result serializes"),
-            principal: request.principal.clone(),
-        };
-        self.apply_runtime_result(&internal)
+        self.apply_runtime_result_input(result)
     }
 }

@@ -38,14 +38,7 @@ impl PostgresRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        let internal = ApiEffectRequest {
-            contract_version: request.contract_version,
-            method: "POST".to_owned(),
-            path_and_query: "/internal/runtime/results".to_owned(),
-            body: serde_json::to_vec(&result).expect("native runtime result serializes"),
-            principal: request.principal.clone(),
-        };
-        self.apply_runtime_result(&internal).await
+        self.apply_runtime_result_input(result).await
     }
 }
 
