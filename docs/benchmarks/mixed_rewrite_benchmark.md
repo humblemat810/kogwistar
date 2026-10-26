@@ -1028,6 +1028,36 @@ variation. This strengthens the narrow endpoint evidence but does not change
 the scope guardrails above: it is still not evidence for complete production
 route, indexing, ACL, agent, replay, or embedding parity.
 
+### 2026-10-27 three-sample resource-matched endpoint recheck
+
+The same 100-item/300-operation trace was rerun after a fresh Docker image
+build, using a fresh database per sample, three measured samples per mode, and
+one warm-up.
+The container ran CPython 3.15.1 free-threaded and verified a 4-CPU/8-GiB
+cgroup limit. Both modes returned the same final-state digest
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median elapsed | Median throughput | Median startup | Elapsed CV |
+| --- | ---: | ---: | ---: | ---: |
+| Python HTTP | 61.502 s | 4.88 ops/s | 479 ms | 1.63% |
+| Rust-native HTTP | 8.639 s | 34.72 ops/s | 324 ms | 0.86% |
+
+The native path measured about 7.1x the Python HTTP throughput, while host
+process CPU for the measured trace was 9.34 s versus 0.74 s. The Rust-native
+server attested `scope=rust_native_server`, `complete=true`, zero FFI calls,
+and 300 transport requests/tool dispatches; both modes covered 100 read-event,
+100 read-projection, and 100 write operations. The exact report is retained
+under the ignored
+`.tmp/mixed-runtime-matrix-followup-20261027/endpoint/endpoint-report.v1.json`.
+
+This repeat strengthens the narrow endpoint result and lowers sample
+uncertainty; it does not close production parity. The harness uses a synthetic
+SQLite workload and a benchmark-only Rust server, excludes production MCP
+session/authentication, ACL, indexing, agents, replay/recovery, PostgreSQL, and
+embedding inference, and runs CPython 3.15 free-threaded rather than the
+supported production interpreter matrix. Do not extrapolate the ratio to a
+general end-to-end speedup.
+
 ### 2026-10-25 persistent SQLite smoke recheck
 
 A controlled local smoke run used five logical items, two measured samples, two
