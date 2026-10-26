@@ -570,6 +570,80 @@ def test_async_batch_worker_propagates_cancellation_without_queue_mutation() -> 
     assert meta.failed == []
 
 
+def test_sync_batch_adapter_cannot_mutate_claim_identity_or_ack_token() -> None:
+    first = vars(_job(claim_token="claim-1"))
+    second = vars(_job(claim_token="claim-2"))
+    for job, job_id in ((first, "job-1"), (second, "job-2")):
+        job["job_id"] = job_id
+        job["index_kind"] = "node_embedding"
+        job["payload_json"] = '{"embedding_model":"test"}'
+
+    class BatchMeta(_Meta):
+        def claim_index_jobs(self, **_: object) -> list[dict[str, object]]:
+            if self.claimed:
+                return []
+            self.claimed = True
+            return [first, second]
+
+    class MutatingBatchAdapter:
+        def apply_embedding_jobs_batch(
+            self, jobs: list[object]
+        ) -> dict[str, BaseException | None]:
+            for job in jobs:
+                assert isinstance(job, dict)
+                job["job_id"] = "attacker-job"
+                job["claim_token"] = "attacker-token"
+            return {"job-1": None, "job-2": None}
+
+    meta = BatchMeta(first)
+    engine = _engine(meta)
+    engine.two_stage_projection_adapter = MutatingBatchAdapter()
+
+    metrics = IndexJobWorker(engine=engine).tick()
+
+    assert metrics.done == 2
+    assert meta.done == [("job-1", "claim-1"), ("job-2", "claim-2")]
+    assert first["job_id"] == "job-1" and first["claim_token"] == "claim-1"
+    assert second["job_id"] == "job-2" and second["claim_token"] == "claim-2"
+
+
+def test_async_batch_adapter_cannot_mutate_claim_identity_or_ack_token() -> None:
+    first = vars(_job(claim_token="claim-1"))
+    second = vars(_job(claim_token="claim-2"))
+    for job, job_id in ((first, "job-1"), (second, "job-2")):
+        job["job_id"] = job_id
+        job["index_kind"] = "node_embedding"
+        job["payload_json"] = '{"embedding_model":"test"}'
+
+    class BatchMeta(_Meta):
+        def claim_index_jobs(self, **_: object) -> list[dict[str, object]]:
+            if self.claimed:
+                return []
+            self.claimed = True
+            return [first, second]
+
+    class MutatingBatchAdapter:
+        async def apply_embedding_jobs_batch(
+            self, jobs: list[object]
+        ) -> dict[str, BaseException | None]:
+            for job in jobs:
+                assert isinstance(job, dict)
+                job["job_id"] = "attacker-job"
+                job["claim_token"] = "attacker-token"
+            return {"job-1": None, "job-2": None}
+
+    meta = BatchMeta(first)
+    engine = _engine(meta)
+    engine.async_two_stage_projection_adapter = MutatingBatchAdapter()
+
+    metrics = asyncio.run(AsyncIndexJobWorker(engine=engine).tick())
+
+    assert metrics.done == 2
+    assert meta.done == [("job-1", "claim-1"), ("job-2", "claim-2")]
+    assert first["job_id"] == "job-1" and first["claim_token"] == "claim-1"
+    assert second["job_id"] == "job-2" and second["claim_token"] == "claim-2"
+
+
 def test_legacy_claim_without_token_keeps_compatibility_call_shape() -> None:
     meta = _Meta(_job(claim_token=None))
     worker = IndexJobWorker(engine=_engine(meta))

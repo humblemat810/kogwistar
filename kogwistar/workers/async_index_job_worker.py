@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import json
 import time
@@ -122,7 +123,9 @@ class AsyncIndexJobWorker:
                 try:
                     if not inspect.iscoroutinefunction(batch_apply):
                         raise RuntimeError("async embedding batch handler must be awaitable")
-                    batch_results = await batch_apply(unit)
+                    # Keep provider-facing objects separate from the claimed
+                    # rows used later for result association and queue ack.
+                    batch_results = await batch_apply(copy.deepcopy(unit))
                 except Exception as exc:
                     batch_results = {
                         str(self._value(job, "job_id")): exc for job in unit

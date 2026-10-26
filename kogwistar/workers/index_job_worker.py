@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import signal
 import sys
@@ -182,7 +183,10 @@ class IndexJobWorker:
                 batch_results: dict[str, BaseException | None] | None = None
                 if batch_fn is not None and len(unit) > 1:
                     try:
-                        batch_results = batch_fn(unit)
+                        # Batch adapters may call third-party providers. Give
+                        # them detached rows so mutation cannot change the
+                        # identity/token used below for admission or ack.
+                        batch_results = batch_fn(copy.deepcopy(unit))
                     except Exception as exc:
                         # A provider/adapter batch failure is per-job failure,
                         # not a worker-process failure or batch transaction.
