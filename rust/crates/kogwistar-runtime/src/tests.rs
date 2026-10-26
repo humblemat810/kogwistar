@@ -567,6 +567,44 @@
     }
 
     #[test]
+    fn native_registry_rejects_unsupported_state_update_mode_for_custom_result() {
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register("app/custom-result", "v1", |_| {
+                Ok(NativeOperationOutput {
+                    state_update: vec![RecordedStateUpdate::Pair((
+                        "unknown".to_owned(),
+                        Map::from_iter([("value".to_owned(), json!(1))]),
+                    ))],
+                    result: Some(json!({"custom": true})),
+                })
+            })
+            .unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "app/custom-result".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+        };
+
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::OperationFailed { operation, reason })
+                if operation == "app/custom-result"
+                    && reason.contains("unsupported state update mode")
+        ));
+    }
+
+    #[test]
     fn native_request_legacy_wire_defaults_state_without_changing_routing() {
         let request: RuntimeNativeStepRequest = serde_json::from_value(json!({
             "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
