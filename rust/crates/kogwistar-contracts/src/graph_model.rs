@@ -530,9 +530,11 @@ impl RawGraphModelEnvelopeV1 {
             });
         }
 
-        self.validate_family_v1()?;
         let level_from_root = self.level_from_root()?;
         let payload = persistent_payload_for_v1_decode(self.payload.get())?;
+        // The typed persistent decoder performs the Node/Edge family checks.
+        // Do not call validate_family_v1() first: for these classes that would
+        // decode and validate the same entity once before this lossless V1 view.
         let entity = GraphModelEnvelope::new(self.model_class, payload).decode_persistent_v1()?;
         Ok(PersistentGraphEntityV2 {
             entity,
@@ -4115,6 +4117,20 @@ mod tests {
                 _ => unreachable!("only persistent nodes and edges are tested"),
             }
         }
+
+        let mut invalid_payload = fixture["cases"][0]["payload"].clone();
+        invalid_payload["metadata"]["lifecycle_status"] = Value::String("purged".to_owned());
+        let invalid_wire = format!(
+            "{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{}}}",
+            serde_json::to_string(&invalid_payload).expect("serialize invalid payload")
+        );
+        assert!(
+            RawGraphModelEnvelopeV1::from_json(&invalid_wire)
+                .expect("invalid family payload remains valid JSON")
+                .decode_persistent_v2()
+                .is_err(),
+            "V2 decoding must retain fail-closed lifecycle validation"
+        );
     }
 
     #[test]
