@@ -1134,20 +1134,34 @@ fn validate_pure_chroma_shape(
     if model_class.entity_kind() == GraphEntityKind::Edge {
         let edge: PureChromaEdgeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
-        if edge.fields.label.trim().is_empty() || edge.fields.summary.trim().is_empty() {
+        if edge.fields.label.trim().is_empty()
+            || edge.fields.summary.trim().is_empty()
+            || edge
+                .fields
+                .properties
+                .as_ref()
+                .is_some_and(|value| !valid_graph_properties(value))
+        {
             return Err(GraphModelError::InvalidEntityFields {
                 model_class,
-                reason: "PureChroma label and summary must not be empty",
+                reason: "invalid PureChroma label, summary, or properties",
             });
         }
         Ok(())
     } else {
         let node: PureChromaNodeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
-        if node.fields.label.trim().is_empty() || node.fields.summary.trim().is_empty() {
+        if node.fields.label.trim().is_empty()
+            || node.fields.summary.trim().is_empty()
+            || node
+                .fields
+                .properties
+                .as_ref()
+                .is_some_and(|value| !valid_graph_properties(value))
+        {
             return Err(GraphModelError::InvalidEntityFields {
                 model_class,
-                reason: "PureChroma label and summary must not be empty",
+                reason: "invalid PureChroma label, summary, or properties",
             });
         }
         Ok(())
@@ -2844,16 +2858,29 @@ mod tests {
         for case in invalid["cases"].as_array().expect("invalid cases") {
             let case_id = case.as_str().expect("case id");
             let (kind, mutation) = case_id.split_once('.').expect("kind.mutation");
+            let baseline_kind = match kind {
+                "pure_chroma_node" => "node",
+                "pure_chroma_edge" => "edge",
+                _ => kind,
+            };
             let baseline_case = baseline["cases"]
                 .as_array()
                 .expect("baseline cases")
                 .iter()
-                .find(|candidate| candidate["kind"] == kind)
+                .find(|candidate| candidate["kind"] == baseline_kind)
                 .expect("matching baseline model");
             let mut payload = baseline_case["payload"].clone();
+            if kind.starts_with("pure_chroma_") {
+                payload
+                    .as_object_mut()
+                    .expect("PureChroma payload object")
+                    .remove("mentions");
+            }
             let model_class = match kind {
                 "node" => GraphModelClass::Node,
                 "edge" => GraphModelClass::Edge,
+                "pure_chroma_node" => GraphModelClass::PureChromaNode,
+                "pure_chroma_edge" => GraphModelClass::PureChromaEdge,
                 _ => panic!("unexpected fixture model class: {kind}"),
             };
             match mutation {
@@ -2881,12 +2908,20 @@ mod tests {
                 "properties_not_mapping" => {
                     payload["properties"] = serde_json::json!(["not", "a", "mapping"]);
                 }
-                "properties_nested_mapping" => {
+                "properties_nested_mapping" if kind == "node" => {
                     payload["properties"] = serde_json::json!({
                         "invalid": {"nested": {"value": 1}}
                     });
                 }
                 "properties_nested_list" if kind == "edge" => {
+                    payload["properties"] = serde_json::json!({"invalid": [[1]]});
+                }
+                "properties_nested_mapping" if kind == "pure_chroma_node" => {
+                    payload["properties"] = serde_json::json!({
+                        "invalid": {"nested": {"value": 1}}
+                    });
+                }
+                "properties_nested_list" if kind == "pure_chroma_edge" => {
                     payload["properties"] = serde_json::json!({"invalid": [[1]]});
                 }
                 _ => panic!("unexpected graph-model invalid fixture: {case_id}"),

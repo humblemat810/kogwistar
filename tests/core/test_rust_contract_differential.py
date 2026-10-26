@@ -383,7 +383,22 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
     baseline_by_kind = {
         case["kind"]: case["payload"] for case in GRAPH_MODEL_FIXTURE["cases"]
     }
-    model_by_kind = {"node": Node, "edge": Edge}
+    baseline_by_kind["pure_chroma_node"] = copy.deepcopy(baseline_by_kind["node"])
+    baseline_by_kind["pure_chroma_node"].pop("mentions")
+    baseline_by_kind["pure_chroma_edge"] = copy.deepcopy(baseline_by_kind["edge"])
+    baseline_by_kind["pure_chroma_edge"].pop("mentions")
+    model_by_kind = {
+        "node": Node,
+        "edge": Edge,
+        "pure_chroma_node": PureChromaNode,
+        "pure_chroma_edge": PureChromaEdge,
+    }
+    rust_class_by_kind = {
+        "node": "node",
+        "edge": "edge",
+        "pure_chroma_node": "pure_chroma_node",
+        "pure_chroma_edge": "pure_chroma_edge",
+    }
     assert GRAPH_MODEL_INVALID_FIXTURE["schema_version"] == 1
     for case_id in GRAPH_MODEL_INVALID_FIXTURE["cases"]:
         kind, mutation = case_id.split(".", maxsplit=1)
@@ -404,7 +419,10 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
             payload["properties"] = ["not", "a", "mapping"]
         elif mutation == "properties_nested_mapping":
             payload["properties"] = {"invalid": {"nested": {"value": 1}}}
-        elif mutation == "properties_nested_list" and kind == "edge":
+        elif mutation == "properties_nested_list" and kind in {
+            "edge",
+            "pure_chroma_edge",
+        }:
             payload["properties"] = {"invalid": [[1]]}
         else:
             raise AssertionError(f"unknown graph-model parity fixture: {case_id}")
@@ -414,7 +432,11 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
         with pytest.raises(Exception):
             _rust.validate_graph_model_family(
                 json.dumps(
-                    {"schema_version": 1, "model_class": kind, "payload": payload},
+                    {
+                        "schema_version": 1,
+                        "model_class": rust_class_by_kind[kind],
+                        "payload": payload,
+                    },
                     ensure_ascii=False,
                 )
             )
