@@ -25,10 +25,12 @@ denominator of either snapshot.
   `projection_worker::run_graph_projection_jobs_once`, which composes any
   `IndexJobWriteStore` with any `GraphWriteStore`. Its versioned action binds
   queue ID, namespace, entity kind/ID, and index kind; invalid provider output
-  is rejected before durable admission. A projection failure retries from the
+  is rejected before durable admission. Replayed accepted actions must have a
+  matching stored SHA-256 digest; missing or mismatched integrity metadata
+  fails the job before graph mutation. A projection failure retries from the
   accepted action without rerunning the provider, and queue completion follows
   the graph upsert/delete. Evidence: `cargo test -p kogwistar-engine --offline`
-  (**11 unit tests and 1 backend-composition test passed**) and
+  (**12 unit tests and 1 backend-composition test passed**) and
   `cargo fmt --all -- --check` on Windows. The compile-time composition test
   proves `PostgresStore` can supply the durable index queue while
   `ChromaGraphStore` supplies graph projection; it does not run live PostgreSQL

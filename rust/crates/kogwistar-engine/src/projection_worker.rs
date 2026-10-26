@@ -256,8 +256,13 @@ where
             return Err(backend_error("claimed index job has no claim token"));
         };
         let is_replay = job.accepted_result_json.is_some();
-        let action_json = if let Some(existing) = job.accepted_result_json.as_deref() {
-            existing.to_owned()
+        let (action_json, accepted_digest) = if let Some(existing) =
+            job.accepted_result_json.as_deref()
+        {
+            (
+                existing.to_owned(),
+                job.accepted_result_sha256.as_deref().map(str::to_owned),
+            )
         } else {
             let candidate = if job.op.eq_ignore_ascii_case("DELETE") {
                 None
@@ -303,9 +308,10 @@ where
                 .await?
             {
                 admission if admission.status == "accepted" || admission.status == "existing" => {
-                    admission.result_json.ok_or_else(|| {
+                    let result_json = admission.result_json.ok_or_else(|| {
                         backend_error("queue accepted a projection action without returning it")
-                    })?
+                    })?;
+                    (result_json, admission.result_sha256)
                 }
                 admission if admission.status == "rejected" => {
                     summary.claim_lost += 1;
@@ -319,6 +325,22 @@ where
                 }
             }
         };
+
+        let digest_matches = accepted_digest
+            .as_deref()
+            .is_some_and(|expected| expected == result_digest(&action_json));
+        if !digest_matches {
+            queue
+                .mark_index_job_failed(
+                    &job.job_id,
+                    "accepted projection action is missing or has an invalid SHA-256 digest",
+                    true,
+                    Some(claim_token),
+                )
+                .await?;
+            summary.failed += 1;
+            continue;
+        }
 
         let action = match parse_action(&job, &action_json) {
             Ok(action) => action,
@@ -590,6 +612,56 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|job| job.job_id == "projection-job")
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_action_with_mismatched_digest_fails_before_graph_write() {
+        let queue = InMemoryStore::new();
+        enqueue(&queue, "UPSERT").await;
+        let claimed = queue
+            .claim_index_jobs(1, 30, Some("workspace"))
+            .await
+            .unwrap()
+            .remove(0);
+        let action = action_value(&claimed, Some(&candidate())).to_string();
+        let token = claimed.claim_token.unwrap();
+        queue
+            .accept_index_job_result("projection-job", &token, &action, "not-the-action-digest")
+            .await
+            .unwrap();
+        queue
+            .bump_retry_and_requeue("projection-job", "simulate restart", 0, Some(&token))
+            .await
+            .unwrap();
+
+        let graph = InMemoryStore::new();
+        let summary = run_graph_projection_jobs_once(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace"),
+            move |_job| async { panic!("invalid accepted result must not call provider") },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.failed, 1);
+        assert!(
+            graph
+                .graph_record("workspace", "node-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            queue
+                .index_jobs(None, Some("FAILED"), None, None, None, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 
