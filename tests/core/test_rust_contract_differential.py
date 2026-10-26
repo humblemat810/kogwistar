@@ -547,6 +547,7 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     assert decoded["level_from_root"] == str(large_level)
     assert decoded["entity"]["id"] == python_payload["id"]
     assert decoded["entity"]["level_from_root"] is None
+    assert decoded["raw_payload"] == python_payload
 
     metadata_only = copy.deepcopy(python_payload)
     metadata_only.pop("level_from_root")
@@ -559,6 +560,7 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     metadata_decoded = decode_persistent_graph_model_v2(metadata_wire)
     assert metadata_decoded["model_class"] == kind
     assert metadata_decoded["level_from_root"] == str(large_level)
+    assert metadata_decoded["raw_payload"] == metadata_only
 
     explicit_null = copy.deepcopy(python_payload)
     explicit_null["level_from_root"] = None
@@ -571,6 +573,7 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     null_decoded = decode_persistent_graph_model_v2(null_wire)
     assert null_decoded["model_class"] == kind
     assert null_decoded["level_from_root"] is None
+    assert null_decoded["raw_payload"] == explicit_null
 
 
 @pytest.mark.requires_rust

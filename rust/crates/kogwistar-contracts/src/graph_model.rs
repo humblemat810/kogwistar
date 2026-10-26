@@ -695,6 +695,7 @@ pub fn decode_persistent_graph_model_v2_from_str(
         "model_class": envelope.model_class.wire_name(),
         "entity": entity,
         "level_from_root": level_from_root,
+        "raw_payload": decoded.raw_payload,
     }))
     .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))
 }

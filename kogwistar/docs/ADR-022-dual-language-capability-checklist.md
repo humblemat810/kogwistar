@@ -879,6 +879,21 @@ The additive `PersistentGraphEntityV2` now participates in the shared Rust graph
   Windows CPython 3.13 with the rebuilt extension. Ruff, rustfmt, and
   `git diff --check` passed. DL-16 remains in progress.
 
+### Latest DL-16A V2 bridge preservation evidence
+
+The additive `decode_persistent_graph_model_v2()` bridge response now includes
+the untouched `raw_payload` alongside the typed legacy entity and exact level.
+This closes a response-boundary loss: the Rust V2 value already retained the
+raw payload, but the serialized PyO3 result previously omitted it. The field is
+additive; the V1 wire shape and typed entity remain unchanged. Python/Rust
+differential coverage verifies exact raw-payload parity for Node and Edge with
+positive and negative `2**64` and `2**200` values, metadata fallback, and
+explicit top-level null precedence. Evidence: the complete
+`tests/core/test_rust_contract_differential.py` module (**107 passed**),
+`cargo test -p kogwistar-contracts --lib` (**81 passed**), Rust formatting,
+Ruff, and `git diff --check`. This remains a focused graph-model seam, not
+whole-stack interchangeability evidence; DL-16A remains partial.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its
