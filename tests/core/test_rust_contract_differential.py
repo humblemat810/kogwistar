@@ -502,16 +502,26 @@ def test_python_and_rust_preserve_shared_legacy_graph_defaults(monkeypatch) -> N
 
 
 @pytest.mark.requires_rust
+@pytest.mark.parametrize(("kind", "model_type"), [("node", Node), ("edge", Edge)])
 @pytest.mark.parametrize("large_level", [2**64, 2**200, -(2**64), -(2**200)])
 def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
-    monkeypatch: pytest.MonkeyPatch, large_level: int
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    model_type: type[Node] | type[Edge],
+    large_level: int,
 ) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
 
-    payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    payload = copy.deepcopy(
+        next(
+            case["payload"]
+            for case in GRAPH_MODEL_FIXTURE["cases"]
+            if case["kind"] == kind
+        )
+    )
     payload["level_from_root"] = large_level
     payload["metadata"]["level_from_root"] = large_level
-    python_model = Node.model_validate(payload)
+    python_model = model_type.model_validate(payload)
     python_payload = python_model.model_dump(
         field_mode="backend", dump_format="json"
     )
@@ -519,12 +529,12 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     assert python_payload["metadata"]["level_from_root"] == large_level
 
     wire = json.dumps(
-        {"schema_version": 1, "model_class": "node", "payload": python_payload},
+        {"schema_version": 1, "model_class": kind, "payload": python_payload},
         ensure_ascii=False,
     )
     assert str(large_level) in wire
     validate_graph_model_family(
-        {"schema_version": 1, "model_class": "node", "payload": python_payload}
+        {"schema_version": 1, "model_class": kind, "payload": python_payload}
     )
 
     round_trip = round_trip_raw_graph_model_envelope(wire)
@@ -533,7 +543,7 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     assert graph_model_level_from_root(wire) == str(large_level)
     decoded = decode_persistent_graph_model_v2(wire)
     assert decoded["schema_version"] == 2
-    assert decoded["model_class"] == "node"
+    assert decoded["model_class"] == kind
     assert decoded["level_from_root"] == str(large_level)
     assert decoded["entity"]["id"] == python_payload["id"]
     assert decoded["entity"]["level_from_root"] is None
@@ -542,7 +552,7 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     metadata_only.pop("level_from_root")
     metadata_only["metadata"]["level_from_root"] = large_level
     metadata_wire = json.dumps(
-        {"schema_version": 1, "model_class": "node", "payload": metadata_only},
+        {"schema_version": 1, "model_class": kind, "payload": metadata_only},
         ensure_ascii=False,
     )
     assert graph_model_level_from_root(metadata_wire) == str(large_level)
@@ -551,7 +561,7 @@ def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     explicit_null["level_from_root"] = None
     explicit_null["metadata"]["level_from_root"] = large_level
     null_wire = json.dumps(
-        {"schema_version": 1, "model_class": "node", "payload": explicit_null},
+        {"schema_version": 1, "model_class": kind, "payload": explicit_null},
         ensure_ascii=False,
     )
     assert graph_model_level_from_root(null_wire) is None
