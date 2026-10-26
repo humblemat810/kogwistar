@@ -459,16 +459,31 @@ pub fn apply_state_update_from_str(payload_json: &str) -> Result<String, Contrac
     let Value::Object(request) = serde_json::from_str::<Value>(payload_json)? else {
         return Err(ContractError::StateUpdateRequestMustBeObject);
     };
-    let mut state = request
+    let state = request
         .get("state")
         .cloned()
         .ok_or(ContractError::StateUpdateStateMustBeObject)?;
-    state_object_mut(&mut state)?;
     let state_update = request
         .get("state_update")
         .ok_or(ContractError::StateUpdateItemMustBePair)?;
-    let update = request.get("update").cloned().unwrap_or(Value::Null);
-    if json_truthy(&update) && json_truthy(state_update) {
+    let update = request.get("update");
+    let state_schema = request.get("state_schema");
+    let state = apply_state_update_values(state, state_update, update, state_schema)?;
+    Ok(canonical_json(&state, false))
+}
+
+/// Apply a Python-compatible JSON state delta without crossing a string/JSON
+/// serialization boundary. Native runtime callers use this same reducer for
+/// in-memory effects; `apply_state_update_from_str` remains the stable bridge.
+pub fn apply_state_update_values(
+    mut state: Value,
+    state_update: &Value,
+    update: Option<&Value>,
+    state_schema: Option<&Value>,
+) -> Result<Value, ContractError> {
+    state_object_mut(&mut state)?;
+    let update_value = update.cloned().unwrap_or(Value::Null);
+    if json_truthy(&update_value) && json_truthy(state_update) {
         return Err(ContractError::StateUpdateConflict);
     }
     for item in state_update_entries(state_update)? {
@@ -506,11 +521,11 @@ pub fn apply_state_update_from_str(payload_json: &str) -> Result<String, Contrac
             _ => {}
         }
     }
-    if json_truthy(&update) {
-        let Some(update) = update.as_object() else {
+    if json_truthy(&update_value) {
+        let Some(update) = update_value.as_object() else {
             return Err(ContractError::StateUpdatePayloadMustBeObject);
         };
-        let schema = request.get("state_schema").and_then(Value::as_object);
+        let schema = state_schema.and_then(Value::as_object);
         for (key, value) in update {
             if schema
                 .and_then(|schema| schema.get(key))
@@ -526,7 +541,7 @@ pub fn apply_state_update_from_str(payload_json: &str) -> Result<String, Contrac
             }
         }
     }
-    Ok(canonical_json(&state, false))
+    Ok(state)
 }
 
 fn normalize_entity_event(value: &Value) -> Result<Value, ContractError> {
@@ -1650,6 +1665,14 @@ mod tests {
                 serde_json::from_str(&apply_state_update_from_str(&request.to_string()).unwrap())
                     .unwrap();
             assert_eq!(result, case["expected"], "case {}", case["name"]);
+            let in_memory = apply_state_update_values(
+                case["state"].clone(),
+                &case["state_update"],
+                Some(&case["update"]),
+                Some(&case["state_schema"]),
+            )
+            .unwrap();
+            assert_eq!(in_memory, result, "in-memory case {}", case["name"]);
         }
     }
 

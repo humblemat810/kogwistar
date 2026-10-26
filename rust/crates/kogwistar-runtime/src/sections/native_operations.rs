@@ -441,24 +441,21 @@ fn validate_standard_result_state(
         });
     }
 
-    let reducer_payload = json!({
-        "state": &request.state,
-        "state_update": &output.state_update,
-        "update": null,
-        "state_schema": {},
-    });
-    let expected_state = kogwistar_contracts::apply_state_update_from_str(
-        &reducer_payload.to_string(),
+    let state_update = serde_json::to_value(&output.state_update).map_err(|error| {
+        RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: format!("native operation returned an invalid state update: {error}"),
+        }
+    })?;
+    let expected_state = kogwistar_contracts::apply_state_update_values(
+        Value::Object(request.state.clone()),
+        &state_update,
+        None,
+        None,
     )
     .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
         operation: request.operation.clone(),
         reason: format!("native operation returned an invalid state update: {error}"),
-    })?;
-    let expected_state: Value = serde_json::from_str(&expected_state).map_err(|error| {
-        RuntimeNativeExecutionError::OperationFailed {
-            operation: request.operation.clone(),
-            reason: format!("native state reducer returned invalid JSON: {error}"),
-        }
     })?;
     if final_state != &expected_state {
         return Err(RuntimeNativeExecutionError::OperationFailed {
