@@ -202,6 +202,22 @@
                 "final_state": {"counter": 2},
             }))
         );
+        let increment_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-native-increment-counter-v1.json"
+        )))
+        .unwrap();
+        let increment_durable = json!({
+            "contract_version": increment_effect.contract_version,
+            "status": "success",
+            "state_update": increment_effect.state_update,
+            "update": increment_effect.update,
+            "state_schema": increment_effect.state_schema,
+            "successors": increment_effect.successors,
+            "route_next": increment_effect.route_next,
+            "result": increment_effect.result,
+        });
+        assert_eq!(increment_durable, increment_fixture);
         let invalid_increment = RuntimeNativeStepRequest {
             state: Map::new(),
             ..increment
