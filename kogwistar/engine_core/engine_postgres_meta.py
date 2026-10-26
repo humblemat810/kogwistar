@@ -186,7 +186,7 @@ def _make_runner() -> asyncio.Runner:
 
 @dataclass
 class IndexJob:
-    """Typed view of an index job (matches EngineSQLite.IndexJobRow)."""
+    """Typed PostgreSQL view with the same fields as the SQLite job row."""
 
     job_id: str
     namespace: str
@@ -207,6 +207,8 @@ class IndexJob:
     accepted_result_json: str | None = None
     accepted_result_sha256: str | None = None
     accepted_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass
@@ -824,6 +826,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     WHERE j.job_id = c.job_id
                     RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
                               j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts,
+                              j.created_at, j.updated_at,
                               j.accepted_result_json, j.accepted_result_sha256, j.accepted_at
                     """
                 ),
@@ -876,6 +879,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     ),
                     claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
                     claim_attempts=_int_or_default(r.get("claim_attempts")),
+                    created_at=(str(r.get("created_at")) if r.get("created_at") is not None else None),
+                    updated_at=(str(r.get("updated_at")) if r.get("updated_at") is not None else None),
                     accepted_result_json=(str(r.get("accepted_result_json")) if r.get("accepted_result_json") is not None else None),
                     accepted_result_sha256=(str(r.get("accepted_result_sha256")) if r.get("accepted_result_sha256") is not None else None),
                     accepted_at=(str(r.get("accepted_at")) if r.get("accepted_at") is not None else None),
@@ -1096,7 +1101,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"""
             SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
                    lease_until, next_run_at, max_retries, retry_count, last_error, payload_json,
-                   claim_token, claim_attempts, accepted_result_json,
+                   created_at, updated_at, claim_token, claim_attempts, accepted_result_json,
                    accepted_result_sha256, accepted_at
             FROM {ij}
             {where_sql}
@@ -1146,6 +1151,16 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         else None
                     ),
                     claim_attempts=_int_or_default(r.get("claim_attempts")),
+                    created_at=(
+                        str(r.get("created_at"))
+                        if r.get("created_at") is not None
+                        else None
+                    ),
+                    updated_at=(
+                        str(r.get("updated_at"))
+                        if r.get("updated_at") is not None
+                        else None
+                    ),
                     accepted_result_json=(
                         str(r.get("accepted_result_json"))
                         if r.get("accepted_result_json") is not None

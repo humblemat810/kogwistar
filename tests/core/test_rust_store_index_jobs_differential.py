@@ -4,15 +4,20 @@ import sqlite3
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+    IndexJob as PostgresIndexJob,
+)
+from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.indexing import IndexingSubsystem
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -40,12 +45,20 @@ def _job(job_id: str, namespace: str = "ns", op: str = "UPSERT", **extra: Any) -
     }
 
 
+def test_python_queue_row_models_expose_the_same_fields() -> None:
+    sqlite_fields = {field.name for field in fields(IndexJobRow)}
+    postgres_fields = {field.name for field in fields(PostgresIndexJob)}
+
+    assert sqlite_fields == postgres_fields
+
+
 def test_sqlite_python_to_rust_and_rust_to_python_queue_contract(tmp_path: Path) -> None:
     python = EngineSQLite(tmp_path)
     python.ensure_initialized()
     assert python.enqueue_index_job(job_id="python", namespace="ns", entity_kind="node", entity_id="n", index_kind="doc", op="UPSERT") == "python"
     row = _sqlite(python.db_path, {"kind": "list_index_jobs", "namespace": "ns"})[0]
     assert row["job_id"] == "python" and isinstance(row["created_at"], int)
+    assert set(row) == {field.name for field in fields(IndexJobRow)}
 
     assert _sqlite(python.db_path, _job("rust", namespace="other", payload_json='{"from":"rust"}')) == "rust"
     rows = python.list_index_jobs(namespace="other")
@@ -109,6 +122,7 @@ def test_sqlite_python_rust_claim_and_ack_handoff_is_interoperable(
     python_view = python.list_index_jobs(namespace="handoff")[0]
     assert python_view.status == "DOING"
     assert python_view.claim_token == rust_claim["claim_token"]
+    assert python_view.claim_attempts == 0
     assert (
         python.mark_index_job_done(
             rust_claim["job_id"], claim_token="stale-python-token"
@@ -282,7 +296,7 @@ def test_sqlite_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
         _phase1_enable_validation_cache=False,
         _implementation_selection_snapshot=None,
     )
-    reconciler = IndexingSubsystem(engine)
+    reconciler = IndexingSubsystem(cast(GraphKnowledgeEngine, engine))
     projection_calls = 0
 
     def apply_index_job(**_: object) -> None:
@@ -336,6 +350,7 @@ def _pg(dsn: str, schema: str, operation: dict[str, Any]) -> Any:
 def _require_pg(pg_dsn: str | None, pg_schema: str | None) -> tuple[str, str]:
     if not pg_dsn or not pg_schema:
         pytest.skip("PostgreSQL fixture/DSN unavailable")
+    assert pg_dsn is not None and pg_schema is not None
     return pg_dsn, pg_schema
 
 
@@ -406,8 +421,18 @@ def test_postgres_reconciler_recovers_admitted_result_after_restart_and_lost_ack
     reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     reopened.ensure_initialized()
     persisted = reopened.list_index_jobs(namespace=namespace)[0]
+    rust_persisted = _pg(
+        dsn,
+        schema,
+        {"kind": "list_index_jobs", "namespace": namespace},
+    )[0]
+    assert set(rust_persisted) == {field.name for field in fields(IndexJobRow)}
+    assert rust_persisted["accepted_result_json"] == '{"embedding":[0.25,0.75]}'
     assert persisted.status == "DOING"
     assert persisted.claim_token == claim.claim_token
+    assert persisted.claim_attempts == 0
+    assert persisted.created_at is not None
+    assert persisted.updated_at is not None
     assert persisted.accepted_result_json == '{"embedding":[0.25,0.75]}'
     assert persisted.accepted_result_sha256 == "durable-result"
     assert persisted.accepted_at is not None
@@ -419,7 +444,7 @@ def test_postgres_reconciler_recovers_admitted_result_after_restart_and_lost_ack
         _phase1_enable_validation_cache=False,
         _implementation_selection_snapshot=None,
     )
-    reconciler = IndexingSubsystem(engine)
+    reconciler = IndexingSubsystem(cast(GraphKnowledgeEngine, engine))
     projection_calls = 0
 
     def apply_index_job(**_: object) -> None:

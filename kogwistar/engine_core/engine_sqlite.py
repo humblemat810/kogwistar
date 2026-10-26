@@ -100,6 +100,7 @@ class IndexJobRow:
     accepted_result_json: str | None = None
     accepted_result_sha256: str | None = None
     accepted_at: int | None = None
+    claim_attempts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
