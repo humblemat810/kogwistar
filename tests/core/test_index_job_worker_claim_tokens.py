@@ -293,18 +293,21 @@ def test_sync_worker_replays_admitted_result_without_projection() -> None:
     assert engine.indexing.calls == 0
 
 
-def test_sync_worker_does_not_ack_malformed_accepted_result_json() -> None:
+@pytest.mark.parametrize("payload", ['{"operation":', "123"])
+def test_sync_worker_preserves_opaque_legacy_accepted_result_string(
+    payload: str,
+) -> None:
     job = _admitted_job(claim_token="claim-1")
-    job.accepted_result_json = '{"operation":'
+    job.accepted_result_json = payload
     meta = _Meta(job)
     worker = IndexJobWorker(engine=_engine(meta))
 
     metrics = worker.tick()
 
-    assert metrics.done == 0
-    assert metrics.retried == 1
-    assert meta.done == []
-    assert meta.retried == [("job-1", "claim-1")]
+    assert metrics.done == 1
+    assert metrics.retried == 0
+    assert meta.done == [("job-1", "claim-1")]
+    assert meta.retried == []
 
 
 def test_sync_worker_does_not_ack_non_string_accepted_result() -> None:
@@ -459,19 +462,22 @@ def test_async_worker_replays_admitted_result_without_projection() -> None:
     asyncio.run(run())
 
 
-def test_async_worker_does_not_ack_malformed_accepted_result_json() -> None:
+@pytest.mark.parametrize("payload", ['{"operation":', "123"])
+def test_async_worker_preserves_opaque_legacy_accepted_result_string(
+    payload: str,
+) -> None:
     async def run() -> None:
         job = _admitted_job(claim_token="claim-1")
-        job.accepted_result_json = '{"operation":'
+        job.accepted_result_json = payload
         meta = _Meta(job)
         worker = AsyncIndexJobWorker(engine=_engine(meta))
 
         metrics = await worker.tick()
 
-        assert metrics.done == 0
-        assert metrics.retried == 1
-        assert meta.done == []
-        assert meta.retried == [("job-1", "claim-1")]
+        assert metrics.done == 1
+        assert metrics.retried == 0
+        assert meta.done == [("job-1", "claim-1")]
+        assert meta.retried == []
 
     asyncio.run(run())
 

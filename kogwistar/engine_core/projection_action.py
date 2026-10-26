@@ -199,19 +199,20 @@ def decode_projection_action(
 
 
 def is_projection_action_payload(result_json: object) -> bool:
-    """Recognize projection actions and reject malformed accepted-result JSON.
+    """Recognize versioned actions without changing legacy result semantics.
 
-    Legacy accepted results are JSON objects too. Invalid JSON must not be
-    mistaken for an opaque legacy result and acknowledged without projection.
+    Rust's generic result-admission worker has historically treated accepted
+    strings as opaque idempotency records. Keep malformed or non-object strings
+    on that legacy path; only a recognized action marker selects projection.
     """
     if not isinstance(result_json, str):
         raise _fail("accepted index-job result must be serialized JSON")
     try:
         value = json.loads(result_json)
     except (TypeError, ValueError):
-        raise _fail("accepted index-job result is not valid JSON") from None
+        return False
     if not isinstance(value, dict):
-        raise _fail("accepted index-job result must be a JSON object")
+        return False
     return (
         "operation" in value
         or {"job_id", "entity_kind"}.issubset(value)

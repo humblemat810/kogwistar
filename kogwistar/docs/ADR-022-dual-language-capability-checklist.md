@@ -37,9 +37,10 @@ denominator of either snapshot.
   schema, queue-binding, digest, and f32-range mismatches.
   Evidence: `cargo test -p kogwistar-engine --offline`
   (**13 unit tests and 1 backend-composition test passed**), focused Python
-  projection-action/worker tests (**38 passed**), including sync and async
-  regressions proving explicit `False` upsert results and malformed/non-string
-  accepted results are retried rather than acknowledged, while deleting an
+  projection-action/worker tests (**40 passed**), including sync and async
+  regressions proving explicit `False` upsert results and non-string accepted
+  queue values are retried rather than acknowledged, while malformed opaque
+  legacy result strings retain Rust-compatible replay behavior and deleting an
   absent record remains idempotent; Ruff, and
   `cargo fmt --all -- --check` on Windows. The compile-time composition test
   proves `PostgresStore` can supply the durable index queue while
