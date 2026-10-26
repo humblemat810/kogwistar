@@ -702,6 +702,63 @@ def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch
 
 
 @pytest.mark.requires_rust
+def test_workflow_runtime_edge_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    base_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+
+    def payload_with_metadata(metadata: dict[str, object]) -> dict[str, object]:
+        payload = copy.deepcopy(base_edge)
+        payload["metadata"] = metadata
+        python_payload = WorkflowRuntimeEdge.model_validate(payload).model_dump(
+            field_mode="backend", dump_format="json"
+        )
+        assert python_payload["metadata"].get("relation") == metadata["relation"]
+        assert python_payload["metadata"].get("entity_type") == metadata.get(
+            "entity_type"
+        )
+        return python_payload
+
+    for metadata in (
+        {"relation": "next"},
+        {"relation": "next", "entity_type": "legacy-edge-kind"},
+        {"relation": "next", "run_id": "run-2"},
+    ):
+        python_payload = payload_with_metadata(metadata)
+        _rust.validate_graph_model_family(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "model_class": "workflow_runtime_edge",
+                    "payload": python_payload,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    for metadata in (
+        {"entity_type": "conversation_edge"},
+        {"relation": "next", "run_id": []},
+        {"relation": 1},
+    ):
+        payload = copy.deepcopy(base_edge)
+        payload["metadata"] = metadata
+        with pytest.raises(Exception):
+            WorkflowRuntimeEdge.model_validate(payload)
+        with pytest.raises(Exception):
+            _rust.validate_graph_model_family(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "model_class": "workflow_runtime_edge",
+                        "payload": payload,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+
+@pytest.mark.requires_rust
 def test_workflow_operation_version_fixture_matches_native_graph_validator(
     monkeypatch,
 ) -> None:

@@ -806,6 +806,24 @@ snapshot's denominator.
   Python fixture test passed and Rust `provider_input_matches_shared_python_golden_without_claim_authority`
   passed as part of the **15-test** engine library suite.
 
+### Latest Workflow Runtime Edge Contract Update
+
+- Rust `WorkflowRuntimeEdge` validation now matches the Python model's actual
+  metadata contract: `relation` is required; optional `conversation_id` and
+  `run_id` accept null or string; optional `entity_type` accepts a string but
+  is not forced to Python's validation-only default. Numeric values are
+  rejected, as they are by the current strict Pydantic string fields.
+- Evidence: Rust unit test
+  `graph_model::tests::workflow_runtime_edge_matches_python_metadata_defaults_and_requirements`
+  passed; Python/native differential test
+  `tests/core/test_rust_contract_differential.py::test_workflow_runtime_edge_metadata_matches_python_model_contract`
+  passed on Windows CPython 3.13 against the rebuilt local extension. `maturin`
+  compiled the extension, but its final environment installation step reported
+  Windows access denied; the generated extension was nevertheless loaded by
+  the passing differential test. Ruff on the Python test, Rust formatting, and
+  `git diff --check` pass. DL-16 remains in progress; this closes only this
+  specific wire-contract discrepancy.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

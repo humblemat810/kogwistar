@@ -618,11 +618,7 @@ impl GraphModelEnvelope {
             ),
             GraphModelClass::WorkflowRuntimeEdge => {
                 let typed = self.decode_persistent_edge_shape()?;
-                validate_workflow_runtime_metadata(
-                    self.model_class,
-                    &typed.core.metadata,
-                    "conversation_edge",
-                )
+                validate_workflow_runtime_edge_metadata(&typed.core.metadata)
             }
             GraphModelClass::ConversationNode => {
                 let typed = self.decode_persistent_shape(GraphEntityKind::Node)?;
@@ -785,6 +781,27 @@ fn validate_workflow_runtime_metadata(
         return Err(GraphModelError::InvalidEntityFields {
             model_class,
             reason: "workflow runtime metadata has an unexpected entity_type",
+        });
+    }
+    Ok(())
+}
+
+fn validate_workflow_runtime_edge_metadata(
+    metadata: &BTreeMap<String, Value>,
+) -> Result<(), GraphModelError> {
+    let is_string = |value: &Value| value.is_string();
+    let relation_valid = metadata.get("relation").is_some_and(is_string);
+    let optional_string_fields_valid = ["conversation_id", "run_id", "entity_type"]
+        .into_iter()
+        .all(|field| {
+            metadata
+                .get(field)
+                .is_none_or(|value| value.is_null() && field != "entity_type" || is_string(value))
+        });
+    if !relation_valid || !optional_string_fields_valid {
+        return Err(GraphModelError::InvalidEntityFields {
+            model_class: GraphModelClass::WorkflowRuntimeEdge,
+            reason: "invalid workflow runtime edge metadata",
         });
     }
     Ok(())
@@ -2505,6 +2522,32 @@ mod tests {
             }
             assert_eq!(envelope.payload, case["payload"]);
         }
+    }
+
+    #[test]
+    fn workflow_runtime_edge_matches_python_metadata_defaults_and_requirements() {
+        let mut payload = fixture()["cases"][1]["payload"].clone();
+        payload["metadata"] = serde_json::json!({"relation": "next"});
+        GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload.clone())
+            .validate_family_v1()
+            .expect("Python's omitted entity_type default remains a valid wire payload");
+
+        payload["metadata"] = serde_json::json!({"entity_type": "legacy-edge-kind"});
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload)
+                .validate_family_v1()
+                .is_err(),
+            "relation is required by the Python metadata model"
+        );
+
+        let mut payload = fixture()["cases"][1]["payload"].clone();
+        payload["metadata"] = serde_json::json!({"relation": "next", "run_id": []});
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload)
+                .validate_family_v1()
+                .is_err(),
+            "optional string metadata must reject incompatible shapes"
+        );
     }
 
     #[test]
