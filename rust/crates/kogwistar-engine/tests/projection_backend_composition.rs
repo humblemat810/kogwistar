@@ -7,7 +7,14 @@ use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::PostgresStore;
 use serde_json::{Value, json};
-use std::{env, time::SystemTime};
+use std::{
+    env,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, SystemTime},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -29,13 +36,20 @@ fn postgres_durable_queue_can_pair_with_chroma_graph_projection() {
 }
 
 async fn fake_chroma() -> (String, JoinHandle<Vec<(String, Value)>>) {
+    fake_chroma_with_upsert_statuses(vec![200]).await
+}
+
+async fn fake_chroma_with_upsert_statuses(
+    upsert_statuses: Vec<u16>,
+) -> (String, JoinHandle<Vec<(String, Value)>>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind fixture");
     let address = listener.local_addr().expect("fixture address");
     let handle = tokio::spawn(async move {
         let mut observed = Vec::new();
-        for _ in 0..2 {
+        let mut upsert_statuses = upsert_statuses.into_iter();
+        for _ in 0..=upsert_statuses.len() {
             let (mut stream, _) = listener.accept().await.expect("accept request");
             let mut bytes = Vec::new();
             let mut chunk = [0_u8; 4096];
@@ -63,15 +77,29 @@ async fn fake_chroma() -> (String, JoinHandle<Vec<(String, Value)>>) {
             let request_line = headers.lines().next().expect("request line").to_owned();
             let body = &bytes[header_end + 4..header_end + 4 + body_size];
             let payload: Value = serde_json::from_slice(body).expect("JSON request body");
-            let response = if request_line.contains("/collections HTTP") {
-                json!({"id":"collection-1","metadata":{"hnsw:space":"cosine"}})
+            let (status, response) = if request_line.contains("/collections HTTP") {
+                (
+                    200,
+                    json!({"id":"collection-1","metadata":{"hnsw:space":"cosine"}}),
+                )
             } else {
-                json!({"ids":["node-1"]})
+                let status = upsert_statuses.next().expect("configured upsert response");
+                let response = if status < 300 {
+                    json!({"ids":["node-1"]})
+                } else {
+                    json!({"error":"injected temporary Chroma failure"})
+                };
+                (status, response)
             };
             let encoded = response.to_string();
+            let status_text = if status < 300 {
+                "200 OK"
+            } else {
+                "503 Service Unavailable"
+            };
             let response_head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                encoded.len()
+                "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                encoded.len(),
             );
             stream
                 .write_all(response_head.as_bytes())
@@ -183,7 +211,7 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
         .await
         .expect("enqueue in PostgreSQL");
 
-    let (endpoint, server) = fake_chroma().await;
+    let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![503, 200]).await;
     let graph = ChromaGraphStore::connect(ChromaStoreConfig {
         endpoint,
         collection: "test-postgres-queue".to_owned(),
@@ -191,23 +219,54 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
     })
     .await
     .expect("connect fake Chroma");
-    let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let first_provider_calls = Arc::clone(&provider_calls);
+    let first_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
         &queue,
         &graph,
         1,
         30,
         Some("workspace-a"),
-        |_job| async {
-            let mut record = GraphRecord::new("node-1");
-            record.document = Some("durable queue projection".to_owned());
-            record.metadata.insert("kind".to_owned(), json!("node"));
-            record.embedding = Some(vec![0.5, 0.5]);
-            Ok(record)
+        move |_job| {
+            first_provider_calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                let mut record = GraphRecord::new("node-1");
+                record.document = Some("durable queue projection".to_owned());
+                record.metadata.insert("kind".to_owned(), json!("node"));
+                record.embedding = Some(vec![0.5, 0.5]);
+                Ok(record)
+            }
         },
     )
     .await
-    .expect("run PostgreSQL-to-Chroma projection");
-    assert_eq!(summary.projected, 1);
+    .expect("first PostgreSQL-to-Chroma projection attempt");
+    assert_eq!(first_summary.retried, 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+
+    // Retry backoff is one second for the first failure. The accepted result
+    // must survive the delay so the provider is not invoked again.
+    std::thread::sleep(Duration::from_millis(1_100));
+    let second_provider_calls = Arc::clone(&provider_calls);
+    let second_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
+        &queue,
+        &graph,
+        1,
+        30,
+        Some("workspace-a"),
+        move |_job| {
+            second_provider_calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                let mut record = GraphRecord::new("node-1");
+                record.document = Some("unexpected provider replay".to_owned());
+                record.embedding = Some(vec![0.0, 1.0]);
+                Ok(record)
+            }
+        },
+    )
+    .await
+    .expect("replay accepted result after Chroma recovers");
+    assert_eq!(second_summary.reused, 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         queue
             .index_jobs(
@@ -224,8 +283,13 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
         1
     );
     let requests = server.await.expect("fake Chroma server");
+    assert_eq!(requests.len(), 3);
     assert_eq!(
         requests[1].1["documents"],
+        json!(["durable queue projection"])
+    );
+    assert_eq!(
+        requests[2].1["documents"],
         json!(["durable queue projection"])
     );
 
