@@ -11,12 +11,16 @@ from types import SimpleNamespace
 
 import pytest
 from kogwistar._rust_bridge import (
+    api_health,
     contract_implementation_mode,
+    contract_canonical_json,
     graph_store_implementation_mode,
     meta_store_implementation_mode,
     postgres_authority_implementation_mode,
     runtime_implementation_mode,
     server_implementation_mode,
+    runtime_apply_state_update,
+    store_memory_read,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
 from kogwistar.engine_core.in_memory_backend import InMemoryBackend, build_in_memory_backend
@@ -101,6 +105,55 @@ def test_all_selector_families_use_the_same_run_snapshot(
         assert [selector() for selector in selectors] == ["python"] * len(selectors)
 
     assert [selector() for selector in selectors] == ["rust"] * len(selectors)
+
+
+def test_python_selection_snapshot_prevents_late_native_bridge_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    for name in (
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    snapshot = capture_implementation_selection()
+
+    def unexpected_native_load() -> None:
+        pytest.fail("Python-selected bridge attempted to load the Rust extension")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unexpected_native_load)
+    with implementation_selection_scope(snapshot):
+        for name in (
+            "KOGWISTAR_IMPL_MODE",
+            "KOGWISTAR_IMPL_CONTRACTS",
+            "KOGWISTAR_IMPL_GRAPH_STORE",
+            "KOGWISTAR_IMPL_META_STORE",
+            "KOGWISTAR_IMPL_RUNTIME",
+            "KOGWISTAR_IMPL_SERVER",
+        ):
+            monkeypatch.setenv(name, "rust")
+
+        python_json = '{"selected":"python"}'
+        python_update: list[object] = []
+        python_nodes: list[object] = []
+        python_status = {"ok": True, "implementation": "python"}
+        assert contract_canonical_json(
+            value={"selected": "python"}, python_value=python_json
+        ) == python_json
+        assert runtime_apply_state_update(
+            payload={"updates": []}, python_value=python_update
+        ) is python_update
+        assert store_memory_read(
+            snapshot={},
+            operation={"kind": "list_nodes"},
+            python_value=python_nodes,
+            store="graph",
+        ) is python_nodes
+        assert api_health(payload={}, python_value=python_status) is python_status
 
 
 def test_selection_metadata_records_effective_defaults_and_transaction_coherence(
