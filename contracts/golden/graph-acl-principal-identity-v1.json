@@ -27,6 +27,11 @@
       "expected_principal_id": "user-5"
     },
     {
+      "name": "unicode_identity_uses_unicode_lowercase",
+      "claims": {"agent_id": "ÄCTOR-Ü"},
+      "expected_principal_id": "äctor-ü"
+    },
+    {
       "name": "empty_identity_uses_legacy_system_principal",
       "claims": {},
       "expected_principal_id": "system"

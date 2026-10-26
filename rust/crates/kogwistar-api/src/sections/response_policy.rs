@@ -351,7 +351,7 @@ fn graph_acl_principal_id(principal: &Value) -> String {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("system")
-        .to_ascii_lowercase()
+        .to_lowercase()
 }
 
 fn principal_role(principal: &Value) -> String {
