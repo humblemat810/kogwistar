@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from kogwistar.acl.context import current_acl_context
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
     claims_ctx,
@@ -84,6 +85,23 @@ def test_principal_group_helper_matches_rust_claim_projection():
     )
     try:
         assert get_current_principal_groups() == ("auditors", "ops", "reviewers")
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_shared_acl_context_uses_same_group_projection_and_ignores_roles():
+    token = claims_ctx.set(
+        {
+            "agent_id": "Agent-A",
+            "groups": " Reviewers, Ops ",
+            "principal_groups": ["reviewers", "Auditors"],
+            "roles": ["admin"],
+        }
+    )
+    try:
+        context = current_acl_context(acl_enabled=True, purpose="test")
+        assert context.principal_id == "Agent-A"
+        assert context.principal_groups == ("auditors", "ops", "reviewers")
     finally:
         claims_ctx.reset(token)
 

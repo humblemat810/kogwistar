@@ -433,6 +433,35 @@ def test_lane_message_cross_scope_read_denied_unless_explicit_shared():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
+def test_lane_message_acl_metadata_uses_authoritative_group_claims():
+    engine, test_db_dir = _make_engine()
+    token = claims_ctx.set(
+        {
+            "agent_id": "agent-a",
+            "groups": "Reviewers, Ops",
+            "principal_groups": ["reviewers", "Auditors"],
+            "roles": ["admin"],
+            "ns": "conversation",
+        }
+    )
+    try:
+        result = engine.send_lane_message(
+            conversation_id="conv-groups",
+            inbox_id="inbox:worker",
+            sender_id="agent-a",
+            recipient_id="agent-b",
+            msg_type="request.test",
+            payload={},
+        )
+        message = engine.raw_read.get_nodes(ids=[result.message_id])[0]
+        acl_context = json.loads(message.metadata["acl_context_json"])
+        assert acl_context["principal_groups"] == ["auditors", "ops", "reviewers"]
+    finally:
+        claims_ctx.reset(token)
+        engine.close()
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
 def test_lane_message_claim_rechecks_acl_visibility_before_lease():
     engine, test_db_dir = _make_engine()
     namespace = "ws:demo:conv:bg"

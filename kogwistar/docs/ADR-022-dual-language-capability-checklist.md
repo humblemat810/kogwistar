@@ -23,6 +23,7 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-26)
 
+- `DL-08C` additional bounded group-claim parity: `ACLSubsystem.current_principal_context()` and the shared `current_acl_context()` now use the same authenticated `groups`/`principal_groups` projection as Rust. It accepts string and string-array claims, lowercases, sorts, and deduplicates; it intentionally does not treat `roles` or the legacy singular `group` claim as ACL group membership. Tests prove normal ACL-aware node reads and persisted lane-message ACL metadata use this exact contract. Evidence: `tests/auth/test_auth_scope_helpers.py::test_principal_group_helper_matches_rust_claim_projection`, `::test_shared_acl_context_uses_same_group_projection_and_ignores_roles`, `tests/acl/test_acl_graph.py::test_normal_acl_read_uses_authenticated_group_claims`, and `tests/core/test_lane_messaging.py::test_lane_message_acl_metadata_uses_authoritative_group_claims`; affected ACL/auth suite: **48 passed, 2 PostgreSQL cases skipped**; new context/lane regressions: **2 passed**; Ruff passed. This closes only Python claim-source consistency for this bounded group case; `DL-08C` remains IN PROGRESS and the checklist denominator is unchanged.
 - `DL-20A` remains IN PROGRESS: the shared Python extension loader now supports
   request-local, opt-in call tracing with FFI-call, UTF-8 byte, method, and
   operation-kind, and transaction-state counters. The graph-slice benchmark

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 
 from kogwistar.server.auth_middleware import (
-    claims_ctx,
     get_current_agent_id,
+    get_current_principal_groups,
     get_security_scope,
 )
 
@@ -26,23 +25,6 @@ class AclContext:
         return asdict(self)
 
 
-def _normalize_groups(raw: object) -> tuple[str, ...]:
-    if raw is None:
-        return ()
-    if isinstance(raw, str):
-        items: Iterable[object] = (raw,)
-    elif isinstance(raw, Iterable):
-        items = raw
-    else:
-        return ()
-    out = []
-    for item in items:
-        text = str(item or "").strip()
-        if text:
-            out.append(text)
-    return tuple(dict.fromkeys(out))
-
-
 def current_acl_context(
     *,
     acl_enabled: bool,
@@ -52,16 +34,9 @@ def current_acl_context(
     visibility: str | None = None,
     owner_id: str | None = None,
 ) -> AclContext:
-    claims = claims_ctx.get() or {}
-    groups = _normalize_groups(
-        claims.get("groups")
-        or claims.get("group")
-        or claims.get("roles")
-        or claims.get("principal_groups")
-    )
     return AclContext(
         principal_id=str(get_current_agent_id() or "system"),
-        principal_groups=groups,
+        principal_groups=get_current_principal_groups(),
         security_scope=str(get_security_scope() or "").strip().lower() or None,
         acl_enabled=bool(acl_enabled),
         purpose=str(purpose or "user_visible"),
