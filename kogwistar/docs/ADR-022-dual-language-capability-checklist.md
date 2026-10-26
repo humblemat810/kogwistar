@@ -33,8 +33,10 @@ snapshot's denominator.
   passed), `graph_acl_principal_identity_matches_shared_python_contract` and
   `graph_acl_matches_shared_golden_contract` (1 Rust test each passed), plus
   Ruff and Rust formatting. Persisted ACL-record normalization remains
-  unchanged. This adds evidence under existing `DL-08C`; no item ID or
-  denominator changed.
+  unchanged. Rust PostgreSQL graph-read routes and conversation ACL scope now
+  share one `principal_group_set()` projection, so claim selection, Unicode
+  normalization, sorting, and deduplication cannot drift by route. This adds
+  evidence under existing `DL-08C`; no item ID or denominator changed.
 - Additional malformed edge-endpoint parity: Rust graph ACL projection previously
   discarded non-string endpoint values and could expose an edge without checking
   a corresponding hidden endpoint. It now fails closed for non-string node and

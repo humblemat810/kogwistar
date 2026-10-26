@@ -617,13 +617,9 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
         let principal = GraphAclPrincipal {
             principal_id: graph_acl_principal_id(&request.principal),
-            groups: groups.into_iter().collect(),
+            groups: principal_group_set(&request.principal),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
         let (nodes, edges) =
@@ -791,13 +787,9 @@ impl PostgresRunApplicationService {
         } else {
             "gke_edges"
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
         let principal = GraphAclPrincipal {
             principal_id: graph_acl_principal_id(&request.principal),
-            groups: groups.into_iter().collect(),
+            groups: principal_group_set(&request.principal),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
 
@@ -995,13 +987,9 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
         let principal = GraphAclPrincipal {
             principal_id: graph_acl_principal_id(&request.principal),
-            groups: groups.into_iter().collect(),
+            groups: principal_group_set(&request.principal),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
         let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
@@ -1090,13 +1078,9 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
         let principal = GraphAclPrincipal {
             principal_id: graph_acl_principal_id(&request.principal),
-            groups: groups.into_iter().collect(),
+            groups: principal_group_set(&request.principal),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
         let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
@@ -1191,13 +1175,9 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let mut groups = principal_strings(&request.principal, "groups");
-        groups.extend(principal_strings(&request.principal, "principal_groups"));
-        groups.sort();
-        groups.dedup();
         let principal = GraphAclPrincipal {
             principal_id: graph_acl_principal_id(&request.principal),
-            groups: groups.into_iter().collect(),
+            groups: principal_group_set(&request.principal),
             security_scope: scope_value["security_scope"].as_str().map(str::to_owned),
         };
         let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
