@@ -264,6 +264,23 @@ def test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python(
         },
     )
     assert rust_rows[0]["metadata"]["level_from_root"] == level
+    vector_rows = _rust(
+        dsn,
+        schema,
+        {
+            "kind": "graph_projection_vector_query",
+            "namespace": "alpha",
+            "workspace_id": "ws",
+            "graph_space": "facts",
+            "table": "gke_nodes",
+            "embedding": list(node.embedding or []),
+            "embedding_dim": 3,
+            "metadata": {"level_from_root": level},
+            "metric": "cosine",
+            "limit": 10,
+        },
+    )
+    assert vector_rows[0]["record"]["metadata"]["level_from_root"] == level
 
 
 def test_graph_mutation_scope_vector_contract_and_fault_rollback(
