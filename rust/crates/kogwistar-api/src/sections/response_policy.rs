@@ -23,6 +23,7 @@ fn strip_snapshot_implementation_fields(response: &mut ApiEffectResponse) {
     response.body = serde_json::to_vec(&payload).expect("snapshot response serializes");
 }
 
+#[cfg(test)]
 fn legacy_receive_message_payload(response: &mut ApiEffectResponse) {
     if !(200..300).contains(&response.status) {
         return;
@@ -48,6 +49,11 @@ fn legacy_receive_message_payload(response: &mut ApiEffectResponse) {
         );
         return;
     };
+    response.body = serde_json::to_vec(&legacy_receive_message_value(transcript))
+        .expect("legacy transcript response serializes");
+}
+
+fn legacy_receive_message_value(transcript: ConversationTranscriptV1) -> Value {
     let messages = transcript
         .turns
         .into_iter()
@@ -61,11 +67,10 @@ fn legacy_receive_message_payload(response: &mut ApiEffectResponse) {
             })
         })
         .collect::<Vec<_>>();
-    response.body = serde_json::to_vec(&json!({
+    json!({
         "conversation_id": transcript.conversation_id,
         "messages": messages,
-    }))
-    .expect("legacy transcript response serializes");
+    })
 }
 
 fn html_effect(body: String) -> ApiEffectResponse {

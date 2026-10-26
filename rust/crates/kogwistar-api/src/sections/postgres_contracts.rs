@@ -141,6 +141,10 @@ struct InternalConversationTranscriptRequest {
     limit: usize,
 }
 
+struct ConversationTranscriptAuthorization {
+    principal: Value,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InternalContextSnapshotRequest {
@@ -172,10 +176,17 @@ fn parse_internal_conversation_transcript_request(
 ) -> Result<InternalConversationTranscriptRequest, String> {
     let input: InternalConversationTranscriptRequest =
         serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    validate_internal_conversation_transcript_request(&input)?;
+    Ok(input)
+}
+
+fn validate_internal_conversation_transcript_request(
+    input: &InternalConversationTranscriptRequest,
+) -> Result<(), String> {
     if input.conversation_id.trim().is_empty() || input.limit > 10_000 {
         return Err("conversation_id is required and limit must be <= 10000".to_owned());
     }
-    Ok(input)
+    Ok(())
 }
 
 fn parse_internal_context_snapshot_request(

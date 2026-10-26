@@ -450,6 +450,57 @@
     }
 
     #[tokio::test]
+    async fn conversation_transcript_authorization_is_bound_to_request_principal() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_transcript_principal_binding",
+        )
+        .unwrap();
+        let authorized_request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations/c-1/turns".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": ["read_graph"]
+            }),
+        };
+        let authorization = service
+            .authorize_conversation_transcript(&authorized_request)
+            .unwrap();
+        let other_principal_request = ApiEffectRequest {
+            principal: json!({
+                "sub": "bob",
+                "ns": "conversation",
+                "capabilities": ["read_graph"]
+            }),
+            ..authorized_request
+        };
+
+        let result = service
+            .conversation_transcript_projection(
+                &other_principal_request,
+                InternalConversationTranscriptRequest {
+                    conversation_id: "c-1".to_owned(),
+                    limit: 10,
+                },
+                authorization,
+            )
+            .await;
+
+        let Err(response) = result else {
+            panic!("authorization for one principal must not authorize another");
+        };
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
     async fn latest_snapshot_route_checks_namespace_and_capability_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",

@@ -23,6 +23,22 @@ fn graph_record_string_ids(record: &GraphRecord, field: &str) -> Vec<String> {
 }
 
 impl PostgresRunApplicationService {
+    fn authorize_conversation_transcript(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> Result<ConversationTranscriptAuthorization, ApiEffectResponse> {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return Err(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation transcript reads require read_graph capability",
+            ));
+        }
+        Ok(ConversationTranscriptAuthorization {
+            principal: request.principal.clone(),
+        })
+    }
+
     async fn authorized_conversation_nodes(
         &self,
         request_principal: &Value,
@@ -191,17 +207,58 @@ impl PostgresRunApplicationService {
         json_effect(StatusCode::OK, payload)
     }
 
+    async fn conversation_transcript_projection(
+        &self,
+        request: &ApiEffectRequest,
+        input: InternalConversationTranscriptRequest,
+        authorization: ConversationTranscriptAuthorization,
+    ) -> Result<ConversationTranscriptV1, ApiEffectResponse> {
+        if authorization.principal != request.principal {
+            return Err(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation transcript authorization does not match the request principal",
+            ));
+        }
+        if let Err(error) = validate_internal_conversation_transcript_request(&input) {
+            return Err(effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            ));
+        }
+        let visible_nodes = self
+            .authorized_conversation_nodes(&request.principal)
+            .await
+            .map_err(|error| {
+                effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                )
+            })?;
+        conversation_transcript_from_visible_records(
+            &visible_nodes,
+            &input.conversation_id,
+            input.limit,
+        )
+        .map_err(|error| {
+            effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                error.to_string(),
+            )
+        })
+    }
+
     async fn internal_conversation_transcript_effect(
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation transcript reads require read_graph capability",
-            );
-        }
+        let authorization = match self.authorize_conversation_transcript(request) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
         let input = match parse_internal_conversation_transcript_request(&request.body) {
             Ok(value) => value,
             Err(error) => {
@@ -212,34 +269,18 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
-            Ok(nodes) => nodes,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error,
-                );
-            }
-        };
-        let transcript = match conversation_transcript_from_visible_records(
-            &visible_nodes,
-            &input.conversation_id,
-            input.limit,
-        ) {
-            Ok(transcript) => transcript,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
-                    error.to_string(),
-                );
-            }
-        };
-        json_effect(
-            StatusCode::OK,
-            rust_native_attested(serde_json::to_value(transcript).expect("transcript serializes")),
-        )
+        match self
+            .conversation_transcript_projection(request, input, authorization)
+            .await
+        {
+            Ok(transcript) => json_effect(
+                StatusCode::OK,
+                rust_native_attested(
+                    serde_json::to_value(transcript).expect("transcript serializes"),
+                ),
+            ),
+            Err(response) => response,
+        }
     }
 
     async fn internal_context_snapshot_effect(
@@ -518,38 +559,38 @@ impl PostgresRunApplicationService {
                 "Conversation transcript route was not found",
             );
         };
-        let internal = ApiEffectRequest {
-            contract_version: request.contract_version,
-            method: "POST".to_owned(),
-            path_and_query: "/internal/conversation/transcript".to_owned(),
-            body: serde_json::to_vec(&json!({
-                "conversation_id": conversation_id,
-                "limit": 10_000,
-            }))
-            .expect("conversation transcript request serializes"),
-            principal: request.principal.clone(),
+        let authorization = match self.authorize_conversation_transcript(request) {
+            Ok(value) => value,
+            Err(response) => return response,
         };
-        let mut response = self
-            .internal_conversation_transcript_effect(&internal)
-            .await;
-        if (200..300).contains(&response.status)
-            && let Ok(mut payload) = serde_json::from_slice::<Value>(&response.body)
-            && let Some(object) = payload.as_object_mut()
+        match self
+            .conversation_transcript_projection(
+                request,
+                InternalConversationTranscriptRequest {
+                    conversation_id,
+                    limit: 10_000,
+                },
+                authorization,
+            )
+            .await
         {
-            object.remove("schema_version");
-            object.remove("implementation_authority");
-            object.remove("seam_attestation_version");
-            object.remove("seam_crossings");
-            if let Some(turns) = object.get_mut("turns").and_then(Value::as_array_mut) {
-                for turn in turns {
-                    if let Some(turn) = turn.as_object_mut() {
-                        turn.remove("schema_version");
+            Ok(transcript) => {
+                let mut payload =
+                    serde_json::to_value(transcript).expect("transcript serializes");
+                if let Some(object) = payload.as_object_mut() {
+                    object.remove("schema_version");
+                    if let Some(turns) = object.get_mut("turns").and_then(Value::as_array_mut) {
+                        for turn in turns {
+                            if let Some(turn) = turn.as_object_mut() {
+                                turn.remove("schema_version");
+                            }
+                        }
                     }
                 }
+                json_effect(StatusCode::OK, payload)
             }
-            response.body = serde_json::to_vec(&payload).expect("transcript response serializes");
+            Err(response) => response,
         }
-        response
     }
 
     async fn graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
@@ -1330,21 +1371,31 @@ impl PostgresRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else if let Some(conversation_id) = input.args["conversation_id"].as_str() {
-                    let nested = ApiEffectRequest {
-                        contract_version: request.contract_version,
-                        method: "POST".to_owned(),
-                        path_and_query: "/internal/conversation/transcript".to_owned(),
-                        body: serde_json::to_vec(&json!({
-                            "conversation_id": conversation_id,
-                            "limit": 10_000,
-                        }))
-                        .expect("transcript syscall args serialize"),
-                        principal: request.principal.clone(),
+                    let authorization = match self.authorize_conversation_transcript(request) {
+                        Ok(value) => value,
+                        Err(response) => return syscall_result(&input.version, op, response),
                     };
-                    let mut transcript_response =
-                        self.internal_conversation_transcript_effect(&nested).await;
-                    legacy_receive_message_payload(&mut transcript_response);
-                    syscall_result(&input.version, op, transcript_response)
+                    match self
+                        .conversation_transcript_projection(
+                            request,
+                            InternalConversationTranscriptRequest {
+                                conversation_id: conversation_id.to_owned(),
+                                limit: 10_000,
+                            },
+                            authorization,
+                        )
+                        .await
+                    {
+                        Ok(transcript) => syscall_result(
+                            &input.version,
+                            op,
+                            json_effect(
+                                StatusCode::OK,
+                                legacy_receive_message_value(transcript),
+                            ),
+                        ),
+                        Err(response) => syscall_result(&input.version, op, response),
+                    }
                 } else {
                     effect_error(
                         StatusCode::BAD_REQUEST,
