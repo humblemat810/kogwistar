@@ -13,7 +13,7 @@ import json
 import math
 import struct
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
 
 from typing_extensions import TypedDict
 
@@ -64,6 +64,24 @@ class ProjectionAction:
     index_kind: str
     operation: Literal["DELETE", "UPSERT"]
     record: ProjectionRecord | None
+
+
+class ProjectionGraphStore(Protocol):
+    """Python execution seam matching Rust's generic graph write capability."""
+
+    def upsert_graph_record(self, namespace: str, record: ProjectionRecord) -> object: ...
+
+    def delete_graph_record(self, namespace: str, entity_id: str) -> object: ...
+
+
+class AsyncProjectionGraphStore(Protocol):
+    """Nonblocking Python execution seam for async workers."""
+
+    async def upsert_graph_record(
+        self, namespace: str, record: ProjectionRecord
+    ) -> object: ...
+
+    async def delete_graph_record(self, namespace: str, entity_id: str) -> object: ...
 
 
 class ProjectionActionError(ValueError):
@@ -178,3 +196,48 @@ def decode_projection_action(
         operation=operation,  # type: ignore[arg-type]
         record=record,
     )
+
+
+def is_projection_action_payload(result_json: str) -> bool:
+    """Recognize the versioned action family without rejecting legacy results."""
+    try:
+        value = json.loads(result_json)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(value, dict) and (
+        "operation" in value
+        or {"job_id", "entity_kind"}.issubset(value)
+        or {"entity_id", "index_kind", "record"}.issubset(value)
+    )
+
+
+def apply_projection_action(
+    job: ProjectionJobIdentity,
+    result_json: str,
+    result_sha256: str | None,
+    graph: ProjectionGraphStore,
+) -> ProjectionAction:
+    """Validate and apply a durable action using a Python graph-store adapter."""
+    action = decode_projection_action(job, result_json, result_sha256)
+    if action.operation == "DELETE":
+        graph.delete_graph_record(action.namespace, action.entity_id)
+    else:
+        assert action.record is not None
+        graph.upsert_graph_record(action.namespace, action.record)
+    return action
+
+
+async def apply_projection_action_async(
+    job: ProjectionJobIdentity,
+    result_json: str,
+    result_sha256: str | None,
+    graph: AsyncProjectionGraphStore,
+) -> ProjectionAction:
+    """Async counterpart that does not hide blocking graph writes."""
+    action = decode_projection_action(job, result_json, result_sha256)
+    if action.operation == "DELETE":
+        await graph.delete_graph_record(action.namespace, action.entity_id)
+    else:
+        assert action.record is not None
+        await graph.upsert_graph_record(action.namespace, action.record)
+    return action

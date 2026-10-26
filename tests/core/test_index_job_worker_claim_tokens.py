@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -67,6 +70,32 @@ class _Indexing:
             raise RuntimeError("projection failed")
 
 
+class _ProjectionStore:
+    def __init__(self) -> None:
+        self.upserts: list[tuple[str, object]] = []
+        self.deletes: list[tuple[str, str]] = []
+
+    def upsert_graph_record(self, namespace: str, record: object) -> None:
+        self.upserts.append((namespace, record))
+
+    def delete_graph_record(self, namespace: str, entity_id: str) -> bool:
+        self.deletes.append((namespace, entity_id))
+        return True
+
+
+class _AsyncProjectionStore:
+    def __init__(self) -> None:
+        self.upserts: list[tuple[str, object]] = []
+        self.deletes: list[tuple[str, str]] = []
+
+    async def upsert_graph_record(self, namespace: str, record: object) -> None:
+        self.upserts.append((namespace, record))
+
+    async def delete_graph_record(self, namespace: str, entity_id: str) -> bool:
+        self.deletes.append((namespace, entity_id))
+        return True
+
+
 def _engine(meta: _Meta, *, fail: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
         meta_sqlite=meta,
@@ -79,6 +108,7 @@ def _engine(meta: _Meta, *, fail: bool = False) -> SimpleNamespace:
 def _reconciler(meta: _Meta, *, fail: bool = False) -> IndexingSubsystem:
     engine = SimpleNamespace(
         meta_sqlite=meta,
+        metadata=meta,
         namespace="test",
         _phase1_enable_index_jobs=True,
         _phase1_enable_validation_cache=False,
@@ -115,6 +145,29 @@ def _admitted_job(*, claim_token: str | None) -> SimpleNamespace:
     return job
 
 
+def _admitted_projection_job(*, claim_token: str | None) -> SimpleNamespace:
+    action_json = (
+        Path(__file__).resolve().parents[2]
+        .joinpath("contracts/golden/graph-projection-action-v1.json")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+    return SimpleNamespace(
+        job_id="projection-job",
+        namespace="workspace",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+        payload_json=None,
+        retry_count=0,
+        max_retries=3,
+        claim_token=claim_token,
+        accepted_result_json=action_json,
+        accepted_result_sha256=hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+    )
+
+
 def test_sync_worker_propagates_claim_token_to_success_ack() -> None:
     meta = _Meta(_job(claim_token="claim-1"))
     worker = IndexJobWorker(engine=_engine(meta))
@@ -123,6 +176,52 @@ def test_sync_worker_propagates_claim_token_to_success_ack() -> None:
 
     assert metrics.done == 1
     assert meta.done == [("job-1", "claim-1")]
+
+
+def test_sync_worker_applies_rust_projection_action_before_ack() -> None:
+    meta = _Meta(_admitted_projection_job(claim_token="claim-1"))
+    graph = _ProjectionStore()
+    worker = IndexJobWorker(
+        engine=_engine(meta), namespace="workspace", projection_store=graph
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.done == 1
+    assert meta.done == [("projection-job", "claim-1")]
+    assert len(graph.upserts) == 1
+    assert graph.upserts[0][0] == "workspace"
+    assert getattr(graph.upserts[0][1], "id") == "node-1"
+
+
+def test_sync_worker_does_not_ack_projection_action_without_store() -> None:
+    meta = _Meta(_admitted_projection_job(claim_token="claim-1"))
+    worker = IndexJobWorker(engine=_engine(meta), namespace="workspace")
+
+    metrics = worker.tick()
+
+    assert metrics.done == 0
+    assert metrics.retried == 1
+    assert meta.done == []
+    assert meta.retried == [("projection-job", "claim-1")]
+
+
+def test_sync_worker_does_not_misclassify_malformed_action_as_legacy_result() -> None:
+    job = _admitted_projection_job(claim_token="claim-1")
+    action = json.loads(job.accepted_result_json)
+    action.pop("job_id")
+    job.accepted_result_json = json.dumps(action, separators=(",", ":"))
+    job.accepted_result_sha256 = hashlib.sha256(
+        job.accepted_result_json.encode("utf-8")
+    ).hexdigest()
+    meta = _Meta(job)
+    worker = IndexJobWorker(engine=_engine(meta), namespace="workspace")
+
+    metrics = worker.tick()
+
+    assert metrics.done == 0
+    assert metrics.retried == 1
+    assert meta.done == []
 
 
 def test_sync_worker_does_not_count_lost_claim_as_done() -> None:
@@ -175,6 +274,40 @@ def test_async_worker_propagates_claim_token_to_success_ack() -> None:
 
         assert metrics.done == 1
         assert meta.done == [("job-1", "claim-1")]
+
+    asyncio.run(run())
+
+
+def test_async_worker_applies_rust_projection_action_before_ack() -> None:
+    async def run() -> None:
+        meta = _Meta(_admitted_projection_job(claim_token="claim-1"))
+        graph = _AsyncProjectionStore()
+        worker = AsyncIndexJobWorker(
+            engine=_engine(meta), namespace="workspace", projection_store=graph
+        )
+
+        metrics = await worker.tick()
+
+        assert metrics.done == 1
+        assert meta.done == [("projection-job", "claim-1")]
+        assert len(graph.upserts) == 1
+        assert graph.upserts[0][0] == "workspace"
+        assert getattr(graph.upserts[0][1], "id") == "node-1"
+
+    asyncio.run(run())
+
+
+def test_async_worker_does_not_ack_projection_action_without_store() -> None:
+    async def run() -> None:
+        meta = _Meta(_admitted_projection_job(claim_token="claim-1"))
+        worker = AsyncIndexJobWorker(engine=_engine(meta), namespace="workspace")
+
+        metrics = await worker.tick()
+
+        assert metrics.done == 0
+        assert metrics.retried == 1
+        assert meta.done == []
+        assert meta.retried == [("projection-job", "claim-1")]
 
     asyncio.run(run())
 
@@ -291,6 +424,7 @@ def test_reconciler_replays_admitted_result_without_projection() -> None:
     meta = _Meta(_admitted_job(claim_token="claim-1"))
     engine = SimpleNamespace(
         meta_sqlite=meta,
+        metadata=meta,
         namespace="test",
         _phase1_enable_index_jobs=True,
         _phase1_enable_validation_cache=False,

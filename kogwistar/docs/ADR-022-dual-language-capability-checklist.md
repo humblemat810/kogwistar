@@ -31,10 +31,13 @@ denominator of either snapshot.
   accepted action without rerunning the provider, and queue completion follows
   the graph upsert/delete. The Python `decode_projection_action` and Rust
   serializer/parser both consume `contracts/golden/graph-projection-action-v1.json`;
-  Python rejects schema, queue-binding, digest, and f32-range mismatches.
+  sync and async Python workers can apply that action through an optional graph
+  adapter and fail/retry rather than ack when it is missing or invalid. Legacy
+  accepted embedding results retain their old replay behavior. Python rejects
+  schema, queue-binding, digest, and f32-range mismatches.
   Evidence: `cargo test -p kogwistar-engine --offline`
   (**13 unit tests and 1 backend-composition test passed**), focused Python
-  contract tests (**9 passed**), Ruff, and
+  projection-action/worker tests (**30 passed**), Ruff, and
   `cargo fmt --all -- --check` on Windows. The compile-time composition test
   proves `PostgresStore` can supply the durable index queue while
   `ChromaGraphStore` supplies graph projection; it does not run live PostgreSQL

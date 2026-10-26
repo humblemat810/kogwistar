@@ -8,6 +8,12 @@ from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar, cast
 
+from ..engine_core.projection_action import (
+    AsyncProjectionGraphStore,
+    ProjectionJobIdentity,
+    apply_projection_action_async,
+    is_projection_action_payload,
+)
 from ..implementation_selection import implementation_selection_bound
 
 if TYPE_CHECKING:
@@ -45,6 +51,7 @@ class AsyncIndexJobWorker:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        projection_store: AsyncProjectionGraphStore | None = None,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -52,6 +59,7 @@ class AsyncIndexJobWorker:
         self.lease_seconds = int(lease_seconds)
         self.max_jobs_per_tick = int(max_jobs_per_tick)
         self.namespace = namespace
+        self.projection_store = projection_store
 
     @property
     def _implementation_selection_snapshot(self) -> object:
@@ -79,6 +87,9 @@ class AsyncIndexJobWorker:
         embedding_groups: dict[tuple[str, str, str], list[object]] = {}
         ordinary_jobs: list[object] = []
         for job in jobs:
+            if self._value(job, "accepted_result_json") is not None:
+                ordinary_jobs.append(job)
+                continue
             if str(self._value(job, "index_kind") or "") != "node_embedding":
                 ordinary_jobs.append(job)
                 continue
@@ -122,7 +133,54 @@ class AsyncIndexJobWorker:
                 try:
                     # Match the Rust worker: an admitted result is the
                     # idempotency record, so replay only finalizes the queue.
-                    if self._value(job, "accepted_result_json") is not None:
+                    accepted_result = self._value(job, "accepted_result_json")
+                    if isinstance(accepted_result, str) and is_projection_action_payload(
+                        accepted_result
+                    ):
+                        if self.projection_store is None:
+                            raise RuntimeError(
+                                "accepted graph projection action requires projection_store"
+                            )
+                        identity_fields = (
+                            "job_id",
+                            "namespace",
+                            "entity_kind",
+                            "entity_id",
+                            "index_kind",
+                            "op",
+                        )
+                        identity_values = {
+                            name: self._value(job, name) for name in identity_fields
+                        }
+                        if not all(
+                            isinstance(value, str)
+                            for value in identity_values.values()
+                        ):
+                            raise RuntimeError(
+                                "claimed projection action lacks a complete queue identity"
+                            )
+                        identity = ProjectionJobIdentity(
+                            job_id=cast(str, identity_values["job_id"]),
+                            namespace=cast(str, identity_values["namespace"]),
+                            entity_kind=cast(str, identity_values["entity_kind"]),
+                            entity_id=cast(str, identity_values["entity_id"]),
+                            index_kind=cast(str, identity_values["index_kind"]),
+                            op=cast(str, identity_values["op"]),
+                        )
+                        if identity.namespace != ns:
+                            raise RuntimeError(
+                                "claimed projection action is outside the worker namespace"
+                            )
+                        digest = self._value(job, "accepted_result_sha256")
+                        await apply_projection_action_async(
+                            identity,
+                            accepted_result,
+                            digest if isinstance(digest, str) else None,
+                            self.projection_store,
+                        )
+                    elif accepted_result is not None:
+                        # Existing provider-result records were already applied
+                        # by their producer; preserve their legacy replay rule.
                         pass
                     elif batch_results is not None:
                         error = batch_results.get(str(job_id))
