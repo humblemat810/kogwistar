@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "legacy-prefixed-native-operation",
+      "operation": "rust-native/noop",
+      "target": null,
+      "native_operation": "noop"
+    },
+    {
+      "name": "legacy-unprefixed-operation-defaults-to-python",
+      "operation": "noop",
+      "target": null,
+      "native_operation": null
+    },
+    {
+      "name": "explicit-native-target-with-plain-operation",
+      "operation": "app/transform",
+      "target": "rust-native",
+      "native_operation": "app/transform"
+    },
+    {
+      "name": "explicit-native-target-accepts-legacy-prefix",
+      "operation": "rust-native/noop",
+      "target": "rust-native",
+      "native_operation": "noop"
+    },
+    {
+      "name": "explicit-python-target-keeps-plain-operation",
+      "operation": "noop",
+      "target": "python-worker",
+      "native_operation": null
+    }
+  ]
+}

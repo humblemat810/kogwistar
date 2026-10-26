@@ -38,6 +38,35 @@ class RustRuntimeAuthorityError(RuntimeError):
     """Rust runtime authority is unavailable or violates its contract."""
 
 
+_RUST_NATIVE_OPERATION_PREFIX = "rust-native/"
+_RUNTIME_EXECUTOR_TARGETS = {"python-worker", "rust-native"}
+
+
+def _native_operation_for_target(operation: str, target: object) -> str | None:
+    """Resolve legacy and explicit executor routing before freezing a plan."""
+    if target is not None and (
+        not isinstance(target, str) or target not in _RUNTIME_EXECUTOR_TARGETS
+    ):
+        raise RustRuntimeAuthorityError(f"unsupported executor target {target!r}")
+    has_legacy_prefix = operation.startswith(_RUST_NATIVE_OPERATION_PREFIX)
+    if target == "python-worker":
+        if has_legacy_prefix:
+            raise RustRuntimeAuthorityError(
+                f"cannot route a rust-native operation to Python: {operation!r}"
+            )
+        return None
+    if target == "rust-native" or (target is None and has_legacy_prefix):
+        native_operation = (
+            operation[len(_RUST_NATIVE_OPERATION_PREFIX) :]
+            if has_legacy_prefix
+            else operation
+        )
+        if not native_operation.strip():
+            raise RustRuntimeAuthorityError("native operation name must be non-empty")
+        return native_operation
+    return None
+
+
 def rust_runtime_authority_url() -> str | None:
     """Return configured authority URL only for explicit Rust runtime mode."""
     if not rust_runtime_authority_selected():
@@ -110,17 +139,7 @@ def freeze_runtime_plan(
         metadata = getattr(node, "metadata", None) or {}
         target = metadata.get("wf_executor_target")
         op = str(getattr(node, "op", "") or "noop")
-        if target not in {None, "python-worker", "rust-native"}:
-            raise RustRuntimeAuthorityError(
-                f"workflow node {node_id!r} has unsupported executor target {target!r}"
-            )
-        if target == "python-worker" and op.startswith("rust-native/"):
-            raise RustRuntimeAuthorityError(
-                f"workflow node {node_id!r} cannot route a rust-native operation to Python"
-            )
-        rust_native = target == "rust-native" or (
-            target is None and op.startswith("rust-native/")
-        )
+        rust_native = _native_operation_for_target(op, target) is not None
         version = str(metadata.get("wf_version") or metadata.get("wf.version") or "v1")
         environment_id_value = metadata.get("wf_environment_id") or metadata.get(
             "wf.environment_id"

@@ -20,6 +20,14 @@ _OPERATION_VERSION_FIXTURE = json.loads(
         / "workflow-operation-version-v1.json"
     ).read_text(encoding="utf-8")
 )
+_EXECUTOR_ROUTING_FIXTURE = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "runtime-executor-routing-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 @dataclass
@@ -241,8 +249,40 @@ def test_workflow_operation_version_accepts_shared_canonical_values(
     metadata = WorkflowNodeMetadata.model_validate(
         {"workflow_id": "wf", "wf_op": "compute", "wf_version": version}
     )
-
     assert metadata.wf_version == version
+
+
+def test_executor_routing_matches_shared_rust_contract_fixture() -> None:
+    from kogwistar.runtime.rust_runtime_authority import _native_operation_for_target
+
+    assert _EXECUTOR_ROUTING_FIXTURE["schema_version"] == 1
+    for case in _EXECUTOR_ROUTING_FIXTURE["cases"]:
+        operation = case["operation"]
+        target = case["target"]
+        assert _native_operation_for_target(operation, target) == case["native_operation"], (
+            case["name"]
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "target", "message"),
+    [
+        ("rust-native/noop", "python-worker", "cannot route a rust-native operation"),
+        ("rust-native/", None, "native operation name must be non-empty"),
+        ("", "rust-native", "native operation name must be non-empty"),
+        ("noop", "unknown", "unsupported executor target"),
+    ],
+)
+def test_executor_routing_rejects_invalid_or_ambiguous_requests(
+    operation: str, target: str | None, message: str
+) -> None:
+    from kogwistar.runtime.rust_runtime_authority import (
+        RustRuntimeAuthorityError,
+        _native_operation_for_target,
+    )
+
+    with pytest.raises(RustRuntimeAuthorityError, match=message):
+        _native_operation_for_target(operation, target)
 
 
 @pytest.mark.parametrize("version", _OPERATION_VERSION_FIXTURE["invalid"])

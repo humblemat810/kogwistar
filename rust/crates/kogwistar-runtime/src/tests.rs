@@ -263,6 +263,27 @@
     }
 
     #[test]
+    fn native_executor_routing_matches_shared_python_contract_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-executor-routing-v1.json"
+        )))
+        .unwrap();
+        assert_eq!(fixture["schema_version"], 1);
+        for case in fixture["cases"].as_array().unwrap() {
+            let operation = case["operation"].as_str().unwrap();
+            let target = case["target"].as_str();
+            let expected = case["native_operation"].as_str();
+            assert_eq!(
+                native_operation_for_target(operation, target),
+                expected,
+                "case {}",
+                case["name"].as_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn native_registry_runs_versioned_application_operation_and_preserves_builtins() {
         let mut registry = NativeOperationRegistry::default();
         registry
