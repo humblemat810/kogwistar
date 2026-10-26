@@ -573,7 +573,9 @@ fn validate_transition_basics(
     if transition.expected_event_seq < 0 || transition.step_seq < 0 {
         return Err(RecordedRuntimeError::NegativeStepSequence);
     }
-    if !transition.state_update.is_empty() && transition.update.is_some() {
+    if !transition.state_update.is_empty()
+        && transition.update.as_ref().is_some_and(|update| !update.is_empty())
+    {
         return Err(RecordedRuntimeError::StateUpdateConflict);
     }
     Ok(())

@@ -51,6 +51,20 @@
         "nested": {"stable": true},
         "items": [1, 2]
       }
+    },
+    {
+      "name": "empty_legacy_update_does_not_conflict_with_state_delta",
+      "state": {
+        "items": ["seed"]
+      },
+      "state_update": [
+        ["a", {"items": "appended"}]
+      ],
+      "update": {},
+      "state_schema": {},
+      "expected": {
+        "items": ["seed", "appended"]
+      }
     }
   ]
 }

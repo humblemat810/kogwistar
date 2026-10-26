@@ -966,6 +966,54 @@
     }
 
     #[test]
+    fn empty_legacy_update_matches_python_state_update_truthiness() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-state-update-v1.json"
+        )))
+        .unwrap();
+        let case = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| {
+                case["name"] == "empty_legacy_update_does_not_conflict_with_state_delta"
+            })
+            .unwrap();
+        let initial_state: Map<String, serde_json::Value> =
+            serde_json::from_value(case["state"].clone()).unwrap();
+        let mut start = transition(RecordedTransitionKind::Start, "empty-update-start", 0, 0);
+        start.initial_state = Some(initial_state);
+        start.frontier = Some(RuntimeFrontier {
+            pending: vec![("node".to_owned(), 0, "token".to_owned(), None)],
+            ..RuntimeFrontier::default()
+        });
+        let started = reduce_recorded_transition(None, &start).unwrap();
+
+        let mut step = transition(
+            RecordedTransitionKind::RecordedStepSuccess,
+            "empty-update-step",
+            1,
+            0,
+        );
+        step.state_update = serde_json::from_value(case["state_update"].clone()).unwrap();
+        step.update = serde_json::from_value(case["update"].clone()).unwrap();
+        step.state_schema = serde_json::from_value(case["state_schema"].clone()).unwrap();
+        let stepped = reduce_recorded_transition(Some(&started.state), &step).unwrap();
+
+        assert_eq!(
+            serde_json::Value::Object(stepped.state.state)["items"],
+            case["expected"]["items"]
+        );
+
+        step.update = Some(Map::from_iter([("status".to_owned(), json!("done"))]));
+        assert!(matches!(
+            reduce_recorded_transition(Some(&started.state), &step),
+            Err(RecordedRuntimeError::StateUpdateConflict)
+        ));
+    }
+
+    #[test]
     fn terminal_transition_rejects_unfinished_join_work() {
         let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
         start.frontier = Some(RuntimeFrontier {
