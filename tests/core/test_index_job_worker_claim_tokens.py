@@ -12,6 +12,15 @@ from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from kogwistar.workers.index_job_worker import IndexJobWorker
 
+_REPLAY_FIXTURE = json.loads(
+    Path(__file__)
+    .resolve()
+    .parents[2]
+    .joinpath("contracts/golden/index-job-opaque-result-replay-v1.json")
+    .read_text(encoding="utf-8")
+)
+_OPAQUE_RESULT_CASES = _REPLAY_FIXTURE["cases"]
+
 
 class _Meta:
     def __init__(self, job: SimpleNamespace, *, reject_ack: bool = False) -> None:
@@ -293,12 +302,14 @@ def test_sync_worker_replays_admitted_result_without_projection() -> None:
     assert engine.indexing.calls == 0
 
 
-@pytest.mark.parametrize("payload", ['{"operation":', "123"])
+@pytest.mark.parametrize(
+    "case", _OPAQUE_RESULT_CASES, ids=lambda case: str(case["name"])
+)
 def test_sync_worker_preserves_opaque_legacy_accepted_result_string(
-    payload: str,
+    case: dict[str, str],
 ) -> None:
     job = _admitted_job(claim_token="claim-1")
-    job.accepted_result_json = payload
+    job.accepted_result_json = case["result_json"]
     meta = _Meta(job)
     worker = IndexJobWorker(engine=_engine(meta))
 
@@ -462,13 +473,15 @@ def test_async_worker_replays_admitted_result_without_projection() -> None:
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("payload", ['{"operation":', "123"])
+@pytest.mark.parametrize(
+    "case", _OPAQUE_RESULT_CASES, ids=lambda case: str(case["name"])
+)
 def test_async_worker_preserves_opaque_legacy_accepted_result_string(
-    payload: str,
+    case: dict[str, str],
 ) -> None:
     async def run() -> None:
         job = _admitted_job(claim_token="claim-1")
-        job.accepted_result_json = payload
+        job.accepted_result_json = case["result_json"]
         meta = _Meta(job)
         worker = AsyncIndexJobWorker(engine=_engine(meta))
 

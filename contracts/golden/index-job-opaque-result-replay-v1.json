@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "legacy-embedding-object",
+      "result_json": "{\"embedding\":[1,0]}"
+    },
+    {
+      "name": "opaque-invalid-json",
+      "result_json": "{\"operation\":"
+    },
+    {
+      "name": "opaque-json-scalar",
+      "result_json": "123"
+    }
+  ]
+}

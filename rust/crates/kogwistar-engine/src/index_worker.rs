@@ -281,4 +281,78 @@ mod tests {
             Some(first_result)
         );
     }
+
+    #[tokio::test]
+    async fn opaque_accepted_result_cases_match_shared_python_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/index-job-opaque-result-replay-v1.json"
+        )))
+        .expect("shared accepted-result replay fixture is valid");
+        assert_eq!(fixture["version"], 1);
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("fixture cases must be an array");
+
+        for (index, case) in cases.iter().enumerate() {
+            let result_json = case["result_json"]
+                .as_str()
+                .expect("fixture result_json must be a string");
+            let job_id = format!("job-{index}");
+            let store = InMemoryStore::new();
+            store
+                .enqueue_index_job(NewIndexJob {
+                    job_id: job_id.clone(),
+                    namespace: "ns".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: format!("node-{index}"),
+                    index_kind: "node_embedding".to_owned(),
+                    op: "UPSERT".to_owned(),
+                    payload_json: None,
+                    max_retries: 3,
+                })
+                .await
+                .unwrap();
+            let claimed = store
+                .claim_index_jobs(1, 30, Some("ns"))
+                .await
+                .unwrap()
+                .pop()
+                .unwrap();
+            let claim_token = claimed.claim_token.unwrap();
+            store
+                .accept_index_job_result(
+                    &job_id,
+                    &claim_token,
+                    result_json,
+                    &result_digest(result_json),
+                )
+                .await
+                .unwrap();
+            store
+                .bump_retry_and_requeue(&job_id, "simulate lost ack", 0, Some(&claim_token))
+                .await
+                .unwrap();
+
+            let summary = run_index_jobs_once(&store, 1, 30, Some("ns"), move |_| async {
+                panic!("accepted opaque result must not rerun its provider")
+            })
+            .await
+            .unwrap();
+            assert_eq!(summary.existing, 1, "case {}", case["name"]);
+            assert_eq!(summary.accepted, 0, "case {}", case["name"]);
+            assert_eq!(
+                store
+                    .index_job_result(&job_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .result_json
+                    .as_deref(),
+                Some(result_json),
+                "case {}",
+                case["name"]
+            );
+        }
+    }
 }

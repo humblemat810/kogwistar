@@ -35,9 +35,12 @@ denominator of either snapshot.
   adapter and fail/retry rather than ack when it is missing or invalid. Legacy
   accepted embedding results retain their old replay behavior. Python rejects
   schema, queue-binding, digest, and f32-range mismatches.
+  Generic index-result replay now has shared opaque-string cases in
+  `contracts/golden/index-job-opaque-result-replay-v1.json`, consumed by Rust
+  and Python sync/async worker tests to prevent legacy payload drift.
   Evidence: `cargo test -p kogwistar-engine --offline`
-  (**13 unit tests and 1 backend-composition test passed**), focused Python
-  projection-action/worker tests (**40 passed**), including sync and async
+  (**14 unit tests and 1 backend-composition test passed**), focused Python
+  projection-action/worker tests (**42 passed**), including sync and async
   regressions proving explicit `False` upsert results and non-string accepted
   queue values are retried rather than acknowledged, while malformed opaque
   legacy result strings retain Rust-compatible replay behavior and deleting an
