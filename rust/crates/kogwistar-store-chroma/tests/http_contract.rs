@@ -58,6 +58,11 @@ async fn fake_chroma(
                 json!({"updated": 1, "deleted": 1})
             } else if first_line.contains("/query HTTP") {
                 query_response(query_distance)
+            } else if first_line.contains("/get HTTP") && payload.get("offset").is_some() {
+                paged_get_response(
+                    payload["offset"].as_u64().expect("page offset") as usize,
+                    payload["limit"].as_u64().expect("page limit") as usize,
+                )
             } else {
                 get_response()
             };
@@ -95,6 +100,20 @@ fn get_response() -> Value {
         "documents": ["node body"],
         "metadatas": [record_metadata()],
         "embeddings": [[0.1, 0.2]]
+    })
+}
+
+fn paged_get_response(offset: usize, limit: usize) -> Value {
+    let end = (offset + limit).min(501);
+    let ids = (offset..end)
+        .map(|index| format!("node-{index}"))
+        .collect::<Vec<_>>();
+    let count = ids.len();
+    json!({
+        "ids": ids,
+        "documents": vec![Value::Null; count],
+        "metadatas": vec![record_metadata(); count],
+        "embeddings": vec![Value::Null; count]
     })
 }
 
@@ -172,6 +191,44 @@ async fn chroma_graph_store_uses_scoped_v2_crud_and_vector_routes() {
     );
     assert_eq!(requests[3].1["n_results"], 1);
     assert!(requests[5].0.contains("/delete HTTP"));
+}
+
+#[tokio::test]
+async fn chroma_graph_records_reads_all_pages_without_skipping_boundary_rows() {
+    let (endpoint, server) = fake_chroma(3, "cosine", 0.25).await;
+    let store = ChromaGraphStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "paged-graph".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect Chroma client");
+
+    let records = store
+        .graph_records("workspace-a", &MetadataFilter::default())
+        .await
+        .expect("read all graph pages");
+    assert_eq!(records.len(), 501);
+    assert_eq!(
+        records.first().map(|record| record.id.as_str()),
+        Some("node-0")
+    );
+    assert_eq!(
+        records.get(499).map(|record| record.id.as_str()),
+        Some("node-499")
+    );
+    assert_eq!(
+        records.last().map(|record| record.id.as_str()),
+        Some("node-500")
+    );
+
+    let requests = server.await.expect("fixture server");
+    let page_requests = &requests[1..];
+    assert_eq!(page_requests.len(), 2);
+    assert_eq!(page_requests[0].1["offset"], 0);
+    assert_eq!(page_requests[1].1["offset"], 500);
+    assert_eq!(page_requests[0].1["limit"], 500);
+    assert_eq!(page_requests[1].1["limit"], 500);
 }
 
 #[tokio::test]
