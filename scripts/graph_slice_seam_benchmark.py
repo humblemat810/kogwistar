@@ -166,6 +166,13 @@ def _python_raw_json_pipeline(source: str) -> str:
 
 def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
     models = _models(model_count)
+    envelope_construction = _timed(
+        lambda: [
+            build_graph_model_slice_envelope(model, field_mode=field_mode)
+            for model in models
+        ],
+        iterations,
+    )
     envelopes = [
         build_graph_model_slice_envelope(model, field_mode=field_mode)
         for model in models
@@ -298,6 +305,7 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
             json.loads(python_raw_pipeline_output)
         ),
         "stages": {
+            "python_slice_envelope_construction": _summary(envelope_construction),
             "python_model_projection": _summary(python_projection),
             "python_json_encode": _summary(python_encode),
             "rust_pyo3_call_and_json_encode": _summary(rust_call),
@@ -318,6 +326,7 @@ def run(*, model_count: int, iterations: int, field_mode: str) -> JsonObject:
             "python_json_parse_project_encode": _summary(python_raw_json_pipeline),
         },
         "interpretation": {
+            "python_slice_envelope_construction": "pydantic-extension serialization of the backend and requested-mode source payload plus manifest assembly; included to expose canonical-envelope preparation cost",
             "python_projection": "Pydantic-extension governed Python projection only",
             "rust_pyo3_call_and_json_encode": "Rust projection plus PyO3 entry and output serialization",
             "rust_pyo3_call_decode": "Rust projection plus PyO3 and Python JSON decoding",

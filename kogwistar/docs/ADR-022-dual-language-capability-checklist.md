@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Capability Checklist
 
-**Updated:** 2026-10-26
+**Updated:** 2026-10-27
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 `PASS` requires a named test, benchmark, or inspected code path. A design
 decision by itself does not prove an implementation gate. Update this file as
@@ -522,6 +522,23 @@ snapshot's denominator.
   invariant module passed (**29 passed**). These local runs do not substitute
   for the Ubuntu CPython 3.12-3.14 CI matrix or the supported PyPy/macOS matrix,
   so DL-07E remains **IN PROGRESS**.
+
+- DL-16U field-slice regression follow-up: a real `LLMNode` with nested source
+  evidence showed that a multi-mode pydantic-extension dump is not a recursive
+  union: exclusions from either mode removed the LLM-only `Span.chunk_id`.
+  The canonical slice envelope now merges separate backend and requested-mode
+  JSON dumps recursively and rejects conflicting shared values. Rust projection
+  is verified against direct Pydantic output for this populated model across all
+  five modes, in addition to the 26-model/130-mode matrix. The adapter and
+  manifest suites passed **34 tests each** on Windows CPython 3.12, 3.13, and
+  3.14; Ruff passed. The graph-slice benchmark now includes envelope-building
+  cost, which its earlier timings excluded. On an 8-envelope, five-sample
+  CPython 3.12 smoke, construction median was **27.16 ms**, versus **9.40 ms**
+  for Python projection and **11.05 ms** for the public bridge; all four output
+  digests matched. This tiny noisy sample does not establish a stable overhead
+  ratio or a full-stack slowdown. This adds evidence to existing DL-16U only;
+  no checklist ID or denominator changed. PyPy 3.11 remains unverified locally
+  because the installed interpreter has no pytest environment.
 
 ## Earlier verification update (2026-10-25)
 

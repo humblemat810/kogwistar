@@ -162,3 +162,4 @@ def test_graph_slice_benchmark_reports_actual_crossing_budget() -> None:
     assert crossings["batch"]["ffi_calls"] == 1
     assert crossings["batch"]["input_bytes"] > 0
     assert report["bridge_projection_digest"] == report["bridge_batch_projection_digest"]
+    assert "python_slice_envelope_construction" in report["stages"]

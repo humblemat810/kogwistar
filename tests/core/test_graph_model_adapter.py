@@ -20,6 +20,7 @@ from kogwistar.engine_core.graph_contracts import (
     build_graph_model_envelope,
     graph_model_class_for,
     GraphModelEnvelopeDict,
+    _merge_mode_payloads,
 )
 from kogwistar.engine_core.graph_slice_manifest import project_with_manifest
 from kogwistar.engine_core.models import (
@@ -198,17 +199,24 @@ def test_every_mapped_graph_model_preserves_field_slicing_contract() -> None:
 
 
 def test_python_slice_envelope_keeps_canonical_payload_and_manifest() -> None:
-    node = Node(
+    node = engine_models.LLMNode(
+        id="nn:slice-envelope-node",
+        local_id="nn:slice-envelope-node",
         label="node",
         type="entity",
         summary="A node",
         mentions=_mentions("node"),
     )
-    envelope = build_graph_model_slice_envelope(node, field_mode="llm_in")
-    assert envelope["payload"] == node.model_dump(
-        field_mode=("backend", "llm_in"), dump_format="json"
+    envelope = build_graph_model_slice_envelope(node, field_mode="llm")
+    backend_payload = node.model_dump(field_mode="backend", dump_format="json")
+    target_payload = node.model_dump(field_mode="llm", dump_format="json")
+    assert envelope["payload"]["mentions"][0]["spans"][0]["insertion_method"] == (
+        backend_payload["mentions"][0]["spans"][0]["insertion_method"]
     )
-    assert envelope["slice"]["mode"] == "llm_in"
+    assert envelope["payload"]["mentions"][0]["spans"][0]["chunk_id"] == (
+        target_payload["mentions"][0]["spans"][0]["chunk_id"]
+    )
+    assert envelope["slice"]["mode"] == "llm"
     assert envelope["slice"]["manifest"]["schema_version"] == 1
 
 
@@ -345,6 +353,29 @@ def test_built_rust_extension_matches_all_registered_model_slice_modes() -> None
 
 
 @pytest.mark.requires_rust
+def test_built_rust_extension_preserves_real_llm_node_fields_in_every_slice() -> None:
+    """Mode-only model fields and nested evidence survive the language seam."""
+    native = pytest.importorskip("kogwistar._rust")
+    model = engine_models.LLMNode(
+        id="nn:actual-node",
+        local_id="nn:actual-node",
+        label="Actual node",
+        type="entity",
+        summary="A concrete LLM-visible graph node",
+        domain_id="domain-hidden-from-llm-in",
+        canonical_entity_id="canonical-entity-7",
+        properties={"topic": "interoperability"},
+        mentions=_mentions("nested evidence survives projection"),
+    )
+
+    for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
+        envelope = build_graph_model_slice_envelope(model, field_mode=mode)
+        result = json.loads(native.project_graph_model_slice(json.dumps(envelope)))
+        expected = model.model_dump(field_mode=mode, dump_format="json")
+        assert result["payload"] == expected, mode
+
+
+@pytest.mark.requires_rust
 def test_native_capability_report_matches_corrected_doc_node_profile() -> None:
     pytest.importorskip("kogwistar._rust")
     profiles = graph_model_capability_profiles()
@@ -468,12 +499,46 @@ def test_python_slice_envelope_accepts_all_extension_modes() -> None:
         mentions=_mentions("node"),
     )
 
+    def contains_projection(source: object, projected: object) -> bool:
+        if isinstance(projected, dict):
+            return isinstance(source, dict) and all(
+                key in source and contains_projection(source[key], value)
+                for key, value in projected.items()
+            )
+        if isinstance(projected, list):
+            return (
+                isinstance(source, list)
+                and len(source) == len(projected)
+                and all(
+                    contains_projection(source_value, projected_value)
+                    for source_value, projected_value in zip(
+                        source, projected, strict=True
+                    )
+                )
+            )
+        return source == projected
+
     for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
         envelope = build_graph_model_slice_envelope(node, field_mode=mode)
         assert envelope["slice"]["mode"] == mode
-        source_modes = "backend" if mode == "backend" else ("backend", mode)
-        expected_source = node.model_dump(field_mode=source_modes, dump_format="json")
-        assert envelope["payload"] == expected_source
+        backend_payload = node.model_dump(field_mode="backend", dump_format="json")
+        target_payload = node.model_dump(field_mode=mode, dump_format="json")
+        assert contains_projection(envelope["payload"], backend_payload)
+        assert contains_projection(envelope["payload"], target_payload)
+
+
+def test_graph_mode_payload_merge_is_recursive_and_fails_closed() -> None:
+    merged = _merge_mode_payloads(
+        {"mentions": [{"spans": [{"backend": "source"}]}]},
+        {"mentions": [{"spans": [{"llm": "prompt"}]}]},
+    )
+    assert merged == {
+        "mentions": [{"spans": [{"backend": "source", "llm": "prompt"}]}]
+    }
+    with pytest.raises(GraphModelAdapterError, match="conflict at a shared value"):
+        _merge_mode_payloads({"value": 1}, {"value": 2})
+    with pytest.raises(GraphModelAdapterError, match="incompatible lists"):
+        _merge_mode_payloads({"items": [1]}, {"items": []})
 
 
 def test_python_contract_mode_does_not_cross_native_boundary(

@@ -7,6 +7,7 @@ that a new Python subclass cannot silently receive the wrong Rust contract.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Literal, cast
 
 from typing_extensions import TypedDict
@@ -45,9 +46,6 @@ GraphModelClassName = Literal[
 ]
 
 GraphWireFieldMode = Literal["backend", "frontend", "dto", "llm", "llm_in"]
-GraphWireFieldSelection = GraphWireFieldMode | tuple[
-    GraphWireFieldMode, GraphWireFieldMode
-]
 GraphWireDumpFormat = Literal["python", "json"]
 GRAPH_MODEL_ENVELOPE_VERSION = 1
 
@@ -140,7 +138,7 @@ def build_graph_model_envelope(
 def _build_graph_model_envelope(
     model: ModeSlicingMixin,
     *,
-    field_mode: GraphWireFieldSelection,
+    field_mode: GraphWireFieldMode,
     exclude: set[str] | list[str] | None = None,
     dump_format: GraphWireDumpFormat = "json",
 ) -> GraphModelEnvelopeDict:
@@ -175,16 +173,23 @@ def build_graph_model_slice_envelope(
     """Build a backend-preserving source payload plus a projection declaration.
 
     Some graph models have fields that are visible only in non-backend modes.
-    Serialize the union of backend and requested-mode fields in one
-    pydantic-extension dump; the Rust projection then applies the requested
-    mode before returning data to its consumer. A backend-only source payload
-    cannot reconstruct those model-visible fields after they have been omitted.
+    Serialize backend and requested-mode views separately, then merge their
+    JSON values recursively. Passing multiple field modes to pydantic-extension
+    is not equivalent: nested exclusions win across modes and can drop fields
+    visible only in the requested mode. The Rust projection then applies the
+    requested mode before returning data to its consumer.
     """
 
-    source_modes: GraphWireFieldSelection = (
-        field_mode if field_mode == "backend" else ("backend", field_mode)
-    )
-    envelope = _build_graph_model_envelope(model, field_mode=source_modes)
+    envelope = build_graph_model_envelope(model, field_mode="backend")
+    if field_mode != "backend":
+        target_envelope = build_graph_model_envelope(model, field_mode=field_mode)
+        envelope = {
+            **envelope,
+            "payload": cast(
+                dict[str, object],
+                _merge_mode_payloads(envelope["payload"], target_envelope["payload"]),
+            ),
+        }
 
     return {
         **envelope,
@@ -194,4 +199,30 @@ def build_graph_model_slice_envelope(
             "manifest": build_slice_manifest(type(model)),
         },
     }
+
+
+def _merge_mode_payloads(base: object, additional: object) -> object:
+    """Union two mode dumps without losing nested fields or hiding conflicts."""
+
+    if isinstance(base, Mapping) and isinstance(additional, Mapping):
+        merged = dict(base)
+        for key, value in additional.items():
+            merged[key] = (
+                _merge_mode_payloads(merged[key], value) if key in merged else value
+            )
+        return merged
+    if isinstance(base, list) and isinstance(additional, list):
+        if len(base) != len(additional):
+            raise GraphModelAdapterError(
+                "backend and requested-mode graph payloads have incompatible lists"
+            )
+        return [
+            _merge_mode_payloads(base_item, additional_item)
+            for base_item, additional_item in zip(base, additional, strict=True)
+        ]
+    if base != additional:
+        raise GraphModelAdapterError(
+            "backend and requested-mode graph payloads conflict at a shared value"
+        )
+    return additional
 

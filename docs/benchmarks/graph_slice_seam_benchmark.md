@@ -209,3 +209,25 @@ measurement (1,958 ms median) must not be compared directly with Rust family
 validation (2.265 ms median): those validators do not yet implement equivalent
 validation contracts, so that result is a parity gap to resolve, not valid
 performance evidence.
+
+### Recursive Source-Envelope Construction Recheck (2026-10-27)
+
+The source envelope must retain the backend view and also carry fields visible
+only in the requested output mode. A single multi-mode `model_dump` is not a
+recursive union because nested `ExcludeMode` rules win across the selected
+modes; it dropped `Span.chunk_id` from the LLM projection. The correct path now
+serializes the backend and requested modes separately and recursively merges
+their JSON payloads, failing closed if shared values conflict.
+
+The benchmark now measures this preparation step instead of starting after the
+envelopes have already been built. A Windows CPython 3.12 smoke with four
+node/edge pairs (eight envelopes), `llm_in`, and five timed samples produced
+identical Python, Rust, and bridge output digests. Median envelope construction
+was **27.16 ms**; Python projection was **9.40 ms** and the public bridge was
+**11.05 ms** on the same small fixture. Sample count and fixture size are too
+small for a stable overhead ratio, but the measurement makes the preparation
+cost visible. This function currently has no production call sites; this is
+not evidence of a full-stack slowdown. If the adapter becomes a hot path, the
+next optimization should be a pydantic-extension primitive with true recursive
+mode-union semantics, measured against the current correct fallback. Do not
+restore the incorrect one-dump approximation for speed.
