@@ -14810,6 +14810,166 @@ mod tests {
                 && event.payload_json.contains("seam_crossings")
         }));
 
+        // One durable run can hand off from the Python worker protocol to
+        // Rust-native execution and back without changing its state contract.
+        let mixed_submit = client
+            .post(format!("{base_url}/api/workflow/runs"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "run_id": "mixed-language-run",
+                "workflow_id": "mixed-language-workflow",
+                "conversation_id": "mixed-language-conversation",
+                "initial_state": {"counter": 4},
+                "runtime_kind": "sync",
+                "start_node_id": "python-before",
+                "node_ops": {
+                    "python-before": "application.before",
+                    "native-middle": "rust-native/increment-counter",
+                    "python-after": "application.after"
+                },
+                "runtime_routes": [
+                    {"source_node_id": "python-before", "target_node_id": "native-middle", "join_mask": 0},
+                    {"source_node_id": "native-middle", "target_node_id": "python-after", "join_mask": 0}
+                ]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(mixed_submit.status(), StatusCode::ACCEPTED);
+
+        let python_before_claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "claimed_by": "python-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["python-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        let python_before_work =
+            python_before_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        assert_eq!(python_before_work["step_id"], "python-before");
+        assert!(python_before_work["payload"]["executor_target"].is_null());
+        let python_before_result = client
+            .post(format!("{base_url}/internal/runtime/results"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": python_before_work["message_id"],
+                    "claimed_by": python_before_work["claimed_by"],
+                    "run_id": python_before_work["run_id"],
+                    "step_id": python_before_work["step_id"],
+                    "correlation_id": python_before_work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "mixed-python-before",
+                    "state_update": [["u", {"python_before_seen": true}]],
+                    "successors": [],
+                    "result": null
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(python_before_result.status(), StatusCode::OK);
+
+        let native_middle_claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        let native_middle_work =
+            native_middle_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        assert_eq!(native_middle_work["payload"]["node_id"], "native-middle");
+        assert_eq!(native_middle_work["payload"]["state"]["counter"], 4);
+        assert_eq!(
+            native_middle_work["payload"]["state"]["python_before_seen"],
+            true
+        );
+        let native_middle_result = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": native_middle_work["message_id"],
+                    "claimed_by": native_middle_work["claimed_by"],
+                    "run_id": native_middle_work["run_id"],
+                    "step_id": native_middle_work["step_id"],
+                    "correlation_id": native_middle_work["correlation_id"]
+                },
+                "payload": native_middle_work["payload"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(native_middle_result.status(), StatusCode::OK);
+
+        let python_after_claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "claimed_by": "python-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["python-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        let python_after_work =
+            python_after_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        assert_eq!(python_after_work["payload"]["node_id"], "python-after");
+        assert!(python_after_work["payload"]["executor_target"].is_null());
+        assert_eq!(python_after_work["payload"]["state"]["counter"], 5);
+        assert_eq!(
+            python_after_work["payload"]["state"]["python_before_seen"],
+            true
+        );
+        let python_after_result = client
+            .post(format!("{base_url}/internal/runtime/results"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": python_after_work["message_id"],
+                    "claimed_by": python_after_work["claimed_by"],
+                    "run_id": python_after_work["run_id"],
+                    "step_id": python_after_work["step_id"],
+                    "correlation_id": python_after_work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "mixed-python-after",
+                    "state_update": [["u", {"python_after_seen": true}]],
+                    "successors": [],
+                    "result": {"workflow_status": "succeeded", "answer": "mixed"}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(python_after_result.status(), StatusCode::OK);
+        let mixed_run = store.get_server_run("mixed-language-run").unwrap().unwrap();
+        assert_eq!(mixed_run.status, "succeeded");
+        let mixed_events = store
+            .list_server_run_events("mixed-language-run", 0, 100)
+            .unwrap();
+        assert!(mixed_events.iter().any(|event| {
+            event.event_type == "workflow.trace.v1"
+                && event.payload_json.contains("native-middle")
+                && event.payload_json.contains("seam_crossings")
+        }));
+
         // A non-native operation must keep the legacy Python-worker lane and
         // must not acquire native executor metadata implicitly.
         let legacy_submit = client

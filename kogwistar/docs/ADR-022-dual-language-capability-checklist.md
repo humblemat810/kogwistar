@@ -21,6 +21,17 @@ denominator of either snapshot.
 
 ## Latest verification update (2026-10-26)
 
+- Additional `DL-13` mixed-executor evidence: the real-loopback SQLite API test
+  now runs one durable workflow through `Python worker protocol -> Rust-native
+  registered operation -> Python worker protocol`. It checks recipient and
+  executor metadata at each claim, verifies the first Python result is visible
+  in the Rust-native step and the native state update is visible in the next
+  Python claim, then verifies the run completes with a durable Rust trace.
+  Python execution is represented by the actual versioned worker-result wire
+  contract submitted over HTTP (the test does not start a Python callback
+  worker). `sqlite_native_runtime_route_uses_shared_result_reducer` passed on
+  Windows CPython with local sockets enabled. This proves a mixed handoff slice
+  over SQLite, not full Python/Rust workflow parity or live PostgreSQL behavior.
 - Additional `DL-13` evidence: the versioned `NativeOperationRegistry` supports
   trusted application-composed handlers in addition to built-ins, and both
   SQLite and PostgreSQL run services accept an injected registry. New run
