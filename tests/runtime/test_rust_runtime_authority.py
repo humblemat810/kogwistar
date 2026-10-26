@@ -16,7 +16,7 @@ import pytest
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
-from kogwistar.runtime.rust_worker import RustRuntimeWorker
+from kogwistar.runtime.rust_worker import AsyncRustRuntimeWorker, RustRuntimeWorker
 from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
     RustRuntimeAuthority,
@@ -593,6 +593,142 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
         assert final_state["counter"] == 5
         assert final_state["python_before_seen"] is True
         assert final_state["python_after_seen"] is True
+
+        from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+        async_callbacks: list[str] = []
+        async_resolver = AsyncMappingStepResolver()
+
+        @async_resolver.register("application.async_before")
+        async def async_before(ctx):
+            async_callbacks.append("before")
+            assert ctx.state_view["counter"] == 8
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"async_python_before_seen": True})],
+            )
+
+        @async_resolver.register("application.async_after")
+        async def async_after(ctx):
+            async_callbacks.append("after")
+            assert ctx.state_view["counter"] == 9
+            assert ctx.state_view["async_python_before_seen"] is True
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"async_python_after_seen": True})],
+            )
+
+        async_submitted = httpx.post(
+            f"{base_url}/api/workflow/runs",
+            headers=headers,
+            json={
+                "run_id": "mixed-async-live-run",
+                "workflow_id": "mixed-async-live-workflow",
+                "conversation_id": "mixed-async-live-conversation",
+                "initial_state": {"counter": 8},
+                "runtime_kind": "async",
+                "start_node_id": "python-before",
+                "node_ops": {
+                    "python-before": "application.async_before",
+                    "native-middle": "rust-native/increment-counter",
+                    "python-after": "application.async_after",
+                },
+                "runtime_routes": [
+                    {
+                        "source_node_id": "python-before",
+                        "target_node_id": "native-middle",
+                        "join_mask": 0,
+                    },
+                    {
+                        "source_node_id": "native-middle",
+                        "target_node_id": "python-after",
+                        "join_mask": 0,
+                    },
+                ],
+            },
+            timeout=10,
+        )
+        assert async_submitted.status_code == 202, async_submitted.text
+
+        async def execute_async_python_workers() -> None:
+            worker = AsyncRustRuntimeWorker.from_step_resolver(
+                base_url=base_url,
+                worker_id="async-python-worker",
+                journal_path=tmp_path / "async-python-worker.sqlite",
+                step_resolver=async_resolver,
+                headers=headers,
+            )
+            try:
+                async_before_work = await worker.claim(run_id="mixed-async-live-run")
+                assert len(async_before_work) == 1
+                assert async_before_work[0]["step_id"] == "python-before"
+                await worker.process(async_before_work[0])
+
+                async with httpx.AsyncClient(
+                    base_url=base_url, headers=headers, timeout=10
+                ) as client:
+                    native_claim_response = await client.post(
+                        "/internal/runtime/claim",
+                        json={
+                            "claimed_by": "rust-native-worker",
+                            "limit": 1,
+                            "lease_seconds": 60,
+                            "recipient_ids": ["rust-native-worker"],
+                            "run_id": "mixed-async-live-run",
+                        },
+                    )
+                    assert native_claim_response.status_code == 200
+                    native_work = native_claim_response.json()["work"]
+                    assert len(native_work) == 1
+                    native_item = native_work[0]
+                    assert native_item["step_id"] == "native-middle"
+                    assert native_item["payload"]["state"][
+                        "async_python_before_seen"
+                    ] is True
+                    native_response = await client.post(
+                        "/internal/runtime/native/execute",
+                        json={
+                            "handoff": {
+                                "message_id": native_item["message_id"],
+                                "claimed_by": native_item["claimed_by"],
+                                "run_id": native_item["run_id"],
+                                "step_id": native_item["step_id"],
+                                "correlation_id": native_item["correlation_id"],
+                            },
+                            "payload": native_item["payload"],
+                        },
+                    )
+                    assert native_response.status_code == 200, native_response.text
+
+                async_after_work = await worker.claim(run_id="mixed-async-live-run")
+                assert len(async_after_work) == 1
+                assert async_after_work[0]["step_id"] == "python-after"
+                async_after_state = async_after_work[0]["payload"]["state"]
+                assert async_after_state["counter"] == 9
+                assert async_after_state["async_python_before_seen"] is True
+                await worker.process(async_after_work[0])
+            finally:
+                await worker.aclose()
+
+        asyncio.run(execute_async_python_workers())
+        assert async_callbacks == ["before", "after"]
+        async_status = httpx.get(
+            f"{base_url}/api/workflow/runs/mixed-async-live-run",
+            headers=headers,
+            timeout=10,
+        )
+        assert async_status.status_code == 200, async_status.text
+        assert async_status.json()["status"] == "succeeded"
+        async_checkpoints = httpx.get(
+            f"{base_url}/api/workflow/runs/mixed-async-live-run/checkpoints",
+            headers=headers,
+            timeout=10,
+        )
+        assert async_checkpoints.status_code == 200, async_checkpoints.text
+        async_final_state = async_checkpoints.json()["checkpoints"][-1]["state"]
+        assert async_final_state["counter"] == 9
+        assert async_final_state["async_python_before_seen"] is True
+        assert async_final_state["async_python_after_seen"] is True
     finally:
         process.terminate()
         try:

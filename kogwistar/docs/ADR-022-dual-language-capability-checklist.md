@@ -34,12 +34,12 @@ denominator of either snapshot.
   over SQLite, not full Python/Rust workflow parity or live PostgreSQL behavior.
 - Stronger `DL-13` mixed-executor evidence: `tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server`
   launches the actual `RustRuntimeWorker` with registered Python callbacks,
-  executes a durable `Python -> Rust-native -> Python` workflow over loopback,
-  and reads the reconstructed final state from the durable checkpoint endpoint.
-  The complete `tests/runtime/test_rust_runtime_authority.py` module passed on
-  Windows CPython 3.13 (**21 passed**), including this integration; Ruff passed.
-  This closes the earlier wire-contract-only test gap for this SQLite slice; it
-  does not establish PostgreSQL mixed-worker behavior or broad workflow parity.
+  and also launches `AsyncRustRuntimeWorker` with async callbacks. Each executes
+  a durable `Python -> Rust-native -> Python` workflow over loopback and checks
+  the reconstructed final state from the durable checkpoint endpoint. This
+  adds real sync-v1 and async-v2 mixed-worker evidence for SQLite. It closes the
+  earlier wire-contract-only test gap for this slice; it does not establish
+  PostgreSQL mixed-worker behavior or broad workflow parity.
 - Additional `DL-13` evidence: the versioned `NativeOperationRegistry` supports
   trusted application-composed handlers in addition to built-ins, and both
   SQLite and PostgreSQL run services accept an injected registry. New run
