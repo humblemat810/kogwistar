@@ -49,6 +49,49 @@ const STORE_SCHEMA_VERSION: i64 = 1;
 static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 static PROCESS_AUTHORITY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
+static ACTIVE_DATABASE_IDENTITIES: OnceLock<Mutex<BTreeMap<PathBuf, (String, usize)>>> =
+    OnceLock::new();
+
+fn register_active_database_identity(
+    path: PathBuf,
+    identity: &str,
+    display_path: &Path,
+) -> SqliteStoreResult<()> {
+    let identities = ACTIVE_DATABASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut active = identities
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match active.get_mut(&path) {
+        Some((existing, _)) if existing != identity => Err(SqliteStoreError::AuthorityConflict {
+            path: display_path.display().to_string(),
+            message: "database file identity changed while its authority was active".to_owned(),
+        }),
+        Some((_, count)) => {
+            *count += 1;
+            Ok(())
+        }
+        None => {
+            active.insert(path, (identity.to_owned(), 1));
+            Ok(())
+        }
+    }
+}
+
+fn unregister_active_database_identity(path: &Path, identity: &str) {
+    let identities = ACTIVE_DATABASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut active = identities
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((current, count)) = active.get_mut(path) {
+        if current == identity {
+            if *count <= 1 {
+                active.remove(path);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
 
 #[cfg(windows)]
 static WINDOWS_PROCESS_AUTHORITY_MUTEXES: OnceLock<
@@ -186,6 +229,7 @@ fn acquire_authority_lock_handle(
 struct ProcessAuthorityLock {
     _path: Option<AuthorityLockHandle>,
     _file_identity: Option<AuthorityLockHandle>,
+    active_path_identity: Option<(PathBuf, String)>,
 }
 
 impl ProcessAuthorityLock {
@@ -194,6 +238,7 @@ impl ProcessAuthorityLock {
             return Ok(Self {
                 _path: None,
                 _file_identity: None,
+                active_path_identity: None,
             });
         }
         let database = normalized_database_path(database);
@@ -203,6 +248,7 @@ impl ProcessAuthorityLock {
         Ok(Self {
             _path: Some(path),
             _file_identity: None,
+            active_path_identity: None,
         })
     }
 
@@ -218,12 +264,21 @@ impl ProcessAuthorityLock {
             "kogwistar-sqlite-authority-{}.lock",
             identifier.simple()
         ));
-        self._file_identity = Some(acquire_authority_lock_handle(
-            lock_path,
-            &identity_key,
-            database,
-        )?);
+        let file_identity_lock = acquire_authority_lock_handle(lock_path, &identity_key, database)?;
+        let database_path = normalized_database_path(database);
+        register_active_database_identity(database_path.clone(), &identity_key, database)?;
+        self._file_identity = Some(file_identity_lock);
+        self.active_path_identity = Some((database_path, identity_key));
         Ok(())
+    }
+}
+
+impl Drop for ProcessAuthorityLock {
+    fn drop(&mut self) {
+        let Some((path, identity)) = self.active_path_identity.take() else {
+            return;
+        };
+        unregister_active_database_identity(&path, &identity);
     }
 }
 
@@ -5156,6 +5211,53 @@ mod tests {
     }
 
     #[test]
+    fn active_path_identity_is_shared_and_replacement_fails_closed() {
+        let path = database_path("identity-registry");
+        register_active_database_identity(path.clone(), "file-identity-a", &path).unwrap();
+        register_active_database_identity(path.clone(), "file-identity-a", &path).unwrap();
+        assert!(matches!(
+            register_active_database_identity(path.clone(), "file-identity-b", &path),
+            Err(SqliteStoreError::AuthorityConflict { .. })
+        ));
+
+        unregister_active_database_identity(&path, "file-identity-a");
+        assert!(matches!(
+            register_active_database_identity(path.clone(), "file-identity-b", &path),
+            Err(SqliteStoreError::AuthorityConflict { .. })
+        ));
+        unregister_active_database_identity(&path, "file-identity-a");
+        register_active_database_identity(path.clone(), "file-identity-b", &path).unwrap();
+        unregister_active_database_identity(&path, "file-identity-b");
+    }
+
+    #[test]
+    fn concurrent_file_identity_replacement_has_one_active_winner() {
+        let path = database_path("identity-race");
+        let barrier = Arc::new(Barrier::new(3));
+        let workers = ["file-identity-a", "file-identity-b"].map(|identity| {
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                let result = register_active_database_identity(path.clone(), identity, &path);
+                (identity, result.is_ok())
+            })
+        });
+        barrier.wait();
+        let outcomes = workers.map(|worker| worker.join().unwrap());
+        let winners: Vec<_> = outcomes
+            .iter()
+            .filter_map(|(identity, accepted)| accepted.then_some(*identity))
+            .collect();
+        assert_eq!(winners.len(), 1);
+
+        let active = ACTIVE_DATABASE_IDENTITIES.get().unwrap().lock().unwrap();
+        assert_eq!(active.get(&path).map(|(_, count)| *count), Some(1));
+        drop(active);
+        unregister_active_database_identity(&path, winners[0]);
+    }
+
+    #[test]
     fn standalone_rust_process_cannot_open_an_authority_owned_database() {
         let Ok(path) = std::env::var("KOGWISTAR_SQLITE_LOCK_CHILD_PATH") else {
             let path = database_path("cross-process-authority");
@@ -5217,6 +5319,28 @@ mod tests {
         .unwrap();
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn active_rust_authority_rejects_database_path_replacement() {
+        let (store, path) = store("active-path-replacement");
+        let original = path.with_extension("original.db");
+        let replacement = path.with_extension("replacement.db");
+        let replacement_connection = Connection::open(&replacement).unwrap();
+        replacement_connection
+            .execute_batch("CREATE TABLE replacement_probe (value INTEGER);")
+            .unwrap();
+        drop(replacement_connection);
+
+        fs::rename(&path, &original).unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let error = SqliteStore::open(&path).unwrap_err();
+        assert!(matches!(error, SqliteStoreError::AuthorityConflict { .. }));
+
+        drop(store);
+        fs::remove_file(original).unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
