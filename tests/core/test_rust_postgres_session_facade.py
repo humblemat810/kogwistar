@@ -895,6 +895,24 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
             connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
+def test_native_vector_filter_accepts_only_lossless_supported_forms():
+    assert ReadSubsystem._native_vector_filter(
+        {"$and": [{"team": "red"}, {"entity_type": {"$ne": "acl_record"}}]}
+    ) == ({"team": "red"}, {"entity_type": "acl_record"})
+    assert ReadSubsystem._native_vector_filter(
+        {"entity_type": {"$ne": "acl_record"}}
+    ) == ({}, {"entity_type": "acl_record"})
+    assert ReadSubsystem._native_vector_filter(
+        {"$or": [{"team": "red"}, {"team": "blue"}]}
+    ) is None
+    assert ReadSubsystem._native_vector_filter(
+        {"team": {"$in": ["red", "blue"]}}
+    ) is None
+    assert ReadSubsystem._native_vector_filter(
+        {"$and": [{"team": "red"}, {"team": "blue"}]}
+    ) is None
+
+
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
     operations: list[dict] = []
 
@@ -1160,6 +1178,40 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
             "metric": "cosine",
             "limit": 1,
             "embeddings": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        }
+    ]
+
+    acl_batch_calls: list[dict] = []
+
+    def native_vector_query_batch_excluding_metadata(**values):
+        acl_batch_calls.append(values)
+        return native_vector_query_batch(
+            **{key: value for key, value in values.items() if key != "metadata_not_equals"}
+        )
+
+    monkeypatch.setattr(
+        store,
+        "graph_projection_vector_query_batch_excluding_metadata",
+        native_vector_query_batch_excluding_metadata,
+    )
+    acl_batch_hits = acl_reader.query_nodes(
+        query_embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        where={"team": "red"},
+        n_results=1,
+    )
+    assert len(acl_batch_hits) == 1
+    assert acl_batch_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "embedding_dim": 3,
+            "metadata": {"team": "red"},
+            "metric": "cosine",
+            "limit": 1,
+            "embeddings": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            "metadata_not_equals": {"entity_type": "acl_record"},
         }
     ]
 

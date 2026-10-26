@@ -1141,11 +1141,15 @@ before top-k ranking (`IS DISTINCT FROM` also excludes records with no such
 metadata key). Calls without exclusions retain the legacy operation payload.
 Evidence: `test_read_subsystem_routes_simple_base_reads_to_native_projection`
 passes through `ACLAwareReadSubsystem` and asserts the Python vector backend is
-not called; `test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_available`
+not called for single and batched queries; `test_native_vector_filter_accepts_only_lossless_supported_forms`
+proves unsupported `$or`, `$in`, and conflicting clauses are not partially
+translated; `test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_available`
 passed against the local Docker pgvector service with a deliberately closer ACL
-record; `postgres_bridge_accepts_closed_batched_graph_vector_query_contract`
-passed for the backward-compatible bridge contract; Rust bridge `cargo check`,
-Rust storage tests, Ruff, and `git diff --check` passed. This closes the
+record and a combined caller filter; `postgres_bridge_accepts_closed_batched_graph_vector_query_contract`
+passed for the backward-compatible bridge contract. The complete
+`tests/core/test_rust_postgres_session_facade.py` module passed against the live
+container (**44 passed**); Rust bridge `cargo check`, Rust storage tests, Ruff,
+and `git diff --check` passed. This closes the
 identified native-query fallback for this bounded ACL exclusion only; it does
 not close `DL-08C` or broaden its completion score.
 
