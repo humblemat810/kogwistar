@@ -556,6 +556,16 @@ mod tests {
             30,
             Some("workspace"),
             move |_input| {
+                let provider_payload = serde_json::to_value(&_input).unwrap();
+                for authority_field in [
+                    "claim_token",
+                    "lease_until",
+                    "retry_count",
+                    "accepted_result_json",
+                    "accepted_result_sha256",
+                ] {
+                    assert!(provider_payload.get(authority_field).is_none());
+                }
                 calls.fetch_add(1, Ordering::SeqCst);
                 async { Ok(candidate()) }
             },

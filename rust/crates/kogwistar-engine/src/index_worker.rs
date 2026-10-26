@@ -232,6 +232,16 @@ mod tests {
                 assert_eq!(input.namespace, "ns");
                 assert_eq!(input.entity_id, "node-1");
                 assert_eq!(input.payload_json.as_deref(), Some("{}"));
+                let provider_payload = serde_json::to_value(&input).unwrap();
+                for authority_field in [
+                    "claim_token",
+                    "lease_until",
+                    "retry_count",
+                    "accepted_result_json",
+                    "accepted_result_sha256",
+                ] {
+                    assert!(provider_payload.get(authority_field).is_none());
+                }
                 Ok("{\"embedding\":[1,0]}".to_owned())
             },
         )
