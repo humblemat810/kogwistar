@@ -21,6 +21,20 @@ denominator of either snapshot.
 
 ## Latest verification update (2026-10-26)
 
+- Additional `DL-13` evidence: the versioned `NativeOperationRegistry` supports
+  trusted application-composed handlers in addition to built-ins, and both
+  SQLite and PostgreSQL run services accept an injected registry. New run
+  admission validates each effective `rust-native/<operation>` and version
+  before persistence; malformed names, unknown operations, and unsupported
+  versions return 422 without a run or lane record. Existing-run idempotency
+  is checked first. Explicit `node_versions` are honored when no authoritative
+  graph plan supplies them; omitted versions retain the legacy `v1` default.
+  Evidence: runtime crate tests (25 passed), and
+  `sqlite_native_runtime_route_uses_shared_result_reducer`, which exercises
+  rejection/no-persistence for all three invalid cases over real loopback HTTP,
+  then executes a registered application `v2` operation and checks legacy
+  Python-worker routing and duplicate-execution idempotency. The full API
+  library suite passed (77/77) on Windows CPython with local sockets enabled.
 - Native-path dependency boundary evidence for `DL-13`: the Rust CI job now
   inspects the complete normal dependency closure of `kogwistar-api` and fails
   if it includes `pyo3` or `kogwistar-python`; a config contract test ensures

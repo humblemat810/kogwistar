@@ -778,6 +778,35 @@ fn native_operation_name(operation: &str) -> Option<&str> {
     kogwistar_runtime::native_operation_name(operation)
 }
 
+fn validate_native_operation_registry(
+    operations: &std::collections::BTreeMap<String, String>,
+    versions: &std::collections::BTreeMap<String, String>,
+    registry: &kogwistar_runtime::NativeOperationRegistry,
+) -> Result<(), (&'static str, String)> {
+    for (node_id, operation) in operations {
+        let Some(name) = operation.strip_prefix(kogwistar_runtime::RUST_NATIVE_OPERATION_PREFIX)
+        else {
+            continue;
+        };
+        if name.trim().is_empty() {
+            return Err((
+                "KOGWISTAR_INVALID_NATIVE_OPERATION",
+                format!("node {node_id:?} has an empty Rust-native operation name"),
+            ));
+        }
+        let version = versions.get(node_id).map(String::as_str).unwrap_or("v1");
+        if !registry.supports(name, version) {
+            return Err((
+                "KOGWISTAR_NATIVE_OPERATION_UNREGISTERED",
+                format!(
+                    "Rust-native operation {name:?} version {version:?} for node {node_id:?} is not registered"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn add_executor_target(payload: &mut Value, operation: &str) {
     if native_operation_name(operation).is_some() {
         payload["executor_target"] = json!(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
@@ -4661,6 +4690,7 @@ pub struct SqliteRunApplicationService {
     store: SqliteStore,
     max_queue: usize,
     capabilities: SharedCapabilityState,
+    native_operations: kogwistar_runtime::NativeOperationRegistry,
 }
 
 fn runtime_max_queue() -> usize {
@@ -5136,8 +5166,19 @@ impl SqliteRunApplicationService {
                 store,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+                native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
             })
             .map_err(|error| error.to_string())
+    }
+
+    /// Compose trusted application-owned Rust operations into the opt-in native
+    /// workflow lane. The default registry remains unchanged for existing users.
+    pub fn with_native_operations(
+        mut self,
+        native_operations: kogwistar_runtime::NativeOperationRegistry,
+    ) -> Self {
+        self.native_operations = native_operations;
+        self
     }
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
@@ -5262,10 +5303,14 @@ impl SqliteRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_versions.clone())
             .unwrap_or_else(|| {
-                effective_node_ops
-                    .keys()
-                    .map(|node_id| (node_id.clone(), "v1".to_owned()))
-                    .collect()
+                if input.node_versions.is_empty() {
+                    effective_node_ops
+                        .keys()
+                        .map(|node_id| (node_id.clone(), "v1".to_owned()))
+                        .collect()
+                } else {
+                    input.node_versions
+                }
             });
         let effective_node_environment_ids = graph_plan
             .as_ref()
@@ -5380,6 +5425,13 @@ impl SqliteRunApplicationService {
                     format!("run_id {run_id:?} already exists with different admission state"),
                 ),
             };
+        }
+        if let Err((code, message)) = validate_native_operation_registry(
+            &effective_node_ops,
+            &effective_node_versions,
+            &self.native_operations,
+        ) {
+            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, code, message);
         }
         let max_queue = self.max_queue;
         let outcome = self.store.immediate_transaction(|uow| {
@@ -5835,7 +5887,10 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let effect = match kogwistar_runtime::execute_native_step(&native_request) {
+        let effect = match kogwistar_runtime::execute_native_step_with_registry(
+            &native_request,
+            &self.native_operations,
+        ) {
             Ok(effect) => effect,
             Err(error) => {
                 return effect_error(
@@ -5866,6 +5921,7 @@ pub struct PostgresRunApplicationService {
     store: PostgresStore,
     max_queue: usize,
     capabilities: SharedCapabilityState,
+    native_operations: kogwistar_runtime::NativeOperationRegistry,
 }
 
 fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1, String> {
@@ -8535,6 +8591,7 @@ impl PostgresRunApplicationService {
                 store,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+                native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
             })
             .map_err(|error| error.to_string())
     }
@@ -8544,6 +8601,16 @@ impl PostgresRunApplicationService {
             .ensure_schema()
             .await
             .map_err(|error| error.to_string())
+    }
+
+    /// Compose trusted application-owned Rust operations into the opt-in native
+    /// workflow lane. The default registry remains unchanged for existing users.
+    pub fn with_native_operations(
+        mut self,
+        native_operations: kogwistar_runtime::NativeOperationRegistry,
+    ) -> Self {
+        self.native_operations = native_operations;
+        self
     }
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
@@ -8654,10 +8721,14 @@ impl PostgresRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_versions.clone())
             .unwrap_or_else(|| {
-                effective_node_ops
-                    .keys()
-                    .map(|node_id| (node_id.clone(), "v1".to_owned()))
-                    .collect()
+                if input.node_versions.is_empty() {
+                    effective_node_ops
+                        .keys()
+                        .map(|node_id| (node_id.clone(), "v1".to_owned()))
+                        .collect()
+                } else {
+                    input.node_versions
+                }
             });
         let effective_node_environment_ids = graph_plan
             .as_ref()
@@ -8782,6 +8853,13 @@ impl PostgresRunApplicationService {
                     format!("run_id {run_id:?} already exists with different admission state"),
                 ),
             };
+        }
+        if let Err((code, message)) = validate_native_operation_registry(
+            &effective_node_ops,
+            &effective_node_versions,
+            &self.native_operations,
+        ) {
+            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, code, message);
         }
         let max_queue = self.max_queue;
         let queued_priority_class = priority_class.clone();
@@ -9788,7 +9866,10 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let effect = match kogwistar_runtime::execute_native_step(&native_request) {
+        let effect = match kogwistar_runtime::execute_native_step_with_registry(
+            &native_request,
+            &self.native_operations,
+        ) {
             Ok(effect) => effect,
             Err(error) => {
                 return effect_error(
@@ -14414,6 +14495,33 @@ mod tests {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-native-runtime-{nonce}.sqlite3"));
         let store = SqliteStore::open(&path).unwrap();
+        let mut native_operations = kogwistar_runtime::NativeOperationRegistry::default();
+        native_operations
+            .register("app/custom-result", "v1", |request| {
+                Ok(kogwistar_runtime::NativeOperationOutput {
+                    state_update: Vec::new(),
+                    result: Some(json!({
+                        "custom_result": true,
+                        "counter": request.state.get("counter"),
+                    })),
+                })
+            })
+            .unwrap();
+        native_operations
+            .register("app/custom-result", "v2", |request| {
+                Ok(kogwistar_runtime::NativeOperationOutput {
+                    state_update: Vec::new(),
+                    result: Some(json!({
+                        "custom_result": true,
+                        "operation_version": request.op_version,
+                        "counter": request.state.get("counter"),
+                    })),
+                })
+            })
+            .unwrap();
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_native_operations(native_operations);
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -14421,7 +14529,7 @@ mod tests {
                 implementation: ImplementationSnapshot::default(),
                 auth: AuthConfig::default(),
             },
-            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+            Arc::new(service),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -14429,12 +14537,67 @@ mod tests {
         let client = reqwest::Client::new();
         let base_url = format!("http://{address}");
 
+        for (run_id, operation, version, expected_code) in [
+            (
+                "unknown-native-run",
+                "rust-native/app/missing",
+                "v1",
+                "KOGWISTAR_NATIVE_OPERATION_UNREGISTERED",
+            ),
+            (
+                "unsupported-native-version-run",
+                "rust-native/increment-counter",
+                "v9",
+                "KOGWISTAR_NATIVE_OPERATION_UNREGISTERED",
+            ),
+            (
+                "malformed-native-run",
+                "rust-native/",
+                "v1",
+                "KOGWISTAR_INVALID_NATIVE_OPERATION",
+            ),
+        ] {
+            let response = client
+                .post(format!("{base_url}/api/workflow/runs"))
+                .header("x-kogwistar-roles", "reader")
+                .json(&json!({
+                    "run_id": run_id,
+                    "workflow_id": "native-admission-workflow",
+                    "conversation_id": "native-admission-conversation",
+                    "runtime_kind": "sync",
+                    "start_node_id": "entry",
+                    "node_ops": {"entry": operation},
+                    "node_versions": {"entry": version}
+                }))
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let response_body = response.text().await.unwrap();
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{response_body}");
+            let body: Value = serde_json::from_str(&response_body).unwrap();
+            assert_eq!(body["code"], expected_code);
+            assert!(store.get_server_run(run_id).unwrap().is_none());
+            assert!(
+                store
+                    .list_projected_lane_messages(LaneMessageFilter {
+                        namespace: Some("workflow".to_owned()),
+                        inbox_id: Some("workflow-runtime".to_owned()),
+                        correlation_id: Some(run_id.to_owned()),
+                        limit: 10,
+                        ..LaneMessageFilter::default()
+                    })
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+
         let submit = client
             .post(format!("{base_url}/api/workflow/runs"))
             .header("x-kogwistar-roles", "reader")
             .header("content-type", "application/json")
             .body(
-                r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"counter":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/increment-counter","finish":"rust-native/emit-result"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0}]}"#,
+                r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"counter":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/increment-counter","finish":"rust-native/emit-result","custom":"rust-native/app/custom-result"},"node_versions":{"custom":"v2"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0},{"source_node_id":"finish","target_node_id":"custom","join_mask":0}]}"#,
             )
             .send()
             .await
@@ -14560,7 +14723,7 @@ mod tests {
         assert_eq!(continuation_execute.status(), StatusCode::OK);
         assert_eq!(
             store.get_server_run("native-run").unwrap().unwrap().status,
-            "succeeded"
+            "running"
         );
         let events = store.list_server_run_events("native-run", 0, 100).unwrap();
         let native_trace = events
@@ -14593,6 +14756,58 @@ mod tests {
             event.event_type == "workflow.recorded_transition.v1"
                 && event.payload_json.contains("emit-result")
                 && event.payload_json.contains("rust-native")
+        }));
+
+        let custom_claim = client
+            .post(format!("{base_url}/internal/runtime/claim"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(custom_claim.status(), StatusCode::OK);
+        let custom_work = custom_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        assert_eq!(
+            custom_work["payload"]["op"],
+            "rust-native/app/custom-result"
+        );
+        let custom_execute = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": custom_work["message_id"],
+                    "claimed_by": custom_work["claimed_by"],
+                    "run_id": custom_work["run_id"],
+                    "step_id": custom_work["step_id"],
+                    "correlation_id": custom_work["correlation_id"]
+                },
+                "payload": custom_work["payload"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(custom_execute.status(), StatusCode::OK);
+        assert_eq!(
+            store.get_server_run("native-run").unwrap().unwrap().status,
+            "succeeded"
+        );
+        let events = store.list_server_run_events("native-run", 0, 100).unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.recorded_transition.v1"
+                && event.payload_json.contains("app/custom-result")
+                && event.payload_json.contains("custom_result")
+                && event.payload_json.contains("v2")
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.trace.v1"
+                && event.payload_json.contains("app/custom-result")
+                && event.payload_json.contains("seam_crossings")
         }));
 
         // A non-native operation must keep the legacy Python-worker lane and

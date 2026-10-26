@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 pub const RECORDED_RUNTIME_CONTRACT_VERSION: u32 = 1;
@@ -148,16 +149,188 @@ pub enum RuntimeNativeExecutionError {
         field: &'static str,
         reason: &'static str,
     },
+    #[error("native operation {operation:?} failed: {reason}")]
+    OperationFailed { operation: String, reason: String },
     #[error("native routing failed: {0}")]
     Routing(#[from] RecordedRuntimeError),
 }
 
-/// Execute the current Rust-native registry and emit the same durable effect
-/// shape accepted from Python workers.  This is intentionally not a generic
-/// callback bridge: unsupported operations fail closed instead of falling
-/// through to Python or silently acquiring a native implementation.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum NativeOperationRegistrationError {
+    #[error("native operation name and version must be non-empty and whitespace-free")]
+    InvalidIdentity,
+    #[error("native operation {operation:?} version {version:?} is already registered")]
+    Duplicate { operation: String, version: String },
+}
+
+/// Typed output of one application-owned Rust operation. The runtime still
+/// owns routing, effect identity, trace attestation, and durable reduction.
+#[derive(Clone, Debug)]
+pub struct NativeOperationOutput {
+    pub state_update: Vec<RecordedStateUpdate>,
+    pub result: Option<Value>,
+}
+
+type NativeOperationHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
+    + Send
+    + Sync;
+
+/// Versioned registry for trusted Rust operation implementations. Registration
+/// is explicit application composition; it is not a plugin loader or a way for
+/// workflow input to install executable code.
+#[derive(Clone)]
+pub struct NativeOperationRegistry {
+    handlers: BTreeMap<String, BTreeMap<String, Arc<NativeOperationHandler>>>,
+}
+
+impl Default for NativeOperationRegistry {
+    fn default() -> Self {
+        let mut registry = Self {
+            handlers: BTreeMap::new(),
+        };
+        registry.insert_builtin("noop", native_noop);
+        registry.insert_builtin("increment-counter", native_increment_counter);
+        registry.insert_builtin("emit-result", native_emit_result);
+        registry
+    }
+}
+
+impl NativeOperationRegistry {
+    fn insert_builtin(
+        &mut self,
+        operation: &str,
+        handler: impl Fn(
+            &RuntimeNativeStepRequest,
+        ) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.handlers
+            .entry(operation.to_owned())
+            .or_default()
+            .insert("v1".to_owned(), Arc::new(handler));
+    }
+
+    /// Add a trusted, application-owned synchronous handler. Handlers must be
+    /// bounded, deterministic, and free of external side effects: delivery may
+    /// retry before the runtime durably reduces the returned effect.
+    pub fn register<F>(
+        &mut self,
+        operation: impl Into<String>,
+        version: impl Into<String>,
+        handler: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+            ) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let operation = operation.into();
+        let version = version.into();
+        if operation.is_empty()
+            || operation.trim() != operation
+            || operation.starts_with(RUST_NATIVE_OPERATION_PREFIX)
+            || operation.chars().any(char::is_whitespace)
+            || version.is_empty()
+            || version.trim() != version
+            || version.chars().any(char::is_whitespace)
+        {
+            return Err(NativeOperationRegistrationError::InvalidIdentity);
+        }
+        let versions = self.handlers.entry(operation.clone()).or_default();
+        if versions.contains_key(&version) {
+            return Err(NativeOperationRegistrationError::Duplicate { operation, version });
+        }
+        versions.insert(version, Arc::new(handler));
+        Ok(())
+    }
+
+    fn handler(&self, operation: &str, version: &str) -> Option<&Arc<NativeOperationHandler>> {
+        self.handlers.get(operation)?.get(version)
+    }
+
+    fn contains_operation(&self, operation: &str) -> bool {
+        self.handlers.contains_key(operation)
+    }
+
+    pub fn supports(&self, operation: &str, version: &str) -> bool {
+        self.handler(operation, version).is_some()
+    }
+}
+
+fn native_noop(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    Ok(NativeOperationOutput {
+        state_update: Vec::new(),
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": request.state,
+        })),
+    })
+}
+
+fn native_increment_counter(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let current = request.state.get("counter").and_then(Value::as_i64).ok_or(
+        RuntimeNativeExecutionError::InvalidState {
+            field: "counter",
+            reason: "expected a signed integer",
+        },
+    )?;
+    let next = current
+        .checked_add(1)
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "counter",
+            reason: "integer overflow",
+        })?;
+    let mut values = Map::new();
+    values.insert("counter".to_owned(), json!(next));
+    let mut final_state = request.state.clone();
+    final_state.insert("counter".to_owned(), json!(next));
+    Ok(NativeOperationOutput {
+        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), values))],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+        })),
+    })
+}
+
+fn native_emit_result(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    Ok(NativeOperationOutput {
+        state_update: Vec::new(),
+        result: Some(json!({
+            "executor": RUST_NATIVE_EXECUTOR_TARGET,
+            "operation": request.operation,
+            "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+        })),
+    })
+}
+
+/// Execute with the built-in native operation registry.
 pub fn execute_native_step(
     request: &RuntimeNativeStepRequest,
+) -> Result<RecordedWorkerSuccessEffect, RuntimeNativeExecutionError> {
+    static BUILTINS: OnceLock<NativeOperationRegistry> = OnceLock::new();
+    execute_native_step_with_registry(
+        request,
+        BUILTINS.get_or_init(NativeOperationRegistry::default),
+    )
+}
+
+/// Execute one explicitly registered Rust operation and emit the shared durable
+/// worker-effect contract. Unregistered operations never fall through to Python.
+pub fn execute_native_step_with_registry(
+    request: &RuntimeNativeStepRequest,
+    registry: &NativeOperationRegistry,
 ) -> Result<RecordedWorkerSuccessEffect, RuntimeNativeExecutionError> {
     if request.executor_target != RUST_NATIVE_EXECUTOR_TARGET {
         return Err(RuntimeNativeExecutionError::WrongExecutorTarget {
@@ -167,12 +340,6 @@ pub fn execute_native_step(
     }
     if request.operation.trim().is_empty() {
         return Err(RuntimeNativeExecutionError::EmptyOperation);
-    }
-    if !is_default_operation_version(&request.op_version) {
-        return Err(RuntimeNativeExecutionError::UnsupportedOperationVersion {
-            operation: request.operation.clone(),
-            version: request.op_version.clone(),
-        });
     }
     for (field, value) in [
         ("run_id", request.run_id.as_str()),
@@ -188,46 +355,17 @@ pub fn execute_native_step(
     if request.step_seq < 0 {
         return Err(RuntimeNativeExecutionError::NegativeStepSequence);
     }
-    let mut state_update = Vec::new();
-    let result = match request.operation.as_str() {
-        "noop" => Some(json!({
-            "workflow_status": "succeeded",
-            "final_state": request.state.clone(),
-        })),
-        "increment-counter" => {
-            let current = request.state.get("counter").and_then(Value::as_i64).ok_or(
-                RuntimeNativeExecutionError::InvalidState {
-                    field: "counter",
-                    reason: "expected a signed integer",
-                },
-            )?;
-            let next = current
-                .checked_add(1)
-                .ok_or(RuntimeNativeExecutionError::InvalidState {
-                    field: "counter",
-                    reason: "integer overflow",
-                })?;
-            let mut values = Map::new();
-            values.insert("counter".to_owned(), json!(next));
-            state_update.push(RecordedStateUpdate::Pair(("u".to_owned(), values)));
-            let mut final_state = request.state.clone();
-            final_state.insert("counter".to_owned(), json!(next));
-            Some(json!({
-                "workflow_status": "succeeded",
-                "final_state": final_state,
-            }))
-        }
-        "emit-result" => Some(json!({
-            "executor": RUST_NATIVE_EXECUTOR_TARGET,
-            "operation": request.operation,
-            "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
-        })),
-        _ => {
-            return Err(RuntimeNativeExecutionError::UnsupportedOperation(
-                request.operation.clone(),
-            ));
-        }
+    let Some(handler) = registry.handler(&request.operation, &request.op_version) else {
+        return Err(if registry.contains_operation(&request.operation) {
+            RuntimeNativeExecutionError::UnsupportedOperationVersion {
+                operation: request.operation.clone(),
+                version: request.op_version.clone(),
+            }
+        } else {
+            RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
+        });
     };
+    let output = handler(request)?;
     let successors =
         authoritative_runtime_successors(&request.runtime_routes, &request.node_id, &[])?;
     Ok(RecordedWorkerSuccessEffect {
@@ -237,12 +375,12 @@ pub fn execute_native_step(
             request.run_id, request.node_id, request.token_id, request.step_seq
         ),
         status: RuntimeWorkerEffectStatus::Success,
-        state_update,
+        state_update: output.state_update,
         update: None,
         state_schema: Map::new(),
         successors,
         route_next: Vec::new(),
-        result,
+        result: output.result,
         errors: Vec::new(),
         wait_reason: None,
         resume_payload: None,
@@ -2519,6 +2657,78 @@ mod tests {
         assert_eq!(native_operation_name("rust-native/"), None);
         assert_eq!(native_operation_name("rust-native"), None);
         assert_eq!(native_operation_name("python/noop"), None);
+    }
+
+    #[test]
+    fn native_registry_runs_versioned_application_operation_and_preserves_builtins() {
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register("app/label", "v2", |request| {
+                Ok(NativeOperationOutput {
+                    state_update: Vec::new(),
+                    result: Some(json!({
+                        "label": request.state.get("label").cloned().unwrap_or(Value::Null),
+                        "operation_version": request.op_version,
+                    })),
+                })
+            })
+            .unwrap();
+
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "app/label".to_owned(),
+            op_version: "v2".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "label".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::from_iter([(String::from("label"), json!("native"))]),
+            runtime_routes: Vec::new(),
+        };
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        assert_eq!(
+            effect.result,
+            Some(json!({"label": "native", "operation_version": "v2"}))
+        );
+        assert_eq!(effect.trace_events[0]["op_version"], "v2");
+        assert_eq!(effect.trace_events[0]["seam_crossings"], json!([]));
+
+        let unregistered_version = RuntimeNativeStepRequest {
+            op_version: "v1".to_owned(),
+            ..request.clone()
+        };
+        assert!(matches!(
+            execute_native_step_with_registry(&unregistered_version, &registry),
+            Err(RuntimeNativeExecutionError::UnsupportedOperationVersion {
+                operation,
+                version
+            }) if operation == "app/label" && version == "v1"
+        ));
+
+        let builtin = RuntimeNativeStepRequest {
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            ..request.clone()
+        };
+        assert!(execute_native_step_with_registry(&builtin, &registry).is_ok());
+        assert!(matches!(
+            registry.register("app/label", "v2", |_| Ok(NativeOperationOutput {
+                state_update: Vec::new(),
+                result: None,
+            })),
+            Err(NativeOperationRegistrationError::Duplicate { .. })
+        ));
+        assert!(matches!(
+            registry.register(" rust-native/unsafe", "v1", |_| Ok(NativeOperationOutput {
+                state_update: Vec::new(),
+                result: None,
+            })),
+            Err(NativeOperationRegistrationError::InvalidIdentity)
+        ));
     }
 
     #[test]
