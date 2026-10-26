@@ -496,6 +496,32 @@ def test_python_and_rust_preserve_shared_legacy_graph_defaults(monkeypatch) -> N
 
 
 @pytest.mark.requires_rust
+@pytest.mark.parametrize("large_level", [2**64, 2**200])
+def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
+    monkeypatch: pytest.MonkeyPatch, large_level: int
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    payload["level_from_root"] = large_level
+    payload["metadata"]["level_from_root"] = large_level
+    python_model = Node.model_validate(payload)
+    python_payload = python_model.model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert python_payload["level_from_root"] == large_level
+    assert python_payload["metadata"]["level_from_root"] == large_level
+
+    wire = json.dumps(
+        {"schema_version": 1, "model_class": "node", "payload": python_payload},
+        ensure_ascii=False,
+    )
+    assert str(large_level) in wire
+    _rust.validate_graph_model_family(wire)
+
+
+@pytest.mark.requires_rust
 def test_tombstoned_edge_lifecycle_is_shared_by_python_and_rust(monkeypatch) -> None:
     """An edge tombstone must cross the same typed seam as a node tombstone."""
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")

@@ -32,7 +32,7 @@ percent-encoding = "2"
 proptest = "1.6"
 ryu = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip", "raw_value"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "2"

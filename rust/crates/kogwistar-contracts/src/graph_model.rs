@@ -9,6 +9,7 @@
 //! node and edge endpoint references.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use thiserror::Error;
@@ -699,9 +700,68 @@ impl GraphModelEnvelope {
 /// storage or runtime operation. This is used by differential tests and by
 /// optional native callers that already own the envelope class tag.
 pub fn validate_graph_model_family_from_str(payload_json: &str) -> Result<(), GraphModelError> {
-    let envelope: GraphModelEnvelope = serde_json::from_str(payload_json)
+    if let Ok(envelope) = serde_json::from_str::<GraphModelEnvelope>(payload_json)
+        && envelope.validate_family_v1().is_ok()
+    {
+        return Ok(());
+    }
+
+    #[derive(Deserialize)]
+    struct RawEnvelope<'a> {
+        schema_version: u16,
+        model_class: GraphModelClass,
+        #[serde(borrow)]
+        payload: &'a RawValue,
+    }
+
+    let raw_envelope: RawEnvelope<'_> = serde_json::from_str(payload_json)
         .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    let fields: BTreeMap<String, Box<RawValue>> = serde_json::from_str(raw_envelope.payload.get())
+        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+    let mut payload = Map::new();
+    for (name, raw) in fields {
+        if name == "level_from_root" && oversized_nonnegative_integer(raw.get()) {
+            payload.insert(name, Value::Number(0.into()));
+        } else if name == "metadata" {
+            match serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get()) {
+                Ok(metadata_fields) => {
+                    let mut metadata = Map::new();
+                    for (key, value) in metadata_fields {
+                        if key == "level_from_root" && oversized_nonnegative_integer(value.get()) {
+                            metadata.insert(key, Value::Number(0.into()));
+                        } else {
+                            let parsed = serde_json::from_str(value.get()).map_err(|error| {
+                                GraphModelError::InvalidPayload(error.to_string())
+                            })?;
+                            metadata.insert(key, parsed);
+                        }
+                    }
+                    payload.insert(name, Value::Object(metadata));
+                }
+                Err(_) => {
+                    let parsed = serde_json::from_str(raw.get())
+                        .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+                    payload.insert(name, parsed);
+                }
+            }
+        } else {
+            let parsed = serde_json::from_str(raw.get())
+                .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+            payload.insert(name, parsed);
+        }
+    }
+    let envelope = GraphModelEnvelope {
+        schema_version: raw_envelope.schema_version,
+        model_class: raw_envelope.model_class,
+        payload: Value::Object(payload),
+        slice: None,
+    };
     envelope.validate_family_v1()
+}
+
+fn oversized_nonnegative_integer(raw: &str) -> bool {
+    let raw = raw.trim();
+    !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()) && raw.parse::<i64>().is_err()
 }
 
 /// Project a declared canonical envelope at the language seam.
@@ -3359,6 +3419,52 @@ mod tests {
             assert_eq!(core.level_from_root, None);
             assert_eq!(core.metadata["level_from_root"], 2);
         }
+    }
+
+    #[test]
+    fn raw_family_validator_accepts_oversized_python_hierarchy_levels() {
+        let fixture = fixture();
+        let baseline = fixture["cases"][0]["payload"].clone();
+        let huge = "18446744073709551616";
+
+        let top_level_payload = serde_json::to_string(&baseline)
+            .expect("serialize baseline payload")
+            .replace(
+                "\"level_from_root\":0",
+                &format!("\"level_from_root\":{huge}"),
+            );
+        let top_level_wire = format!(
+            "{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{top_level_payload}}}"
+        );
+        assert!(top_level_wire.contains(huge));
+        validate_graph_model_family_from_str(&top_level_wire)
+            .expect("large top-level Python integer validates");
+        assert!(
+            validate_graph_model_family_from_str(&top_level_wire.replace(huge, "2.5")).is_err()
+        );
+        assert!(
+            validate_graph_model_family_from_str(
+                &top_level_wire.replace(huge, "-18446744073709551616")
+            )
+            .is_err()
+        );
+
+        let mut metadata_only = baseline;
+        metadata_only
+            .as_object_mut()
+            .expect("node payload object")
+            .remove("level_from_root");
+        let metadata_payload = serde_json::to_string(&metadata_only)
+            .expect("serialize metadata-only payload")
+            .replace(
+                "\"level_from_root\":0",
+                &format!("\"level_from_root\":{huge}"),
+            );
+        let metadata_wire = format!(
+            "{{\"schema_version\":1,\"model_class\":\"node\",\"payload\":{metadata_payload}}}"
+        );
+        validate_graph_model_family_from_str(&metadata_wire)
+            .expect("large metadata fallback integer validates");
     }
 
     #[test]
