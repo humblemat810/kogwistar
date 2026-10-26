@@ -48,6 +48,16 @@ snapshot's denominator.
   passed on Windows CPython 3.13, including local Chroma; Ruff and `git diff
   --check` pass. This is a backend compatibility correction and does not close
   a dual-language gate or change checklist IDs or denominator.
+- 2026-10-27 Rust bridge trace completeness: request-local `RustBridgeTrace`
+  now counts UTF-8 string buffers supplied through positional or keyword
+  arguments and recognizes transaction metadata from either payload form. It
+  records only method/operation names, byte counts, and transaction flags; the
+  regression confirms transaction identifiers and payload content do not enter
+  the snapshot. Evidence: `tests/core/test_rust_bridge_trace.py` (**7 passed**)
+  on Windows CPython 3.13, Ruff, and `git diff --check`. This closes a specific
+  trace undercount at the Python/PyO3 boundary; stack-wide crossing attribution
+  remains open under existing `DL-20A`, with no checklist ID or denominator
+  change.
 
 - 2026-10-27 current Linux/Docker verification follow-up: the complete Rust
   workspace test command passed with the live PostgreSQL 17.11/pgvector service

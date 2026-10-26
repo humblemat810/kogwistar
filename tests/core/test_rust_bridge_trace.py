@@ -7,6 +7,8 @@ import pytest
 
 from kogwistar._rust_bridge import (
     RustParityError,
+    RustBridgeTrace,
+    _TracingRustExtension,
     api_health,
     capture_rust_bridge_calls,
     graph_model_capability_profiles,
@@ -30,6 +32,31 @@ class _ExtensionStub:
 
     def store_postgres_json(self, payload: str) -> str:
         return "null"
+
+
+def test_bridge_trace_counts_keyword_payload_and_transaction_metadata() -> None:
+    class KeywordExtension:
+        def store_postgres_json(self, *, payload: str) -> str:
+            return "null"
+
+    request = json.dumps(
+        {
+            "transaction_id": "private-transaction-id",
+            "operation": {"kind": "commit_transaction"},
+        },
+        separators=(",", ":"),
+    )
+    trace = RustBridgeTrace()
+    extension = _TracingRustExtension(KeywordExtension(), trace)
+
+    assert extension.store_postgres_json(payload=request) == "null"
+    metrics = trace.snapshot()
+    assert metrics["ffi_calls"] == 1
+    assert metrics["input_bytes"] == len(request.encode("utf-8"))
+    assert metrics["transaction_active_calls"] == 1
+    assert metrics["transaction_boundary_calls"] == 1
+    assert metrics["calls_by_operation"] == {"commit_transaction": 1}
+    assert "private-transaction-id" not in repr(metrics)
 
 
 def test_bridge_trace_counts_per_item_and_batched_native_calls(

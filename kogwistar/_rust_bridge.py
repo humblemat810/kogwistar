@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from importlib import import_module
@@ -91,16 +91,27 @@ class RustBridgeTrace:
         self.calls_by_method: dict[str, int] = {}
         self.calls_by_operation: dict[str, int] = {}
 
-    def record_call(self, method: str, args: tuple[object, ...]) -> None:
+    def record_call(
+        self, method: str, args: tuple[object, ...], kwargs: Mapping[str, object]
+    ) -> None:
         input_bytes = sum(
-            len(value.encode("utf-8")) for value in args if isinstance(value, str)
+            len(value.encode("utf-8"))
+            for value in (*args, *kwargs.values())
+            if isinstance(value, str)
         )
         active = False
         boundary = False
         operation_kind: str | None = None
-        if method in {"store_sqlite_json", "store_postgres_json"} and args:
+        request_payload = (
+            args[0]
+            if args and isinstance(args[0], str)
+            else kwargs.get("payload")
+        )
+        if method in {"store_sqlite_json", "store_postgres_json"} and isinstance(
+            request_payload, str
+        ):
             try:
-                request = json.loads(args[0]) if isinstance(args[0], str) else None
+                request = json.loads(request_payload)
             except (TypeError, ValueError):
                 request = None
             if isinstance(request, dict):
@@ -171,7 +182,7 @@ class _TracingRustExtension:
             return member
 
         def traced(*args: Any, **kwargs: Any) -> Any:
-            self._trace.record_call(name, args)
+            self._trace.record_call(name, args, kwargs)
             result = member(*args, **kwargs)
             self._trace.record_result(result)
             return result
