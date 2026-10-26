@@ -286,6 +286,32 @@
     #[test]
     fn native_registry_runs_versioned_application_operation_and_preserves_builtins() {
         let mut registry = NativeOperationRegistry::default();
+        let append_fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-native-app-append-v1.json"
+        )))
+        .unwrap();
+        registry
+            .register("app/append-item", "v1", |request| {
+                let mut items = request
+                    .state
+                    .get("items")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                items.push(json!("appended"));
+                Ok(NativeOperationOutput {
+                    state_update: vec![RecordedStateUpdate::Pair((
+                        "a".to_owned(),
+                        Map::from_iter([("items".to_owned(), json!("appended"))]),
+                    ))],
+                    result: Some(json!({
+                        "workflow_status": "succeeded",
+                        "final_state": {"items": items},
+                    })),
+                })
+            })
+            .unwrap();
         registry
             .register("app/label", "v2", |request| {
                 Ok(NativeOperationOutput {
@@ -297,6 +323,34 @@
                 })
             })
             .unwrap();
+
+        let append_request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "app/append-item".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "append".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: serde_json::from_value(append_fixture["initial_state"].clone()).unwrap(),
+            runtime_routes: Vec::new(),
+        };
+        let append_effect = execute_native_step_with_registry(&append_request, &registry).unwrap();
+        assert_eq!(
+            serde_json::json!({
+                "status": append_effect.status,
+                "state_update": append_effect.state_update,
+                "state_schema": append_effect.state_schema,
+                "successors": append_effect.successors,
+                "route_next": append_effect.route_next,
+                "result": append_effect.result,
+            }),
+            append_fixture["effect"]
+        );
 
         let request = RuntimeNativeStepRequest {
             executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),

@@ -128,6 +128,37 @@ def test_python_worker_increment_counter_matches_shared_native_effect_golden() -
     } == fixture
 
 
+def test_python_worker_application_operation_matches_shared_native_effect_golden() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-native-app-append-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("app/append-item", version="v1")
+    def append_item(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("a", {"items": "appended"})],
+        )
+
+    effect = RustStepResolverAdapter(resolver)(
+        _adapter_work(state=fixture["initial_state"], op="app/append-item")
+    )
+    assert {
+        "status": effect["status"],
+        "state_update": effect["state_update"],
+        "state_schema": effect["state_schema"],
+        "successors": effect["successors"],
+        "route_next": effect["route_next"],
+        "result": effect["result"],
+    } == fixture["effect"]
+
+
 def _adapter_work(
     *,
     state: dict[str, Any] | None = None,
