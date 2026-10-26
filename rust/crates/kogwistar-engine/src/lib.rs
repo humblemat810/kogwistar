@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub mod index_worker;
+pub mod projection_worker;
 
 const STATE_VERSION: i64 = 1;
 

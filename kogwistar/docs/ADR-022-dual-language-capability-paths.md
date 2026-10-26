@@ -106,6 +106,24 @@ that capability reject the combined request. Omitting the intents retains the
 legacy pre-indexed contract and does not claim that embedding or indexing was
 performed.
 
+For graph/vector data held outside the canonical SQL store, the additive Rust
+`projection_worker::run_graph_projection_jobs_once` composes an
+`IndexJobWriteStore` with any `GraphWriteStore`. A PostgreSQL queue can
+therefore drive a Chroma graph projection without pretending that Chroma joins
+the PostgreSQL transaction. The worker durably admits a versioned projection
+action before applying it, reuses that action after a projection failure, and
+acknowledges the queue only after the upsert/delete succeeds. The PostgreSQL
+queue remains the authority; the Chroma records are a derived projection.
+
+This worker is not yet wired into Rust HTTP backend selection. Its current
+contract also does not fence an older in-flight projection against a newer
+write from another worker for the same entity. Do not run multiple concurrent
+projectors for overlapping entity scopes or advertise this as production-safe
+multiwriter Chroma projection until a backend-enforced revision/fencing
+capability is added and tested. Replaying the same accepted action is
+idempotent, but idempotency alone does not establish ordering between distinct
+revisions.
+
 | Backend | Current boundary | Required handoff |
 | --- | --- | --- |
 | SQLite | Existing context binding prohibits overlapping Python/Rust handles on one database in one process. | Finish commit or rollback, close connections and cached sessions, release ownership, then reopen under the other implementation. Do not switch within an active execution context. |

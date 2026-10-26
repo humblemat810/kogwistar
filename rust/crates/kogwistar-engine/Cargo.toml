@@ -13,5 +13,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+kogwistar-store-chroma = { path = "../kogwistar-store-chroma" }
 kogwistar-store-memory = { path = "../kogwistar-store-memory" }
+kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }
 tokio.workspace = true

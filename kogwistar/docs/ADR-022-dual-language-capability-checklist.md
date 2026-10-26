@@ -21,6 +21,21 @@ denominator of either snapshot.
 
 ## Latest verification update (2026-10-26)
 
+- Additive SQL-queue to external graph-projection slice: Rust now has
+  `projection_worker::run_graph_projection_jobs_once`, which composes any
+  `IndexJobWriteStore` with any `GraphWriteStore`. Its versioned action binds
+  queue ID, namespace, entity kind/ID, and index kind; invalid provider output
+  is rejected before durable admission. A projection failure retries from the
+  accepted action without rerunning the provider, and queue completion follows
+  the graph upsert/delete. Evidence: `cargo test -p kogwistar-engine --offline`
+  (**11 unit tests and 1 backend-composition test passed**) and
+  `cargo fmt --all -- --check` on Windows. The compile-time composition test
+  proves `PostgresStore` can supply the durable index queue while
+  `ChromaGraphStore` supplies graph projection; it does not run live PostgreSQL
+  and Chroma services. The worker is not wired into Rust HTTP backend selection
+  and does not fence out-of-order writes from concurrent projectors. This is a
+  recoverable worker seam only; multiwriter projection and full service parity
+  remain open. No checklist IDs were added and the denominator is unchanged.
 - Additional `DL-13` mixed-executor evidence: the real-loopback SQLite API test
   now runs one durable workflow through `Python worker protocol -> Rust-native
   registered operation -> Python worker protocol`. It checks recipient and
