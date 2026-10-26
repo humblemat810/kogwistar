@@ -81,16 +81,31 @@ denominator of either snapshot.
   `contracts/golden/index-job-opaque-result-replay-v1.json`, consumed by Rust
   and Python sync/async worker tests to prevent legacy payload drift.
   Evidence: `cargo test -p kogwistar-engine --offline`
-  (**14 unit tests and 1 backend-composition test passed**), focused Python
+  (**14 unit tests and 1 backend-composition test passed**), plus
+  `cargo test -p kogwistar-engine --test projection_backend_composition`
+  (**2 passed, 1 explicitly ignored by default**) with a fake Chroma v2 HTTP
+  service. Behavior tests execute a
+  queued job through the generic projection worker, verify the Chroma upsert
+  payload carries the canonical namespace/document/vector, and confirm the
+  queue reaches `DONE`. One uses the in-memory queue; another uses a real
+  `PostgresStore` queue in a unique schema, then drops that schema. The separate
+  type-bound assertion proves `PostgresStore` and `ChromaGraphStore` satisfy the
+  independent queue/projection capabilities. Live evidence:
+  `KOGWISTAR_TEST_PG_DSN=postgres://postgres:kogwistar@127.0.0.1:55433/kogwistar`
+  with `cargo test -p kogwistar-engine --test projection_backend_composition
+  postgres_queue_projects_to_chroma_without_cross_store_transaction --
+  --ignored` (**1 passed**). The default full `cargo test -p kogwistar-engine`
+  run passed (**14 unit, 2 composition, 1 ignored**). This validates the mixed store worker seam
+  against a fake Chroma protocol endpoint, not a deployed Chroma server or Rust
+  HTTP service wiring. Focused Python
   projection-action/worker tests (**42 passed**), including sync and async
   regressions proving explicit `False` upsert results and non-string accepted
   queue values are retried rather than acknowledged, while malformed opaque
   legacy result strings retain Rust-compatible replay behavior and deleting an
   absent record remains idempotent; Ruff, and
-  `cargo fmt --all -- --check` on Windows. The compile-time composition test
-  proves `PostgresStore` can supply the durable index queue while
-  `ChromaGraphStore` supplies graph projection; it does not run live PostgreSQL
-  and Chroma services. The worker is not wired into Rust HTTP backend selection
+  `cargo fmt --all -- --check` on Windows. The fake-service integration does
+  not prove a live Chroma deployment. The worker is not
+  wired into Rust HTTP backend selection
   and does not fence out-of-order writes from concurrent projectors. This is a
   recoverable worker seam only; multiwriter projection and full service parity
   remain open. No checklist IDs were added and the denominator is unchanged.

@@ -1,8 +1,18 @@
-//! Compile-time composition contracts for independently selected stores.
+//! Behavior and compile-time contracts for independently selected stores.
 
-use kogwistar_store::{GraphWriteStore, IndexJobWriteStore};
-use kogwistar_store_chroma::ChromaGraphStore;
+use kogwistar_store::{
+    GraphRecord, GraphWriteStore, IndexJobReadStore, IndexJobWriteStore, NewIndexJob,
+};
+use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
+use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::PostgresStore;
+use serde_json::{Value, json};
+use std::{env, time::SystemTime};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    task::JoinHandle,
+};
 
 #[test]
 fn postgres_durable_queue_can_pair_with_chroma_graph_projection() {
@@ -13,7 +23,222 @@ fn postgres_durable_queue_can_pair_with_chroma_graph_projection() {
     {
     }
 
-    // The projection worker depends on separate queue and graph capabilities;
-    // it does not require both stores to share a transaction implementation.
+    // Queue durability and semantic projection are independent capabilities;
+    // they do not need to share a transaction implementation.
     composition_bounds::<PostgresStore, ChromaGraphStore>();
+}
+
+async fn fake_chroma() -> (String, JoinHandle<Vec<(String, Value)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fixture");
+    let address = listener.local_addr().expect("fixture address");
+    let handle = tokio::spawn(async move {
+        let mut observed = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let (header_end, body_size) = loop {
+                let count = stream.read(&mut chunk).await.expect("read request");
+                assert!(count > 0, "client closed incomplete request");
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..index]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= index + 4 + length {
+                        break (index, length);
+                    }
+                }
+            };
+            let headers = String::from_utf8_lossy(&bytes[..header_end]);
+            let request_line = headers.lines().next().expect("request line").to_owned();
+            let body = &bytes[header_end + 4..header_end + 4 + body_size];
+            let payload: Value = serde_json::from_slice(body).expect("JSON request body");
+            let response = if request_line.contains("/collections HTTP") {
+                json!({"id":"collection-1","metadata":{"hnsw:space":"cosine"}})
+            } else {
+                json!({"ids":["node-1"]})
+            };
+            let encoded = response.to_string();
+            let response_head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                encoded.len()
+            );
+            stream
+                .write_all(response_head.as_bytes())
+                .await
+                .expect("write headers");
+            stream
+                .write_all(encoded.as_bytes())
+                .await
+                .expect("write body");
+            observed.push((request_line, payload));
+        }
+        observed
+    });
+    (format!("http://{address}"), handle)
+}
+
+#[tokio::test]
+async fn projection_worker_composes_queue_and_chroma_without_shared_transaction() {
+    let queue = InMemoryStore::new();
+    queue
+        .enqueue_index_job(NewIndexJob {
+            job_id: "job-1".to_owned(),
+            namespace: "workspace-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .await
+        .unwrap();
+
+    let (endpoint, server) = fake_chroma().await;
+    let graph = ChromaGraphStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "test-graph".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect fake Chroma");
+
+    let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
+        &queue,
+        &graph,
+        1,
+        30,
+        Some("workspace-a"),
+        |_job| async {
+            let mut record = GraphRecord::new("node-1");
+            record.document = Some("projected document".to_owned());
+            record.metadata.insert("kind".to_owned(), json!("node"));
+            record.embedding = Some(vec![0.25, 0.75]);
+            Ok(record)
+        },
+    )
+    .await
+    .expect("project queued item");
+
+    assert_eq!(summary.claimed, 1);
+    assert_eq!(summary.projected, 1);
+    let completed = queue
+        .index_jobs(
+            Some("workspace-a"),
+            Some("DONE"),
+            Some("node"),
+            Some("node-1"),
+            Some("node_embedding"),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(completed.len(), 1);
+
+    let requests = server.await.expect("fake Chroma server");
+    assert!(requests[0].0.contains("/collections HTTP"));
+    assert!(requests[1].0.contains("/upsert HTTP"));
+    assert_eq!(requests[1].1["ids"], json!(["node-1"]));
+    assert_eq!(requests[1].1["documents"], json!(["projected document"]));
+    assert_eq!(
+        requests[1].1["metadatas"][0]["_kogwistar_namespace"],
+        "workspace-a"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN and an explicit integration-test run"]
+async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
+    let dsn = env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("set KOGWISTAR_TEST_PG_DSN when running this ignored integration test");
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let schema = format!("kg_proj_chroma_{}_{}", std::process::id(), nonce);
+    let queue = PostgresStore::from_dsn(&dsn, &schema).expect("construct isolated queue store");
+    queue.ensure_schema().await.expect("create queue schema");
+    queue
+        .enqueue_index_job(NewIndexJob {
+            job_id: "job-postgres-chroma".to_owned(),
+            namespace: "workspace-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .await
+        .expect("enqueue in PostgreSQL");
+
+    let (endpoint, server) = fake_chroma().await;
+    let graph = ChromaGraphStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "test-postgres-queue".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect fake Chroma");
+    let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once(
+        &queue,
+        &graph,
+        1,
+        30,
+        Some("workspace-a"),
+        |_job| async {
+            let mut record = GraphRecord::new("node-1");
+            record.document = Some("durable queue projection".to_owned());
+            record.metadata.insert("kind".to_owned(), json!("node"));
+            record.embedding = Some(vec![0.5, 0.5]);
+            Ok(record)
+        },
+    )
+    .await
+    .expect("run PostgreSQL-to-Chroma projection");
+    assert_eq!(summary.projected, 1);
+    assert_eq!(
+        queue
+            .index_jobs(
+                Some("workspace-a"),
+                Some("DONE"),
+                Some("node"),
+                Some("node-1"),
+                Some("node_embedding"),
+                10,
+            )
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let requests = server.await.expect("fake Chroma server");
+    assert_eq!(
+        requests[1].1["documents"],
+        json!(["durable queue projection"])
+    );
+
+    drop(graph);
+    drop(queue);
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connect to remove isolated schema");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .await
+        .expect("drop isolated queue schema");
 }
