@@ -16,6 +16,7 @@ pytestmark = pytest.mark.ci_full
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.models import ConversationNode
+from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.graph_query import GraphQuery
 from kogwistar.runtime.models import WorkflowCheckpointNode
@@ -29,6 +30,7 @@ from kogwistar.server.chat_service import (
 )
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.engine_factories import FakeEmbeddingFunction
+from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._helpers.server_fixtures import build_engine_triplet
@@ -272,6 +274,93 @@ async def test_mcp_graph_traversal_matches_shared_golden_contract(
             )
         )
         assert node_neighbors == {"nodes": ["B"], "edges": ["E1"]}
+
+
+@pytest.mark.asyncio
+async def test_mcp_neighbors_preserve_acl_visibility_and_hide_topology(
+    monkeypatch, tmp_path
+):
+    from kogwistar.server import mcp_tools
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-acl-traversal-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["schema_version"] == 1
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "acl_mcp"),
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        embedding_function=build_test_embedding_function("constant", dim=3),
+        acl_enabled=True,
+    )
+    source_spec, target_spec = fixture["nodes"]
+    source = build_entity_node(
+        node_id=source_spec["id"],
+        doc_id=fixture["doc_id"],
+        label="Public source",
+        metadata={"visibility": source_spec["mode"]},
+    )
+    target = build_entity_node(
+        node_id=target_spec["id"],
+        doc_id=fixture["doc_id"],
+        label="Private target",
+        metadata={
+            "visibility": target_spec["mode"],
+            "owner_agent_id": target_spec["owner_id"],
+        },
+    )
+    edge_spec = fixture["edge"]
+    edge = build_relationship_edge(
+        edge_id=edge_spec["id"],
+        src=source.id,
+        tgt=target.id,
+        doc_id=fixture["doc_id"],
+        relation=edge_spec["relation"],
+        metadata={
+            "visibility": edge_spec["mode"],
+            "owner_agent_id": edge_spec["owner_id"],
+        },
+    )
+    owner_token = claims_ctx.set(
+        {"agent_id": "owner-a", "sub": "owner-a", "role": "rw", "ns": "knowledge"}
+    )
+    try:
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(edge)
+    finally:
+        claims_ctx.reset(owner_token)
+
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    owner = fixture["principals"][0]
+    with _claims("rw", fixture["truth_graph"], sub=owner["id"]):
+        owner_neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": source.id, "doc_id": fixture["doc_id"]}
+            )
+        )
+    assert owner_neighbors == owner["expected_neighbors"]
+
+    reader = fixture["principals"][1]
+    with _claims("ro", fixture["truth_graph"], sub=reader["id"]):
+        visible_source = engine.read.get_nodes(ids=[source.id])
+        assert len(visible_source) == 1
+        async_reader_neighbors = await GraphQuery(engine).neighbors_async(
+            source.id, doc_id=fixture["doc_id"]
+        )
+        reader_neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": source.id, "doc_id": fixture["doc_id"]}
+            )
+        )
+    assert reader_neighbors == reader["expected_neighbors"]
+    assert async_reader_neighbors == {
+        "nodes": set(reader["expected_neighbors"]["nodes"]),
+        "edges": set(reader["expected_neighbors"]["edges"]),
+    }
 
 
 def _success_runner(req: AnswerRunRequest) -> dict:

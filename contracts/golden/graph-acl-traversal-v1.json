@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "doc_id": "D-acl",
+  "nodes": [
+    {"id": "source-public", "mode": "public"},
+    {"id": "target-private", "mode": "private", "owner_id": "owner-a"}
+  ],
+  "edge": {
+    "id": "edge-private",
+    "mode": "private",
+    "owner_id": "owner-a",
+    "relation": "private_relation",
+    "source_ids": ["source-public"],
+    "target_ids": ["target-private"]
+  },
+  "principals": [
+    {
+      "id": "owner-a",
+      "expected_neighbors": {"nodes": ["target-private"], "edges": ["edge-private"]}
+    },
+    {
+      "id": "reader-b",
+      "expected_neighbors": {"nodes": [], "edges": []}
+    }
+  ]
+}

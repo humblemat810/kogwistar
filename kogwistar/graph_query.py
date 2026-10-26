@@ -103,15 +103,23 @@ class GraphQuery:
         *,
         ids: Iterable[str] | None = None,
         where: Mapping[str, Any] | None = None,
+        limit: int | None = None,
     ) -> list[Edge]:
         """Read edges through the engine facade, including staged rows."""
         reader = getattr(self.e, "read", None)
         if reader is not None and callable(getattr(reader, "get_edges", None)):
             try:
+                kwargs: dict[str, Any] = {
+                    "ids": ids,
+                    "where": where,
+                    "include": ["documents"],
+                }
+                if limit is not None:
+                    kwargs["limit"] = limit
                 return list(
                     cast(
                         Iterable[Edge],
-                        reader.get_edges(ids=ids, where=where, include=["documents"]),
+                        reader.get_edges(**kwargs),
                     )
                 )
             except TypeError:
@@ -132,33 +140,20 @@ class GraphQuery:
                 return []
         if reader is not None:
             return []
-        got = _as_graph_payload(
-            self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
-        )
+        kwargs = {"ids": ids, "where": where, "include": ["documents"]}
+        if limit is not None:
+            kwargs["limit"] = limit
+        got = _as_graph_payload(self.e.backend.edge_get(**kwargs))
         return [
             Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
         ]
 
     # ---- internals ----
     def _is_node(self, rid: str) -> bool:
-        reader = getattr(self.e, "read", None)
-        exists = getattr(reader, "node_exists", None)
-        if callable(exists):
-            return bool(exists(ids=[rid]))
-        if reader is not None:
-            return bool(self._read_nodes(ids=[rid]))
-        hit = _as_graph_payload(self.e.backend.node_get(ids=[rid]))
-        return (hit.get("ids") or [None])[0] == rid
+        return bool(self._read_nodes(ids=[rid]))
 
     def _is_edge(self, rid: str) -> bool:
-        reader = getattr(self.e, "read", None)
-        exists = getattr(reader, "edge_exists", None)
-        if callable(exists):
-            return bool(exists(ids=[rid]))
-        if reader is not None:
-            return bool(self._read_edges(ids=[rid]))
-        hit = _as_graph_payload(self.e.backend.edge_get(ids=[rid]))
-        return (hit.get("ids") or [None])[0] == rid
+        return bool(self._read_edges(ids=[rid]))
 
     def _stage1_endpoint_rows(self, *, edge_id: str | None = None) -> list[dict]:
         """Read pending structural endpoint rows from Stage 1.
@@ -330,7 +325,23 @@ class GraphQuery:
             if matches(row) and key not in existing:
                 rows.append(row)
                 existing.add(key)
-        return rows
+        return self._visible_endpoint_rows(rows)
+
+    def _visible_endpoint_rows(self, rows: list[GraphRow]) -> list[GraphRow]:
+        edge_ids = sorted(
+            {
+                str(row.get("edge_id"))
+                for row in rows
+                if isinstance(row.get("edge_id"), str) and row.get("edge_id")
+            }
+        )
+        if not edge_ids:
+            return []
+        visible_edge_ids = {
+            str(edge.safe_get_id())
+            for edge in self._read_edges(ids=edge_ids, limit=len(edge_ids))
+        }
+        return [row for row in rows if str(row.get("edge_id")) in visible_edge_ids]
 
     async def _async_collection_call(
         self, collection_key: str, method: str, **kwargs: object
@@ -475,7 +486,7 @@ class GraphQuery:
                 if key not in existing:
                     rows.append(row)
                     existing.add(key)
-        return rows
+        return self._visible_endpoint_rows(rows)
 
     # ---- doc scoping ----
     def nodes_in_doc(self, doc_id: str) -> list[Node]:
@@ -808,31 +819,31 @@ class GraphQuery:
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        _where: dict[str, Any] = (
-            {"doc_id": doc_ids} if type(doc_ids) is str else {}
-        )
+        filters: list[Mapping[str, Any]] = []
+        if type(doc_ids) is str:
+            filters.append({"doc_id": doc_ids})
         if type(doc_ids) is list:
-            _where["doc_id"] = {"$in": doc_ids}
+            filters.append({"doc_id": {"$in": doc_ids}})
         if where:
-            if _where.get("and"):
-                if type(_where["and"]) is list:
-                    _where_and: list = _where["and"]
-                    _where_and.append(where)
-                else:
-                    raise SyntaxError(
-                        "vector backend syntax error: where invalid syntax"
-                    )
-                # _where['and'].append()
-            else:
-                _where = {"$and": [where, _where]}
+            filters.append(where)
+        _where: Mapping[str, Any] | None = (
+            filters[0]
+            if len(filters) == 1
+            else {"$and": filters}
+            if filters
+            else None
+        )
+        query_kwargs: dict[str, Any] = {"n_results": top_k}
+        if _where is not None:
+            query_kwargs["where"] = _where
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (
-            query_reader(query=query_text, n_results=top_k, where=_where)
+            query_reader(query=query_text, **query_kwargs)
             if callable(query_reader)
             else []
             if getattr(self.e, "read", None) is not None
             else self.e.backend.node_query(
-                query_texts=[query_text], n_results=top_k, where=_where
+                query_texts=[query_text], **query_kwargs
             )
         )
         if isinstance(hits, list):

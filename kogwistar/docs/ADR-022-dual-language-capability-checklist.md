@@ -24,6 +24,31 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 bounded cross-language graph-traversal ACL check: Python
+  `GraphQuery` now classifies a requested node/edge through the ACL-aware read
+  facade and filters structural endpoint rows through ACL-visible edges before
+  returning adjacency. This prevents topology disclosure when a public source
+  is connected to a private edge or endpoint. Both Python and Rust consume
+  `contracts/golden/graph-acl-traversal-v1.json`: the ACL-enabled Python MCP
+  test also checks `neighbors_async()`, while the Rust store test applies its
+  ACL projection before the graph-neighbor kernel. Owner and unrelated-reader
+  expectations match. Evidence:
+  `tests/mcp/test_chat_mcp_tools.py::test_mcp_neighbors_preserve_acl_visibility_and_hide_topology`
+  passed on Windows CPython 3.13, and
+  `tests::graph_acl_traversal_matches_shared_python_contract` passed in
+  `kogwistar-store`. Remaining vector, tenant/project, source-evidence, and
+  mutation checks remain open under existing `DL-08C`; no checklist ID or
+  denominator changed.
+- 2026-10-27 semantic query-filter compatibility: text-seeded graph retrieval
+  now omits an empty Chroma `where` filter, passes a single actual filter
+  directly, and combines document plus caller filters only when both are
+  present. This preserves the optional-filter contract across fake and Chroma
+  backends. Evidence: both parameter cases of
+  `tests/primitives/test_graph_query_real_engine.py::test_semantic_seed_then_expand_text`
+  passed on Windows CPython 3.13, including local Chroma; Ruff and `git diff
+  --check` pass. This is a backend compatibility correction and does not close
+  a dual-language gate or change checklist IDs or denominator.
+
 - 2026-10-27 current Linux/Docker verification follow-up: the complete Rust
   workspace test command passed with the live PostgreSQL 17.11/pgvector service
   enabled and all DSN-gated tests selected (manual scale probe and the

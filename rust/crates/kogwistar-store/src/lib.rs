@@ -3011,6 +3011,107 @@ mod tests {
     }
 
     #[test]
+    fn graph_acl_traversal_matches_shared_python_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-traversal-v1.json"
+        )))
+        .expect("valid graph ACL traversal fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        let truth_graph = fixture["truth_graph"].as_str().expect("truth graph");
+        let edge_spec = &fixture["edge"];
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for node_spec in fixture["nodes"].as_array().expect("nodes") {
+            let id = node_spec["id"].as_str().expect("node ID");
+            let record = node_record(id);
+            nodes.push(record.clone());
+
+            let mut acl = GraphRecord::new(format!("acl-{id}"));
+            acl.metadata
+                .insert("entity_type".into(), "acl_record".into());
+            acl.metadata
+                .insert("acl_truth_graph".into(), truth_graph.into());
+            acl.metadata
+                .insert("acl_target_entity_id".into(), id.into());
+            acl.metadata
+                .insert("acl_target_grain".into(), "node".into());
+            acl.metadata.insert("acl_version".into(), 1.into());
+            acl.metadata
+                .insert("acl_mode".into(), node_spec["mode"].clone());
+            if let Some(owner) = node_spec["owner_id"].as_str() {
+                acl.metadata.insert("owner_id".into(), owner.into());
+            }
+            nodes.push(acl);
+        }
+
+        let edge_id = edge_spec["id"].as_str().expect("edge ID");
+        let edge_document = serde_json::json!({
+            "doc_id": fixture["doc_id"],
+            "relation": edge_spec["relation"],
+            "source_ids": edge_spec["source_ids"],
+            "target_ids": edge_spec["target_ids"],
+            "source_edge_ids": [],
+            "target_edge_ids": []
+        });
+        let edge = edge_record(edge_id, edge_document);
+        edges.push(edge.clone());
+        let mut edge_acl = GraphRecord::new(format!("acl-{edge_id}"));
+        edge_acl
+            .metadata
+            .insert("entity_type".into(), "acl_record".into());
+        edge_acl
+            .metadata
+            .insert("acl_truth_graph".into(), truth_graph.into());
+        edge_acl
+            .metadata
+            .insert("acl_target_entity_id".into(), edge_id.into());
+        edge_acl
+            .metadata
+            .insert("acl_target_grain".into(), "edge".into());
+        edge_acl.metadata.insert("acl_version".into(), 1.into());
+        edge_acl
+            .metadata
+            .insert("acl_mode".into(), edge_spec["mode"].clone());
+        if let Some(owner) = edge_spec["owner_id"].as_str() {
+            edge_acl.metadata.insert("owner_id".into(), owner.into());
+        }
+        nodes.push(edge_acl);
+
+        for principal_spec in fixture["principals"].as_array().expect("principals") {
+            let principal = GraphAclPrincipal {
+                principal_id: principal_spec["id"]
+                    .as_str()
+                    .expect("principal ID")
+                    .to_owned(),
+                ..Default::default()
+            };
+            let (visible_nodes, visible_edges) =
+                graph_records_visible_by_acl(&nodes, &edges, truth_graph, &principal);
+            let neighbors = graph_neighbors_from_records(
+                fixture["nodes"][0]["id"].as_str().expect("source ID"),
+                &visible_nodes,
+                &visible_edges,
+                fixture["doc_id"].as_str(),
+            );
+            let expected_nodes = principal_spec["expected_neighbors"]["nodes"]
+                .as_array()
+                .expect("expected nodes")
+                .iter()
+                .map(|value| value.as_str().expect("node ID").to_owned())
+                .collect::<BTreeSet<_>>();
+            let expected_edges = principal_spec["expected_neighbors"]["edges"]
+                .as_array()
+                .expect("expected edges")
+                .iter()
+                .map(|value| value.as_str().expect("edge ID").to_owned())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(neighbors.nodes, expected_nodes, "{}", principal_spec["id"]);
+            assert_eq!(neighbors.edges, expected_edges, "{}", principal_spec["id"]);
+        }
+    }
+
+    #[test]
     fn graph_record_acl_matches_python_visibility_and_fails_closed() {
         let mut acl = GraphRecord::new("acl-n1");
         acl.metadata
