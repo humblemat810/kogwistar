@@ -21,6 +21,25 @@ denominator of either snapshot.
 
 ## Latest verification update (2026-10-26)
 
+- Graph-model inheritance invariant hardening: Rust's edge capability test now
+  enumerates every `GraphModelClass` registered as an edge instead of relying
+  on a manually maintained subset. Each registered edge must resolve to a node
+  counterpart in the same family and preserve all node capabilities while
+  adding edge incidence. Evidence: `cargo test -p kogwistar-contracts --offline`
+  (**68 passed**) and Python's corresponding lifecycle/mixin selection
+  (**9 passed**). This prevents a newly registered Rust edge class from
+  silently escaping the inheritance check; it does not add or alter model
+  capabilities or persisted wire data.
+- Shared graph capability contract: added
+  `contracts/golden/graph-model-capabilities-v1.json`, fixing the 26 graph
+  model class names, entity kinds, capability profiles, and edge/node family
+  pairs in one versioned fixture. Pure Rust compares its capability report and
+  registry resolution to it; Python compares model inheritance and the adapter
+  registry to the same fixture, independent of a Rust extension. Evidence:
+  `cargo test -p kogwistar-contracts --offline` (**69 passed**) and focused
+  Python fixture/native parity tests (**2 passed**). This protects additive
+  model-contract evolution and catches Python/Rust registry drift; it does not
+  claim full graph operation or storage parity.
 - Additive SQL-queue to external graph-projection slice: Rust now has
   `projection_worker::run_graph_projection_jobs_once`, which composes any
   `IndexJobWriteStore` with any `GraphWriteStore`. Its versioned action binds

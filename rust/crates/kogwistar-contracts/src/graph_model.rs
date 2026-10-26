@@ -2470,6 +2470,14 @@ mod tests {
         .expect("valid Python graph payload fixture")
     }
 
+    fn capability_fixture() -> Value {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-model-capabilities-v1.json"
+        )))
+        .expect("valid shared graph capability fixture")
+    }
+
     #[test]
     fn every_python_node_and_edge_fixture_has_a_typed_rust_view() {
         for case in fixture()["cases"].as_array().expect("fixture cases") {
@@ -3135,6 +3143,63 @@ mod tests {
     }
 
     #[test]
+    fn graph_model_capabilities_match_shared_cross_language_fixture() {
+        let fixture = capability_fixture();
+        assert_eq!(fixture["schema_version"], GRAPH_MODEL_ENVELOPE_VERSION);
+
+        let mut expected = BTreeMap::new();
+        for group in fixture["profiles"].as_array().expect("profile groups") {
+            let entity_kind = group["entity_kind"].as_str().expect("entity kind");
+            for model_class in group["classes"].as_array().expect("class names") {
+                let model_class = model_class.as_str().expect("model class name");
+                let mut profile = group["capabilities"].clone();
+                let object = profile.as_object_mut().expect("capability object");
+                object.insert(
+                    "schema_version".to_owned(),
+                    Value::from(GRAPH_MODEL_ENVELOPE_VERSION),
+                );
+                object.insert(
+                    "model_class".to_owned(),
+                    Value::String(model_class.to_owned()),
+                );
+                object.insert(
+                    "entity_kind".to_owned(),
+                    Value::String(entity_kind.to_owned()),
+                );
+                let typed: GraphModelCapabilityProfileV1 =
+                    serde_json::from_value(profile).expect("typed fixture profile");
+                assert!(expected.insert(model_class.to_owned(), typed).is_none());
+            }
+        }
+
+        let actual: BTreeMap<_, _> = graph_model_capability_profiles()
+            .into_iter()
+            .map(|profile| (profile.model_class.clone(), profile))
+            .collect();
+        assert_eq!(actual, expected);
+
+        for pair in fixture["edge_node_pairs"]
+            .as_array()
+            .expect("edge/node pairs")
+        {
+            let edge_name = pair[0].as_str().expect("edge model name");
+            let node_name = pair[1].as_str().expect("node model name");
+            let edge = GraphModelClass::all()
+                .iter()
+                .copied()
+                .find(|model| model.wire_name() == edge_name)
+                .expect("fixture edge exists in Rust registry");
+            let node = GraphModelClass::all()
+                .iter()
+                .copied()
+                .find(|model| model.wire_name() == node_name)
+                .expect("fixture node exists in Rust registry");
+            assert_eq!(edge.corresponding_class(GraphEntityKind::Node), Some(node));
+            assert!(edge.edge_extends_node_capabilities());
+        }
+    }
+
+    #[test]
     fn model_family_classification_keeps_specialized_shapes_separate() {
         assert_eq!(GraphModelClass::Node.family(), GraphModelFamily::Persistent);
         assert_eq!(
@@ -3157,27 +3222,34 @@ mod tests {
 
     #[test]
     fn every_edge_family_explicitly_extends_its_node_capabilities() {
-        let edge_classes = [
-            GraphModelClass::Edge,
-            GraphModelClass::AclEdge,
-            GraphModelClass::ConversationEdge,
-            GraphModelClass::WorkflowEdge,
-            GraphModelClass::WorkflowRuntimeEdge,
-            GraphModelClass::PureChromaEdge,
-            GraphModelClass::LlmEdge,
-            GraphModelClass::LlmEdgeExtraction,
-            GraphModelClass::FlattenedLlmEdge,
-            GraphModelClass::AssocFlattenedLlmEdge,
-        ];
+        let edge_classes: Vec<_> = GraphModelClass::all()
+            .iter()
+            .copied()
+            .filter(|model_class| model_class.entity_kind() == GraphEntityKind::Edge)
+            .collect();
 
+        assert!(
+            !edge_classes.is_empty(),
+            "the graph contract must define edges"
+        );
         for edge_class in edge_classes {
             let node_class = edge_class
                 .corresponding_class(GraphEntityKind::Node)
-                .expect("every edge family has a node counterpart");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "edge class {} has no node counterpart",
+                        edge_class.wire_name()
+                    )
+                });
             assert_eq!(edge_class.entity_kind(), GraphEntityKind::Edge);
             assert_eq!(node_class.entity_kind(), GraphEntityKind::Node);
             assert_eq!(edge_class.family(), node_class.family());
-            assert!(edge_class.edge_extends_node_capabilities());
+            assert!(
+                edge_class.edge_extends_node_capabilities(),
+                "edge class {} must include the capabilities of node class {}",
+                edge_class.wire_name(),
+                node_class.wire_name()
+            );
         }
 
         assert!(

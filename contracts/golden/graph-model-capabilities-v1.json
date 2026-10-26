@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "entity_kind": "node",
+      "classes": ["node", "acl_node", "conversation_node", "workflow_node", "workflow_run_node", "workflow_step_exec_node", "workflow_checkpoint_node", "workflow_completed_node", "workflow_cancelled_node", "workflow_failed_node"],
+      "capabilities": {"graph_entity": true, "edge_entity": false, "metadata": true, "lifecycle": true, "level": true}
+    },
+    {
+      "entity_kind": "edge",
+      "classes": ["edge", "acl_edge", "conversation_edge", "workflow_edge", "workflow_runtime_edge"],
+      "capabilities": {"graph_entity": true, "edge_entity": true, "metadata": true, "lifecycle": true, "level": true}
+    },
+    {
+      "entity_kind": "node",
+      "classes": ["pure_chroma_node"],
+      "capabilities": {"graph_entity": true, "edge_entity": false, "metadata": true, "lifecycle": false, "level": false}
+    },
+    {
+      "entity_kind": "edge",
+      "classes": ["pure_chroma_edge"],
+      "capabilities": {"graph_entity": true, "edge_entity": true, "metadata": true, "lifecycle": false, "level": false}
+    },
+    {
+      "entity_kind": "node",
+      "classes": ["doc_node", "llm_node", "llm_node_extraction", "flattened_llm_node", "assoc_flattened_llm_node"],
+      "capabilities": {"graph_entity": true, "edge_entity": false, "metadata": false, "lifecycle": false, "level": false}
+    },
+    {
+      "entity_kind": "edge",
+      "classes": ["llm_edge", "llm_edge_extraction", "flattened_llm_edge", "assoc_flattened_llm_edge"],
+      "capabilities": {"graph_entity": true, "edge_entity": true, "metadata": false, "lifecycle": false, "level": false}
+    }
+  ],
+  "edge_node_pairs": [
+    ["edge", "node"],
+    ["acl_edge", "acl_node"],
+    ["conversation_edge", "conversation_node"],
+    ["workflow_edge", "workflow_node"],
+    ["workflow_runtime_edge", "workflow_run_node"],
+    ["pure_chroma_edge", "pure_chroma_node"],
+    ["llm_edge", "llm_node"],
+    ["llm_edge_extraction", "llm_node_extraction"],
+    ["flattened_llm_edge", "flattened_llm_node"],
+    ["assoc_flattened_llm_edge", "assoc_flattened_llm_node"]
+  ],
+  "node_only_classes": ["doc_node"]
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -31,6 +32,37 @@ from kogwistar.engine_core.models import (
 from kogwistar.engine_core.subsystems.write import _validate_graph_model_contract
 from kogwistar.runtime import models as runtime_models
 from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
+
+
+def _python_graph_models_by_wire_name() -> dict[str, type[ModeSlicingMixin]]:
+    return {
+        "node": Node,
+        "edge": Edge,
+        "acl_node": acl_models.ACLNode,
+        "acl_edge": acl_models.ACLEdge,
+        "conversation_node": conversation_models.ConversationNode,
+        "conversation_edge": conversation_models.ConversationEdge,
+        "workflow_node": runtime_models.WorkflowNode,
+        "workflow_edge": runtime_models.WorkflowEdge,
+        "workflow_run_node": runtime_models.WorkflowRunNode,
+        "workflow_step_exec_node": runtime_models.WorkflowStepExecNode,
+        "workflow_checkpoint_node": runtime_models.WorkflowCheckpointNode,
+        "workflow_completed_node": runtime_models.WorkflowCompletedNode,
+        "workflow_cancelled_node": runtime_models.WorkflowCancelledNode,
+        "workflow_failed_node": runtime_models.WorkflowFailedNode,
+        "workflow_runtime_edge": runtime_models.WorkflowRuntimeEdge,
+        "pure_chroma_node": engine_models.PureChromaNode,
+        "pure_chroma_edge": engine_models.PureChromaEdge,
+        "doc_node": engine_models.DocNode,
+        "llm_node": engine_models.LLMNode,
+        "llm_edge": engine_models.LLMEdge,
+        "llm_node_extraction": engine_models.LLMNodeExtraction,
+        "llm_edge_extraction": engine_models.LLMEdgeExtraction,
+        "flattened_llm_node": engine_models.FlattenedLLMNode,
+        "flattened_llm_edge": engine_models.FlattenedLLMEdge,
+        "assoc_flattened_llm_node": engine_models.AssocFlattenedLLMNode,
+        "assoc_flattened_llm_edge": engine_models.AssocFlattenedLLMEdge,
+    }
 
 
 def _mentions(excerpt: str) -> list[dict[str, list[dict[str, object]]]]:
@@ -315,34 +347,7 @@ def test_native_capability_report_matches_corrected_doc_node_profile() -> None:
 def test_native_capability_profiles_match_python_model_inheritance() -> None:
     """Rust's graph capability report must track the Python model MRO."""
     pytest.importorskip("kogwistar._rust")
-    python_models = {
-        "node": Node,
-        "edge": Edge,
-        "acl_node": acl_models.ACLNode,
-        "acl_edge": acl_models.ACLEdge,
-        "conversation_node": conversation_models.ConversationNode,
-        "conversation_edge": conversation_models.ConversationEdge,
-        "workflow_node": runtime_models.WorkflowNode,
-        "workflow_edge": runtime_models.WorkflowEdge,
-        "workflow_run_node": runtime_models.WorkflowRunNode,
-        "workflow_step_exec_node": runtime_models.WorkflowStepExecNode,
-        "workflow_checkpoint_node": runtime_models.WorkflowCheckpointNode,
-        "workflow_completed_node": runtime_models.WorkflowCompletedNode,
-        "workflow_cancelled_node": runtime_models.WorkflowCancelledNode,
-        "workflow_failed_node": runtime_models.WorkflowFailedNode,
-        "workflow_runtime_edge": runtime_models.WorkflowRuntimeEdge,
-        "pure_chroma_node": engine_models.PureChromaNode,
-        "pure_chroma_edge": engine_models.PureChromaEdge,
-        "doc_node": engine_models.DocNode,
-        "llm_node": engine_models.LLMNode,
-        "llm_edge": engine_models.LLMEdge,
-        "llm_node_extraction": engine_models.LLMNodeExtraction,
-        "llm_edge_extraction": engine_models.LLMEdgeExtraction,
-        "flattened_llm_node": engine_models.FlattenedLLMNode,
-        "flattened_llm_edge": engine_models.FlattenedLLMEdge,
-        "assoc_flattened_llm_node": engine_models.AssocFlattenedLLMNode,
-        "assoc_flattened_llm_edge": engine_models.AssocFlattenedLLMEdge,
-    }
+    python_models = _python_graph_models_by_wire_name()
 
     profiles = graph_model_capability_profiles()
     assert {profile["model_class"] for profile in profiles} == set(python_models)
@@ -361,6 +366,57 @@ def test_native_capability_profiles_match_python_model_inheritance() -> None:
             for key in expected
         }
         assert actual == expected, profile["model_class"]
+
+
+def test_graph_model_capability_contract_matches_shared_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "graph-model-capabilities-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
+
+    python_models = _python_graph_models_by_wire_name()
+    expected_classes = {
+        model_class
+        for group in fixture["profiles"]
+        for model_class in group["classes"]
+    }
+    assert expected_classes == set(python_models)
+    assert expected_classes == set(graph_contracts.SUPPORTED_GRAPH_MODEL_CLASSES)
+
+    for group in fixture["profiles"]:
+        expected = group["capabilities"]
+        for model_class in group["classes"]:
+            model = python_models[model_class]
+            actual = {
+                "graph_entity": issubclass(model, engine_models.GraphEntityBase),
+                "edge_entity": issubclass(model, EdgeMixin),
+                "metadata": "metadata" in model.model_fields,
+                "lifecycle": issubclass(model, TombstoneMixin),
+                "level": issubclass(model, LevelAwareMixin),
+            }
+            assert group["entity_kind"] == ("edge" if actual["edge_entity"] else "node")
+            assert actual == expected, model_class
+
+    for edge_name, node_name in fixture["edge_node_pairs"]:
+        edge_model = python_models[edge_name]
+        node_model = python_models[node_name]
+        edge_mixins = {
+            base.__name__
+            for base in edge_model.__mro__
+            if base.__name__.endswith("Mixin")
+        }
+        node_mixins = {
+            base.__name__
+            for base in node_model.__mro__
+            if base.__name__.endswith("Mixin")
+        }
+        node_only_mixins = {"ConversationRoleMixin"} if node_name == "conversation_node" else set()
+        assert node_mixins - node_only_mixins <= edge_mixins, edge_name
+        assert "EdgeMixin" in edge_mixins, edge_name
 
 
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
