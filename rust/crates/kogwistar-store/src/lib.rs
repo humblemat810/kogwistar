@@ -222,7 +222,7 @@ impl ConversationListAccumulator {
                 },
             )
             .collect::<Vec<_>>();
-        entries.sort_by(|left, right| right.turn_count.cmp(&left.turn_count));
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.turn_count));
         entries
     }
 }

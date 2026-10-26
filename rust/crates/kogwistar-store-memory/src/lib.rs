@@ -1359,20 +1359,18 @@ impl GraphMutationStore for InMemoryStore {
         Ok(rows)
     }
 
-    fn graph_projection_page(
+    async fn graph_projection_page(
         &self,
         page: GraphProjectionPageRead,
-    ) -> impl std::future::Future<Output = StoreResult<Vec<GraphRecord>>> + Send {
-        async move {
-            let GraphProjectionPageRead { read, after_id } = page;
-            let mut rows = self.graph_projection_rows(&read)?;
-            if let Some(after_id) = after_id {
-                rows.retain(|record| record.id > after_id);
-            }
-            rows.sort_by(|left, right| left.id.cmp(&right.id));
-            rows.truncate(read.limit);
-            Ok(rows)
+    ) -> StoreResult<Vec<GraphRecord>> {
+        let GraphProjectionPageRead { read, after_id } = page;
+        let mut rows = self.graph_projection_rows(&read)?;
+        if let Some(after_id) = after_id {
+            rows.retain(|record| record.id > after_id);
         }
+        rows.sort_by(|left, right| left.id.cmp(&right.id));
+        rows.truncate(read.limit);
+        Ok(rows)
     }
 
     async fn graph_projection_vector_query(

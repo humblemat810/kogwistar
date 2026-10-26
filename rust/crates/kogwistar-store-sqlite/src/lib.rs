@@ -82,13 +82,13 @@ fn unregister_active_database_identity(path: &Path, identity: &str) {
     let mut active = identities
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((current, count)) = active.get_mut(path) {
-        if current == identity {
-            if *count <= 1 {
-                active.remove(path);
-            } else {
-                *count -= 1;
-            }
+    if let Some((current, count)) = active.get_mut(path)
+        && current == identity
+    {
+        if *count <= 1 {
+            active.remove(path);
+        } else {
+            *count -= 1;
         }
     }
 }
@@ -177,7 +177,7 @@ struct AuthorityLockHandle {
 
 fn acquire_authority_lock_handle(
     lock_path: PathBuf,
-    authority_key: &str,
+    _authority_key: &str,
     display_path: &Path,
 ) -> SqliteStoreResult<AuthorityLockHandle> {
     let locks = PROCESS_AUTHORITY_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -187,7 +187,7 @@ fn acquire_authority_lock_handle(
     if let Some(file) = active.get(&lock_path).and_then(Weak::upgrade) {
         #[cfg(windows)]
         {
-            let mutex = acquire_windows_authority_mutex(authority_key, display_path)?;
+            let mutex = acquire_windows_authority_mutex(_authority_key, display_path)?;
             return Ok(AuthorityLockHandle {
                 _file: file,
                 _mutex: mutex,
@@ -199,12 +199,13 @@ fn acquire_authority_lock_handle(
 
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)?;
     #[cfg(windows)]
     {
-        let mutex = acquire_windows_authority_mutex(authority_key, display_path)?;
+        let mutex = acquire_windows_authority_mutex(_authority_key, display_path)?;
         let file = Arc::new(file);
         active.insert(lock_path, Arc::downgrade(&file));
         Ok(AuthorityLockHandle {
@@ -675,18 +676,18 @@ impl SqliteStore {
     pub fn open(path: impl AsRef<Path>) -> SqliteStoreResult<Self> {
         let path = path.as_ref().to_path_buf();
         let private_memory = is_private_memory_database(&path);
-        if !private_memory {
-            if let Some(parent) = path
+        if !private_memory
+            && let Some(parent) = path
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
-            {
-                fs::create_dir_all(parent)?;
-            }
+        {
+            fs::create_dir_all(parent)?;
         }
         let mut authority_lock = ProcessAuthorityLock::acquire(&path)?;
         if !private_memory {
             OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .open(&path)?;

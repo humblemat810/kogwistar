@@ -713,11 +713,11 @@ fn python_float_repr(value: &serde_json::Number) -> String {
         return value.to_string();
     };
 
-    if let Some((mantissa, exponent)) = repr.split_once('e').or_else(|| repr.split_once('E')) {
-        if let Ok(exponent) = exponent.parse::<i32>() {
-            let sign = if exponent < 0 { "-" } else { "+" };
-            return format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs());
-        }
+    if let Some((mantissa, exponent)) = repr.split_once('e').or_else(|| repr.split_once('E'))
+        && let Ok(exponent) = exponent.parse::<i32>()
+    {
+        let sign = if exponent < 0 { "-" } else { "+" };
+        return format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs());
     }
 
     if value

@@ -50,12 +50,12 @@ impl ToolAuditItemV1 {
                 return Err(ToolAuditContractError::EmptyField { field });
             }
         }
-        if let Some(conversation_id) = &self.conversation_id {
-            if conversation_id.trim().is_empty() {
-                return Err(ToolAuditContractError::EmptyField {
-                    field: "conversation_id",
-                });
-            }
+        if let Some(conversation_id) = &self.conversation_id
+            && conversation_id.trim().is_empty()
+        {
+            return Err(ToolAuditContractError::EmptyField {
+                field: "conversation_id",
+            });
         }
         if self.turn_index.is_some_and(|index| index < 0) {
             return Err(ToolAuditContractError::InvalidTurnIndex);
@@ -74,23 +74,22 @@ impl ToolAuditResponseV1 {
         if self.schema_version != TOOL_AUDIT_WIRE_VERSION {
             return Err(ToolAuditContractError::InvalidVersion);
         }
-        if let Some(conversation_id) = &self.conversation_id {
-            if conversation_id.trim().is_empty() {
-                return Err(ToolAuditContractError::EmptyField {
-                    field: "conversation_id",
-                });
-            }
+        if let Some(conversation_id) = &self.conversation_id
+            && conversation_id.trim().is_empty()
+        {
+            return Err(ToolAuditContractError::EmptyField {
+                field: "conversation_id",
+            });
         }
         for item in &self.items {
             item.validate()?;
             if let (Some(response_conversation), Some(item_conversation)) =
                 (&self.conversation_id, &item.conversation_id)
+                && response_conversation != item_conversation
             {
-                if response_conversation != item_conversation {
-                    return Err(ToolAuditContractError::EmptyField {
-                        field: "conversation_id",
-                    });
-                }
+                return Err(ToolAuditContractError::EmptyField {
+                    field: "conversation_id",
+                });
             }
         }
         Ok(())

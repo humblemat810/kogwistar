@@ -433,32 +433,32 @@ fn validate_native_output_state(
         )
     };
 
-    if let Some(result) = output.result.as_ref().and_then(Value::as_object) {
-        if result.contains_key("workflow_status") {
-            let final_state = result.get("final_state").ok_or_else(|| {
-                RuntimeNativeExecutionError::OperationFailed {
-                    operation: request.operation.clone(),
-                    reason: "standard workflow result is missing final_state".to_owned(),
-                }
-            })?;
-            if result
-                .get("workflow_status")
-                .and_then(Value::as_str)
-                != Some("succeeded")
-            {
-                return Err(RuntimeNativeExecutionError::OperationFailed {
-                    operation: request.operation.clone(),
-                    reason: "successful native effect must report workflow_status=succeeded".to_owned(),
-                });
+    if let Some(result) = output.result.as_ref().and_then(Value::as_object)
+        && result.contains_key("workflow_status")
+    {
+        let final_state = result.get("final_state").ok_or_else(|| {
+            RuntimeNativeExecutionError::OperationFailed {
+                operation: request.operation.clone(),
+                reason: "standard workflow result is missing final_state".to_owned(),
             }
-            let expected_state = expected_state
-                .unwrap_or_else(|| Value::Object(request.state.clone()));
-            if final_state != &expected_state {
-                return Err(RuntimeNativeExecutionError::OperationFailed {
-                    operation: request.operation.clone(),
-                    reason: "result.final_state does not match the operation state_update".to_owned(),
-                });
-            }
+        })?;
+        if result
+            .get("workflow_status")
+            .and_then(Value::as_str)
+            != Some("succeeded")
+        {
+            return Err(RuntimeNativeExecutionError::OperationFailed {
+                operation: request.operation.clone(),
+                reason: "successful native effect must report workflow_status=succeeded".to_owned(),
+            });
+        }
+        let expected_state = expected_state
+            .unwrap_or_else(|| Value::Object(request.state.clone()));
+        if final_state != &expected_state {
+            return Err(RuntimeNativeExecutionError::OperationFailed {
+                operation: request.operation.clone(),
+                reason: "result.final_state does not match the operation state_update".to_owned(),
+            });
         }
     }
     Ok(())

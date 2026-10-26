@@ -24,6 +24,14 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 `DL-07E` Linux Rust-store evidence: in `rust:1.97-bookworm`,
+  `cargo test --locked -p kogwistar-store-sqlite --lib -- --test-threads=1`
+  passed **29 tests, 1 intentionally ignored**, including POSIX file identity,
+  path replacement, and process-authority checks. Strict Clippy passed for
+  `kogwistar-store-sqlite --all-targets` with `-D warnings`. This verifies the
+  Linux Rust store only; Linux Python/Rust cross-process interoperability and
+  the required Ubuntu CI matrix are still unverified, so `DL-07E` remains
+  **IN PROGRESS**. No checklist IDs or denominators changed.
 - 2026-10-27 `DL-16A` model-contract closure: Python Node/Edge to Rust V2
   hierarchy-level differential passed **8 cases**, including positive and
   negative integers beyond 64 bits. A live PostgreSQL graph mutation/reopen

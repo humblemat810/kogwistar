@@ -738,13 +738,13 @@ impl GraphModelEnvelope {
         if self.schema_version != GRAPH_MODEL_ENVELOPE_VERSION {
             return Err(GraphModelError::UnsupportedVersion(self.schema_version));
         }
-        if let Some(model_name) = manifest.model_name.as_deref() {
-            if model_name != self.model_class.python_name() {
-                return Err(GraphModelError::InvalidPayload(format!(
-                    "slice manifest model {model_name:?} does not match envelope model {}",
-                    self.model_class.python_name()
-                )));
-            }
+        if let Some(model_name) = manifest.model_name.as_deref()
+            && model_name != self.model_class.python_name()
+        {
+            return Err(GraphModelError::InvalidPayload(format!(
+                "slice manifest model {model_name:?} does not match envelope model {}",
+                self.model_class.python_name()
+            )));
         }
         let payload = manifest
             .project(&self.payload, mode)
@@ -2005,18 +2005,16 @@ impl GraphEntityCoreV1 {
         if let Some(level) = self.level_from_root {
             self.metadata
                 .insert("level_from_root".to_owned(), Value::Number(level.into()));
-        } else if !level_field_present {
-            if let Some(value) = self.metadata.get("level_from_root") {
-                self.level_from_root = coerce_python_integer(value).map_err(|reason| {
-                    GraphModelError::InvalidEntityFields {
-                        model_class,
-                        reason,
-                    }
-                })?;
-                if let Some(level) = self.level_from_root {
-                    self.metadata
-                        .insert("level_from_root".to_owned(), Value::Number(level.into()));
+        } else if !level_field_present && let Some(value) = self.metadata.get("level_from_root") {
+            self.level_from_root = coerce_python_integer(value).map_err(|reason| {
+                GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason,
                 }
+            })?;
+            if let Some(level) = self.level_from_root {
+                self.metadata
+                    .insert("level_from_root".to_owned(), Value::Number(level.into()));
             }
         }
         Ok(())
@@ -2050,13 +2048,13 @@ impl GraphEntityCoreV1 {
         for grounding in &self.mentions {
             grounding.validate(model_class)?;
         }
-        if let Some(status) = self.metadata.get("lifecycle_status") {
-            if !matches!(status.as_str(), Some("active" | "tombstoned")) {
-                return Err(GraphModelError::InvalidEntityFields {
-                    model_class,
-                    reason: "lifecycle_status must be active or tombstoned",
-                });
-            }
+        if let Some(status) = self.metadata.get("lifecycle_status")
+            && !matches!(status.as_str(), Some("active" | "tombstoned"))
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "lifecycle_status must be active or tombstoned",
+            });
         }
         if let Some(redirect) = self.metadata.get("redirect_to_id")
             && !redirect.is_null()
@@ -3058,21 +3056,21 @@ pub enum GraphModelError {
 
 impl GraphEntityPayload {
     fn validate(&self, model_class: GraphModelClass) -> Result<(), GraphModelError> {
-        if let Some(id) = &self.id {
-            if id.is_empty() {
-                return Err(GraphModelError::InvalidEntityFields {
-                    model_class,
-                    reason: "id must not be empty",
-                });
-            }
+        if let Some(id) = &self.id
+            && id.is_empty()
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "id must not be empty",
+            });
         }
-        if let Some(id) = &self.local_id {
-            if id.is_empty() {
-                return Err(GraphModelError::InvalidEntityFields {
-                    model_class,
-                    reason: "local_id must not be empty",
-                });
-            }
+        if let Some(id) = &self.local_id
+            && id.is_empty()
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "local_id must not be empty",
+            });
         }
         Ok(())
     }
