@@ -23,6 +23,18 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-26)
 
+- Additional Unicode group-claim parity: Python's authenticated group projection
+  uses Unicode lowercase; Rust's graph ACL request projection now does the same
+  rather than ASCII-only lowercase. The shared identity/group fixture includes
+  accented values, whitespace, duplicate claims, and non-string array members.
+  The shared graph-ACL fixture also exercises a canonical Unicode group grant.
+  Evidence: `test_acl_principal_identity_matches_shared_rust_contract` and
+  `test_python_acl_visibility_matches_shared_golden_contract` (2 Python tests
+  passed), `graph_acl_principal_identity_matches_shared_python_contract` and
+  `graph_acl_matches_shared_golden_contract` (1 Rust test each passed), plus
+  Ruff and Rust formatting. Persisted ACL-record normalization remains
+  unchanged. This adds evidence under existing `DL-08C`; no item ID or
+  denominator changed.
 - Additional malformed edge-endpoint parity: Rust graph ACL projection previously
   discarded non-string endpoint values and could expose an edge without checking
   a corresponding hidden endpoint. It now fails closed for non-string node and

@@ -321,14 +321,14 @@ fn principal_strings(principal: &Value, name: &str) -> Vec<String> {
             .split(',')
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_ascii_lowercase)
+            .map(str::to_lowercase)
             .collect(),
         Some(Value::Array(values)) => values
             .iter()
             .filter_map(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_ascii_lowercase)
+            .map(str::to_lowercase)
             .collect(),
         _ => Vec::new(),
     }

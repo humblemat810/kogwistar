@@ -36,5 +36,15 @@
       "claims": {},
       "expected_principal_id": "system"
     }
+  ],
+  "group_cases": [
+    {
+      "name": "unicode_group_claims_use_unicode_lowercase_and_deduplicate",
+      "claims": {
+        "groups": " Ä-Team,Ops ",
+        "principal_groups": ["ä-team", "Üsers", 17]
+      },
+      "expected_groups": ["ops", "ä-team", "üsers"]
+    }
   ]
 }

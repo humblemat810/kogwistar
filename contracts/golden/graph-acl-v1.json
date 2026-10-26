@@ -3,7 +3,7 @@
   "truth_graph": "knowledge",
   "principal": {
     "id": "alice",
-    "groups": ["reviewers"],
+    "groups": ["reviewers", "ä-review"],
     "security_scope": "team-a"
   },
   "targets": [
@@ -11,6 +11,7 @@
     {"id": "node-owner", "grain": "node", "mode": "private", "owner_id": "alice"},
     {"id": "node-shared", "grain": "node", "mode": "shared", "shared_with_principals": ["alice"]},
     {"id": "node-group", "grain": "node", "mode": "group", "shared_with_groups": ["reviewers"]},
+    {"id": "node-unicode-group", "grain": "node", "mode": "group", "shared_with_groups": ["ä-review"]},
     {"id": "node-scope", "grain": "node", "mode": "scope", "security_scope": "team-a"},
     {"id": "node-private", "grain": "node", "mode": "private", "owner_id": "bob"},
     {"id": "node-tombstoned", "grain": "node", "mode": "public", "tombstoned": true},
@@ -20,7 +21,7 @@
     {"id": "edge-private", "grain": "edge", "mode": "private", "owner_id": "bob"}
   ],
   "expected_visible": {
-    "nodes": ["node-public", "node-owner", "node-shared", "node-group", "node-scope"],
+    "nodes": ["node-public", "node-owner", "node-shared", "node-group", "node-unicode-group", "node-scope"],
     "edges": ["edge-public", "edge-shared"]
   }
 }

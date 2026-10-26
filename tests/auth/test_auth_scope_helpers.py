@@ -129,6 +129,12 @@ def test_acl_principal_identity_matches_shared_rust_contract():
             ), case["name"]
         finally:
             claims_ctx.reset(token)
+    for case in fixture.get("group_cases", []):
+        token = claims_ctx.set(case["claims"])
+        try:
+            assert get_current_principal_groups() == tuple(case["expected_groups"]), case["name"]
+        finally:
+            claims_ctx.reset(token)
 
 
 def test_security_scope_access_requires_match_or_explicit_share():
