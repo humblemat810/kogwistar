@@ -24,6 +24,18 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 current Linux/Docker verification follow-up: the complete Rust
+  workspace test command passed with the live PostgreSQL 17.11/pgvector service
+  enabled and all DSN-gated tests selected (manual scale probe and the
+  PostgreSQL-to-Chroma cross-store test explicitly skipped). Full workspace
+  strict Clippy (`--workspace --all-targets --locked -- -D warnings`) also
+  passed after resolving existing lint findings in the API and Python bridge.
+  The Python SQLite cross-language differential group passed **17 tests** after
+  correcting its fake engine fixture to expose the canonical `metadata`
+  property used by `IndexingSubsystem.reconcile_indexes`. These checks add
+  local Linux evidence only; Rust formatting and `git diff --check` also pass.
+  They do not close any platform-support or capability gate. No checklist IDs,
+  statuses, or denominators changed.
 - 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
   with the repository's `abi3-py312` native extension, six real Python/Rust
   SQLite cases passed in a Linux Docker container: Python-created DB opened and

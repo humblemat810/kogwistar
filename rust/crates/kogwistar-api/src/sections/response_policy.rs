@@ -546,17 +546,17 @@ fn inject_authoritative_capability_state(
     let capabilities = effective_capabilities(principal, &state);
     initial_state.insert("effective_capabilities".to_owned(), json!(capabilities));
     initial_state.insert("_rt_effective_capabilities".to_owned(), json!(capabilities));
-    if let Some(delegated_by) = principal.get("delegated_by").and_then(Value::as_str) {
-        if let Ok(authority) = DelegationAuthorityV1::new(delegated_by, &capabilities) {
-            initial_state.insert(
-                "_rt_delegated_by".to_owned(),
-                Value::String(delegated_by.to_owned()),
-            );
-            initial_state.insert(
-                "_rt_delegation".to_owned(),
-                serde_json::to_value(authority).expect("delegation authority serializes"),
-            );
-        }
+    if let Some(delegated_by) = principal.get("delegated_by").and_then(Value::as_str)
+        && let Ok(authority) = DelegationAuthorityV1::new(delegated_by, &capabilities)
+    {
+        initial_state.insert(
+            "_rt_delegated_by".to_owned(),
+            Value::String(delegated_by.to_owned()),
+        );
+        initial_state.insert(
+            "_rt_delegation".to_owned(),
+            serde_json::to_value(authority).expect("delegation authority serializes"),
+        );
     }
 }
 

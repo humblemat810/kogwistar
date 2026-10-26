@@ -164,10 +164,10 @@ impl GraphWriteStore for ChromaGraphStore {
         if record.id.is_empty() {
             return Err(StoreError::EmptyRecordId);
         }
-        if let Some(vector) = &record.embedding {
-            if vector.iter().any(|value| !value.is_finite()) {
-                return Err(StoreError::NonFiniteVector);
-            }
+        if let Some(vector) = &record.embedding
+            && vector.iter().any(|value| !value.is_finite())
+        {
+            return Err(StoreError::NonFiniteVector);
         }
         let metadata = records::chroma_metadata(namespace, &record)?;
         let url = self
@@ -251,7 +251,6 @@ fn decode_records(payload: &Value, nested: bool) -> StoreResult<Vec<GraphRecord>
                 })
                 .transpose()?;
             records::restore_record(id.to_owned(), document, metadata, embedding)
-                .map_err(Into::into)
         })
         .collect()
 }

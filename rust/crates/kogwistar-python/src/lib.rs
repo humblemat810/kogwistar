@@ -5302,14 +5302,18 @@ struct CachedPostgresStore {
 }
 
 type SharedCachedPostgresStore = Arc<Mutex<CachedPostgresStore>>;
+type ActivePostgresTransactionKey = (u32, String, String);
+type ActivePostgresTransactions = BTreeMap<ActivePostgresTransactionKey, String>;
+type PostgresTransactionFinishSender = mpsc::Sender<Result<(), PostgresStoreError>>;
+type SharedPostgresTransactionFinish = Arc<Mutex<Option<PostgresTransactionFinishSender>>>;
 
 fn postgres_store_cache() -> &'static Mutex<BTreeMap<String, SharedCachedPostgresStore>> {
     static STORES: OnceLock<Mutex<BTreeMap<String, SharedCachedPostgresStore>>> = OnceLock::new();
     STORES.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn active_postgres_store_transactions() -> &'static Mutex<BTreeMap<(u32, String, String), String>> {
-    static ACTIVE: OnceLock<Mutex<BTreeMap<(u32, String, String), String>>> = OnceLock::new();
+fn active_postgres_store_transactions() -> &'static Mutex<ActivePostgresTransactions> {
+    static ACTIVE: OnceLock<Mutex<ActivePostgresTransactions>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -5374,9 +5378,7 @@ fn run_cached_postgres_worker(
                 let future_started = started_flag.clone();
                 let startup_response = started.clone();
                 let transaction_receiver = receiver.clone();
-                let finish_response: Arc<
-                    Mutex<Option<mpsc::Sender<Result<(), PostgresStoreError>>>>,
-                > = Arc::new(Mutex::new(None));
+                let finish_response: SharedPostgresTransactionFinish = Arc::new(Mutex::new(None));
                 let future_finish_response = finish_response.clone();
                 let result = runtime.block_on(store.transaction(move |uow| {
                     Box::pin(async move {

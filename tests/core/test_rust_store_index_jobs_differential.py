@@ -290,7 +290,7 @@ def test_sqlite_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
     assert persisted.accepted_result_json == '{"embedding":[0.25,0.75]}'
 
     engine = SimpleNamespace(
-        meta_sqlite=reopened,
+        metadata=reopened,
         namespace="ns",
         _phase1_enable_index_jobs=True,
         _phase1_enable_validation_cache=False,
