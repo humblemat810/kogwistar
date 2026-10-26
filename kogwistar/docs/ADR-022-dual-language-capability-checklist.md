@@ -843,6 +843,19 @@ snapshot's denominator.
   reported Windows access denied, but the generated extension was loaded by
   the passing differential run. DL-16 remains in progress.
 
+- Conversation graph parity audit found Rust was applying a non-Python
+  nonnegative constraint to edge summary distances and using normalized
+  top-level node fields to satisfy a metadata requirement that Python checks
+  only inside `metadata`. Rust now validates the original metadata object,
+  matches Python's accepted integer coercions for level/turn/distance fields,
+  preserves negative conversation-edge counters, and retains node-only
+  forbidden summary fields and role/identifier validation.
+  Evidence: both languages consume
+  `contracts/golden/conversation-graph-metadata-v1.json`; the full contracts
+  crate (**73 passed**) and full differential module (**98 passed**) passed
+  against the rebuilt extension on Windows CPython 3.13. Ruff, rustfmt, and
+  `git diff --check` passed. DL-16 remains in progress.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

@@ -122,6 +122,14 @@ WORKFLOW_RUNTIME_NODE_METADATA_FIXTURE = json.loads(
         / "workflow-runtime-node-metadata-v1.json"
     ).read_text(encoding="utf-8")
 )
+CONVERSATION_GRAPH_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "conversation-graph-metadata-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -796,6 +804,51 @@ def test_workflow_runtime_node_metadata_matches_python_model_contract() -> None:
                 "schema_version": 1,
                 "model_class": model_class,
                 "payload": rust_payload,
+            },
+            ensure_ascii=False,
+        )
+        if case["valid"]:
+            _rust.validate_graph_model_family(envelope)
+        else:
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(envelope)
+
+
+@pytest.mark.requires_rust
+def test_conversation_graph_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    fixture = CONVERSATION_GRAPH_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
+    node_payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    edge_payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    model_by_class: dict[str, type[BaseModel]] = {
+        "conversation_node": ConversationNode,
+        "conversation_edge": ConversationEdge,
+    }
+
+    for case in fixture["cases"]:
+        model_class = case["model_class"]
+        payload = copy.deepcopy(
+            edge_payload if model_class == "conversation_edge" else node_payload
+        )
+        payload["metadata"] = case["metadata"]
+        if case["valid"]:
+            python_payload = (
+                model_by_class[model_class]
+                .model_validate(payload)
+                .model_dump(field_mode="backend", dump_format="json")
+            )
+        else:
+            with pytest.raises(Exception):
+                model_by_class[model_class].model_validate(payload)
+            python_payload = payload
+
+        envelope = json.dumps(
+            {
+                "schema_version": 1,
+                "model_class": model_class,
+                "payload": python_payload,
             },
             ensure_ascii=False,
         )

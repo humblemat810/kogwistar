@@ -621,12 +621,18 @@ impl GraphModelEnvelope {
                 validate_workflow_runtime_edge_metadata(&typed.core.metadata)
             }
             GraphModelClass::ConversationNode => {
-                let typed = self.decode_persistent_shape(GraphEntityKind::Node)?;
-                validate_conversation_node_metadata(&typed.core.metadata)
+                self.decode_persistent_shape(GraphEntityKind::Node)?;
+                validate_conversation_node_metadata(&raw_metadata(
+                    GraphModelClass::ConversationNode,
+                    &self.payload,
+                )?)
             }
             GraphModelClass::ConversationEdge => {
-                let typed = self.decode_persistent_edge_shape()?;
-                validate_conversation_edge_metadata(&typed.core.metadata)
+                self.decode_persistent_edge_shape()?;
+                validate_conversation_edge_metadata(&raw_metadata(
+                    GraphModelClass::ConversationEdge,
+                    &self.payload,
+                )?)
             }
             GraphModelClass::LlmNode
             | GraphModelClass::LlmNodeExtraction
@@ -734,6 +740,23 @@ fn validate_metadata<T: for<'de> Deserialize<'de>>(
     serde_json::from_value(Value::Object(metadata.clone().into_iter().collect())).map_err(|error| {
         GraphModelError::InvalidPayload(format!("{model_class:?} metadata: {error}"))
     })
+}
+
+fn raw_metadata(
+    model_class: GraphModelClass,
+    payload: &Value,
+) -> Result<BTreeMap<String, Value>, GraphModelError> {
+    match payload.get("metadata") {
+        None => Ok(BTreeMap::new()),
+        Some(Value::Object(metadata)) => Ok(metadata
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()),
+        Some(_) => Err(GraphModelError::InvalidEntityFields {
+            model_class,
+            reason: "conversation metadata must be an object",
+        }),
+    }
 }
 
 fn validate_workflow_node_metadata(
@@ -938,6 +961,18 @@ fn validate_conversation_node_metadata(
 ) -> Result<(), GraphModelError> {
     let value: ConversationNodeMetadataV1 =
         validate_metadata(GraphModelClass::ConversationNode, metadata)?;
+    let role_valid = metadata.get("role").is_none_or(|role| {
+        role.is_null()
+            || matches!(
+                role.as_str(),
+                Some("user" | "assistant" | "system" | "tool")
+            )
+    });
+    let optional_fields_valid = ["conversation_id", "user_id"].into_iter().all(|field| {
+        metadata
+            .get(field)
+            .is_none_or(|value| value.is_null() || value.is_string())
+    });
     let forbidden = [
         "char_distance_from_last_summary",
         "turn_distance_from_last_summary",
@@ -945,7 +980,15 @@ fn validate_conversation_node_metadata(
         "prev_node_distance_from_last_summary",
         "prev_turn_meta_summary",
     ];
-    if value.level_from_root < 0 || forbidden.iter().any(|key| metadata.contains_key(*key)) {
+    if python_integer_input(&value.level_from_root) != Some(true)
+        || value
+            .turn_index
+            .as_ref()
+            .is_some_and(|index| python_integer_input(index).is_none())
+        || !role_valid
+        || !optional_fields_valid
+        || forbidden.iter().any(|key| metadata.contains_key(*key))
+    {
         return Err(GraphModelError::InvalidEntityFields {
             model_class: GraphModelClass::ConversationNode,
             reason: "invalid conversation node metadata",
@@ -957,14 +1000,22 @@ fn validate_conversation_node_metadata(
 fn validate_conversation_edge_metadata(
     metadata: &BTreeMap<String, Value>,
 ) -> Result<(), GraphModelError> {
-    let value: ConversationEdgeMetadataV1 =
+    let _: ConversationEdgeMetadataV1 =
         validate_metadata(GraphModelClass::ConversationEdge, metadata)?;
-    if value.char_distance_from_last_summary.is_some_and(|v| v < 0)
-        || value.turn_distance_from_last_summary.is_some_and(|v| v < 0)
-    {
+    let numeric_fields_valid = [
+        "char_distance_from_last_summary",
+        "turn_distance_from_last_summary",
+    ]
+    .into_iter()
+    .all(|field| {
+        metadata
+            .get(field)
+            .is_none_or(|value| value.is_null() || python_integer_input(value).is_some())
+    });
+    if !numeric_fields_valid {
         return Err(GraphModelError::InvalidEntityFields {
             model_class: GraphModelClass::ConversationEdge,
-            reason: "conversation edge distances must not be negative",
+            reason: "conversation edge distances must be integers or null",
         });
     }
     Ok(())
@@ -1732,11 +1783,11 @@ pub enum ConversationRoleV1 {
 pub struct ConversationNodeMetadataV1 {
     #[serde(default = "conversation_node_entity_type")]
     pub entity_type: String,
-    pub level_from_root: i64,
+    pub level_from_root: Value,
     #[serde(default)]
     pub role: Option<ConversationRoleV1>,
     #[serde(default)]
-    pub turn_index: Option<i64>,
+    pub turn_index: Option<Value>,
     #[serde(default)]
     pub conversation_id: Option<String>,
     #[serde(default)]
@@ -1764,9 +1815,9 @@ pub struct ConversationEdgeMetadataV1 {
     #[serde(default)]
     pub causal_type: Option<ConversationCausalTypeV1>,
     #[serde(default)]
-    pub char_distance_from_last_summary: Option<i64>,
+    pub char_distance_from_last_summary: Option<Value>,
     #[serde(default)]
-    pub turn_distance_from_last_summary: Option<i64>,
+    pub turn_distance_from_last_summary: Option<Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2677,6 +2728,32 @@ mod tests {
                 result.is_ok(),
                 case["valid"].as_bool().expect("validity flag"),
                 "workflow runtime node metadata case {}",
+                case["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn conversation_metadata_matches_python_model_contract() {
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/conversation-graph-metadata-v1.json"
+        )))
+        .expect("valid shared conversation graph metadata contract");
+        assert_eq!(contract["schema_version"], 1);
+
+        let graph_fixture = fixture();
+        for case in contract["cases"].as_array().expect("contract cases") {
+            let model_class: GraphModelClass = serde_json::from_value(case["model_class"].clone())
+                .expect("known conversation model class");
+            let baseline_index = usize::from(model_class == GraphModelClass::ConversationEdge);
+            let mut payload = graph_fixture["cases"][baseline_index]["payload"].clone();
+            payload["metadata"] = case["metadata"].clone();
+            let result = GraphModelEnvelope::new(model_class, payload).validate_family_v1();
+            assert_eq!(
+                result.is_ok(),
+                case["valid"].as_bool().expect("validity flag"),
+                "conversation metadata case {}",
                 case["id"]
             );
         }
