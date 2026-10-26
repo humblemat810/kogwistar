@@ -179,6 +179,101 @@ async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
     assert semantic["seeds"] == []
 
 
+@pytest.mark.asyncio
+async def test_mcp_graph_traversal_matches_shared_golden_contract(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/graph-traversal-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+
+    graph = fixture["graph"]
+    engine, _, _ = engine_triplet
+    for node_id in graph["nodes"]:
+        engine.write.add_node(
+            build_entity_node(
+                node_id=node_id,
+                doc_id=graph["edges"][0]["doc_id"],
+                label=graph["node_labels"][node_id],
+            )
+        )
+    for edge_row in graph["edges"]:
+        engine.write.add_edge(
+            build_relationship_edge(
+                edge_id=edge_row["id"],
+                src=edge_row["source_ids"][0],
+                tgt=edge_row["target_ids"][0],
+                doc_id=edge_row["doc_id"],
+                relation=edge_row["relation"],
+            )
+        )
+
+    from kogwistar.server import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    cases = {case["name"]: case for case in fixture["cases"]}
+    with _claims("rw", "knowledge", sub="mcp-traversal-contract"):
+        edge_case = cases["edge_to_nodes"]
+        edge_neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": edge_case["rid"], "doc_id": "D1"}
+            )
+        )
+        assert edge_neighbors == edge_case["expected_neighbors"]
+
+        hop_case = cases["k_hop"]
+        hop_result = _structured(
+            await server.mcp.call_tool(
+                "kg_k_hop",
+                {
+                    "start_ids": hop_case["start_ids"],
+                    "k": hop_case["k"],
+                    "doc_id": "D1",
+                },
+            )
+        )
+        assert hop_result["layers"] == hop_case["expected_layers"]
+
+        path_case = cases["shortest_path"]
+        path_result = _structured(
+            await server.mcp.call_tool(
+                "kg_shortest_path",
+                {
+                    "src_id": path_case["src_id"],
+                    "dst_id": path_case["dst_id"],
+                    "doc_id": "D1",
+                },
+            )
+        )
+        assert path_result["path"] == path_case["expected_path"]
+
+        find_case = cases["find_edges"]
+        find_result = _structured(
+            await server.mcp.call_tool(
+                "kg_find_edges",
+                {
+                    "relation": find_case["relation"],
+                    "src_label_contains": find_case["source_label_contains"],
+                    "tgt_label_contains": find_case["target_label_contains"],
+                    "doc_id": find_case["doc_id"],
+                },
+            )
+        )
+        assert find_result["edges"] == find_case["expected_edge_ids"]
+
+        # The MCP neighbors operation intentionally follows the graph query's
+        # default and includes the opposite endpoint for node IDs.
+        node_neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": "A", "doc_id": "D1"}
+            )
+        )
+        assert node_neighbors == {"nodes": ["B"], "edges": ["E1"]}
+
+
 def _success_runner(req: AnswerRunRequest) -> dict:
     assistant_text = f"Assistant reply: {req.user_text}"
     assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
