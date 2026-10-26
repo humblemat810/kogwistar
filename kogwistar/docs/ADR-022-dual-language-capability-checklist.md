@@ -44,9 +44,9 @@ denominator of either snapshot.
   node-only model classes, including workflow runtime state nodes. This protects
   additive model-contract evolution and catches Python/Rust registry drift; it
   does not claim full graph operation or storage parity.
-- Graph-mutation contract parity: Rust rejects payload/projection ID drift and
-  retry counts outside the PostgreSQL `INTEGER` range, matching the Python DTO
-  validator. The versioned
+- Graph-mutation contract parity: Rust and Python reject payload/projection ID
+  drift, retry counts outside the PostgreSQL `INTEGER` range, and coercive JSON
+  values (booleans or numeric strings in numeric fields). The versioned
   `contracts/golden/graph-mutation-invalid-v1.json` is consumed by both Python
   and Rust, so these malformed cases cannot silently drift apart. Evidence:
   Rust `graph_mutation::tests::graph_mutation_invalid_cases_match_shared_python_fixture`

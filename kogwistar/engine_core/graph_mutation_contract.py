@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, model_validator
 
 _MAX_POSTGRES_INTEGER = 2_147_483_647
 
@@ -32,7 +32,7 @@ class GraphRecordPayload(BaseModel):
     id: str
     document: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
-    embedding: list[float] | None = None
+    embedding: list[StrictFloat] | None = None
 
 
 class IndexJobIntentPayload(BaseModel):
@@ -45,7 +45,7 @@ class IndexJobIntentPayload(BaseModel):
     index_kind: str
     op: Literal["UPSERT", "DELETE"]
     payload_json: str | None = None
-    max_retries: int = 3
+    max_retries: StrictInt = 3
 
     @model_validator(mode="after")
     def validate_fields(self) -> "IndexJobIntentPayload":
@@ -77,7 +77,7 @@ class GraphMutationPayload(BaseModel):
     op: Literal["ADD", "REPLACE", "TOMBSTONE"]
     payload: dict[str, object]
     record: GraphRecordPayload
-    embedding_dim: int
+    embedding_dim: StrictInt
     model_envelope: dict[str, object] | None = None
 
     @model_validator(mode="after")

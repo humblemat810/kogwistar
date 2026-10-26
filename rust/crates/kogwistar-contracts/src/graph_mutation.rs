@@ -297,6 +297,15 @@ mod tests {
                     value["mutations"][0]["record"]["id"] =
                         Value::String("different-node".to_owned());
                 }
+                "embedding_boolean" => {
+                    value["mutations"][0]["record"]["embedding"] = serde_json::json!([true, 0]);
+                }
+                "embedding_numeric_string" => {
+                    value["mutations"][0]["record"]["embedding"] = serde_json::json!(["1", 0]);
+                }
+                "embedding_dim_boolean" => {
+                    value["mutations"][0]["embedding_dim"] = Value::Bool(true);
+                }
                 "index_retries_negative" | "index_retries_above_postgres_integer" => {
                     let max_retries = if case_id == "index_retries_negative" {
                         -1
@@ -313,10 +322,24 @@ mod tests {
                         "max_retries": max_retries
                     }]);
                 }
+                "index_retries_boolean" => {
+                    value["index_jobs"] = serde_json::json!([{
+                        "job_id": "index-node-1",
+                        "namespace": "tenant-a",
+                        "entity_kind": "node",
+                        "entity_id": "node-1",
+                        "index_kind": "node_embedding",
+                        "op": "UPSERT",
+                        "max_retries": true
+                    }]);
+                }
                 _ => panic!("unknown graph mutation invalid case: {case_id}"),
             }
 
-            let batch: GraphMutationBatchV1 = serde_json::from_value(value).unwrap();
+            let batch = match serde_json::from_value::<GraphMutationBatchV1>(value) {
+                Ok(batch) => batch,
+                Err(_) => continue,
+            };
             let error = batch.validate().unwrap_err();
             match case_id {
                 "payload_record_id_mismatch" => {
@@ -324,6 +347,12 @@ mod tests {
                 }
                 "index_retries_negative" | "index_retries_above_postgres_integer" => {
                     assert_eq!(error, GraphMutationValidationError::IndexJobRetries)
+                }
+                "embedding_boolean"
+                | "embedding_numeric_string"
+                | "embedding_dim_boolean"
+                | "index_retries_boolean" => {
+                    panic!("Rust decoder unexpectedly accepted malformed case: {case_id}")
                 }
                 _ => unreachable!(),
             }

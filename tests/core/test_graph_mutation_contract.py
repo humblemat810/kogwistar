@@ -26,9 +26,16 @@ def test_graph_mutation_shared_invalid_cases_are_rejected_by_python() -> None:
         payload = _fixture()
         if case_id == "payload_record_id_mismatch":
             payload["mutations"][0]["record"]["id"] = "different-node"
+        elif case_id == "embedding_boolean":
+            payload["mutations"][0]["record"]["embedding"] = [True, 0]
+        elif case_id == "embedding_numeric_string":
+            payload["mutations"][0]["record"]["embedding"] = ["1", 0]
+        elif case_id == "embedding_dim_boolean":
+            payload["mutations"][0]["embedding_dim"] = True
         elif case_id in {
             "index_retries_negative",
             "index_retries_above_postgres_integer",
+            "index_retries_boolean",
         }:
             payload["index_jobs"] = [
                 {
@@ -42,6 +49,8 @@ def test_graph_mutation_shared_invalid_cases_are_rejected_by_python() -> None:
                         -1
                         if case_id == "index_retries_negative"
                         else 2_147_483_648
+                        if case_id == "index_retries_above_postgres_integer"
+                        else True
                     ),
                 }
             ]
