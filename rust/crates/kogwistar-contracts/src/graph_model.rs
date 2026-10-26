@@ -764,7 +764,6 @@ fn validate_workflow_node_metadata(
 ) -> Result<(), GraphModelError> {
     let value: WorkflowNodeMetadataV1 = validate_metadata(GraphModelClass::WorkflowNode, metadata)?;
     if value.entity_type != "workflow_node"
-        || value.workflow_id.trim().is_empty()
         || (!value.wf_terminal && value.wf_op.trim().is_empty())
         || value.wf_version.trim().is_empty()
         || value.wf_version.trim() != value.wf_version
@@ -772,6 +771,8 @@ fn validate_workflow_node_metadata(
             .wf_environment_id
             .as_deref()
             .is_some_and(|id| id.trim().is_empty() || id.trim() != id)
+        || (value.wf_executor_target == Some(WorkflowExecutorTargetV1::PythonWorker)
+            && value.wf_op.starts_with("rust-native/"))
     {
         return Err(GraphModelError::InvalidEntityFields {
             model_class: GraphModelClass::WorkflowNode,
@@ -944,8 +945,7 @@ fn validate_workflow_edge_metadata(
 ) -> Result<(), GraphModelError> {
     let value: WorkflowEdgeMetadataV1 = validate_metadata(GraphModelClass::WorkflowEdge, metadata)?;
     if value.entity_type != "workflow_edge"
-        || value.workflow_id.trim().is_empty()
-        || value.wf_priority < 0
+        || python_integer_input(&value.wf_priority) != Some(true)
         || !matches!(value.wf_multiplicity.as_str(), "one" | "many")
     {
         return Err(GraphModelError::InvalidEntityFields {
@@ -1722,6 +1722,8 @@ pub struct WorkflowNodeMetadataV1 {
     #[serde(default)]
     pub wf_environment_id: Option<String>,
     #[serde(default)]
+    pub wf_executor_target: Option<WorkflowExecutorTargetV1>,
+    #[serde(default)]
     pub wf_start: bool,
     #[serde(default)]
     pub wf_terminal: bool,
@@ -1729,6 +1731,13 @@ pub struct WorkflowNodeMetadataV1 {
     pub wf_fanout: bool,
     #[serde(default)]
     pub wf_join: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkflowExecutorTargetV1 {
+    PythonWorker,
+    RustNative,
 }
 
 fn workflow_node_entity_type() -> String {
@@ -1755,15 +1764,15 @@ pub struct WorkflowEdgeMetadataV1 {
     #[serde(default)]
     pub wf_predicate: Option<String>,
     #[serde(default = "workflow_default_priority")]
-    pub wf_priority: i64,
+    pub wf_priority: Value,
     #[serde(default)]
     pub wf_is_default: bool,
     #[serde(default = "workflow_one")]
     pub wf_multiplicity: String,
 }
 
-fn workflow_default_priority() -> i64 {
-    100
+fn workflow_default_priority() -> Value {
+    Value::from(100)
 }
 
 fn workflow_one() -> String {
@@ -2754,6 +2763,36 @@ mod tests {
                 result.is_ok(),
                 case["valid"].as_bool().expect("validity flag"),
                 "conversation metadata case {}",
+                case["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_design_metadata_matches_python_model_contract() {
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-metadata-v1.json"
+        )))
+        .expect("valid shared workflow design metadata contract");
+        assert_eq!(contract["schema_version"], 1);
+
+        let graph_fixture = fixture();
+        for case in contract["cases"].as_array().expect("contract cases") {
+            let model_class: GraphModelClass = serde_json::from_value(case["model_class"].clone())
+                .expect("known workflow design model class");
+            let baseline_index = usize::from(model_class == GraphModelClass::WorkflowEdge);
+            let mut payload = graph_fixture["cases"][baseline_index]["payload"].clone();
+            payload["metadata"] = if case["valid"].as_bool() == Some(true) {
+                case["serialized_metadata"].clone()
+            } else {
+                case["input_metadata"].clone()
+            };
+            let result = GraphModelEnvelope::new(model_class, payload).validate_family_v1();
+            assert_eq!(
+                result.is_ok(),
+                case["valid"].as_bool().expect("validity flag"),
+                "workflow design metadata case {}",
                 case["id"]
             );
         }

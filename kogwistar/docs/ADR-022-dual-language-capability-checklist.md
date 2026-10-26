@@ -856,6 +856,20 @@ snapshot's denominator.
   against the rebuilt extension on Windows CPython 3.13. Ruff, rustfmt, and
   `git diff --check` passed. DL-16 remains in progress.
 
+- Workflow design parity audit found missing Rust enforcement for
+  `wf_executor_target` and its Python-worker/rust-native operation rule,
+  plus Rust-only rejection of empty workflow IDs accepted by Python. Workflow
+  edge priority was also narrowed to `i64` despite Python's arbitrary-size
+  integer contract. Rust now validates the executor target, preserves the
+  cross-field restriction and Python-compatible workflow-ID behavior, and
+  validates nonnegative priorities through the shared integer compatibility
+  helper without narrowing to `i64`.
+  Evidence: Python normalization and native Rust validation are driven by
+  `contracts/golden/workflow-design-metadata-v1.json`; the full contracts
+  crate (**74 passed**) and differential module (**99 passed**) passed on
+  Windows CPython 3.13 with the rebuilt extension. Ruff, rustfmt, and
+  `git diff --check` passed. DL-16 remains in progress.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

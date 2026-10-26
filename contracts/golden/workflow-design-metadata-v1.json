@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "workflow_node_defaults",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf"},
+      "serialized_metadata": {"entity_type": "workflow_node", "workflow_id": "wf", "wf_op": "noop", "wf_version": "v1", "wf_start": false, "wf_terminal": false, "wf_fanout": false, "wf_join": false},
+      "valid": true
+    },
+    {
+      "id": "workflow_node_empty_id_legacy_compatibility",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": ""},
+      "serialized_metadata": {"entity_type": "workflow_node", "workflow_id": "", "wf_op": "noop", "wf_version": "v1", "wf_start": false, "wf_terminal": false, "wf_fanout": false, "wf_join": false},
+      "valid": true
+    },
+    {
+      "id": "workflow_node_terminal_blank_operation",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_op": "", "wf_terminal": true},
+      "serialized_metadata": {"entity_type": "workflow_node", "workflow_id": "wf", "wf_op": "", "wf_version": "v1", "wf_start": false, "wf_terminal": true, "wf_fanout": false, "wf_join": false},
+      "valid": true
+    },
+    {
+      "id": "workflow_node_rust_executor_target",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_op": "rust-native/execute", "wf_executor_target": "rust-native"},
+      "serialized_metadata": {"entity_type": "workflow_node", "workflow_id": "wf", "wf_op": "rust-native/execute", "wf_version": "v1", "wf_executor_target": "rust-native", "wf_start": false, "wf_terminal": false, "wf_fanout": false, "wf_join": false},
+      "valid": true
+    },
+    {
+      "id": "workflow_node_python_worker_target",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_op": "parse", "wf_executor_target": "python-worker", "wf_environment_id": "env-1"},
+      "serialized_metadata": {"entity_type": "workflow_node", "workflow_id": "wf", "wf_op": "parse", "wf_version": "v1", "wf_environment_id": "env-1", "wf_executor_target": "python-worker", "wf_start": false, "wf_terminal": false, "wf_fanout": false, "wf_join": false},
+      "valid": true
+    },
+    {
+      "id": "workflow_node_boolean_coercion",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_fanout": "false"},
+      "serialized_metadata": {"entity_type": "workflow_node", "workflow_id": "wf", "wf_op": "noop", "wf_version": "v1", "wf_start": false, "wf_terminal": false, "wf_fanout": false, "wf_join": false},
+      "valid": true
+    },
+    {
+      "id": "workflow_node_missing_workflow_id",
+      "model_class": "workflow_node",
+      "input_metadata": {"wf_op": "parse"},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_node_wrong_entity_type",
+      "model_class": "workflow_node",
+      "input_metadata": {"entity_type": "workflow_edge", "workflow_id": "wf"},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_node_bad_executor_target",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_executor_target": "other"},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_node_python_worker_rust_operation",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_op": "rust-native/execute", "wf_executor_target": "python-worker"},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_node_strict_version",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_version": 1},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_node_noncanonical_environment",
+      "model_class": "workflow_node",
+      "input_metadata": {"workflow_id": "wf", "wf_environment_id": " env"},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_edge_defaults",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": "wf"},
+      "serialized_metadata": {"entity_type": "workflow_edge", "workflow_id": "wf", "wf_predicate": null, "wf_priority": 100, "wf_is_default": false, "wf_multiplicity": "one"},
+      "valid": true
+    },
+    {
+      "id": "workflow_edge_empty_id_legacy_compatibility",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": ""},
+      "serialized_metadata": {"entity_type": "workflow_edge", "workflow_id": "", "wf_predicate": null, "wf_priority": 100, "wf_is_default": false, "wf_multiplicity": "one"},
+      "valid": true
+    },
+    {
+      "id": "workflow_edge_priority_integer_coercion",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": "wf", "wf_priority": "12", "wf_is_default": "true"},
+      "serialized_metadata": {"entity_type": "workflow_edge", "workflow_id": "wf", "wf_predicate": null, "wf_priority": 12, "wf_is_default": true, "wf_multiplicity": "one"},
+      "valid": true
+    },
+    {
+      "id": "workflow_edge_large_priority",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": "wf", "wf_priority": "999999999999999999999999999999999999"},
+      "serialized_metadata": {"entity_type": "workflow_edge", "workflow_id": "wf", "wf_predicate": null, "wf_priority": 999999999999999999999999999999999999, "wf_is_default": false, "wf_multiplicity": "one"},
+      "valid": true
+    },
+    {
+      "id": "workflow_edge_negative_priority",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": "wf", "wf_priority": -1},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_edge_bad_multiplicity",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": "wf", "wf_multiplicity": "many-ish"},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_edge_predicate_must_be_string_or_null",
+      "model_class": "workflow_edge",
+      "input_metadata": {"workflow_id": "wf", "wf_predicate": 4},
+      "serialized_metadata": null,
+      "valid": false
+    },
+    {
+      "id": "workflow_edge_wrong_entity_type",
+      "model_class": "workflow_edge",
+      "input_metadata": {"entity_type": "workflow_node", "workflow_id": "wf"},
+      "serialized_metadata": null,
+      "valid": false
+    }
+  ]
+}
