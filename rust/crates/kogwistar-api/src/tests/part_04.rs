@@ -800,6 +800,11 @@
         let parsed: GraphMutationBatchInput = serde_json::from_value(invalid_dimension).unwrap();
         assert!(graph_mutation_batch_value(parsed).is_err());
 
+        let mut identity_drift = body.clone();
+        identity_drift["mutations"][0]["record"]["id"] = json!("different-node");
+        let parsed: GraphMutationBatchInput = serde_json::from_value(identity_drift).unwrap();
+        assert!(graph_mutation_batch_value(parsed).is_err());
+
         let mut physical_delete = body.clone();
         physical_delete["mutations"][0]["op"] = json!("DELETE");
         let parsed: GraphMutationBatchInput = serde_json::from_value(physical_delete).unwrap();
@@ -849,12 +854,13 @@
             let mut invalid = body.clone();
             invalid["index_jobs"][0][field] = value;
             let input: GraphMutationBatchInput = serde_json::from_value(invalid).unwrap();
-            let mutations = graph_mutation_batch_value(input.clone()).unwrap();
-            assert!(
-                graph_index_jobs_value(&input, &mutations).is_err(),
-                "{field}"
-            );
+            assert!(graph_mutation_batch_value(input).is_err(), "{field}");
         }
+
+        let mut invalid = body.clone();
+        invalid["index_jobs"][0]["max_retries"] = json!(i32::MAX as i64 + 1);
+        let input: GraphMutationBatchInput = serde_json::from_value(invalid).unwrap();
+        assert!(graph_mutation_batch_value(input).is_err());
     }
 
     #[test]

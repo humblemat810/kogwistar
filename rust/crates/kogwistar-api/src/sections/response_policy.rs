@@ -982,6 +982,7 @@ fn graph_mutation_into_store(input: GraphMutationInput) -> GraphMutation {
 fn graph_mutation_batch_value(
     input: GraphMutationBatchInput,
 ) -> Result<Vec<GraphMutation>, String> {
+    input.validate().map_err(|error| error.to_string())?;
     if input.contract_version != 1 {
         return Err(format!(
             "unsupported graph mutation contract version {}",
@@ -1048,6 +1049,7 @@ fn graph_index_jobs_value(
     input: &GraphMutationBatchInput,
     mutations: &[GraphMutation],
 ) -> Result<Vec<NewIndexJob>, String> {
+    input.validate().map_err(|error| error.to_string())?;
     let Some(first) = mutations.first() else {
         return Err("graph mutation batches must not be empty".to_owned());
     };

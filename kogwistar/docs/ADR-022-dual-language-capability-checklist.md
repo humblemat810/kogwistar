@@ -50,9 +50,13 @@ denominator of either snapshot.
   `graph_mutation::tests::graph_mutation_rejects_payload_record_identity_drift`
   and `graph_mutation::tests::graph_mutation_rejects_retries_outside_postgres_integer_range`
   (6 focused Rust graph-mutation tests passed); Python
-  `tests/core/test_graph_mutation_contract.py` (15 passed). This closes these
-  two validator mismatches only; broader graph mutation, storage, transaction,
-  and error-taxonomy parity remain open under DL-05.
+  `tests/core/test_graph_mutation_contract.py` (15 passed); Rust API conversion
+  tests `internal_graph_mutation_contract_requires_atomic_versioned_batches`
+  and `graph_mutation_index_intents_are_explicit_and_scope_checked` (2 passed)
+  confirm conversion helpers invoke the shared validator before producing store
+  effects. This closes these two validator mismatches and protects the API
+  conversion boundary only; broader graph mutation, storage, transaction, and
+  error-taxonomy parity remain open under DL-05.
 - Additive SQL-queue to external graph-projection slice: Rust now has
   `projection_worker::run_graph_projection_jobs_once`, which composes any
   `IndexJobWriteStore` with any `GraphWriteStore`. Its versioned action binds
