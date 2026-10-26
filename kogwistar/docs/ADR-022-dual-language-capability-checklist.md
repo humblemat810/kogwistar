@@ -38,9 +38,12 @@ snapshot's denominator.
   same canonical-property correction, the entire SQLite/PostgreSQL index-job
   differential module passed (**11 passed**, including live queue concurrency,
   lease reclaim, and admitted-result recovery). These checks add bounded local
-  evidence only; Rust formatting and `git diff --check` also pass. They do not
-  close any platform-support or capability gate. No checklist IDs, statuses,
-  or denominators changed.
+  evidence only. The Windows CPython 3.13 implementation-selection and
+  sync/async index-worker suites then passed together (**70 passed**); the
+  selector regression now supplies only canonical `metadata`, proving the
+  subsystem does not depend on the legacy alias. Rust formatting, Ruff, and
+  `git diff --check` pass. These checks do not close any platform-support or
+  capability gate. No checklist IDs, statuses, or denominators changed.
 - 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
   with the repository's `abi3-py312` native extension, six real Python/Rust
   SQLite cases passed in a Linux Docker container: Python-created DB opened and

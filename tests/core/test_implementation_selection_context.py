@@ -552,7 +552,7 @@ def test_indexing_boundary_uses_owning_engine_snapshot(
     engine = SimpleNamespace(
         _implementation_selection_snapshot=snapshot,
         _phase1_enable_index_jobs=True,
-        meta_sqlite=Meta(),
+        metadata=Meta(),
         namespace="default",
     )
     subsystem = IndexingSubsystem(engine=engine)
