@@ -1492,163 +1492,115 @@
             .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
             .await
             .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-vector-query-v1.json"
+        )))
+        .unwrap();
         let scope = GraphScope {
-            namespace: "vector-query-test".to_owned(),
-            workspace_id: Some("workspace-a".to_owned()),
+            namespace: fixture["scope"]["namespace"].as_str().unwrap().to_owned(),
+            workspace_id: fixture["scope"]["workspace_id"]
+                .as_str()
+                .map(str::to_owned),
             graph_space: None,
         };
-        for (entity_id, vector, acl_mode, owner) in [
-            ("near-private", vec![1.0, 0.0], "private", Some("bob")),
-            ("visible-public", vec![0.8, 0.6], "public", None),
+        for (entity_kind, table, entities) in [
+            ("node", "gke_nodes", &fixture["nodes"]),
+            ("edge", "gke_edges", &fixture["edges"]),
         ] {
-            let mut metadata = Map::new();
-            metadata.insert("entity_type".to_owned(), json!("node"));
-            metadata.insert("label".to_owned(), json!(entity_id));
-            service
-                .store
-                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                    scope: scope.clone(),
-                    table: "gke_nodes".to_owned(),
-                    record: GraphRecord {
-                        id: entity_id.to_owned(),
-                        document: Some(entity_id.to_owned()),
-                        metadata,
-                        embedding: Some(vector),
-                    },
-                    embedding_dim: 2,
-                })
-                .await
-                .unwrap();
+            for entity in entities.as_array().unwrap() {
+                let entity_id = entity["id"].as_str().unwrap();
+                let mut metadata = Map::new();
+                metadata.insert("entity_type".to_owned(), json!(entity_kind));
+                if entity_kind == "node" {
+                    metadata.insert("label".to_owned(), json!(entity_id));
+                } else {
+                    metadata.insert("source_ids".to_owned(), entity["source_ids"].clone());
+                    metadata.insert("target_ids".to_owned(), entity["target_ids"].clone());
+                }
+                service
+                    .store
+                    .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                        scope: scope.clone(),
+                        table: table.to_owned(),
+                        record: GraphRecord {
+                            id: entity_id.to_owned(),
+                            document: Some(entity_id.to_owned()),
+                            metadata,
+                            embedding: Some(
+                                serde_json::from_value(entity["embedding"].clone()).unwrap(),
+                            ),
+                        },
+                        embedding_dim: 2,
+                    })
+                    .await
+                    .unwrap();
 
-            let mut acl_metadata = Map::new();
-            for (key, value) in [
-                ("entity_type", json!("acl_record")),
-                ("acl_truth_graph", json!("knowledge")),
-                ("acl_target_entity_id", json!(entity_id)),
-                ("acl_target_grain", json!("node")),
-                ("acl_version", json!(1)),
-                ("acl_mode", json!(acl_mode)),
-            ] {
-                acl_metadata.insert(key.to_owned(), value);
+                let mut acl_metadata = Map::new();
+                for (key, value) in [
+                    ("entity_type", json!("acl_record")),
+                    ("acl_truth_graph", fixture["truth_graph"].clone()),
+                    ("acl_target_entity_id", json!(entity_id)),
+                    ("acl_target_grain", json!(entity_kind)),
+                    ("acl_version", json!(1)),
+                    ("acl_mode", entity["mode"].clone()),
+                ] {
+                    acl_metadata.insert(key.to_owned(), value);
+                }
+                if let Some(owner_id) = entity["owner_id"].as_str() {
+                    acl_metadata.insert("owner_id".to_owned(), json!(owner_id));
+                }
+                service
+                    .store
+                    .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                        scope: scope.clone(),
+                        table: "gke_nodes".to_owned(),
+                        record: GraphRecord {
+                            id: format!("acl-{entity_id}"),
+                            document: None,
+                            metadata: acl_metadata,
+                            embedding: None,
+                        },
+                        embedding_dim: 2,
+                    })
+                    .await
+                    .unwrap();
             }
-            if let Some(owner) = owner {
-                acl_metadata.insert("owner_id".to_owned(), json!(owner));
-            }
-            service
-                .store
-                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                    scope: scope.clone(),
-                    table: "gke_nodes".to_owned(),
-                    record: GraphRecord {
-                        id: format!("acl-{entity_id}"),
-                        document: None,
-                        metadata: acl_metadata,
-                        embedding: None,
-                    },
-                    embedding_dim: 2,
-                })
-                .await
-                .unwrap();
         }
 
-        let response = service
-            .execute_async(ApiEffectRequest {
-                contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/internal/graph/vector-query".to_owned(),
-                body: br#"{"entity_kind":"node","query_embeddings":[[1.0,0.0],[0.0,1.0]],"metric":"cosine","n_results":2}"#.to_vec(),
-                principal: json!({
-                    "sub": "alice",
-                    "ns": "vector-query-test",
-                    "storage_ns": "vector-query-test",
-                    "workspace": "workspace-a",
-                    "capabilities": ["read_graph"]
-                }),
-            })
-            .await;
-        assert_eq!(response.status, StatusCode::OK.as_u16());
-        let result: Value = serde_json::from_slice(&response.body).unwrap();
-        assert_eq!(
-            result["ids"],
-            json!([["visible-public"], ["visible-public"]])
-        );
-        assert_eq!(
-            result["documents"],
-            json!([["visible-public"], ["visible-public"]])
-        );
-
-        for (edge_id, vector, source_id) in [
-            ("edge-private-endpoint", vec![1.0, 0.0], "near-private"),
-            ("edge-public", vec![0.8, 0.6], "visible-public"),
-        ] {
-            let mut edge_metadata = Map::new();
-            edge_metadata.insert("entity_type".to_owned(), json!("edge"));
-            edge_metadata.insert("source_ids".to_owned(), json!([source_id]));
-            edge_metadata.insert("target_ids".to_owned(), json!(["visible-public"]));
-            service
-                .store
-                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                    scope: scope.clone(),
-                    table: "gke_edges".to_owned(),
-                    record: GraphRecord {
-                        id: edge_id.to_owned(),
-                        document: Some(edge_id.to_owned()),
-                        metadata: edge_metadata,
-                        embedding: Some(vector),
-                    },
-                    embedding_dim: 2,
-                })
-                .await
-                .unwrap();
-            let mut acl_metadata = Map::new();
-            for (key, value) in [
-                ("entity_type", json!("acl_record")),
-                ("acl_truth_graph", json!("knowledge")),
-                ("acl_target_entity_id", json!(edge_id)),
-                ("acl_target_grain", json!("edge")),
-                ("acl_version", json!(1)),
-                ("acl_mode", json!("public")),
-            ] {
-                acl_metadata.insert(key.to_owned(), value);
+        for principal in fixture["principals"].as_array().unwrap() {
+            let subject = principal["id"].as_str().unwrap();
+            for (entity_kind, expected_key) in [("node", "nodes"), ("edge", "edges")] {
+                let request_body = json!({
+                    "entity_kind": entity_kind,
+                    "query_embeddings": fixture["query_embeddings"],
+                    "metric": fixture["metric"],
+                    "n_results": fixture["n_results"]
+                });
+                let response = service
+                    .execute_async(ApiEffectRequest {
+                        contract_version: 1,
+                        method: "POST".to_owned(),
+                        path_and_query: "/internal/graph/vector-query".to_owned(),
+                        body: serde_json::to_vec(&request_body).unwrap(),
+                        principal: json!({
+                            "sub": subject,
+                            "ns": scope.namespace,
+                            "storage_ns": scope.namespace,
+                            "workspace": scope.workspace_id,
+                            "capabilities": ["read_graph"]
+                        }),
+                    })
+                    .await;
+                assert_eq!(response.status, StatusCode::OK.as_u16());
+                let result: Value = serde_json::from_slice(&response.body).unwrap();
+                assert_eq!(
+                    result["ids"],
+                    principal["expected"][expected_key],
+                    "unexpected {entity_kind} vector results for {subject}"
+                );
             }
-            service
-                .store
-                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                    scope: scope.clone(),
-                    table: "gke_nodes".to_owned(),
-                    record: GraphRecord {
-                        id: format!("acl-{edge_id}"),
-                        document: None,
-                        metadata: acl_metadata,
-                        embedding: None,
-                    },
-                    embedding_dim: 2,
-                })
-                .await
-                .unwrap();
         }
-        let edge_response = service
-            .execute_async(ApiEffectRequest {
-                contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/internal/graph/vector-query".to_owned(),
-                body: br#"{"entity_kind":"edge","query_embeddings":[[1.0,0.0],[0.0,1.0]],"metric":"cosine","n_results":2}"#.to_vec(),
-                principal: json!({
-                    "sub": "alice",
-                    "ns": "vector-query-test",
-                    "storage_ns": "vector-query-test",
-                    "workspace": "workspace-a",
-                    "capabilities": ["read_graph"]
-                }),
-            })
-            .await;
-        assert_eq!(edge_response.status, StatusCode::OK.as_u16());
-        let edge_result: Value = serde_json::from_slice(&edge_response.body).unwrap();
-        assert_eq!(edge_result["ids"], json!([["edge-public"], ["edge-public"]]));
-        assert_eq!(
-            edge_result["documents"],
-            json!([["edge-public"], ["edge-public"]])
-        );
 
         drop(service);
         let cleanup_dsn = dsn

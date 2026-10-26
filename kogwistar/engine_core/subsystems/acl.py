@@ -1509,6 +1509,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         node_type: type[Node] | None = None,
         **kwargs: object,
     ) -> list[list[Node]]:
+        kwargs = self._exclude_acl_records_from_vector_query(kwargs)
         batches = self._raw.query_nodes(
             *args,
             query=query,
@@ -1528,6 +1529,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         edge_type: type[Edge] | None = None,
         **kwargs: object,
     ) -> list[list[Edge]]:
+        kwargs = self._exclude_acl_records_from_vector_query(kwargs)
         batches = self._raw.query_edges(
             *args,
             query=query,
@@ -1537,6 +1539,22 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             **kwargs,
         )
         return [[edge for edge in batch if self._edge_visible(edge)] for batch in batches]
+
+    @staticmethod
+    def _exclude_acl_records_from_vector_query(
+        kwargs: dict[str, object],
+    ) -> dict[str, object]:
+        """Keep internal ACL graph records out of semantic candidate ranking."""
+        result = dict(kwargs)
+        acl_record_filter: JsonObject = {"entity_type": {"$ne": "acl_record"}}
+        where = result.get("where")
+        if where is None:
+            result["where"] = acl_record_filter
+        elif isinstance(where, dict):
+            result["where"] = {"$and": [where, acl_record_filter]}
+        else:
+            raise TypeError("vector query where filter must be an object")
+        return result
 
     def search_nodes_as_of(
         self,
@@ -1553,13 +1571,16 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         similarity_threshold: float | None = None,
         **kwargs: object,
     ) -> list[Node]:
+        filtered_where = self._exclude_acl_records_from_vector_query(
+            {"where": where}
+        )["where"]
         return [
             node
             for node in self._raw.search_nodes_as_of(
                 query=query,
                 query_embeddings=query_embeddings,
                 as_of_ts=as_of_ts,
-                where=where,
+                where=cast(dict[str, JsonValue], filtered_where),
                 n_results=n_results,
                 follow_redirects=follow_redirects,
                 node_type=node_type,
@@ -1586,13 +1607,16 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         similarity_threshold: float | None = None,
         **kwargs: object,
     ) -> list[VectorSearchHit[Node]]:
+        filtered_where = self._exclude_acl_records_from_vector_query(
+            {"where": where}
+        )["where"]
         return [
             hit
             for hit in self._raw.search_nodes_as_of_scored(
                 query=query,
                 query_embeddings=query_embeddings,
                 as_of_ts=as_of_ts,
-                where=where,
+                where=cast(dict[str, JsonValue], filtered_where),
                 n_results=n_results,
                 follow_redirects=follow_redirects,
                 node_type=node_type,

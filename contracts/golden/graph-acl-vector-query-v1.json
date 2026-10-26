@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "scope": {
+    "namespace": "vector-query-test",
+    "workspace_id": "workspace-a"
+  },
+  "metric": "cosine",
+  "n_results": 2,
+  "query_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+  "nodes": [
+    {
+      "id": "near-private",
+      "embedding": [1.0, 0.0],
+      "mode": "private",
+      "owner_id": "owner-b"
+    },
+    {
+      "id": "visible-public",
+      "embedding": [0.8, 0.6],
+      "mode": "public"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-private-endpoint",
+      "embedding": [1.0, 0.0],
+      "mode": "public",
+      "source_ids": ["near-private"],
+      "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-public",
+      "embedding": [0.8, 0.6],
+      "mode": "public",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"]
+    }
+  ],
+  "principals": [
+    {
+      "id": "reader-a",
+      "expected": {
+        "nodes": [["visible-public"], ["visible-public"]],
+        "edges": [["edge-public"], ["edge-public"]]
+      }
+    },
+    {
+      "id": "owner-b",
+      "expected": {
+        "nodes": [
+          ["near-private", "visible-public"],
+          ["visible-public", "near-private"]
+        ],
+        "edges": [
+          ["edge-private-endpoint", "edge-public"],
+          ["edge-public", "edge-private-endpoint"]
+        ]
+      }
+    }
+  ]
+}

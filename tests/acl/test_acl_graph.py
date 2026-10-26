@@ -2080,6 +2080,15 @@ def test_acl_smoke_across_fake_chroma_and_pg_backends(
     try:
         visible_nodes = kg_engine.read.get_nodes(ids=[node.id])
         assert [row.id for row in visible_nodes] == [node.id]
+        vector_nodes = kg_engine.read.query_nodes(
+            query="ACL smoke retrieval", n_results=20
+        )
+        assert node.id in {row.id for batch in vector_nodes for row in batch}
+        assert all(
+            str((row.metadata or {}).get("entity_type") or "") != "acl_record"
+            for batch in vector_nodes
+            for row in batch
+        )
         assert kg_engine.decide_acl_node_read(
             item_grain="span",
             truth_graph="knowledge",
@@ -2097,6 +2106,9 @@ def test_acl_smoke_across_fake_chroma_and_pg_backends(
     )
     try:
         assert kg_engine.read.get_nodes(ids=[node.id]) == []
+        assert kg_engine.read.query_nodes(
+            query="ACL smoke retrieval", n_results=20
+        ) == [[]]
         assert (
             kg_engine.decide_acl_node_read(
                 item_grain="span",

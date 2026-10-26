@@ -363,6 +363,82 @@ async def test_mcp_neighbors_preserve_acl_visibility_and_hide_topology(
     }
 
 
+def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-acl-vector-query-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "acl_vector_query"),
+        backend_factory=build_fake_backend,
+        kg_graph_type=fixture["truth_graph"],
+        embedding_function=build_test_embedding_function("constant", dim=2),
+        acl_enabled=True,
+    )
+    nodes = {}
+    for spec in fixture["nodes"]:
+        metadata = {"visibility": spec["mode"]}
+        if "owner_id" in spec:
+            metadata["owner_agent_id"] = spec["owner_id"]
+        node = build_entity_node(
+            node_id=spec["id"],
+            doc_id="D-vector-acl",
+            label=spec["id"],
+            metadata=metadata,
+        )
+        node.embedding = spec["embedding"]
+        nodes[node.id] = node
+
+    edges = []
+    for spec in fixture["edges"]:
+        edge = build_relationship_edge(
+            edge_id=spec["id"],
+            src=spec["source_ids"][0],
+            tgt=spec["target_ids"][0],
+            doc_id="D-vector-acl",
+            relation="links",
+            metadata={"visibility": spec["mode"]},
+        )
+        edge.embedding = spec["embedding"]
+        edges.append(edge)
+
+    with _claims("rw", fixture["truth_graph"], sub="owner-b"):
+        for node in nodes.values():
+            engine.write.add_node(node)
+        for edge in edges:
+            engine.write.add_edge(edge)
+
+    for principal in fixture["principals"]:
+        with _claims("ro", fixture["truth_graph"], sub=principal["id"]):
+            node_results = engine.read.query_nodes(
+                query_embeddings=fixture["query_embeddings"],
+                n_results=fixture["n_results"],
+            )
+            edge_results = engine.read.query_edges(
+                query_embeddings=fixture["query_embeddings"],
+                n_results=fixture["n_results"],
+            )
+        assert [[node.id for node in batch] for batch in node_results] == principal[
+            "expected"
+        ]["nodes"]
+        assert [[edge.id for edge in batch] for batch in edge_results] == principal[
+            "expected"
+        ]["edges"]
+
+    with _claims("ro", fixture["truth_graph"], sub="owner-b"):
+        public_nodes = engine.read.query_nodes(
+            query_embeddings=fixture["query_embeddings"],
+            n_results=fixture["n_results"],
+            where={"visibility": "public"},
+        )
+    assert [[node.id for node in batch] for batch in public_nodes] == [
+        ["visible-public"],
+        ["visible-public"],
+    ]
+
+
 def _success_runner(req: AnswerRunRequest) -> dict:
     assistant_text = f"Assistant reply: {req.user_text}"
     assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"

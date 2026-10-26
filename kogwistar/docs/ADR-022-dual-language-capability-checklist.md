@@ -1111,6 +1111,28 @@ as a product failure. This is production-route Rust plus shared-fixture Python
 evidence for one traversal/ACL case, not complete Python/Rust parity;
 `DL-08C` remains IN PROGRESS and no checklist IDs or denominator changed.
 
+### Latest DL-08C ACL vector candidate-ranking evidence
+
+ACL-aware Python vector reads now add an internal `entity_type != acl_record`
+predicate before backend ranking, preserving any caller-supplied metadata
+filter. This keeps authorization helper records from consuming top-N vector
+slots, matching Rust's live PostgreSQL vector path where ACL helper records
+have no vectors. The shared
+`contracts/golden/graph-acl-vector-query-v1.json` drives Python/Rust expected
+ranking assertions for two principals, node and edge queries, two query
+vectors, and both allowed and denied visibility. Evidence:
+`tests/mcp/test_chat_mcp_tools.py::test_acl_vector_query_matches_shared_python_rust_ranking_fixture`
+passed; `tests/acl/test_acl_graph.py::test_acl_smoke_across_fake_chroma_and_pg_backends[fake]`
+and `[pg]` passed, including the ACL-aware vector query through the normal
+read facade; Rust
+`tests::postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available`
+passed against the local PostgreSQL/pgvector container. Ruff passed for the
+changed Python files. The Chroma smoke attempt stalled during startup in this
+Windows environment and was stopped; Chroma execution is therefore not
+verified by this slice. This narrows one ranking discrepancy but does not
+prove full vector authorization or cross-language parity; `DL-08C` remains
+IN PROGRESS and no checklist IDs or denominator changed.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its
