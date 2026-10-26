@@ -106,7 +106,7 @@ class AdjudicateSubsystem(NamespaceProxy["GraphKnowledgeEngine"], AdjudicateLike
                 entity_id=entity_id,
             )
         if candidate is None:
-            meta = getattr(self._e, "meta_sqlite", None)
+            meta = getattr(self._e, "metadata", None)
             meta_getter = getattr(meta, "get_stage1_node_projection", None)
             if callable(meta_getter):
                 candidate = meta_getter(

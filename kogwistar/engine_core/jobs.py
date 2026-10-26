@@ -52,7 +52,7 @@ class JobQueueSubsystem:
         missing = [
             name
             for name in required
-            if getattr(self.engine.meta_sqlite, name, None) is None
+            if getattr(self.engine.metadata, name, None) is None
         ]
         if missing:
             raise DurableQueueUnavailableError(
@@ -72,7 +72,7 @@ class JobQueueSubsystem:
         payload: dict[str, Any] | None = None,
         max_retries: int = 10,
     ) -> str:
-        enqueue = getattr(self.engine.meta_sqlite, "enqueue_index_job", None)
+        enqueue = getattr(self.engine.metadata, "enqueue_index_job", None)
         if enqueue is None:
             return ""
 
@@ -96,7 +96,7 @@ class JobQueueSubsystem:
         limit: int = 50,
         lease_seconds: int = 60,
     ) -> list[JobQueueItem]:
-        claim = getattr(self.engine.meta_sqlite, "claim_index_jobs", None)
+        claim = getattr(self.engine.metadata, "claim_index_jobs", None)
         if claim is None:
             return []
         return [
@@ -105,7 +105,7 @@ class JobQueueSubsystem:
         ]
 
     def mark_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
-        mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
+        mark_done = getattr(self.engine.metadata, "mark_index_job_done", None)
         if mark_done is not None:
             if claim_token is None:
                 return bool(mark_done(str(job_id)))
@@ -113,7 +113,7 @@ class JobQueueSubsystem:
         return False
 
     def renew_lease(self, job: JobQueueItem, *, lease_seconds: int) -> bool:
-        renew = getattr(self.engine.meta_sqlite, "renew_index_job_lease", None)
+        renew = getattr(self.engine.metadata, "renew_index_job_lease", None)
         if renew is None or job.claim_token is None:
             return False
         return bool(renew(job.job_id, claim_token=job.claim_token, lease_seconds=lease_seconds))
@@ -126,7 +126,7 @@ class JobQueueSubsystem:
         """
         if job.claim_token is None:
             return {"status": "rejected", "reason": "claim_token_missing"}
-        accept = getattr(self.engine.meta_sqlite, "accept_index_job_result", None)
+        accept = getattr(self.engine.metadata, "accept_index_job_result", None)
         if accept is None:
             return {"status": "rejected", "reason": "claim_result_not_supported"}
         result_json = json.dumps(candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -140,7 +140,7 @@ class JobQueueSubsystem:
         return result
 
     def accepted_candidate(self, job: JobQueueItem) -> object | None:
-        result = getattr(self.engine.meta_sqlite, "get_index_job_result", lambda _job_id: None)(job.job_id)
+        result = getattr(self.engine.metadata, "get_index_job_result", lambda _job_id: None)(job.job_id)
         if not result or result.get("result_json") is None:
             return None
         try:
@@ -149,7 +149,7 @@ class JobQueueSubsystem:
             return None
 
     def mark_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
-        mark_failed = getattr(self.engine.meta_sqlite, "mark_index_job_failed", None)
+        mark_failed = getattr(self.engine.metadata, "mark_index_job_failed", None)
         if mark_failed is not None:
             if claim_token is None:
                 mark_failed(str(job_id), str(error), final=final)
@@ -166,7 +166,7 @@ class JobQueueSubsystem:
         err = f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error)
         next_retry = int(job.retry_count) + 1
         if next_retry < int(job.max_retries):
-            bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)
+            bump = getattr(self.engine.metadata, "bump_retry_and_requeue", None)
             if bump is not None:
                 delay = min(int(max_delay_seconds), 2 ** max(int(job.retry_count), 0))
                 if job.claim_token is None:
@@ -189,7 +189,7 @@ class JobQueueSubsystem:
         may carry a durable workflow checkpoint so the next claim resumes the
         same job instead of restarting its work.
         """
-        requeue = getattr(self.engine.meta_sqlite, "requeue_index_job_at_tail", None)
+        requeue = getattr(self.engine.metadata, "requeue_index_job_at_tail", None)
         if requeue is None:
             raise RuntimeError("meta store does not support fair job requeue")
         kwargs = {
@@ -207,7 +207,7 @@ class JobQueueSubsystem:
         status: str | None = None,
         limit: int = 1000,
     ) -> list[JobQueueItem]:
-        list_jobs = getattr(self.engine.meta_sqlite, "list_index_jobs", None)
+        list_jobs = getattr(self.engine.metadata, "list_index_jobs", None)
         if list_jobs is None:
             return []
         return [

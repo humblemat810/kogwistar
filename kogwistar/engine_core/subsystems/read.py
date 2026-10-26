@@ -179,7 +179,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
+        meta = getattr(self._e, "metadata", None)
         metadata = self._native_equality_filter(where)
         if (
             not isinstance(meta, RustEnginePostgresMetaStore)
@@ -233,7 +233,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
+        meta = getattr(self._e, "metadata", None)
         metadata = self._native_equality_filter(where)
         if (
             not isinstance(meta, RustEnginePostgresMetaStore)

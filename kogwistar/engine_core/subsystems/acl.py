@@ -342,8 +342,8 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         recent ACL record events, then lets normal ACL lookup see them again.
         """
         graph_name = truth_graph or self._e.kg_graph_type
-        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
-        latest_seq_getter = getattr(self._e.meta_sqlite, "get_latest_entity_event_seq", None)
+        iter_events = getattr(self._e.metadata, "iter_entity_events", None)
+        latest_seq_getter = getattr(self._e.metadata, "get_latest_entity_event_seq", None)
         if iter_events is None or latest_seq_getter is None:
             return {
                 "truth_graph": graph_name,
@@ -697,7 +697,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         tombstoned: bool = False,
     ) -> ACLRecord:
         with self._e.uow():
-            metadata_store = getattr(self._e, "meta_sqlite", None)
+            metadata_store = getattr(self._e, "metadata", None)
             lock_identity = getattr(metadata_store, "lock_entity_identity", None)
             if callable(lock_identity):
                 lock_identity(
@@ -794,7 +794,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         graph_name = truth_graph or self._e.kg_graph_type
         repaired = 0
         scanned = 0
-        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
+        iter_events = getattr(self._e.metadata, "iter_entity_events", None)
         if iter_events is not None:
             prev_log = getattr(self._e, "_disable_event_log", False)
             self._e._disable_event_log = True

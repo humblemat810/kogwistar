@@ -430,7 +430,7 @@ class LifecycleSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> RustEnginePostgresMetaStore | None:
         from .rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
+        meta = getattr(self._e, "metadata", None)
         if isinstance(meta, RustEnginePostgresMetaStore):
             return cast(RustEnginePostgresMetaStore, meta)
         from .._rust_bridge import postgres_authority_implementation_mode

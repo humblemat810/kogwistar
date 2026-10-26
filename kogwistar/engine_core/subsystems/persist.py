@@ -363,7 +363,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 entity_id=entity_id,
             )
         if row is None:
-            meta = getattr(self._e, "meta_sqlite", None)
+            meta = getattr(self._e, "metadata", None)
             getter = getattr(meta, "get_stage1_node_projection", None)
             if callable(getter):
                 row = getter(
@@ -975,7 +975,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         enabled, a reconcile pass runs after replay; repair_backend additionally
         deletes current backend rows before reapplying ADD/REPLACE events.
         """
-        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
+        iter_events = getattr(self._e.metadata, "iter_entity_events", None)
         if iter_events is None:
             return 0
 

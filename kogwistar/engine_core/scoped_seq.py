@@ -37,13 +37,13 @@ class ScopedSeqHookConfig:
 
 
 def _next_scoped_seq(engine: GraphKnowledgeEngine, scope_id: str) -> int:
-    meta = getattr(engine, "meta_sqlite", None)
+    meta = getattr(engine, "metadata", None)
     alloc = getattr(meta, "next_scoped_seq", None)
     if not callable(alloc):
         alloc = getattr(meta, "next_user_seq", None)
     if not callable(alloc):
         raise AttributeError(
-            "engine.meta_sqlite must provide next_scoped_seq(scope_id) or next_user_seq(user_id)"
+            "engine.metadata must provide next_scoped_seq(scope_id) or next_user_seq(user_id)"
         )
     allocator = cast(ScopedSeqAllocator, alloc)
     return allocator(str(scope_id))

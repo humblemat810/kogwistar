@@ -1149,7 +1149,7 @@ def build_in_memory_backend(engine: GraphKnowledgeEngine) -> InMemoryBackend:
     backend.backend_kind = "memory"
     meta_store = InMemoryMetaStore()
     meta_store.ensure_initialized()
-    setattr(engine, "meta_sqlite", meta_store)
+    setattr(engine, "metadata", meta_store)
     setattr(engine, "collection_lock", {
         "node": _DummyLock(),
         "edge": _DummyLock(),

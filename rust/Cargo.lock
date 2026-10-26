@@ -880,6 +880,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kogwistar-store-chroma"
+version = "0.2.0"
+dependencies = [
+ "kogwistar-store",
+ "reqwest",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "kogwistar-store-memory"
 version = "0.2.0"
 dependencies = [

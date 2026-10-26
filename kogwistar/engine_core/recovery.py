@@ -243,7 +243,7 @@ class RecoverySubsystem:
         return results
 
     def inspect_queues(self, namespaces: list[str]) -> list[QueueRecoveryState]:
-        list_jobs = self.engine.meta_sqlite.list_index_jobs
+        list_jobs = self.engine.metadata.list_index_jobs
         if not callable(list_jobs):
             return []
         now = int(time.time())
@@ -273,7 +273,7 @@ class RecoverySubsystem:
         return states
 
     def inspect_lane_rows(self, namespaces: list[str]) -> list[LaneRecoveryState]:
-        list_rows = self.engine.meta_sqlite.list_projected_lane_messages
+        list_rows = self.engine.metadata.list_projected_lane_messages
 
         if not callable(list_rows):
             return []
@@ -353,7 +353,7 @@ class RecoverySubsystem:
     def inspect_run_history(
         self, *, namespace: str, workspace_id: str
     ) -> list[RunRecoveryState]:
-        meta = self.engine.meta_sqlite
+        meta = self.engine.metadata
         list_runs = meta.list_server_runs
         list_events = meta.list_server_run_events
         if not callable(list_runs):
@@ -565,7 +565,7 @@ class RecoverySubsystem:
         terminal_run_ids: set[str],
     ) -> list[CheckpointRecoveryState]:
 
-        list_projection = self.engine.meta_sqlite.list_named_projections
+        list_projection = self.engine.metadata.list_named_projections
         if not callable(list_projection):
             return []
         out: list[CheckpointRecoveryState] = []
@@ -919,7 +919,7 @@ class RecoverySubsystem:
         return tuple(repaired), tuple(findings)
 
     def _terminal_run_ids(self, namespace: str) -> set[str]:
-        meta = self.engine.meta_sqlite
+        meta = self.engine.metadata
         list_projection = meta.list_named_projections
         if callable(list_projection):
             terminal_run_ids: set[str] = set()

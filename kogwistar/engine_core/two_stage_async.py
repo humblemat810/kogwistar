@@ -94,7 +94,7 @@ class _TwoStageEngineLike(Protocol):
     backend: _AsyncBackendLike
     indexing: _IndexingLike
     write: "WriteLike"
-    meta_sqlite: _MetaStoreLike
+    metadata: _MetaStoreLike
     namespace: str
     _ef: EmbeddingProvider
 
@@ -482,7 +482,7 @@ class AsyncChromaTwoStageProjectionAdapter:
 
     async def _meta(self, method: str, *args: object, **kwargs: object) -> object:
         import asyncio
-        return await asyncio.to_thread(getattr(self.engine.meta_sqlite, method), *args, **kwargs)
+        return await asyncio.to_thread(getattr(self.engine.metadata, method), *args, **kwargs)
 
     async def _current(self, entity_kind: str, entity_id: str) -> _RevisionLike | None:
         import asyncio

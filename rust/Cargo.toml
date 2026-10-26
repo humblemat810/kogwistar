@@ -9,6 +9,7 @@ members = [
     "crates/kogwistar-store-memory",
     "crates/kogwistar-store-sqlite",
     "crates/kogwistar-store-postgres",
+    "crates/kogwistar-store-chroma",
 ]
 resolver = "2"
 

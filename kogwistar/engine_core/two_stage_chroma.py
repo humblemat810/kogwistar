@@ -81,7 +81,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         self.engine = engine
 
     def _meta(self) -> _Stage1MetaStore:
-        return cast(_Stage1MetaStore, self.engine.meta_sqlite)
+        return cast(_Stage1MetaStore, self.engine.metadata)
 
     def _namespace(self) -> str:
         return active_graph_namespace(self.engine)

@@ -99,11 +99,11 @@ class IndexingSubsystem:
             return ""
         job_id = str(uuid.uuid4())
 
-        enqueue = getattr(self.engine.meta_sqlite, "enqueue_index_job", None)
+        enqueue = getattr(self.engine.metadata, "enqueue_index_job", None)
         if enqueue is None:
             return ""
 
-        job_id2 = self.engine.meta_sqlite.enqueue_index_job(
+        job_id2 = self.engine.metadata.enqueue_index_job(
             job_id=job_id,
             namespace=(self.engine.namespace if namespace is None else namespace),
             entity_kind=entity_kind,
@@ -179,7 +179,7 @@ class IndexingSubsystem:
         selected_namespace = str(
             namespace or getattr(self.engine, "namespace", "default")
         )
-        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
+        iter_events = getattr(self.engine.metadata, "iter_entity_events", None)
         if not callable(iter_events):
             raise RuntimeError("canonical event store does not support iter_entity_events")
         events = cast(
@@ -283,8 +283,8 @@ class IndexingSubsystem:
         """
         if getattr(self.engine, "persistence_mode", "single_stage") != "two_stage":
             return 0
-        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
-        list_jobs = getattr(self.engine.meta_sqlite, "list_index_jobs", None)
+        iter_events = getattr(self.engine.metadata, "iter_entity_events", None)
+        list_jobs = getattr(self.engine.metadata, "list_index_jobs", None)
         if not callable(iter_events) or not callable(list_jobs):
             return 0
         ns = self.engine.namespace if namespace is None else str(namespace)
@@ -400,7 +400,7 @@ class IndexingSubsystem:
         """
         if not getattr(self.engine, "_phase1_enable_index_jobs", False):
             return 0
-        claim = getattr(self.engine.meta_sqlite, "claim_index_jobs", None)
+        claim = getattr(self.engine.metadata, "claim_index_jobs", None)
         if claim is None:
             return 0
 
@@ -480,9 +480,9 @@ class IndexingSubsystem:
                     )
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
-                bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)
+                bump = getattr(self.engine.metadata, "bump_retry_and_requeue", None)
                 mark_failed = getattr(
-                    self.engine.meta_sqlite, "mark_index_job_failed", None
+                    self.engine.metadata, "mark_index_job_failed", None
                 )
 
                 if job_id:
@@ -515,7 +515,7 @@ class IndexingSubsystem:
                 self._profile_step("reconcile.job_total", job_started)
                 continue
 
-            mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
+            mark_done = getattr(self.engine.metadata, "mark_index_job_done", None)
             if mark_done is not None and job_id:
                 done_started = time.perf_counter()
                 if claim_token is None:
@@ -613,10 +613,10 @@ class IndexingSubsystem:
         # Phase 2: fingerprints + drift detection
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
         get_applied = getattr(
-            self.engine.meta_sqlite, "get_index_applied_fingerprint", None
+            self.engine.metadata, "get_index_applied_fingerprint", None
         )
         set_applied = getattr(
-            self.engine.meta_sqlite, "set_index_applied_fingerprint", None
+            self.engine.metadata, "set_index_applied_fingerprint", None
         )
 
         def _fp(obj: object) -> str:
@@ -802,7 +802,7 @@ class IndexingSubsystem:
 
         started = time.perf_counter()
         applied_fp = (
-            self.engine.meta_sqlite.get_index_applied_fingerprint(
+            self.engine.metadata.get_index_applied_fingerprint(
                 namespace=namespace, coalesce_key=coalesce_key
             )
             if callable(get_applied)

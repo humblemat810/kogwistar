@@ -1088,7 +1088,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_meta(self) -> RustEnginePostgresMetaStore | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = self._e.meta_sqlite
+        meta = self._e.metadata
         return (
             cast(RustEnginePostgresMetaStore, meta)
             if isinstance(meta, RustEnginePostgresMetaStore)
