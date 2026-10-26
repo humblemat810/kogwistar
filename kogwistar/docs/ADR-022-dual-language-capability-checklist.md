@@ -1088,6 +1088,22 @@ explicit top-level null precedence. Evidence: the complete
 Ruff, and `git diff --check`. This remains a focused graph-model seam, not
 whole-stack interchangeability evidence; DL-16A remains partial.
 
+### Latest DL-08C live PostgreSQL MCP traversal evidence
+
+The shared `contracts/golden/graph-acl-traversal-v1.json` now drives an
+additional assertion inside the live PostgreSQL Rust API integration test.
+The test writes its public source, private target, private edge, and ACL
+records through `/internal/graph/mutations`, then calls the production `/mcp`
+`kg_neighbors` endpoint as both `owner-a` and `reader-b`. Each result is
+compared to the fixture's expected nodes and edges; the reader must not learn
+the private edge or endpoint through the public source's topology. Evidence:
+`tests::postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available`
+passed against the local disposable pgvector service (**1 passed, 0 failed,
+0 skipped**); Rust API test targets compiled, `cargo fmt --check` and
+`git diff --check` passed. This is production-route Rust evidence for one
+traversal/ACL fixture, not complete Python/Rust parity; `DL-08C` remains
+IN PROGRESS and no checklist IDs or denominator changed.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

@@ -688,11 +688,11 @@
             "max_retries": 3
         }]);
         let key = "graph-route-test-secret";
-        let make_token = |capabilities: &[&str], storage_ns: &str| {
+        let make_token_for = |subject: &str, capabilities: &[&str], storage_ns: &str| {
             encode(
                 &Header::new(Algorithm::HS256),
                 &json!({
-                    "sub": "alice",
+                    "sub": subject,
                     "role": "rw",
                     "roles": ["reader", "rw"],
                     "ns": "workflow",
@@ -703,6 +703,9 @@
                 &EncodingKey::from_secret(key.as_bytes()),
             )
             .unwrap()
+        };
+        let make_token = |capabilities: &[&str], storage_ns: &str| {
+            make_token_for("alice", capabilities, storage_ns)
         };
         let make_app = || {
             router_with_application(
@@ -1241,6 +1244,144 @@
             k_hop_value["result"]["layers"][0]["edges"],
             json!(["edge-1"])
         );
+
+        let acl_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-acl-traversal-v1.json"
+        )))
+        .unwrap();
+        let mut acl_fixture_batch = json!({
+            "contract_version": 1,
+            "atomic": true,
+            "mutations": [],
+            "index_jobs": []
+        });
+        let template = &body["mutations"][0];
+        for node in acl_fixture["nodes"].as_array().unwrap() {
+            let id = node["id"].as_str().unwrap();
+            let mut mutation = template.clone();
+            mutation["event_id"] = json!(format!("acl-fixture-node-{id}"));
+            mutation["scope"]["namespace"] = json!("alpha");
+            mutation["payload"] = json!({"id": id});
+            mutation["record"]["id"] = json!(id);
+            mutation["record"]["document"] = json!(
+                serde_json::to_string(&json!({"label": id})).unwrap()
+            );
+            mutation["record"]["metadata"] = json!({});
+            mutation["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
+            acl_fixture_batch["mutations"]
+                .as_array_mut()
+                .unwrap()
+                .push(mutation);
+        }
+        let edge_fixture = &acl_fixture["edge"];
+        let edge_id = edge_fixture["id"].as_str().unwrap();
+        let mut edge_mutation = template.clone();
+        edge_mutation["table"] = json!("gke_edges");
+        edge_mutation["entity_kind"] = json!("edge");
+        edge_mutation["event_id"] = json!(format!("acl-fixture-edge-{edge_id}"));
+        edge_mutation["scope"]["namespace"] = json!("alpha");
+        edge_mutation["payload"] = json!({
+            "id": edge_id,
+            "source_ids": edge_fixture["source_ids"],
+            "target_ids": edge_fixture["target_ids"],
+            "source_edge_ids": [],
+            "target_edge_ids": []
+        });
+        edge_mutation["record"]["id"] = json!(edge_id);
+        edge_mutation["record"]["document"] = json!(serde_json::to_string(&json!({
+            "relation": edge_fixture["relation"],
+            "source_ids": edge_fixture["source_ids"],
+            "target_ids": edge_fixture["target_ids"],
+            "source_edge_ids": [],
+            "target_edge_ids": []
+        })).unwrap());
+        edge_mutation["record"]["metadata"] = json!({});
+        edge_mutation["record"]["embedding"] = json!([0.0, 1.0, 0.0]);
+        acl_fixture_batch["mutations"]
+            .as_array_mut()
+            .unwrap()
+            .push(edge_mutation);
+
+        for (grain, entity) in acl_fixture["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| ("node", node))
+            .chain(std::iter::once(("edge", edge_fixture)))
+        {
+            let target_id = entity["id"].as_str().unwrap();
+            let mut acl_record = template.clone();
+            let acl_id = format!("acl-fixture-{grain}-{target_id}");
+            let mut metadata = json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": acl_fixture["truth_graph"],
+                "acl_target_grain": grain,
+                "acl_target_item_id": "",
+                "acl_target_entity_id": target_id,
+                "acl_version": 1,
+                "acl_mode": entity["mode"],
+                "tombstoned": false
+            });
+            if let Some(owner_id) = entity["owner_id"].as_str() {
+                metadata["owner_id"] = json!(owner_id);
+            }
+            acl_record["event_id"] = json!(format!("acl-fixture-event-{acl_id}"));
+            acl_record["scope"]["namespace"] = json!("alpha");
+            acl_record["payload"] = json!({"id": acl_id});
+            acl_record["record"]["id"] = json!(acl_id);
+            acl_record["record"]["metadata"] = metadata;
+            acl_record["record"]["document"] = Value::Null;
+            acl_record["record"]["embedding"] = Value::Null;
+            acl_fixture_batch["mutations"]
+                .as_array_mut()
+                .unwrap()
+                .push(acl_record);
+        }
+        let acl_write = send_mutation(
+            make_app(),
+            make_token(&["write_graph"], "alpha"),
+            acl_fixture_batch,
+        )
+        .await;
+        assert_eq!(acl_write.status(), StatusCode::OK);
+
+        for principal in acl_fixture["principals"].as_array().unwrap() {
+            let subject = principal["id"].as_str().unwrap();
+            let response = make_app()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("content-type", "application/json")
+                        .header(
+                            "authorization",
+                            format!(
+                                "Bearer {}",
+                                make_token_for(subject, &["read_graph"], "alpha")
+                            ),
+                        )
+                        .body(Body::from(format!(
+                            r#"{{"jsonrpc":"2.0","id":"acl-{subject}","method":"tools/call","params":{{"name":"kg_neighbors","arguments":{{"rid":"source-public"}}}}}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let response_body = to_bytes(response.into_body(), 65_536).await.unwrap();
+            let response_value: Value = serde_json::from_slice(&response_body).unwrap();
+            assert_eq!(
+                response_value["result"]["nodes"],
+                principal["expected_neighbors"]["nodes"],
+                "unexpected visible nodes for {subject}"
+            );
+            assert_eq!(
+                response_value["result"]["edges"],
+                principal["expected_neighbors"]["edges"],
+                "unexpected visible edges for {subject}"
+            );
+        }
     }
 
     #[tokio::test]
