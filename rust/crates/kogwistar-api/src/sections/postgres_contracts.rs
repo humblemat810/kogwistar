@@ -155,6 +155,10 @@ struct InternalContextSnapshotRequest {
     stage: Option<String>,
 }
 
+struct ContextSnapshotAuthorization {
+    principal: Value,
+}
+
 fn default_conversation_limit() -> usize {
     10_000
 }
@@ -194,11 +198,29 @@ fn parse_internal_context_snapshot_request(
 ) -> Result<InternalContextSnapshotRequest, String> {
     let input: InternalContextSnapshotRequest =
         serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    validate_internal_context_snapshot_request(&input)?;
+    Ok(input)
+}
+
+fn validate_internal_context_snapshot_request(
+    input: &InternalContextSnapshotRequest,
+) -> Result<(), String> {
     if input.conversation_id.trim().is_empty()
         || input.run_id.as_deref().is_some_and(str::is_empty)
         || input.stage.as_deref().is_some_and(str::is_empty)
     {
         return Err("conversation_id is required and run_id/stage must not be empty".to_owned());
     }
-    Ok(input)
+    Ok(())
+}
+
+fn context_snapshot_syscall_field(
+    args: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("{field} must be a string or null")),
+    }
 }

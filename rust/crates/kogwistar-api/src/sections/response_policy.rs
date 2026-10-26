@@ -6,6 +6,16 @@ fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
     }
 }
 
+fn public_context_snapshot_value(snapshot: ContextSnapshotV1) -> Value {
+    let mut payload = serde_json::to_value(snapshot).expect("snapshot serializes");
+    payload
+        .as_object_mut()
+        .expect("typed snapshot serializes as an object")
+        .remove("schema_version");
+    payload
+}
+
+#[cfg(test)]
 fn strip_snapshot_implementation_fields(response: &mut ApiEffectResponse) {
     if !(200..300).contains(&response.status) {
         return;

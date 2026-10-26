@@ -108,6 +108,29 @@
         let actual = serde_json::from_slice::<Value>(&response.body).unwrap();
         assert_eq!(actual, expected);
 
+        let typed: ContextSnapshotV1 = serde_json::from_value({
+            let mut value = expected.clone();
+            value
+                .as_object_mut()
+                .unwrap()
+                .insert("schema_version".to_owned(), json!(1));
+            value
+        })
+        .unwrap();
+        assert_eq!(public_context_snapshot_value(typed), expected);
+        assert_eq!(
+            context_snapshot_syscall_field(json!({}).as_object().unwrap(), "stage"),
+            Ok(None)
+        );
+        assert_eq!(
+            context_snapshot_syscall_field(json!({"stage": null}).as_object().unwrap(), "stage"),
+            Ok(None)
+        );
+        assert!(
+            context_snapshot_syscall_field(json!({"stage": 1}).as_object().unwrap(), "stage")
+                .is_err()
+        );
+
         let mut failure = json_effect(
             StatusCode::NOT_FOUND,
             json!({"error": {"code": "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND"}}),

@@ -16,7 +16,7 @@ use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
 };
 use kogwistar_contracts::{
-    ConversationTranscriptV1, DelegationAuthorityV1, DocumentUpsertV1,
+    ContextSnapshotV1, ConversationTranscriptV1, DelegationAuthorityV1, DocumentUpsertV1,
     GraphMutationBatchV1 as GraphMutationBatchInput, GraphMutationV1 as GraphMutationInput,
     GraphNeighborsRequestV1, ToolAuditResponseV1, attach_rust_native_seam_attestation,
     attenuate_capabilities, graph_neighbors_request_from_str,

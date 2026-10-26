@@ -11,9 +11,10 @@ and CI evidence rather than assigning one percentage to the whole port.
 
 Use commit `6130d04` as the fixed comparison baseline for the checklist snapshot
 from approximately 18 hours earlier: **130 items** (96 PASS, 32 IN PROGRESS,
-2 NOT STARTED). Against that fixed baseline, **99/130 are now PASS**: `DL-04`,
-`DL-05B`, and `DL-16G` moved to PASS; `DL-06` and `DL-17` moved from NOT STARTED
-to IN PROGRESS. The current inventory has **177 items** (137 PASS, 40 IN PROGRESS).
+2 NOT STARTED). Against that fixed baseline, **98/130 are now PASS**: `DL-04`,
+`DL-05B`, and `DL-16G` moved to PASS; `DL-16A` was reopened for typed integer
+parity; `DL-06` and `DL-17` moved from NOT STARTED to IN PROGRESS. The current
+inventory has **177 items** (136 PASS, 41 IN PROGRESS).
 The 47 IDs added since the baseline contain **38 PASS and 9 IN PROGRESS**.
 Report baseline completion and later-added scope separately; the combined
 177-item ratio is not a progress measure against the original scope. Keep the
@@ -23,6 +24,15 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 typed context-snapshot handoff: the PostgreSQL REST snapshot route
+  and `mount_memory` syscall now project a typed `ContextSnapshotV1` rather than
+  serializing an internal request and reparsing its response. The internal JSON
+  route remains compatible. Authorization is bound to the request principal;
+  optional syscall fields reject invalid types before storage access. The
+  focused Rust snapshot suite passed **8 tests**. The elevated Windows Rust
+  workspace library run passed **326 tests with 2 intentionally ignored**;
+  PostgreSQL integration cases return early without `KOGWISTAR_TEST_PG_DSN`,
+  so this is not a live-database parity claim. No checklist item changed status.
 - 2026-10-27 public-route cutover audit: `POST /api/conversations` must remain
   deferred for now. Python creation constructs the conversation-start
   `ConversationNode` and calls `conversation_engine.write.add_node`; the normal
@@ -764,7 +774,7 @@ snapshot's denominator.
 | DL-17A | IN PROGRESS (Windows CPython workspace evidence) | The complete Rust workspace library target passes on the supported Windows CPython development environment: `cargo test --manifest-path rust/Cargo.toml --workspace --lib -j 1` produced 185 passed and 1 intentionally ignored test across API, contracts, engine, PyO3, runtime, memory, SQLite, and PostgreSQL crates. The first attempt was blocked by a stale generated `kogwistar_api` test process holding the linker output; after that identified test process was terminated, the same command completed. This is workspace evidence only; the PyPy 3.11 and CPython 3.12-3.14 matrix and CI-run evidence remain open under DL-17. |
 | DL-17B | PASS (CI matrix drift guard) | `tests/core/test_ci_failure_guardrails.py::test_ci_declares_the_supported_interpreter_matrix` requires the release CI workflow to retain CPython 3.12, 3.13, 3.14, and PyPy 3.11 cells. The focused guardrail file passed 5 tests on Windows CPython 3.13 with `-p no:cacheprovider`, and Ruff passed. The combined guardrail, graph-model adapter, and Rust contract differential suite subsequently passed 106 tests. This protects the declared matrix from configuration drift; it is not evidence that every interpreter cell has passed. |
 | DL-17C | IN PROGRESS (Windows loopback integration-test boundedness) | The Rust OIDC callback test now bounds both the callback and local issuer awaits and reports the response body before waiting on the mock task, preventing a restricted-loopback failure from becoming an indefinite test hang. The aggregate workspace attempt exposed two environment-sensitive tests because the restricted run could not use loopback and the shared Windows target had a locked API test executable; it was not treated as green. Fresh isolated-target elevated verification passed both `oidc_callback_validates_rs256_and_persists_identity_before_minting` and `tcp_transport_serves_health_over_real_socket`. The supported-platform and CI matrix remains open. |
-| DL-17D | PASS (fresh Windows workspace Rust verification) | The current elevated Windows CPython 3.13 run of `cargo test --manifest-path rust/Cargo.toml --workspace --lib -j 1` passed **236 tests with 1 intentionally ignored**: API (60), contracts (64), engine (6), PyO3 bridge (8), runtime (24), store (24), memory (17), PostgreSQL (10), and SQLite (23 passed plus the ignored manual serving-path probe). A fresh 2026-10-27 elevated rerun after the typed native-runtime result handoff passed **324 tests with 2 intentionally ignored** across API (83), contracts (82), engine (15), PyO3 bridge (13), runtime (31), store (36), Chroma (5), memory (18), PostgreSQL (13), and SQLite (28 passed plus the ignored manual serving-path probe); the optional live PostgreSQL vector-query test was also ignored because it requires `KOGWISTAR_TEST_PG_DSN`. This verifies the current Rust workspace together on Windows CPython 3.13; PyPy 3.11, CPython 3.12-3.14, hosted CI, and every live PostgreSQL DSN cell remain separate evidence requirements. |
+| DL-17D | PASS (fresh Windows workspace Rust verification) | The current elevated Windows CPython 3.13 run of `cargo test --manifest-path rust/Cargo.toml --workspace --lib -j 1` passed **236 tests with 1 intentionally ignored**: API (60), contracts (64), engine (6), PyO3 bridge (8), runtime (24), store (24), memory (17), PostgreSQL (10), and SQLite (23 passed plus the ignored manual serving-path probe). A fresh 2026-10-27 elevated rerun after typed transcript and context-snapshot handoffs passed **326 tests with 2 intentionally ignored** across API (85), contracts (82), engine (15), PyO3 bridge (13), runtime (31), store (36), Chroma (5), memory (18), PostgreSQL (13), and SQLite (28 passed plus the ignored manual serving-path probe); the optional live PostgreSQL vector-query test was also ignored because it requires `KOGWISTAR_TEST_PG_DSN`. This verifies the current Rust workspace together on Windows CPython 3.13; PyPy 3.11, CPython 3.12-3.14, hosted CI, and every live PostgreSQL DSN cell remain separate evidence requirements. |
 | DL-17E | PASS (published Python metadata matches the supported matrix) | `pyproject.toml` now advertises `requires-python = ">=3.11"` and classifiers for CPython/PyPy-compatible Python 3.11 through 3.14. `tests/core/test_python_support_metadata.py::test_package_metadata_matches_the_supported_interpreter_matrix` prevents the package contract from rejecting the PyPy 3.11 cell that CI exercises. This corrects packaging metadata only; it does not claim that every interpreter/backend cell has passed. |
 
 ## Performance and release

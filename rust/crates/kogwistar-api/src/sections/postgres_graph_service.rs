@@ -23,6 +23,22 @@ fn graph_record_string_ids(record: &GraphRecord, field: &str) -> Vec<String> {
 }
 
 impl PostgresRunApplicationService {
+    fn authorize_context_snapshot(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> Result<ContextSnapshotAuthorization, ApiEffectResponse> {
+        if !capability_allowed(request, &self.capabilities, "project_view", &["project_view"]) {
+            return Err(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Context snapshot reads require project_view capability",
+            ));
+        }
+        Ok(ContextSnapshotAuthorization {
+            principal: request.principal.clone(),
+        })
+    }
+
     fn authorize_conversation_transcript(
         &self,
         request: &ApiEffectRequest,
@@ -283,22 +299,59 @@ impl PostgresRunApplicationService {
         }
     }
 
+    async fn context_snapshot_projection(
+        &self,
+        request: &ApiEffectRequest,
+        input: InternalContextSnapshotRequest,
+        authorization: ContextSnapshotAuthorization,
+    ) -> Result<ContextSnapshotV1, ApiEffectResponse> {
+        if authorization.principal != request.principal {
+            return Err(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Context snapshot authorization does not match the request principal",
+            ));
+        }
+        if let Err(error) = validate_internal_context_snapshot_request(&input) {
+            return Err(effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            ));
+        }
+        let visible_nodes = self
+            .authorized_conversation_nodes(&request.principal)
+            .await
+            .map_err(|error| {
+                effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                )
+            })?;
+        kogwistar_store::context_snapshot_from_visible_records(
+            &visible_nodes,
+            &input.conversation_id,
+            input.run_id.as_deref(),
+            input.stage.as_deref(),
+        )
+        .map_err(|error| {
+            effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    error.to_string(),
+                )
+        })
+    }
+
     async fn internal_context_snapshot_effect(
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !capability_allowed(
-            request,
-            &self.capabilities,
-            "project_view",
-            &["project_view"],
-        ) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Context snapshot reads require project_view capability",
-            );
-        }
+        let authorization = match self.authorize_context_snapshot(request) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
         let input = match parse_internal_context_snapshot_request(&request.body) {
             Ok(value) => value,
             Err(error) => {
@@ -309,35 +362,18 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let visible_nodes = match self.authorized_conversation_nodes(&request.principal).await {
-            Ok(nodes) => nodes,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error,
-                );
-            }
-        };
-        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
-            &visible_nodes,
-            &input.conversation_id,
-            input.run_id.as_deref(),
-            input.stage.as_deref(),
-        ) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
-                    error.to_string(),
-                );
-            }
-        };
-        json_effect(
-            StatusCode::OK,
-            rust_native_attested(serde_json::to_value(snapshot).expect("snapshot serializes")),
-        )
+        match self
+            .context_snapshot_projection(request, input, authorization)
+            .await
+        {
+            Ok(snapshot) => json_effect(
+                StatusCode::OK,
+                rust_native_attested(
+                    serde_json::to_value(snapshot).expect("snapshot serializes"),
+                ),
+            ),
+            Err(response) => response,
+        }
     }
 
     async fn latest_snapshot_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
@@ -365,24 +401,25 @@ impl PostgresRunApplicationService {
             );
         };
         let (run_id, stage) = context_snapshot_query(&request.path_and_query);
-        let body = serde_json::to_vec(&json!({
-            "conversation_id": conversation_id,
-            "run_id": run_id,
-            "stage": stage,
-        }))
-        .expect("context snapshot request serializes");
-        let internal = ApiEffectRequest {
-            contract_version: request.contract_version,
-            method: "POST".to_owned(),
-            path_and_query: "/internal/conversation/context-snapshot".to_owned(),
-            body,
-            principal: request.principal.clone(),
+        let authorization = match self.authorize_context_snapshot(request) {
+            Ok(value) => value,
+            Err(response) => return response,
         };
-        let mut response = self.internal_context_snapshot_effect(&internal).await;
-        // Preserve the Python-compatible response shape; Rust projection and
-        // seam metadata are implementation details at this boundary.
-        strip_snapshot_implementation_fields(&mut response);
-        response
+        match self
+            .context_snapshot_projection(
+                request,
+                InternalContextSnapshotRequest {
+                    conversation_id,
+                    run_id,
+                    stage,
+                },
+                authorization,
+            )
+            .await
+        {
+            Ok(snapshot) => json_effect(StatusCode::OK, public_context_snapshot_value(snapshot)),
+            Err(response) => response,
+        }
     }
 
     async fn conversation_list_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
@@ -1414,23 +1451,58 @@ impl PostgresRunApplicationService {
                     "conversation",
                 ) {
                     syscall_forbidden(op)
-                } else if input.args["conversation_id"].as_str().is_some() {
-                    let nested = ApiEffectRequest {
-                        contract_version: request.contract_version,
-                        method: "POST".to_owned(),
-                        path_and_query: "/internal/conversation/context-snapshot".to_owned(),
-                        body: serde_json::to_vec(&json!({
-                            "conversation_id": input.args["conversation_id"],
-                            "run_id": input.args.get("run_id"),
-                            "stage": input.args.get("stage"),
-                        }))
-                        .expect("snapshot syscall args serialize"),
-                        principal: request.principal.clone(),
+                } else if let Some(conversation_id) = input.args["conversation_id"].as_str() {
+                    let authorization = match self.authorize_context_snapshot(request) {
+                        Ok(value) => value,
+                        Err(response) => return syscall_result(&input.version, op, response),
                     };
-                    let mut snapshot_response =
-                        self.internal_context_snapshot_effect(&nested).await;
-                    strip_snapshot_implementation_fields(&mut snapshot_response);
-                    syscall_result(&input.version, op, snapshot_response)
+                    let run_id = match context_snapshot_syscall_field(&input.args, "run_id") {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return syscall_result(
+                                &input.version,
+                                op,
+                                effect_error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "KOGWISTAR_INVALID_REQUEST",
+                                    error,
+                                ),
+                            );
+                        }
+                    };
+                    let stage = match context_snapshot_syscall_field(&input.args, "stage") {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return syscall_result(
+                                &input.version,
+                                op,
+                                effect_error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "KOGWISTAR_INVALID_REQUEST",
+                                    error,
+                                ),
+                            );
+                        }
+                    };
+                    match self
+                        .context_snapshot_projection(
+                            request,
+                            InternalContextSnapshotRequest {
+                                conversation_id: conversation_id.to_owned(),
+                                run_id,
+                                stage,
+                            },
+                            authorization,
+                        )
+                        .await
+                    {
+                        Ok(snapshot) => syscall_result(
+                            &input.version,
+                            op,
+                            json_effect(StatusCode::OK, public_context_snapshot_value(snapshot)),
+                        ),
+                        Err(response) => syscall_result(&input.version, op, response),
+                    }
                 } else {
                     effect_error(
                         StatusCode::BAD_REQUEST,

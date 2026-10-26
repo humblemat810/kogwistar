@@ -547,6 +547,56 @@
     }
 
     #[tokio::test]
+    async fn context_snapshot_authorization_is_bound_to_request_principal() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "context_snapshot_principal_binding",
+        )
+        .unwrap();
+        let authorized_request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations/c-1/snapshots/latest".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": ["project_view"]
+            }),
+        };
+        let authorization = service.authorize_context_snapshot(&authorized_request).unwrap();
+        let other_principal_request = ApiEffectRequest {
+            principal: json!({
+                "sub": "bob",
+                "ns": "conversation",
+                "capabilities": ["project_view"]
+            }),
+            ..authorized_request
+        };
+
+        let result = service
+            .context_snapshot_projection(
+                &other_principal_request,
+                InternalContextSnapshotRequest {
+                    conversation_id: "c-1".to_owned(),
+                    run_id: None,
+                    stage: None,
+                },
+                authorization,
+            )
+            .await;
+
+        let Err(response) = result else {
+            panic!("authorization for one principal must not authorize another");
+        };
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
     async fn postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available() {
         let Some(dsn) = std::env::var("KOGWISTAR_TEST_PG_DSN").ok() else {
             eprintln!("KOGWISTAR_TEST_PG_DSN absent; latest snapshot integration skipped");
