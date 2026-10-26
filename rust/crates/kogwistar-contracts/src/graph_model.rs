@@ -986,14 +986,15 @@ pub fn validate_graph_model_family_from_str(payload_json: &str) -> Result<(), Gr
         .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
     let mut payload = Map::new();
     for (name, raw) in fields {
-        if name == "level_from_root" && oversized_nonnegative_integer(raw.get()) {
+        if name == "level_from_root" && level_requires_lossless_sidecar(raw.get())? {
             payload.insert(name, Value::Number(0.into()));
         } else if name == "metadata" {
             match serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get()) {
                 Ok(metadata_fields) => {
                     let mut metadata = Map::new();
                     for (key, value) in metadata_fields {
-                        if key == "level_from_root" && oversized_nonnegative_integer(value.get()) {
+                        if key == "level_from_root" && level_requires_lossless_sidecar(value.get())?
+                        {
                             metadata.insert(key, Value::Number(0.into()));
                         } else {
                             let parsed = serde_json::from_str(value.get()).map_err(|error| {
@@ -1023,11 +1024,6 @@ pub fn validate_graph_model_family_from_str(payload_json: &str) -> Result<(), Gr
         slice: None,
     };
     envelope.validate_family_v1()
-}
-
-fn oversized_nonnegative_integer(raw: &str) -> bool {
-    let raw = raw.trim();
-    !raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()) && raw.parse::<i64>().is_err()
 }
 
 /// Project a declared canonical envelope at the language seam.
@@ -3751,11 +3747,20 @@ mod tests {
         assert!(
             validate_graph_model_family_from_str(&top_level_wire.replace(huge, "2.5")).is_err()
         );
-        assert!(
-            validate_graph_model_family_from_str(
-                &top_level_wire.replace(huge, "-18446744073709551616")
-            )
-            .is_err()
+        let negative_huge = format!("-{huge}");
+        let negative_top_level = top_level_wire.replace(huge, &negative_huge);
+        validate_graph_model_family_from_str(&negative_top_level)
+            .expect("large negative top-level Python integer validates");
+        let negative_v2 = RawGraphModelEnvelopeV1::from_json(&negative_top_level)
+            .expect("negative raw envelope parses")
+            .decode_persistent_v2()
+            .expect("negative V2 decode retains the exact integer");
+        assert_eq!(
+            negative_v2
+                .level_from_root
+                .expect("negative level present")
+                .as_decimal_str(),
+            negative_huge
         );
 
         let mut metadata_only = baseline;
@@ -3774,6 +3779,9 @@ mod tests {
         );
         validate_graph_model_family_from_str(&metadata_wire)
             .expect("large metadata fallback integer validates");
+        let negative_metadata = metadata_wire.replace(huge, &negative_huge);
+        validate_graph_model_family_from_str(&negative_metadata)
+            .expect("large negative metadata fallback integer validates");
     }
 
     #[test]

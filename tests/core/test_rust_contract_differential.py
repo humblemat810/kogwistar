@@ -502,7 +502,7 @@ def test_python_and_rust_preserve_shared_legacy_graph_defaults(monkeypatch) -> N
 
 
 @pytest.mark.requires_rust
-@pytest.mark.parametrize("large_level", [2**64, 2**200])
+@pytest.mark.parametrize("large_level", [2**64, 2**200, -(2**64), -(2**200)])
 def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
     monkeypatch: pytest.MonkeyPatch, large_level: int
 ) -> None:
