@@ -38,19 +38,21 @@ snapshot's denominator.
   optional syscall fields reject invalid types before storage access. The
   focused Rust snapshot suite passed **8 tests**. A subsequent elevated Windows
   workspace run with `KOGWISTAR_TEST_PG_DSN` set passed **326 tests with 2
-  intentionally ignored**, exercising all 15 DSN-conditional API/PostgreSQL
-  test functions against the existing local pgvector container. The explicit
-  ignored cases are the optional vector-query integration and the manual SQLite
-  serving-scale probe. This exposed a test-accounting flaw: the DSN-dependent
-  functions returned normally when the variable was absent, so Cargo counted
-  them as passes without touching PostgreSQL. They are now marked ignored by
-  default and require the DSN when explicitly selected. Rust CI starts a
-  `pgvector/pgvector:pg17` service, sets `KOGWISTAR_TEST_PG_DSN`, and opts into
-  ignored tests while excluding only the manual SQLite scale probe and a
-  separate cross-store Chroma integration. Both the ordinary no-DSN workspace
-  library run (database cases visibly ignored) and the full all-targets run
-  against the local pgvector service passed on Windows. In the live run, all 15
-  database-dependent test functions executed rather than returning early. No
+  intentionally ignored**, exercising the then-enabled PostgreSQL tests against
+  the existing local pgvector container. This exposed a test-accounting flaw:
+  15 DSN-dependent API/store functions returned normally when the variable was
+  absent, so Cargo counted them as passes without touching PostgreSQL. Those
+  tests are now marked ignored by default, require the DSN when selected, and
+  are covered by `tests/core/test_rust_pg_test_contract.py`, which fails if a
+  Rust DSN read is not in an explicitly ignored test or the CI service stops
+  opting into ignored tests. The ordinary no-DSN workspace library run passed
+  with database tests visibly ignored. The full all-targets run against the
+  local pgvector service also passed: all 16 PostgreSQL API/store tests ran
+  (the 15 newly explicit tests plus the preexisting vector-query integration).
+  CI starts `pgvector/pgvector:pg17`, sets the DSN, opts into ignored tests, and
+  excludes only the manual SQLite serving-scale probe and a separate
+  PostgreSQL-to-Chroma cross-store integration. Rust formatting, the static
+  gate test, Ruff, workflow YAML parsing, and `git diff --check` passed. No
   dual-language capability status or checklist denominator changed.
 - 2026-10-27 public-route cutover audit: `POST /api/conversations` must remain
   deferred for now. Python creation constructs the conversation-start
