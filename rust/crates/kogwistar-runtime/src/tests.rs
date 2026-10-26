@@ -465,6 +465,67 @@
     }
 
     #[test]
+    fn native_registry_legacy_request_uses_shared_v1_effect_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-operation-legacy-version-v1.json"
+        )))
+        .unwrap();
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register(
+                fixture["operation"].as_str().unwrap(),
+                "v1",
+                |request| {
+                    let mut final_state = request.state.clone();
+                    final_state.insert("implementation".to_owned(), json!("legacy-v1"));
+                    Ok(NativeOperationOutput {
+                        state_update: vec![RecordedStateUpdate::Pair((
+                            "u".to_owned(),
+                            Map::from_iter([(
+                                "implementation".to_owned(),
+                                json!("legacy-v1"),
+                            )]),
+                        ))],
+                        result: Some(json!({
+                            "workflow_status": "succeeded",
+                            "final_state": final_state,
+                        })),
+                    })
+                },
+            )
+            .unwrap();
+
+        let request: RuntimeNativeStepRequest = serde_json::from_value(json!({
+            "executor_target": RUST_NATIVE_EXECUTOR_TARGET,
+            "operation": fixture["operation"],
+            "run_id": "run",
+            "workflow_id": "workflow",
+            "node_id": "legacy",
+            "conversation_id": "conversation",
+            "token_id": "token",
+            "step_seq": 1,
+            "state": fixture["initial_state"],
+            "runtime_routes": []
+        }))
+        .unwrap();
+        assert_eq!(request.op_version, "v1");
+
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        assert_eq!(
+            json!({
+                "status": effect.status,
+                "state_update": effect.state_update,
+                "state_schema": effect.state_schema,
+                "successors": effect.successors,
+                "route_next": effect.route_next,
+                "result": effect.result,
+            }),
+            fixture["effect"]
+        );
+    }
+
+    #[test]
     fn native_request_legacy_wire_defaults_state_without_changing_routing() {
         let request: RuntimeNativeStepRequest = serde_json::from_value(json!({
             "executor_target": RUST_NATIVE_EXECUTOR_TARGET,

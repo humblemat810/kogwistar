@@ -159,6 +159,40 @@ def test_python_worker_application_operation_matches_shared_native_effect_golden
     } == fixture["effect"]
 
 
+def test_python_worker_omitted_operation_version_preserves_v1_effect() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-operation-legacy-version-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register(fixture["operation"])
+    def legacy_label(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": "legacy-v1"})],
+        )
+
+    work = _adapter_work(
+        op=fixture["operation"],
+        state=fixture["initial_state"],
+    )
+    del work["payload"]["op_version"]
+    effect = RustStepResolverAdapter(resolver)(work)
+    assert {
+        "status": effect["status"],
+        "state_update": effect["state_update"],
+        "state_schema": effect["state_schema"],
+        "successors": effect["successors"],
+        "route_next": effect["route_next"],
+        "result": effect["result"],
+    } == fixture["effect"]
+
+
 def _adapter_work(
     *,
     state: dict[str, Any] | None = None,
