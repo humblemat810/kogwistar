@@ -3131,6 +3131,26 @@ mod tests {
         .expect("valid Python graph payload fixture")
     }
 
+    fn assert_persistent_v2_validation_matches_v1(model_class: GraphModelClass, payload: &Value) {
+        let legacy_result =
+            GraphModelEnvelope::new(model_class, payload.clone()).validate_family_v1();
+        let wire = serde_json::json!({
+            "schema_version": GRAPH_MODEL_ENVELOPE_VERSION,
+            "model_class": model_class.wire_name(),
+            "payload": payload,
+        })
+        .to_string();
+        let v2_result = RawGraphModelEnvelopeV1::from_json(&wire)
+            .and_then(|envelope| envelope.decode_persistent_v2());
+
+        assert_eq!(
+            v2_result.is_ok(),
+            legacy_result.is_ok(),
+            "persistent V2 validation must preserve the V1 family contract for {}: V1={legacy_result:?}, V2={v2_result:?}",
+            model_class.wire_name()
+        );
+    }
+
     fn capability_fixture() -> Value {
         serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3148,6 +3168,7 @@ mod tests {
                 other => panic!("unexpected fixture graph model kind: {other}"),
             };
             let envelope = GraphModelEnvelope::new(model_class, case["payload"].clone());
+            assert_persistent_v2_validation_matches_v1(model_class, &case["payload"]);
             let typed = envelope.inspect().expect("valid typed graph view");
             match typed {
                 TypedGraphEntity::Node(node) => {
@@ -3359,11 +3380,14 @@ mod tests {
                 _ => panic!("unexpected graph-model invalid fixture: {case_id}"),
             }
             assert!(
-                GraphModelEnvelope::new(model_class, payload)
+                GraphModelEnvelope::new(model_class, payload.clone())
                     .validate_family_v1()
                     .is_err(),
                 "Rust accepted shared invalid graph-model case {case_id}"
             );
+            if matches!(model_class, GraphModelClass::Node | GraphModelClass::Edge) {
+                assert_persistent_v2_validation_matches_v1(model_class, &payload);
+            }
         }
     }
 
