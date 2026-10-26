@@ -1058,6 +1058,39 @@ embedding inference, and runs CPython 3.15 free-threaded rather than the
 supported production interpreter matrix. Do not extrapolate the ratio to a
 general end-to-end speedup.
 
+### 2026-10-27 three-mode Python/Rust authority seam comparison
+
+To separate Python HTTP/service cost from the cost of using Rust storage across
+the Python/Rust boundary, the same container runner now optionally includes
+`rust_authority_http`: Python MCP HTTP backed by the Rust SQLite authority.
+The 100-item/300-operation trace ran with three measured samples and one
+warm-up per mode under the verified CPython 3.15.1 free-threaded, 4-CPU/8-GiB
+container limit. Python HTTP/Python authority, Python HTTP/Rust authority, and
+Rust-native HTTP all produced digest
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median elapsed | Median throughput | Median startup | Elapsed CV | FFI calls/sample |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python HTTP + Python authority | 62.121 s | 4.83 ops/s | 535 ms | 1.70% | 0 |
+| Python HTTP + Rust authority | 58.345 s | 5.14 ops/s | 571 ms | 1.14% | 1,000 |
+| Rust-native HTTP | 8.839 s | 33.94 ops/s | 321 ms | 0.93% | 0 |
+
+The mixed mode is about 6% faster than Python authority on this workload,
+while the Rust-native endpoint is about 6.6x faster than the mixed mode and
+7.0x faster than Python HTTP. The mixed trace records 300 transport requests
+and tool dispatches, 1,000 FFI calls, and 810,636 serialized bytes per sample;
+the native trace records 300 requests/dispatches and zero FFI calls. This
+quantifies a useful framework-level optimization target: keep authority
+interchangeable, but avoid repeated language-boundary calls within one logical
+operation where a typed, transactional composite operation can preserve the
+same commit and result contract.
+
+This is not proof that production Python/Rust routes share all semantics. The
+fixture is synthetic SQLite, and the Rust-native endpoint remains a narrow
+benchmark server without production auth/ACL, application routing, indexing,
+agents, PostgreSQL, or replay/recovery. The raw report is kept in the ignored
+`.tmp/mixed-runtime-matrix-three-mode-20261027/endpoint/endpoint-report.v1.json`.
+
 ### 2026-10-25 persistent SQLite smoke recheck
 
 A controlled local smoke run used five logical items, two measured samples, two

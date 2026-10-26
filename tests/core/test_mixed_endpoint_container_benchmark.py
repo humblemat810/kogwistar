@@ -9,7 +9,7 @@ from scripts import mixed_endpoint_container_benchmark
 
 
 @pytest.mark.ci
-def test_endpoint_runner_uses_only_http_modes_and_records_limits(
+def test_endpoint_runner_compares_python_mixed_and_rust_http_modes(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     calls: list[dict[str, object]] = []
@@ -20,6 +20,7 @@ def test_endpoint_runner_uses_only_http_modes_and_records_limits(
             "state_digest_equal": True,
             "modes": {
                 "http": {"state_digest": "digest"},
+                "rust_authority_http": {"state_digest": "digest"},
                 "rust_native": {"state_digest": "digest"},
             },
         }
@@ -59,8 +60,13 @@ def test_endpoint_runner_uses_only_http_modes_and_records_limits(
     )
 
     assert mixed_endpoint_container_benchmark.main() == 0
-    assert calls[0]["modes"] == ("http", "rust_native")
+    assert calls[0]["modes"] == (
+        "http",
+        "rust_authority_http",
+        "rust_native",
+    )
     assert calls[0]["include_concurrent"] is False
     report = json.loads((tmp_path / "endpoint-report.v1.json").read_text())
     assert report["status"] == "complete"
+    assert report["modes"] == ["http", "rust_authority_http", "rust_native"]
     assert report["state_digest_equal"] is True

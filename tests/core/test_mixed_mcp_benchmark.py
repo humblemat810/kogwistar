@@ -24,9 +24,15 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
         tmp_path / "rust-authority.sqlite3", trace, "rust_authority"
     )
     http = asyncio.run(_run_one(tmp_path / "http.sqlite3", trace, "http"))
+    rust_authority_http = asyncio.run(
+        _run_one(
+            tmp_path / "rust-authority-http.sqlite3", trace, "rust_authority_http"
+        )
+    )
 
     assert in_process["state_digest"] == rust_authority["state_digest"]
     assert in_process["state_digest"] == http["state_digest"]
+    assert in_process["state_digest"] == rust_authority_http["state_digest"]
     assert in_process["operations"] == http["operations"] == len(trace)
     assert in_process["per_operation"].keys() == http["per_operation"].keys()
     assert http["startup_ms"] > 0
@@ -35,6 +41,9 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
     assert in_process["host_process_rss_start_bytes"] > 0
     assert rust_authority["host_process_cpu_elapsed_ms"] > 0
     assert http["host_process_rss_end_bytes"] > 0
+    assert rust_authority_http["seam_metrics"]["ffi_calls"] > 0
+    assert rust_authority_http["seam_metrics"]["tool_dispatches"] == len(trace)
+    assert rust_authority_http["seam_metrics"]["transport_requests"] == len(trace)
 
 
 def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
@@ -292,10 +301,10 @@ def test_benchmark_accepts_a_resource_matched_mode_subset(tmp_path, monkeypatch)
         tmp_path / "report",
         items=1,
         samples=2,
-        modes=("http", "rust_native"),
+        modes=("http", "rust_authority_http", "rust_native"),
     )
 
-    assert set(report["modes"]) == {"http", "rust_native"}
+    assert set(report["modes"]) == {"http", "rust_authority_http", "rust_native"}
 
 
 def test_benchmark_rejects_unknown_mode_before_creating_output(tmp_path) -> None:
@@ -319,6 +328,36 @@ def test_progress_json_checkpoint_replaces_atomically(tmp_path) -> None:
     assert not report_path.with_suffix(".json.tmp").exists()
     assert json.loads(concurrent_path.read_text()) == {"completed_mix": "balanced"}
     assert not concurrent_path.with_suffix(".json.tmp").exists()
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        mixed_mcp_benchmark._write_json_atomic,
+        mixed_concurrent_benchmark._write_json_atomic,
+    ],
+)
+def test_progress_json_checkpoint_retries_transient_replace_lock(
+    monkeypatch, tmp_path, writer
+) -> None:
+    report_path = tmp_path / "progress.v3.json"
+    original_replace = mixed_mcp_benchmark.os.replace
+    attempts = 0
+
+    def replace_with_transient_lock(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(5, "transient Windows replace lock")
+        original_replace(source, target)
+
+    monkeypatch.setattr(mixed_mcp_benchmark.os, "replace", replace_with_transient_lock)
+
+    writer(report_path, {"completed_modes": ["python"]})
+
+    assert attempts == 3
+    assert json.loads(report_path.read_text()) == {"completed_modes": ["python"]}
+    assert not [path for path in tmp_path.iterdir() if path.suffix == ".tmp"]
 
 
 def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) -> None:

@@ -29,7 +29,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
-AVAILABLE_MODES = (*DEFAULT_MODES, "rust_authority_batch_write")
+AVAILABLE_MODES = (
+    *DEFAULT_MODES,
+    "rust_authority_batch_write",
+    "rust_authority_http",
+)
 SYNC_MODES = frozenset(
     {"in_process", "rust_authority", "rust_authority_batch_write"}
 )
@@ -180,12 +184,22 @@ def _canonical(value: object) -> str:
 
 
 def _write_json_atomic(path: Path, value: object) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        for attempt in range(6):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.01 * (2**attempt))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _digest(value: object) -> str:
@@ -1484,8 +1498,11 @@ async def _run_one(
                 raise RuntimeError("in-process MCP returned an unexpected projection index")
             timings[operation].append((time.perf_counter_ns() - started) / 1_000_000)
         elapsed_ms = (time.perf_counter_ns() - wall_started) / 1_000_000
-    elif mode == "http":
-        registry, _store = _make_registry(path)
+    elif mode in {"http", "rust_authority_http"}:
+        authority = "rust" if mode == "rust_authority_http" else "python"
+        registry, _store = _make_registry(
+            path, authority=authority, seam_metrics=seam_metrics
+        )
         startup_ms = (time.perf_counter_ns() - started) / 1_000_000
         http_result = await _serve_http(
             registry, trace, trace_arguments, seam_metrics=seam_metrics
