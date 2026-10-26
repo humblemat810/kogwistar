@@ -51,6 +51,23 @@ static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 static PROCESS_AUTHORITY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
 static ACTIVE_DATABASE_IDENTITIES: OnceLock<Mutex<BTreeMap<PathBuf, (String, usize)>>> =
     OnceLock::new();
+static DATABASE_INITIALIZATION_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>> =
+    OnceLock::new();
+
+fn database_initialization_lock(database: &Path) -> Arc<Mutex<()>> {
+    let key = normalized_database_path(database);
+    let locks = DATABASE_INITIALIZATION_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
 
 fn register_active_database_identity(
     path: PathBuf,
@@ -675,6 +692,10 @@ impl SqliteStore {
     /// reproducible instead of depending on a host-provided SQLite library.
     pub fn open(path: impl AsRef<Path>) -> SqliteStoreResult<Self> {
         let path = path.as_ref().to_path_buf();
+        let initialization_lock = database_initialization_lock(&path);
+        let _initialization_guard = initialization_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let private_memory = is_private_memory_database(&path);
         if !private_memory
             && let Some(parent) = path

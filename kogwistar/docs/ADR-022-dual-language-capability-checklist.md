@@ -54,6 +54,21 @@ snapshot's denominator.
   passed**, 1 warning). Ruff and `git diff --check` passed. This guards the
   Python facade contract; it does not close a Rust backend or parity gate, and
   no checklist IDs, statuses, or denominators changed.
+- 2026-10-27 SQLite first-open concurrency follow-up: an elevated run with the
+  live pgvector service exposed an intermittent `database is locked` failure
+  when eight Python threads first opened and wrote the same fresh SQLite file
+  through the Rust bridge. `SqliteStore::open` now serializes WAL/schema
+  initialization per normalized database path, without serializing operations
+  on unrelated databases. The PyO3 extension was rebuilt from the modified
+  Rust source before verification. Evidence: the SQLite concurrent
+  enqueue/claim regression passed **5 consecutive fresh-database runs**; the
+  implementation-selection, sync/async worker, and SQLite/PostgreSQL
+  differential suites passed **82 tests** against the live pgvector service;
+  the Rust SQLite crate passed **28 tests, 1 intentionally ignored**; Rust
+  formatting, Ruff, and `git diff --check` passed. One earlier failure was
+  reproduced before the fix and is now contained by the same regression test.
+  This is bounded Windows CPython 3.13 evidence, not full platform parity. No
+  checklist IDs, statuses, or denominators changed.
 - 2026-10-27 `DL-07E` Linux cross-language verification: under CPython 3.12
   with the repository's `abi3-py312` native extension, six real Python/Rust
   SQLite cases passed in a Linux Docker container: Python-created DB opened and
