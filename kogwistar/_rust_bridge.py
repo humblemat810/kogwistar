@@ -217,6 +217,20 @@ def _lossless_graph_json_payload(value: JsonObject) -> str:
     )
 
 
+_LOSSLESS_POSTGRES_GRAPH_OPERATIONS = frozenset(
+    {
+        "graph_mutation",
+        "graph_metadata_patch_mutation",
+        "graph_delete_mutation",
+        "upsert_graph_projection",
+        "patch_graph_projection_metadata",
+        "graph_projection_records",
+        "graph_projection_vector_query",
+        "graph_projection_vector_query_batch",
+    }
+)
+
+
 def _exception_code(exc: BaseException) -> str | None:
     code = getattr(exc, "code", None)
     return code if isinstance(code, str) else None
@@ -334,12 +348,12 @@ def store_postgres(
             "transaction_id": transaction_id,
             "operation": operation,
         }
-        # Graph records preserve Python's arbitrary-precision integer values.
-        # Keep this exception scoped to the graph mutation ABI; other store
-        # operations continue to use the bounded shared Rust JSON contract.
+        # Graph records and metadata filters preserve Python's arbitrary-
+        # precision integers. Other store operations retain the bounded shared
+        # Rust JSON contract.
         payload_json = (
             _lossless_graph_json_payload(payload)
-            if operation.get("kind") == "graph_mutation"
+            if operation.get("kind") in _LOSSLESS_POSTGRES_GRAPH_OPERATIONS
             else _rust_json_payload(
                 payload,
                 ensure_ascii=False,
