@@ -258,6 +258,16 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Keep the native API dependency closure Python-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          dependencies="$(cargo tree --package kogwistar-api --edges normal --prefix none)"
+          if grep -E '^(kogwistar-python|pyo3) v' <<< "$dependencies"; then
+            echo "kogwistar-api must not depend on the PyO3 bridge or Python binding crate" >&2
+            exit 1
+          fi
+
       - name: Test Rust workspace
         run: cargo test --workspace --all-targets --locked
 

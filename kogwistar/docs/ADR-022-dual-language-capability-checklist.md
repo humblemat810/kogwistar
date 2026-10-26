@@ -21,6 +21,14 @@ denominator of either snapshot.
 
 ## Latest verification update (2026-10-26)
 
+- Native-path dependency boundary evidence for `DL-13`: the Rust CI job now
+  inspects the complete normal dependency closure of `kogwistar-api` and fails
+  if it includes `pyo3` or `kogwistar-python`; a config contract test ensures
+  the guard remains wired. The current closure check passed locally, as did
+  `test_rust_ci_keeps_the_native_api_dependency_closure_python_free` and Ruff.
+  This proves the native API build does not cross the PyO3 seam; it does not
+  prove complete production-operation parity or absence of optional remote
+  Python-worker lanes, so `DL-13` remains in progress.
 - The provider-free PyPy 3.11.13 / PyPy 7.3.20 Docker run passes the hosted
   PyPy job's marker selection: **1,138 passed, 202 skipped, 1,400 deselected**
   in 268.55s. It used a container-local source snapshot because the Windows

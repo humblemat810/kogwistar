@@ -37,6 +37,17 @@ def test_ci_full_uses_postgres_image_with_pgvector_extension() -> None:
     assert "ci_full and not slow and not manual and not llm_real and not requires_ollama" in workflow
 
 
+def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "Keep the native API dependency closure Python-free" in workflow
+    assert (
+        'cargo tree --package kogwistar-api --edges normal --prefix none'
+        in workflow
+    )
+    assert "(kogwistar-python|pyo3) v" in workflow
+
+
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
