@@ -14480,19 +14480,20 @@ mod tests {
             .unwrap();
         assert_eq!(malformed_version.status(), StatusCode::CONFLICT);
 
+        let execute_payload = json!({
+            "handoff": {
+                "message_id": work["message_id"],
+                "claimed_by": work["claimed_by"],
+                "run_id": work["run_id"],
+                "step_id": work["step_id"],
+                "correlation_id": work["correlation_id"]
+            },
+            "payload": work["payload"]
+        });
         let execute = client
             .post(format!("{base_url}/internal/runtime/native/execute"))
             .header("x-kogwistar-roles", "reader")
-            .json(&json!({
-                "handoff": {
-                    "message_id": work["message_id"],
-                    "claimed_by": work["claimed_by"],
-                    "run_id": work["run_id"],
-                    "step_id": work["step_id"],
-                    "correlation_id": work["correlation_id"]
-                },
-                "payload": work["payload"]
-            }))
+            .json(&execute_payload)
             .send()
             .await
             .unwrap();
@@ -14502,6 +14503,26 @@ mod tests {
         assert_eq!(
             store.get_server_run("native-run").unwrap().unwrap().status,
             "running"
+        );
+        let event_count_after_first_execute = store
+            .list_server_run_events("native-run", 0, 100)
+            .unwrap()
+            .len();
+        let retried_execute = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&execute_payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retried_execute.status(), StatusCode::OK);
+        assert_eq!(
+            store
+                .list_server_run_events("native-run", 0, 100)
+                .unwrap()
+                .len(),
+            event_count_after_first_execute,
+            "retry must not duplicate durable runtime events"
         );
         let continuation_claim = client
             .post(format!("{base_url}/internal/runtime/claim"))
