@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import threading
@@ -15,7 +16,7 @@ from kogwistar.engine_core.rust_postgres_session import (
     RustPostgresSession,
     _RustPostgresTransactionToken,
 )
-from kogwistar.engine_core.models import Document
+from kogwistar.engine_core.models import Document, PureChromaNode
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
@@ -1011,17 +1012,30 @@ def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
 
     monkeypatch.setattr(store, "patch_graph_projection_metadata", reject_native)
     monkeypatch.setattr(store, "apply_graph_metadata_patch_mutation", reject_native)
+    monkeypatch.setattr(store, "upsert_graph_projection", reject_native)
+
+    @contextmanager
+    def reject_native_transaction():
+        native_calls.append("rust-transaction")
+        raise AssertionError("frozen Python selection opened a Rust transaction")
+        yield
+
+    monkeypatch.setattr(store, "transaction", reject_native_transaction)
 
     class Backend:
         nodes = SimpleNamespace(name="gke_nodes")
         edges = SimpleNamespace(name="gke_edges")
         document_add_calls = 0
+        node_add_calls = 0
 
         def node_update(self, **_values):
             python_calls.append("write")
 
         def document_add(self, **_values):
             self.document_add_calls += 1
+
+        def node_add(self, **_values):
+            self.node_add_calls += 1
 
     backend = Backend()
     writer = WriteSubsystem.__new__(WriteSubsystem)
@@ -1032,6 +1046,7 @@ def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
         kg_graph_type="knowledge",
         persist_directory="unused",
         _implementation_selection_snapshot=snapshot,
+        _disable_event_log=True,
         _emit_change=lambda **_values: None,
         _backend_update_record_lifecycle=lambda **_values: python_calls.append(
             "lifecycle"
@@ -1050,6 +1065,15 @@ def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
     assert writer.add_document(
         Document.from_text("direct subsystem write", id="doc-1", embeddings=[1, 0, 0])
     ) is None
+    writer.add_pure_node(
+        PureChromaNode(
+            id="pure-node",
+            label="pure node",
+            type="entity",
+            summary="pure node summary",
+            embedding=[1, 0, 0],
+        )
+    )
     assert lifecycle.apply_replayed_lifecycle_patch(
         entity_kind="node",
         entity_id="node-1",
@@ -1058,6 +1082,7 @@ def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
 
     assert python_calls == ["write", "lifecycle"]
     assert backend.document_add_calls == 1
+    assert backend.node_add_calls == 1
     assert native_calls == []
 
 

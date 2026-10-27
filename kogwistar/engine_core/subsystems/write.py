@@ -1123,6 +1123,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return None
         return meta
 
+    @implementation_selection_bound
     def uses_rust_postgres_authority(self) -> bool:
         return (
             self._rust_postgres_meta_or_python_fallback(
@@ -1225,7 +1226,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         embedding: Sequence[float],
         enqueue_index_jobs: bool = True,
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation="projection-only graph upsert"
+        )
         if meta is None or not self._e._disable_event_log:
             return False
         table = (
@@ -1314,6 +1317,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             pass
         return True
 
+    @implementation_selection_bound
     def rust_postgres_delete_existing(
         self, *, entity_kind: _GraphEntityKind, entity_ids: list[str]
     ) -> bool:
@@ -1358,6 +1362,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 pass
         return True
 
+    @implementation_selection_bound
     def rust_postgres_replace_existing(
         self,
         *,
