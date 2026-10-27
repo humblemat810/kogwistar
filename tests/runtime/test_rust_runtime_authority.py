@@ -1200,28 +1200,46 @@ def test_async_python_facade_uses_server_inline_native_worker(
 
 
 @pytest.mark.integration
-def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server(
-    tmp_path: Path,
+@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+def test_python_worker_and_rust_native_step_interoperate_over_real_server(
+    tmp_path: Path, backend: str
 ) -> None:
-    """Exercise actual Python callbacks on both sides of a Rust-native step."""
+    """Exercise mixed execution and lost-ack replay on Rust SQLite/PostgreSQL."""
     if not RUST_SERVER.exists():
         pytest.skip("build kogwistar-server before live authority test")
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
+    pg_schema = (
+        f"kw_worker_replay_{os.urandom(8).hex()}" if backend == "pg" else None
+    )
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
-    sqlite_path = tmp_path / "mixed-language.sqlite3"
     env = os.environ.copy()
     for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
         env.pop(name, None)
     env.update(
         {
-            "KOGWISTAR_BACKEND": "sqlite",
-            "KOGWISTAR_META_SQLITE_PATH": str(sqlite_path),
+            "KOGWISTAR_BACKEND": backend,
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
         }
     )
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        env["KOGWISTAR_PG_DSN"] = pg_dsn
+        env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    else:
+        env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "mixed-language.sqlite3")
     process = subprocess.Popen(
         [str(RUST_SERVER)],
         cwd=ROOT,
@@ -1552,6 +1570,17 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+        if pg_schema is not None and pg_dsn is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(
+                        sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+                    )
+            finally:
+                cleanup_engine.dispose()
 
 
 @pytest.mark.integration
