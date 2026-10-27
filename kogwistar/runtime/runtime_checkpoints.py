@@ -8,6 +8,7 @@ from os import PathLike
 from typing import Any, Callable, Protocol, cast
 
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.models import (
     WorkflowRunNode,
@@ -161,6 +162,7 @@ class CheckpointRuntimeMixin:
             materialization_status=materialization_status,
         )
 
+    @implementation_selection_bound
     def resume_from_latest_checkpoint(
         self: CheckpointRuntimeHost,
         *,

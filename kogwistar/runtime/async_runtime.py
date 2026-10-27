@@ -450,6 +450,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         finally:
             _CANCEL_REQUESTED_CTX.reset(token)
 
+    @implementation_selection_bound
     async def resume_from_latest_checkpoint(
         self,
         *,

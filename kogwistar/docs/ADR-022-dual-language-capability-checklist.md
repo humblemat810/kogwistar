@@ -1291,6 +1291,22 @@ checkpoint/resume/replay contract module passed (**15 passed**); Ruff and
 not the remaining `DL-15C` retries, worker claims, server routes, or all-callsite
 inventory. The fixed baseline remains **99/130 PASS (76.2%)**.
 
+Runtime continuation routing is now bound as one selector-snapshot operation:
+the synchronous suspended-run resume, synchronous latest-checkpoint resume,
+and asynchronous latest-checkpoint resume all inherit their runtime's captured
+choice before reading checkpoints, reducing state, routing to Rust authority,
+or restarting execution. The regression
+`tests/runtime/test_checkpoint_resume_contract.py::test_suspended_resume_keeps_engine_selector_before_runtime_routing`
+changes the process selector from Python to Rust after runtime construction and
+proves the resume path does not instantiate the Rust authority. The complete
+checkpoint/replay contract module plus the runtime-entrypoint selector
+reflection test passed (**17 passed**). Production Pyright reported **0
+errors**, Ruff and `git diff --check` passed. Server request handlers delegate
+to these bound runtime entry points, while sync/async index-job worker ticks
+were already bound; this is evidence for those specific paths, not proof of the
+entire server/worker retry inventory. The fixed DL-15C baseline remains
+**99/130 PASS (76.2%)**.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

@@ -8,6 +8,7 @@ from os import PathLike
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from kogwistar.id_provider import stable_id
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.runtime.models import (
     RunFailure,
     RunSuspended,
@@ -137,6 +138,7 @@ class SuspendedResumeHost(CheckpointRuntimeHost, Protocol):
 class SuspendedRunResumeMixin:
     """Resume client-suspended runs through the existing workflow runtime."""
 
+    @implementation_selection_bound
     def resume_run(
         self: SuspendedResumeHost,
         *,

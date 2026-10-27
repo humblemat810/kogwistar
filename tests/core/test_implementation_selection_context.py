@@ -244,6 +244,21 @@ def test_postgres_selectors_cannot_silently_split_authority(
 def test_runtime_entrypoints_keep_sync_and_async_call_contracts() -> None:
     assert not inspect.iscoroutinefunction(WorkflowRuntime.run)
     assert inspect.iscoroutinefunction(AsyncWorkflowRuntime.run)
+    assert getattr(
+        WorkflowRuntime.resume_run,
+        "__implementation_selection_bound__",
+        False,
+    )
+    assert getattr(
+        WorkflowRuntime.resume_from_latest_checkpoint,
+        "__implementation_selection_bound__",
+        False,
+    )
+    assert getattr(
+        AsyncWorkflowRuntime.resume_from_latest_checkpoint,
+        "__implementation_selection_bound__",
+        False,
+    )
 
 
 def test_every_public_lane_messaging_operation_binds_its_engine_selection() -> None:
