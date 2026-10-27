@@ -1,7 +1,8 @@
 //! Async-first storage contracts. Shadow handles expose reads only.
+pub use kogwistar_contracts::GraphEntityKind;
 use kogwistar_contracts::{
     ContextSnapshotV1, ConversationContractError, ConversationSummaryV1, ConversationTranscriptV1,
-    ConversationTurnV1, EntityEventEnvelope, GraphEntityKind, GraphModelClass, GraphModelEnvelope,
+    ConversationTurnV1, EntityEventEnvelope, GraphModelClass, GraphModelEnvelope,
     PersistentGraphEntityV1, ToolAuditContractError, ToolAuditItemV1,
 };
 use serde::Serialize;
@@ -2391,6 +2392,21 @@ pub trait GraphReadStore: Send + Sync {
         namespace: &str,
         id: &str,
     ) -> impl Future<Output = StoreResult<Option<GraphRecord>>> + Send;
+    /// Read by both namespace and entity kind. The default fails closed so
+    /// stores with an ambiguous legacy identity model cannot claim parity.
+    fn graph_record_of_kind(
+        &self,
+        _namespace: &str,
+        _kind: GraphEntityKind,
+        _id: &str,
+    ) -> impl Future<Output = StoreResult<Option<GraphRecord>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-read".to_owned(),
+                message: "kind-aware graph record reads are not supported by this store".to_owned(),
+            })
+        }
+    }
     /// Namespace records in implementation-defined stable read order.
     ///
     /// The Phase-2 in-memory implementation preserves first insertion order:
@@ -2401,6 +2417,21 @@ pub trait GraphReadStore: Send + Sync {
         namespace: &str,
         metadata: &MetadataFilter,
     ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send;
+    /// Read a graph entity kind without mixing nodes and edges.
+    fn graph_records_of_kind(
+        &self,
+        _namespace: &str,
+        _kind: GraphEntityKind,
+        _metadata: &MetadataFilter,
+    ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-read".to_owned(),
+                message: "kind-aware graph record listing is not supported by this store"
+                    .to_owned(),
+            })
+        }
+    }
     /// Metadata matches in implementation-defined stable rank order.
     ///
     /// The Phase-2 in-memory implementation's cosine mode follows the public
@@ -2412,6 +2443,20 @@ pub trait GraphReadStore: Send + Sync {
         namespace: &str,
         query: &VectorQuery,
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+    /// Run vector search within one graph entity kind.
+    fn vector_query_of_kind(
+        &self,
+        _namespace: &str,
+        _kind: GraphEntityKind,
+        _query: &VectorQuery,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-read".to_owned(),
+                message: "kind-aware vector search is not supported by this store".to_owned(),
+            })
+        }
+    }
 }
 
 pub trait GraphWriteStore: GraphReadStore {
@@ -2420,11 +2465,29 @@ pub trait GraphWriteStore: GraphReadStore {
         namespace: &str,
         record: GraphRecord,
     ) -> impl Future<Output = StoreResult<()>> + Send;
+    /// Write a graph record with an explicit entity kind.
+    fn upsert_graph_record_of_kind(
+        &self,
+        namespace: &str,
+        _kind: GraphEntityKind,
+        record: GraphRecord,
+    ) -> impl Future<Output = StoreResult<()>> + Send {
+        async move { self.upsert_graph_record(namespace, record).await }
+    }
     fn delete_graph_record(
         &self,
         namespace: &str,
         id: &str,
     ) -> impl Future<Output = StoreResult<bool>> + Send;
+    /// Delete by namespace, entity kind, and ID to avoid cross-kind deletion.
+    fn delete_graph_record_of_kind(
+        &self,
+        namespace: &str,
+        _kind: GraphEntityKind,
+        id: &str,
+    ) -> impl Future<Output = StoreResult<bool>> + Send {
+        async move { self.delete_graph_record(namespace, id).await }
+    }
 }
 
 /// Minimal materialized-projection mutation seam for durable index workers.
@@ -2452,19 +2515,44 @@ impl<T: GraphWriteStore> GraphProjectionWriteStore for T {
     fn upsert_graph_projection_record(
         &self,
         namespace: &str,
-        _entity_kind: &str,
+        entity_kind: &str,
         record: GraphRecord,
     ) -> impl Future<Output = StoreResult<()>> + Send {
-        self.upsert_graph_record(namespace, record)
+        async move {
+            let kind = match entity_kind {
+                "node" => GraphEntityKind::Node,
+                "edge" => GraphEntityKind::Edge,
+                _ => {
+                    return Err(StoreError::Backend {
+                        backend: "graph-projection".to_owned(),
+                        message: "graph projection entity kind must be 'node' or 'edge'".to_owned(),
+                    });
+                }
+            };
+            self.upsert_graph_record_of_kind(namespace, kind, record)
+                .await
+        }
     }
 
     fn delete_graph_projection_record(
         &self,
         namespace: &str,
-        _entity_kind: &str,
+        entity_kind: &str,
         id: &str,
     ) -> impl Future<Output = StoreResult<bool>> + Send {
-        self.delete_graph_record(namespace, id)
+        async move {
+            let kind = match entity_kind {
+                "node" => GraphEntityKind::Node,
+                "edge" => GraphEntityKind::Edge,
+                _ => {
+                    return Err(StoreError::Backend {
+                        backend: "graph-projection".to_owned(),
+                        message: "graph projection entity kind must be 'node' or 'edge'".to_owned(),
+                    });
+                }
+            };
+            self.delete_graph_record_of_kind(namespace, kind, id).await
+        }
     }
 }
 

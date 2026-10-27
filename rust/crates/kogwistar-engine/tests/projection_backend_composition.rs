@@ -50,7 +50,7 @@ async fn fake_chroma_with_upsert_statuses(
     let handle = tokio::spawn(async move {
         let mut observed = Vec::new();
         let mut upsert_statuses = upsert_statuses.into_iter();
-        for _ in 0..=upsert_statuses.len() {
+        for _ in 0..(2 + upsert_statuses.len()) {
             let (mut stream, _) = listener.accept().await.expect("accept request");
             let mut bytes = Vec::new();
             let mut chunk = [0_u8; 4096];
@@ -81,7 +81,10 @@ async fn fake_chroma_with_upsert_statuses(
             let (status, response) = if request_line.contains("/collections HTTP") {
                 (
                     200,
-                    json!({"id":"collection-1","metadata":{"hnsw:space":"cosine"}}),
+                    json!({
+                        "id": format!("collection-{}", payload["name"].as_str().unwrap_or("unknown")),
+                        "metadata":{"hnsw:space":"cosine"}
+                    }),
                 )
             } else {
                 let status = upsert_statuses.next().expect("configured upsert response");
@@ -135,11 +138,18 @@ async fn projection_worker_composes_queue_and_chroma_without_shared_transaction(
         .unwrap();
 
     let (endpoint, server) = fake_chroma().await;
-    let graph = ChromaGraphStore::connect(ChromaStoreConfig {
-        endpoint,
-        collection: "test-graph".to_owned(),
-        ..Default::default()
-    })
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: "test-graph-nodes".to_owned(),
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: "test-graph-edges".to_owned(),
+            ..Default::default()
+        },
+    )
     .await
     .expect("connect fake Chroma");
 
@@ -179,12 +189,19 @@ async fn projection_worker_composes_queue_and_chroma_without_shared_transaction(
     assert_eq!(completed.len(), 1);
 
     let requests = server.await.expect("fake Chroma server");
-    assert!(requests[0].0.contains("/collections HTTP"));
-    assert!(requests[1].0.contains("/upsert HTTP"));
-    assert_eq!(requests[1].1["ids"], json!(["node-1"]));
-    assert_eq!(requests[1].1["documents"], json!(["projected document"]));
+    let upsert = requests
+        .iter()
+        .find(|(line, _)| line.contains("/upsert HTTP"))
+        .expect("projection writes to Chroma");
+    assert!(
+        upsert
+            .0
+            .contains("/collections/collection-test-graph-nodes/upsert")
+    );
+    assert_eq!(upsert.1["ids"], json!(["node-1"]));
+    assert_eq!(upsert.1["documents"], json!(["projected document"]));
     assert_eq!(
-        requests[1].1["metadatas"][0]["_kogwistar_namespace"],
+        upsert.1["metadatas"][0]["_kogwistar_namespace"],
         "workspace-a"
     );
 }
@@ -222,11 +239,18 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
         .expect("enqueue durable projection job in SQLite");
 
     let (endpoint, server) = fake_chroma().await;
-    let graph = ChromaGraphStore::connect(ChromaStoreConfig {
-        endpoint,
-        collection: "test-sqlite-queue".to_owned(),
-        ..Default::default()
-    })
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: "test-sqlite-queue-nodes".to_owned(),
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: "test-sqlite-queue-edges".to_owned(),
+            ..Default::default()
+        },
+    )
     .await
     .expect("connect fake Chroma");
     let summary =
@@ -265,16 +289,23 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
     assert_eq!(completed.len(), 1);
 
     let requests = server.await.expect("fake Chroma server");
-    assert_eq!(requests.len(), 2);
-    assert!(requests[0].0.contains("/collections HTTP"));
-    assert!(requests[1].0.contains("/upsert HTTP"));
-    assert_eq!(requests[1].1["ids"], json!(["node-1"]));
+    assert_eq!(requests.len(), 3);
+    let upsert = requests
+        .iter()
+        .find(|(line, _)| line.contains("/upsert HTTP"))
+        .expect("projection writes to Chroma");
+    assert!(
+        upsert
+            .0
+            .contains("/collections/collection-test-sqlite-queue-nodes/upsert")
+    );
+    assert_eq!(upsert.1["ids"], json!(["node-1"]));
     assert_eq!(
-        requests[1].1["documents"],
+        upsert.1["documents"],
         json!(["SQLite metadata, Chroma graph"])
     );
     assert_eq!(
-        requests[1].1["metadatas"][0]["_kogwistar_namespace"],
+        upsert.1["metadatas"][0]["_kogwistar_namespace"],
         "workspace-a"
     );
 
@@ -313,11 +344,18 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
         .expect("enqueue in PostgreSQL");
 
     let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![503, 200]).await;
-    let graph = ChromaGraphStore::connect(ChromaStoreConfig {
-        endpoint,
-        collection: "test-postgres-queue".to_owned(),
-        ..Default::default()
-    })
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: "test-postgres-queue-nodes".to_owned(),
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: "test-postgres-queue-edges".to_owned(),
+            ..Default::default()
+        },
+    )
     .await
     .expect("connect fake Chroma");
     let provider_calls = Arc::new(AtomicUsize::new(0));
@@ -386,13 +424,18 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
         1
     );
     let requests = server.await.expect("fake Chroma server");
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
+    let upserts = requests
+        .iter()
+        .filter(|(line, _)| line.contains("/upsert HTTP"))
+        .collect::<Vec<_>>();
+    assert_eq!(upserts.len(), 2);
     assert_eq!(
-        requests[1].1["documents"],
+        upserts[0].1["documents"],
         json!(["durable queue projection"])
     );
     assert_eq!(
-        requests[2].1["documents"],
+        upserts[1].1["documents"],
         json!(["durable queue projection"])
     );
 

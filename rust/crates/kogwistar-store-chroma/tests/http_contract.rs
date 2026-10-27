@@ -1,5 +1,6 @@
 use kogwistar_store::{
-    DistanceMetric, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter, VectorQuery,
+    DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
+    VectorQuery,
 };
 use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
 use serde_json::{Value, json};
@@ -53,7 +54,10 @@ async fn fake_chroma(
                 serde_json::from_slice(body).expect("JSON request body")
             };
             let response = if first_line.contains("/collections HTTP") {
-                json!({"id": "collection-1", "metadata": {"hnsw:space": metric}})
+                json!({
+                    "id": format!("collection-{}", payload["name"].as_str().unwrap_or("legacy")),
+                    "metadata": {"hnsw:space": metric}
+                })
             } else if first_line.contains("/upsert HTTP") || first_line.contains("/delete HTTP") {
                 json!({"updated": 1, "deleted": 1})
             } else if first_line.contains("/query HTTP") {
@@ -63,6 +67,13 @@ async fn fake_chroma(
                     payload["offset"].as_u64().expect("page offset") as usize,
                     payload["limit"].as_u64().expect("page limit") as usize,
                 )
+            } else if first_line.contains("/get HTTP") && payload["ids"].is_array() {
+                json!({
+                    "ids": [payload["ids"][0]],
+                    "documents": ["node body"],
+                    "metadatas": [record_metadata()],
+                    "embeddings": [[0.1, 0.2]]
+                })
             } else {
                 get_response()
             };
@@ -84,6 +95,100 @@ async fn fake_chroma(
         observed
     });
     (format!("http://{address}"), handle)
+}
+
+#[tokio::test]
+async fn kind_aware_chroma_collections_keep_same_node_and_edge_id_distinct() {
+    let (endpoint, server) = fake_chroma(6, "cosine", 0.25).await;
+    let common = ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        ..Default::default()
+    };
+    let store = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            collection: "nodes".to_owned(),
+            ..common.clone()
+        },
+        ChromaStoreConfig {
+            collection: "edges".to_owned(),
+            ..common
+        },
+    )
+    .await
+    .expect("connect kind-specific collections");
+
+    let mut node = GraphRecord::new("shared-id");
+    node.metadata.insert("kind".to_owned(), json!("node"));
+    let mut edge = GraphRecord::new("shared-id");
+    edge.metadata.insert("kind".to_owned(), json!("edge"));
+    store
+        .upsert_graph_record_of_kind("workspace-a", GraphEntityKind::Node, node)
+        .await
+        .expect("write node collection");
+    store
+        .upsert_graph_record_of_kind("workspace-a", GraphEntityKind::Edge, edge)
+        .await
+        .expect("write edge collection");
+    assert_eq!(
+        store
+            .graph_record_of_kind("workspace-a", GraphEntityKind::Node, "shared-id")
+            .await
+            .expect("read node collection")
+            .expect("node exists")
+            .id,
+        "shared-id"
+    );
+    assert_eq!(
+        store
+            .graph_record_of_kind("workspace-a", GraphEntityKind::Edge, "shared-id")
+            .await
+            .expect("read edge collection")
+            .expect("edge exists")
+            .id,
+        "shared-id"
+    );
+
+    let requests = server.await.expect("fixture server");
+    assert_eq!(requests.len(), 6);
+    assert!(
+        requests[2]
+            .0
+            .contains("/collections/collection-nodes/upsert")
+    );
+    assert!(
+        requests[3]
+            .0
+            .contains("/collections/collection-edges/upsert")
+    );
+    assert!(requests[4].0.contains("/collections/collection-nodes/get"));
+    assert!(requests[5].0.contains("/collections/collection-edges/get"));
+    assert_eq!(requests[2].1["ids"][0], "shared-id");
+    assert_eq!(requests[3].1["ids"][0], "shared-id");
+}
+
+#[tokio::test]
+async fn legacy_single_collection_rejects_kind_aware_reads_without_network_fallback() {
+    let (endpoint, server) = fake_chroma(1, "cosine", 0.25).await;
+    let store = ChromaGraphStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "legacy-graph".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect legacy collection");
+
+    assert!(
+        store
+            .graph_record_of_kind("workspace-a", GraphEntityKind::Node, "shared-id")
+            .await
+            .is_err()
+    );
+    let requests = server.await.expect("fixture server");
+    assert_eq!(
+        requests.len(),
+        1,
+        "the rejected typed read must not hit Chroma"
+    );
 }
 
 fn record_metadata() -> Value {
