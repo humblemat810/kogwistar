@@ -688,6 +688,7 @@ class GraphKnowledgeEngine:
             prefer_label_fallback=prefer_label_fallback,
         )
 
+    @engine_context
     def replay_namespace(
         self,
         *,
@@ -705,6 +706,7 @@ class GraphKnowledgeEngine:
             repair_backend=repair_backend,
         )
 
+    @engine_context
     def replay_repair_namespace(
         self,
         *,

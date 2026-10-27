@@ -28,6 +28,10 @@ from ..types import (
     ToposortIngestResult,
 )
 from ...json_types import JsonObject
+from ...implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from ..utils.aliasing import AliasBook, _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
 from .read import stage1_row_is_current
@@ -46,6 +50,10 @@ def _backend_mapping(value: object) -> dict[str, Any]:
 class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        return getattr(self._e, "_implementation_selection_snapshot", None)
 
     @staticmethod
     def _merge_groundings(
@@ -959,6 +967,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids_added),
         }
 
+    @implementation_selection_bound
     def replay_namespace(
         self,
         *,
@@ -1068,6 +1077,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return last_seq
 
+    @implementation_selection_bound
     def replay_repair_namespace(
         self,
         *,

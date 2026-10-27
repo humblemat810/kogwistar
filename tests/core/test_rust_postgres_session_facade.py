@@ -21,6 +21,7 @@ from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
+from kogwistar.engine_core.subsystems.persist import PersistSubsystem
 from kogwistar.implementation_selection import (
     capture_implementation_selection,
     callback_execution_scope,
@@ -1084,6 +1085,45 @@ def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
     assert backend.document_add_calls == 1
     assert backend.node_add_calls == 1
     assert native_calls == []
+
+
+def test_replay_keeps_frozen_selector_when_process_selector_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    snapshot = capture_implementation_selection()
+    observed_modes: list[str] = []
+    node = build_entity_node(
+        node_id="replay-selector-node",
+        doc_id="replay-selector-doc",
+        summary="replayed under frozen selector",
+        metadata={"namespace": "alpha"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+
+    class Metadata:
+        def iter_entity_events(self, **_values):
+            monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+            yield (1, "node", node.id, "ADD", node.model_dump_json(field_mode="backend"))
+
+    class Write:
+        def add_node(self, _node):
+            observed_modes.append(meta_store_implementation_mode())
+
+    engine = SimpleNamespace(
+        metadata=Metadata(),
+        namespace="alpha",
+        _implementation_selection_snapshot=snapshot,
+        _disable_event_log=False,
+        _phase1_enable_index_jobs=False,
+        write=Write(),
+    )
+
+    assert PersistSubsystem(engine).replay_namespace() == 1
+    assert observed_modes == ["python"]
 
 
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
