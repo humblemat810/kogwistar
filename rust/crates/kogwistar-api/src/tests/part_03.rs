@@ -1441,10 +1441,13 @@
         for (table, id, document, metadata) in [
             ("gke_nodes", source_id, json!({"label":"Smoking"}), json!({})),
             ("gke_nodes", target_id, json!({"label":"Lung Cancer"}), json!({})),
+            ("gke_nodes", "z-third", json!({"label":"Third node"}), json!({})),
             ("gke_edges", edge_id, json!({"relation":"causes","source_ids":[source_id],"target_ids":[target_id]}), json!({})),
             ("gke_nodes", "acl-source", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":source_id,"acl_version":1,"acl_mode":"public"})),
             ("gke_nodes", "acl-target", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":target_id,"acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-third", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"z-third","acl_version":1,"acl_mode":"public"})),
             ("gke_nodes", "acl-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":edge_id,"acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-new-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"z-new-edge","acl_version":1,"acl_mode":"public"})),
         ] {
             service.store.upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                 scope: scope.clone(),
@@ -1458,8 +1461,11 @@
                 embedding_dim: 3,
             }).await.unwrap();
         }
-        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let (mut client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let connection_task = tokio::spawn(connection);
+        let (observer, observer_connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let observer_task = tokio::spawn(observer_connection);
         client.execute(
             &format!("INSERT INTO \"{schema}\".gke_nodes(id, metadata) SELECT 'm' || lpad(n::text, 5, '0'), '{{\"namespace\":\"alpha\"}}'::jsonb FROM generate_series(0, 10000) AS n"),
             &[],
@@ -1487,6 +1493,98 @@
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let http = reqwest::Client::new();
+
+        // Hold the edge table while the reader establishes its repeatable-read
+        // snapshot on nodes. Commit a new edge only after its edge-page SELECT
+        // is waiting on the lock; that same read must not observe the edge.
+        let transaction = client.transaction().await.unwrap();
+        transaction
+            .batch_execute(&format!("LOCK TABLE \"{schema}\".gke_edges IN ACCESS EXCLUSIVE MODE"))
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                &format!("INSERT INTO \"{schema}\".gke_edges(id, document, metadata) VALUES ('z-new-edge', $1, '{{\"namespace\":\"alpha\"}}'::jsonb)"),
+                &[&json!({"relation":"causes","source_ids":[source_id],"target_ids":["z-third"]}).to_string()],
+            )
+            .await
+            .unwrap();
+        let concurrent_read = {
+            let http = http.clone();
+            let token = token.clone();
+            tokio::spawn(async move {
+                http.post(format!("http://{address}/mcp"))
+                    .bearer_auth(token)
+                    .json(&json!({
+                        "jsonrpc": "2.0",
+                        "id": "snapshot-before-edge-commit",
+                        "method": "tools/call",
+                        "params": {"name": "kg_neighbors", "arguments": {"rid": source_id}}
+                    }))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json::<Value>()
+                    .await
+                    .unwrap()
+            })
+        };
+        let waiting_for_edge_page = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            async {
+                loop {
+                    let waiting: bool = observer
+                        .query_one(
+                            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE '%SELECT id, document, metadata::TEXT, embedding::TEXT FROM%' AND query LIKE '%gke_edges%')",
+                            &[],
+                        )
+                        .await
+                        .unwrap()
+                        .get(0);
+                    if waiting {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+            },
+        )
+        .await;
+        assert!(waiting_for_edge_page.is_ok(), "reader did not reach the locked edge projection query");
+        transaction.commit().await.unwrap();
+        let first_read = concurrent_read.await.unwrap();
+        assert!(first_read.get("error").is_none(), "{first_read}");
+        assert_eq!(first_read["result"]["implementation_authority"], "rust");
+        assert_eq!(first_read["result"]["seam_attestation_version"], 1);
+        assert_eq!(first_read["result"]["seam_crossings"], json!([]));
+        assert!(!first_read["result"]["nodes"].as_array().unwrap().contains(&json!("z-third")));
+
+        let second_read: Value = http
+            .post(format!("http://{address}/mcp"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "snapshot-after-edge-commit",
+                "method": "tools/call",
+                "params": {"name": "kg_neighbors", "arguments": {"rid": source_id}}
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(second_read["result"]["nodes"].as_array().unwrap().contains(&json!("z-third")));
+        assert_eq!(second_read["result"]["implementation_authority"], "rust");
+        assert_eq!(second_read["result"]["seam_attestation_version"], 1);
+        assert_eq!(second_read["result"]["seam_crossings"], json!([]));
+        client
+            .execute(
+                &format!("DELETE FROM \"{schema}\".gke_edges WHERE id = 'z-new-edge'"),
+                &[],
+            )
+            .await
+            .unwrap();
+
         let neighbor_case = cases["edge_to_nodes"];
         let find_case = cases["find_edges"];
         let path_case = cases["shortest_path"];
@@ -1533,6 +1631,8 @@
             let payload: Value = response.json().await.unwrap();
             assert!(payload.get("error").is_none(), "{name}: {payload}");
             assert_eq!(payload["result"]["implementation_authority"], "rust");
+            assert_eq!(payload["result"]["seam_attestation_version"], 1);
+            assert_eq!(payload["result"]["seam_crossings"], json!([]));
             if name == "kg_k_hop" {
                 let expected_layers = hop_case["expected_layers"]
                     .as_array()
@@ -1561,6 +1661,8 @@
         drop(service);
         client.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
         drop(client);
+        drop(observer);
+        observer_task.await.unwrap().unwrap();
         connection_task.await.unwrap().unwrap();
     }
 

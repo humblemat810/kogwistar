@@ -1731,12 +1731,15 @@ by Python's `tests/mcp/test_chat_mcp_tools.py::test_mcp_graph_traversal_matches_
 The Python MCP test passed (1 passed), and the Rust regression passed against
 the live local PostgreSQL service (1 passed).
 The reads now run inside one `REPEATABLE READ READ ONLY` transaction, covering
-both node and edge pages from one PostgreSQL snapshot. The complete Rust API
-library suite with live PostgreSQL cases passed **90 tests, 0 ignored** after
-this change. A deterministic concurrent-writer interleaving test and Python
-graph-query equivalence at this size remain open, as do full MCP
-operation/transport parity beyond this tested HTTP slice. `DL-16AM` stays IN
-PROGRESS; no checklist ID, status, or denominator changed.
+both node and edge pages from one PostgreSQL snapshot. A deterministic writer
+interleaving now holds the edge table until the live HTTP reader is blocked on
+its edge query: that in-flight read excludes the uncommitted/new edge, while the
+next read sees it. Rust also asserts `implementation_authority=rust` and zero
+seam crossings for the four graph reads. The same golden traversal fixture is
+consumed by Python's MCP test; it passed (1 passed), as did the live Rust
+PostgreSQL HTTP regression (1 passed). Full MCP operation/transport parity
+beyond this tested slice remains open. `DL-16AM` stays IN PROGRESS; no checklist
+ID, status, or denominator changed.
 
 ## Completion rule
 
