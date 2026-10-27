@@ -582,6 +582,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return node_items, edge_items
 
+    @implementation_selection_bound
     def persist_graph(
         self,
         *,
@@ -658,6 +659,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
+    @implementation_selection_bound
     def persist_graph_extraction(
         self,
         *,
@@ -762,6 +764,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
+    @implementation_selection_bound
     def persist_document_graph_extraction(
         self,
         *,
@@ -847,6 +850,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
+    @implementation_selection_bound
     def ingest_with_toposort(
         self,
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,

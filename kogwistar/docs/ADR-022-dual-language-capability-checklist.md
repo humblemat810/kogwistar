@@ -583,6 +583,18 @@ snapshot's denominator.
   requires a configured live PostgreSQL test DSN. This does not establish
   transactional atomicity across backends; it ensures a single rollback call
   does not change language selection midway through its nested operations.
+- Bound the four public graph-persistence orchestration entry points
+  (`persist_graph`, `persist_graph_extraction`,
+  `persist_document_graph_extraction`, and `ingest_with_toposort`) to the
+  engine's captured selector. A regression changes the process selector during
+  preflight and confirms later dependency construction still observes the
+  original selection. Evidence: the public-entrypoint reflection invariant and
+  `tests/core/test_implementation_selection_context.py::test_persist_graph_keeps_one_selector_snapshot` (2 passed), plus
+  `tests/primitives/test_persist_document_graph_extraction.py` and
+  `tests/primitives/test_graph_extraction_id_contract.py` (**21 passed, 3
+  provider-dependent ingestion tests skipped**) on Windows CPython 3.13. This
+  enforces selector consistency for these orchestration calls but does not
+  claim cross-backend transaction atomicity or persistence parity.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains

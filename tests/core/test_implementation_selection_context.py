@@ -261,6 +261,7 @@ def test_every_public_lane_messaging_operation_binds_its_engine_selection() -> N
 
 def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None:
     from kogwistar.engine_core.recovery import RecoverySubsystem
+    from kogwistar.engine_core.subsystems.persist import PersistSubsystem
     from kogwistar.engine_core.subsystems.read import ReadSubsystem
     from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
     from kogwistar.messaging.service import LaneMessagingService
@@ -279,6 +280,22 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
             if not name.startswith("_")
             and not getattr(member, "__implementation_selection_bound__", False)
         )
+
+    persist_entrypoints = (
+        "persist_graph",
+        "persist_graph_extraction",
+        "persist_document_graph_extraction",
+        "ingest_with_toposort",
+    )
+    unbound.extend(
+        f"PersistSubsystem.{name}"
+        for name in persist_entrypoints
+        if not getattr(
+            getattr(PersistSubsystem, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
 
     assert unbound == []
 
@@ -402,6 +419,34 @@ def test_multi_document_rollback_keeps_one_selector_snapshot(
         "deleted_edges": 0,
         "updated_edges": 0,
     }
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_persist_graph_keeps_one_selector_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.engine_core.subsystems.persist import PersistSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+    persist = PersistSubsystem(SimpleNamespace())
+
+    def preflight(_parsed: object, *, alias_key: str) -> None:
+        assert alias_key == "run-1"
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+
+    def build_deps(_parsed: object) -> tuple[list[str], dict[str, str], dict[str, object]]:
+        observed.append(runtime_implementation_mode())
+        return [], {}, {}
+
+    monkeypatch.setattr(persist, "preflight_validate", preflight)
+    monkeypatch.setattr(persist, "_alloc_real_ids", lambda _parsed: None)
+    monkeypatch.setattr(persist, "build_deps", build_deps)
+
+    result = persist.persist_graph(parsed=SimpleNamespace(), session_id="run-1")
+
+    assert result["nodes_added"] == result["edges_added"] == 0
     assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 
