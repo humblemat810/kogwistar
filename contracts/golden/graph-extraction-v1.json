@@ -1,0 +1,63 @@
+{
+  "contract_version": 1,
+  "doc_id": "doc-1",
+  "content": "Alpha connects to Beta.",
+  "doc_type": "text",
+  "insertion_method": "api_upsert",
+  "nodes": [
+    {
+      "id": "nn:first",
+      "local_id": "nn:first",
+      "label": "Alpha",
+      "type": "entity",
+      "summary": "The first concept.",
+      "references": [
+        {
+          "doc_id": "doc-1",
+          "start_char": 0,
+          "end_char": 5,
+          "excerpt": "Alpha"
+        }
+      ]
+    },
+    {
+      "local_id": "nn:second",
+      "label": "Beta",
+      "type": "entity",
+      "summary": "The second concept.",
+      "mentions": [
+        {
+          "spans": [
+            {
+              "doc_id": "doc-1",
+              "start_char": 18,
+              "end_char": 22,
+              "excerpt": "Beta"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "local_id": "ne:connects",
+      "label": "Alpha connects to Beta",
+      "type": "relationship",
+      "summary": "Alpha connects to Beta.",
+      "relation": "connects",
+      "source_ids": ["nn:first"],
+      "target_ids": ["nn:second"],
+      "source_edge_ids": null,
+      "target_edge_ids": null,
+      "references": [
+        {
+          "doc_id": "doc-1",
+          "start_char": 0,
+          "end_char": 23,
+          "excerpt": "Alpha connects to Beta."
+        }
+      ]
+    }
+  ]
+}

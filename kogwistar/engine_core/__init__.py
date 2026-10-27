@@ -41,6 +41,12 @@ from kogwistar.engine_core.graph_mutation_contract import (
     GraphMutationContractError,
     validate_graph_mutation_batch,
 )
+from kogwistar.engine_core.graph_extraction_contract import (
+    GRAPH_EXTRACTION_WIRE_VERSION,
+    GraphExtractionContractError,
+    GraphExtractionRequestV1,
+    validate_graph_extraction_request,
+)
 from kogwistar.engine_core.graph_slice_manifest import (
     SLICE_MODES,
     build_slice_manifest,
@@ -209,6 +215,10 @@ __all__ = [
     "GraphKnowledgeEngine",
     "GraphMutationBatchPayload",
     "GraphMutationContractError",
+    "GRAPH_EXTRACTION_WIRE_VERSION",
+    "GraphExtractionContractError",
+    "GraphExtractionRequestV1",
+    "validate_graph_extraction_request",
     "SLICE_MODES",
     "GRAPH_MODEL_ENVELOPE_VERSION",
     "GraphModelAdapterError",

@@ -12,6 +12,7 @@ use uuid::Uuid;
 mod conversation;
 mod delegation;
 mod document;
+mod graph_extraction;
 mod graph_model;
 mod graph_mutation;
 mod graph_read;
@@ -30,6 +31,9 @@ pub use delegation::{
     attenuate_capabilities,
 };
 pub use document::{DOCUMENT_UPSERT_WIRE_VERSION, DocumentUpsertV1, DocumentUpsertValidationError};
+pub use graph_extraction::{
+    GRAPH_EXTRACTION_WIRE_VERSION, GraphExtractionRequestV1, GraphExtractionValidationError,
+};
 pub use graph_model::{
     AclEdgeMetadataV1, AclEdgeTypeV1, AclGrainV1, AclModeV1, AclNodeMetadataV1,
     ConversationCausalTypeV1, ConversationEdgeMetadataV1, ConversationNodeMetadataV1,
