@@ -571,6 +571,18 @@ snapshot's denominator.
   (PostgreSQL cases skipped without a configured test DSN) on Windows CPython
   3.13 with local socket access enabled. Read boundary coverage is now broader,
   but the overall selector/call-site inventory remains open under `DL-15C`.
+- Bound all six public `RollbackSubsystem` operations, including single and
+  batch document rollback, edge pruning/deletion, and reference cleanup, to the
+  engine's frozen selector. A multi-document rollback regression changes the
+  process selector while enumerating input documents and verifies the nested
+  rollback still observes the original selection. Evidence:
+  `tests/core/test_implementation_selection_context.py::test_multi_document_rollback_keeps_one_selector_snapshot`
+  and the public-subsystem reflection invariant; document, node-reference, and
+  edge-endpoint rollback suites completed with **11 passed, 1 skipped** on
+  Windows CPython 3.13 with local socket access enabled. The skipped case
+  requires a configured live PostgreSQL test DSN. This does not establish
+  transactional atomicity across backends; it ensures a single rollback call
+  does not change language selection midway through its nested operations.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains

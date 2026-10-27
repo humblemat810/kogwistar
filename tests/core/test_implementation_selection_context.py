@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -262,6 +262,7 @@ def test_every_public_lane_messaging_operation_binds_its_engine_selection() -> N
 def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None:
     from kogwistar.engine_core.recovery import RecoverySubsystem
     from kogwistar.engine_core.subsystems.read import ReadSubsystem
+    from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
     from kogwistar.messaging.service import LaneMessagingService
 
     unbound: list[str] = []
@@ -270,6 +271,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         IndexingSubsystem,
         LaneMessagingService,
         ReadSubsystem,
+        RollbackSubsystem,
     ):
         unbound.extend(
             f"{subsystem.__name__}.{name}"
@@ -365,6 +367,41 @@ def test_read_operation_keeps_one_selector_snapshot(
     )
 
     assert subsystem.get_nodes(node_type=Node) == []
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_multi_document_rollback_keeps_one_selector_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+    rollback = RollbackSubsystem(SimpleNamespace())
+    result = {
+        "deleted_docs": 0,
+        "deleted_node_ids": [],
+        "deleted_edge_ids": [],
+        "updated_edges": 0,
+    }
+
+    def rollback_one(_document_id: str) -> dict[str, object]:
+        observed.append(runtime_implementation_mode())
+        return result
+
+    class SelectorChangingIds(list[str]):
+        def __iter__(self) -> Iterator[str]:
+            monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+            return super().__iter__()
+
+    monkeypatch.setattr(rollback, "rollback_document", rollback_one)
+    assert rollback.rollback_many_documents(SelectorChangingIds(["doc-1"])) == {
+        "deleted_docs": 1,
+        "deleted_nodes": 0,
+        "deleted_edges": 0,
+        "updated_edges": 0,
+    }
     assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from typing_extensions import TypedDict
 
 from ..async_compat import run_awaitable_blocking
+from ...implementation_selection import implementation_selection_bound
 from ...json_types import JsonObject
 from ..models import Edge, Grounding, Node
 from ..utils.metadata import json_or_none, strip_none
@@ -225,6 +226,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edge_ids.add(str(metadata_object["edge_id"]))
         return edge_ids
 
+    @implementation_selection_bound
     def rollback_document(self, document_id: str) -> RollbackDocumentResult:
         """Remove one document's contribution while preserving surviving evidence.
 
@@ -439,6 +441,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "updated_edges": len(updated_edge_ids),
         }
 
+    @implementation_selection_bound
     def rollback_document_extraction(
         self,
         doc_id: str,
@@ -714,6 +717,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return summary
 
+    @implementation_selection_bound
     def prune_node_from_edges(self, node_id: str) -> PrunedNodeEdgesResult:
         eps = _backend_object(
             run_awaitable_blocking(
@@ -873,6 +877,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "updated_edges": updated_edge_ids - removed_edge_ids,
         }
 
+    @implementation_selection_bound
     def rollback_many_documents(
         self, document_ids: list[str]
     ) -> RollbackManyDocumentsResult:
@@ -890,8 +895,10 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             totals["updated_edges"] += res["updated_edges"]
         return totals
 
+    @implementation_selection_bound
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         self._e.write.delete_edges_by_ids(edge_ids)
 
+    @implementation_selection_bound
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         return self._e.write.prune_node_refs_for_doc(node_id, doc_id)
