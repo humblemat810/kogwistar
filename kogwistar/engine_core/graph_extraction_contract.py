@@ -24,7 +24,7 @@ class GraphExtractionContractError(ValueError):
 class GraphExtractionRequestV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    contract_version: Literal[1]
+    contract_version: Literal[1] = GRAPH_EXTRACTION_WIRE_VERSION
     doc_id: StrictStr
     content: StrictStr | None = None
     doc_type: Literal["text", "ocr"] = "text"

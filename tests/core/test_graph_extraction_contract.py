@@ -28,6 +28,17 @@ def test_python_accepts_shared_graph_extraction_fixture() -> None:
     assert request.edges[0]["source_ids"] == ["nn:first"]
 
 
+def test_legacy_graph_upsert_defaults_remain_accepted() -> None:
+    request = validate_graph_extraction_request({"doc_id": "legacy-doc"})
+
+    assert request.contract_version == 1
+    assert request.doc_type == "text"
+    assert request.insertion_method == "api_upsert"
+    assert request.content is None
+    assert request.nodes == []
+    assert request.edges == []
+
+
 def test_graph_extraction_validates_exact_text_spans_with_unicode_offsets() -> None:
     request = validate_graph_extraction_request(_fixture())
     request.validate_source_spans({"doc-1": "Alpha connects to Beta."})

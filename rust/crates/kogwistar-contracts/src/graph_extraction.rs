@@ -12,9 +12,14 @@ use thiserror::Error;
 
 pub const GRAPH_EXTRACTION_WIRE_VERSION: u32 = 1;
 
+fn default_contract_version() -> u32 {
+    GRAPH_EXTRACTION_WIRE_VERSION
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphExtractionRequestV1 {
+    #[serde(default = "default_contract_version")]
     pub contract_version: u32,
     pub doc_id: String,
     #[serde(default)]
@@ -196,6 +201,19 @@ mod tests {
         let mut value: Value = serde_json::from_str(base).unwrap();
         value["unexpected"] = Value::Bool(true);
         assert!(serde_json::from_value::<GraphExtractionRequestV1>(value).is_err());
+    }
+
+    #[test]
+    fn legacy_graph_upsert_defaults_remain_accepted() {
+        let request: GraphExtractionRequestV1 =
+            serde_json::from_str(r#"{"doc_id":"legacy-doc"}"#).unwrap();
+        request.validate().unwrap();
+        assert_eq!(request.contract_version, 1);
+        assert_eq!(request.doc_type, "text");
+        assert_eq!(request.insertion_method, "api_upsert");
+        assert!(request.content.is_none());
+        assert!(request.nodes.is_empty());
+        assert!(request.edges.is_empty());
     }
 
     #[test]
