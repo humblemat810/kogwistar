@@ -14,6 +14,10 @@ from kogwistar.acl import current_acl_context
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.engine_core.utils.refs import default_verification
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from kogwistar.id_provider import stable_id
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
@@ -230,9 +234,14 @@ class LaneMessagingService:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
     def _meta_store(self) -> LaneMessageMetaStoreLike:
         return cast(LaneMessageMetaStoreLike, self.engine.meta_sqlite)
 
+    @implementation_selection_bound
     def send_message(
         self,
         *,
@@ -515,6 +524,7 @@ class LaneMessagingService:
             recipient_anchor_id=str(anchor_nodes["recipient"].id),
         )
 
+    @implementation_selection_bound
     def update_message_status(
         self,
         *,
@@ -598,6 +608,7 @@ class LaneMessagingService:
                 ),
             )
 
+    @implementation_selection_bound
     def claim_pending(
         self,
         *,
@@ -649,9 +660,11 @@ class LaneMessagingService:
             claim_kwargs["recipient_id"] = recipient_id
         return claim(**claim_kwargs)
 
+    @implementation_selection_bound
     def ack(self, *, message_id: str, claimed_by: str) -> None:
         self._meta_store().ack_projected_lane_message(message_id=message_id, claimed_by=claimed_by)
 
+    @implementation_selection_bound
     def link_message_to_step(
         self,
         *,
@@ -698,6 +711,7 @@ class LaneMessagingService:
                 conversation_id=conversation_id,
             )
 
+    @implementation_selection_bound
     def requeue(
         self,
         *,
@@ -717,6 +731,7 @@ class LaneMessagingService:
                 delay_seconds=int(delay_seconds),
             )
 
+    @implementation_selection_bound
     def dead_letter(
         self,
         *,
@@ -734,6 +749,7 @@ class LaneMessagingService:
                 ),
             )
 
+    @implementation_selection_bound
     def list_projected(
         self,
         *,
@@ -792,6 +808,7 @@ class LaneMessagingService:
             rows = [row for row in rows if row.message_id in matching_ids]
         return [row for row in rows if self._row_visible(row)]
 
+    @implementation_selection_bound
     def find_messages(
         self,
         *,
@@ -871,6 +888,7 @@ class LaneMessagingService:
         )
         return matched[: int(limit)]
 
+    @implementation_selection_bound
     def repair_projection(
         self,
         *,

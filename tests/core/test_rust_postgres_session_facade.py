@@ -1163,6 +1163,57 @@ def test_recovery_lane_repair_keeps_frozen_selector_through_engine_service(
     assert observed_modes == ["python"]
 
 
+def test_direct_lane_service_keeps_engine_selector_during_projection_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+    from kogwistar.messaging.service import LaneMessagingService
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    snapshot = capture_implementation_selection()
+    observed_modes: list[str] = []
+
+    class MetaStore:
+        def project_lane_message(self, **_values: object) -> None:
+            monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+            observed_modes.append(meta_store_implementation_mode())
+
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=snapshot,
+        namespace="alpha",
+        meta_sqlite=MetaStore(),
+    )
+    service = LaneMessagingService(engine)
+    record = {
+        "order": 1,
+        "message_id": "message-1",
+        "namespace": "alpha",
+        "purpose": "agent_event",
+        "inbox_id": "inbox-1",
+        "conversation_id": "conversation-1",
+        "recipient_id": "recipient-1",
+        "sender_id": "sender-1",
+        "msg_type": "test.event",
+        "status": "pending",
+        "created_at": 1,
+        "available_at": 1,
+        "run_id": None,
+        "step_id": None,
+        "correlation_id": None,
+        "payload_json": None,
+        "error_json": None,
+    }
+    monkeypatch.setattr(
+        service, "_lane_projection_records_from_events", lambda _namespace: [record]
+    )
+    monkeypatch.setattr(service, "_list_projected_rows_for_repair", lambda _namespace: [])
+
+    result = service.repair_projection(namespace="alpha")
+
+    assert result.repaired_count == 1
+    assert observed_modes == ["python"]
+
+
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
     operations: list[dict] = []
 
