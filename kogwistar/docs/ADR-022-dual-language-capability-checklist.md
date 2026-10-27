@@ -617,6 +617,14 @@ snapshot's denominator.
   `tests/acl/test_acl_protocol.py` (**47 passed, 2 PostgreSQL cases skipped
   because the optional testcontainers fixture is unavailable**) on Windows
   CPython 3.13. ACL visibility rules and returned payloads are unchanged.
+- Bound all four public `IngestSubsystem` entry points to the engine selector.
+  A two-page ingestion regression changes the process selector during the first
+  page and verifies the second page still observes the captured choice.
+  Evidence: `tests/core/test_implementation_selection_context.py::test_multi_page_ingest_keeps_one_selector_snapshot`, the ingest entry-point
+  reflection invariant, and `tests/core/test_engine_namespaced_shims.py` plus
+  `tests/ingestions/test_ingest_document.py` (**20 passed, 3 LLM-provider
+  dependent ingestion tests skipped**) on Windows CPython 3.13. This preserves
+  existing engine shim behavior and does not claim Rust-native LLM extraction.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains

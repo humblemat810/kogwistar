@@ -266,6 +266,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
     from kogwistar.engine_core.subsystems.acl import ACLSubsystem
     from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
+    from kogwistar.engine_core.subsystems.ingest import IngestSubsystem
     from kogwistar.messaging.service import LaneMessagingService
 
     unbound: list[str] = []
@@ -276,6 +277,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         ReadSubsystem,
         RollbackSubsystem,
         ACLAwareReadSubsystem,
+        IngestSubsystem,
     ):
         unbound.extend(
             f"{subsystem.__name__}.{name}"
@@ -551,6 +553,36 @@ def test_acl_aware_read_keeps_one_selector_snapshot_through_filtering(
 
     assert acl_read.get_nodes() == [entity]
     assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_multi_page_ingest_keeps_one_selector_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.engine_core.subsystems.ingest import IngestSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+
+    def ingest_page(**_values: object) -> dict[str, object]:
+        observed.append(runtime_implementation_mode())
+        if len(observed) == 1:
+            monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+        return {"nodes_added": 0, "edges_added": 0, "raw": None}
+
+    ingest = IngestSubsystem(SimpleNamespace(_ingest_text_with_llm=ingest_page))
+    result = ingest.add_page(
+        document_id="document-1",
+        page_text={
+            "pages": [
+                {"page_number": 1, "text": "first"},
+                {"page_number": 2, "text": "second"},
+            ]
+        },
+    )
+
+    assert result["nodes_added"] == result["edges_added"] == 0
+    assert observed == ["python", "python"]
     assert runtime_implementation_mode() == "rust"
 
 
