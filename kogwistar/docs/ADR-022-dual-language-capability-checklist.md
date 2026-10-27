@@ -11,8 +11,8 @@ and CI evidence rather than assigning one percentage to the whole port.
 
 Use commit `6130d04` as the fixed comparison baseline for the checklist snapshot
 from approximately 18 hours earlier: **130 items** (96 PASS, 32 IN PROGRESS,
-2 NOT STARTED). Against that fixed baseline, **102/130 are now PASS** (78.5%): `DL-04`,
-`DL-05B`, `DL-16G`, `DL-16H`, `DL-17A`, and `DL-17C` moved to PASS; `DL-16A` was
+2 NOT STARTED). Against that fixed baseline, **102/130 are now PASS** (78.5%).
+Since the baseline, `DL-04`, `DL-05B`, `DL-16G`, `DL-16H`, `DL-17A`, and `DL-17C` moved to PASS; `DL-16A` was
 temporarily reopened for typed integer parity and reverified; `DL-06` and
 `DL-17` moved from NOT STARTED
 to IN PROGRESS. The current inventory has **177 items** (140 PASS, 37 IN PROGRESS).
@@ -23,10 +23,8 @@ baseline denominator fixed at 130 and do not add checklist IDs without an
 explicit scope decision. This note adds no checklist item and changes neither
 snapshot's denominator. The counts above were recalculated by matching IDs
 against baseline commit `6130d04`; no baseline PASS item is currently reopened.
-Dated evidence notes below retain their contemporaneous counts; in particular,
-their `99/130` figures are historical snapshots, not current status. Use this
-section for current totals: **102/130 PASS (78.5%)** against the fixed baseline,
-and **140/177 PASS** in the current inventory.
+Dated evidence entries below document implementation and verification only;
+progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
@@ -1316,9 +1314,7 @@ passed (**1 passed**) against the already-running `kogwistar-find-edges-test`
 container, using its test database and temporary schema without replacing the
 container. Ruff and `git diff --check` passed. This closes only the identified
 write-side selector-binding gap; it does not complete the `DL-15C` call-site,
-retry, worker, server-route, or continuation inventory. At the time of this
-historical note, the fixed baseline was **99/130 PASS (76.2%)**. Current fixed
-baseline: **102/130 PASS (78.5%)** (see Scope accounting).
+retry, worker, server-route, or continuation inventory.
 
 The public ACL-aware writer facade is now covered separately from the raw writer:
 its effectful forwarding methods bind the same engine snapshot across ACL
@@ -1344,8 +1340,7 @@ engine's original mode while replay reconstructs the expected state. The full
 checkpoint/resume/replay contract module passed (**15 passed**); Ruff and
 `git diff --check` passed. This closes a replay-specific selector-drift path,
 not the remaining `DL-15C` retries, worker claims, server routes, or all-callsite
-inventory. At the time of this historical note, the fixed baseline was
-**99/130 PASS (76.2%)**. Current fixed baseline: **102/130 PASS (78.5%)**.
+inventory.
 
 Runtime continuation routing is now bound as one selector-snapshot operation:
 the synchronous suspended-run resume, synchronous latest-checkpoint resume,
@@ -1360,9 +1355,7 @@ reflection test passed (**17 passed**). Production Pyright reported **0
 errors**, Ruff and `git diff --check` passed. Server request handlers delegate
 to these bound runtime entry points, while sync/async index-job worker ticks
 were already bound; this is evidence for those specific paths, not proof of the
-entire server/worker retry inventory. At the time of this historical note, the
-fixed DL-15C baseline was **99/130 PASS (76.2%)**. Current fixed baseline:
-**102/130 PASS (78.5%)**.
+entire server/worker retry inventory.
 
 Rust-selected synchronous runtime submission now delegates before the Python
 terminal-run lookup and Python ownership lease claim. The Rust runtime API
@@ -1373,9 +1366,7 @@ now fails if either Python admission hook is called and passed. That regression
 plus `tests/runtime/test_run_ownership.py` passed (**6 passed**), preserving
 the Python lease-fencing contract. A broader suspend/resume matrix passed its
 `fake` case but did not complete at its `chroma` parametrization in this local
-Windows run; it is not counted as a pass. At the time of this historical note,
-the fixed baseline was **99/130 PASS (76.2%)**; current fixed baseline:
-**102/130 PASS (78.5%)**. DL-15C remains in progress.
+Windows run; it is not counted as a pass. DL-15C remains in progress.
 
 Rust-owned sync and async runs now pass the parent runtime's frozen
 implementation-selection snapshot into their Python worker adapters. Each
@@ -1391,9 +1382,8 @@ After a behavior-preserving typing cleanup, the targeted drift and worker
 identity cases passed again (**10 passed**). Pyright on `rust_worker.py` and
 `rust_runtime_authority.py` reported **0 errors**; Ruff and `git diff --check`
 passed. This proves selector consistency for the hybrid Python callback lane,
-not operation registry parity or a seam-free Rust-native workload. At the time
-of this historical note, the fixed baseline was **99/130 PASS (76.2%)**;
-current fixed baseline: **102/130 PASS (78.5%)**. DL-15C remains in progress.
+not operation registry parity or a seam-free Rust-native workload. DL-15C
+remains in progress.
 
 Native async client-suspended runs now have a `resume_run()` path: it restores
 the latest durable checkpoint, validates and consumes exactly one matching
@@ -1444,9 +1434,7 @@ passed (0 diagnostics). This verifies the tested sync and async Rust-service
 suspend/resume paths on both SQLite and PostgreSQL, but not all runtime
 operations or Rust-native-only callback execution. This strengthens existing
 runtime continuation/ownership coverage; it does not close all of `DL-15C` or
-establish seam-free native Rust resume. At the time of this historical note,
-the baseline was **99/130 PASS (76.2%)**; current fixed baseline:
-**102/130 PASS (78.5%)**.
+establish seam-free native Rust resume.
 
 Additional direct-server `DL-13` evidence: `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker`
 starts the built `kogwistar-server` binary and submits a two-step workflow with
@@ -1463,9 +1451,7 @@ and PostgreSQL 17 using a disposable schema (**2 passed**); the complete
 `tests/runtime/test_rust_runtime_authority.py` module passed with PostgreSQL
 enabled (**30 passed**). This closes the specific live PostgreSQL HTTP evidence
 gap for this small native workload, not production operation breadth, complete
-Rust server cutover readiness, or seam-free native resume. At the time of this
-historical note, the baseline was **99/130 PASS (76.2%)**; current fixed
-baseline: **102/130 PASS (78.5%)**.
+Rust server cutover readiness, or seam-free native resume.
 
 Correction to the older DL-13 row wording: a direct REST GET to
 `/api/workflow/runs/{run_id}/events/poll` returning 404 is expected because
@@ -1544,9 +1530,7 @@ median **1707 ms**, PostgreSQL **1893 ms**), the typed-path samples overlap
 their observed ranges; this run does **not** demonstrate a measurable
 end-to-end speedup from removing that serialization. The architectural seam
 is gone for this path, while process startup, status polling, and backend work
-remain in the measured interval. DL-13 remains in progress. At the time of this
-historical note, the baseline was **99/130 PASS (76.2%)**; current fixed
-baseline: **102/130 PASS (78.5%)**.
+remain in the measured interval. DL-13 remains in progress.
 
 Follow-up client-polling slice: when `KOGWISTAR_RUNTIME_NATIVE_INLINE=true` is
 configured on the Python facade, an all-Rust-native frozen workflow no longer
@@ -1571,9 +1555,7 @@ client now requires `/health` to explicitly advertise
 configurations retain polling. The live integration verifies this handshake
 on SQLite and PostgreSQL; Rust API health tests passed (**3 passed**). This
 attests the server's configured mode at the health check, not continued
-scheduler liveness after startup. DL-13 remains in progress. At the time of
-this historical note, the baseline was **99/130 PASS (76.2%)**; current fixed
-baseline: **102/130 PASS (78.5%)**. The denominator is unchanged.
+scheduler liveness after startup, and DL-13 remains in progress.
 
 Inline-worker crash recovery follow-up: the server now supervises its opt-in
 native worker task. An unexpected task return or panic is logged, followed by a
@@ -1588,9 +1570,7 @@ panic and that the supervisor exits cleanly on shutdown. Evidence:
 workflow matrix passed (**4 passed**) against the Docker PostgreSQL 17/pgvector
 service. `cargo fmt --all -- --check` passed. This closes the narrow task-panic
 restart case, not database outage recovery, process-level supervision, or
-worker liveness attestation; DL-13 remains in progress. At the time of this
-historical note, the baseline was **99/130 PASS (76.2%)**; current fixed
-baseline: **102/130 PASS (78.5%)**. The complete API library suite passed
+worker liveness attestation; DL-13 remains in progress. The complete API library suite passed
 (**80 passed, 9 PostgreSQL-gated tests ignored**) with local socket access; the
 separately selected live server matrix above exercised PostgreSQL. Strict
 package Clippy remains blocked by the existing `clippy::const_is_empty` lint
@@ -1705,9 +1685,6 @@ roundtrip: **6 passed, 0 skipped**. This confirms the prior evidence against
 the current worktree and live container. Ruff and `git diff --check` passed.
 This is bounded resume-path evidence, not a broad latency claim or completion
 of `DL-14A`.
-Checklist IDs and denominator were unchanged at the time of this historical
-note, when the baseline was **99/130 PASS (76.2%)**. Current fixed baseline:
-**102/130 PASS (78.5%)**.
 
 Worker claim-attempt API follow-up (2026-10-27): added the backwards-compatible
 `LaneMessagingService.claim_pending_attempt(worker_id=...)` helper, which
@@ -1736,9 +1713,7 @@ run explicitly against the existing local PostgreSQL 17/pgvector container
 with a process-local DSN: **13 passed, 0 ignored**. Only the unrelated manual
 scale probe remains intentionally ignored in the workspace run. Ruff and
 `git diff --check` passed. This backend compatibility fix did not change
-checklist IDs, status, or denominator at the time of this historical note; the
-baseline then was **99/130 PASS (76.2%)**. Current fixed baseline:
-**102/130 PASS (78.5%)**.
+checklist IDs, status, or denominator.
 
 ### DL-16AM Public graph-read pagination evidence (2026-10-27)
 
