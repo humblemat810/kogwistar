@@ -264,6 +264,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.persist import PersistSubsystem
     from kogwistar.engine_core.subsystems.read import ReadSubsystem
     from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
+    from kogwistar.engine_core.subsystems.acl import ACLSubsystem
     from kogwistar.messaging.service import LaneMessagingService
 
     unbound: list[str] = []
@@ -292,6 +293,30 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         for name in persist_entrypoints
         if not getattr(
             getattr(PersistSubsystem, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+    acl_entrypoints = (
+        "append_canonical_write_events_for_item",
+        "record_default_acl_for_item",
+        "repair_default_acl_for_item",
+        "repair_acl_records_from_events",
+        "record_acl",
+        "repair_missing_default_acls",
+        "prefetch_acl_neighborhood",
+        "rebuild_acl_graph_from_truth",
+        "decide_acl",
+        "decide_acl_usage",
+        "decide_acl_node_read",
+        "get_node_acl_checked",
+        "get_edge_acl_checked",
+    )
+    unbound.extend(
+        f"ACLSubsystem.{name}"
+        for name in acl_entrypoints
+        if not getattr(
+            getattr(ACLSubsystem, name),
             "__implementation_selection_bound__",
             False,
         )
@@ -447,6 +472,56 @@ def test_persist_graph_keeps_one_selector_snapshot(
     result = persist.persist_graph(parsed=SimpleNamespace(), session_id="run-1")
 
     assert result["nodes_added"] == result["edges_added"] == 0
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_acl_write_keeps_one_selector_snapshot_across_unit_of_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    from kogwistar.engine_core.subsystems.acl import ACLSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+
+    class ACLGraph:
+        def bind_loaders(self, **_values: object) -> None:
+            return None
+
+        def invalidate(self, **_values: object) -> None:
+            return None
+
+    @contextmanager
+    def unit_of_work():
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+        yield
+
+    engine = SimpleNamespace(
+        acl_graph=ACLGraph(),
+        metadata=SimpleNamespace(lock_entity_identity=lambda **_values: None),
+        raw_write=SimpleNamespace(
+            add_node=lambda _node: observed.append(runtime_implementation_mode()),
+            add_edge=lambda _edge: None,
+        ),
+        uow=unit_of_work,
+        _emit_change=lambda **_values: None,
+        namespace="default",
+        kg_graph_type="knowledge",
+    )
+    acl = ACLSubsystem(engine)
+    monkeypatch.setattr(acl, "_latest_persisted_acl_record", lambda **_values: None)
+    monkeypatch.setattr(acl, "_build_acl_record_node", lambda _record: object())
+
+    record = acl.record_acl(
+        truth_graph="knowledge",
+        entity_id="node-1",
+        version=1,
+        mode="private",
+    )
+
+    assert record.target.entity_id == "node-1"
     assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 

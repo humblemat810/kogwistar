@@ -30,6 +30,7 @@ from ...engine_core.types import GraphEntityKind
 from ...id_provider import stable_id
 from ...json_types import JsonObject, JsonValue
 from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
+from ...implementation_selection import implementation_selection_bound
 from .base import NamespaceProxy
 from ..acl_protocol import CreateOnceWriteProtocol
 from .write import CreateNodeResult
@@ -192,6 +193,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         records.extend(_record("span", item_id) for item_id in span_ids)
         return tuple(records)
 
+    @implementation_selection_bound
     def append_canonical_write_events_for_item(self, item: Node | Edge, *, grain: str) -> None:
         """Append canonical truth and ACL events before non-transactional projection."""
         if not self.should_auto_acl_item(item):
@@ -232,6 +234,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return 1 if previous is None else previous.version + 1
 
+    @implementation_selection_bound
     def record_default_acl_for_item(self, item: Node | Edge, *, grain: str) -> None:
         """Write default ACL rows for one truth item.
 
@@ -281,6 +284,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     **base_kwargs,
                 )
 
+    @implementation_selection_bound
     def repair_default_acl_for_item(
         self,
         item: Node | Edge,
@@ -331,6 +335,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             _repair_one(grain_name="span", target_item_id=span_id)
         return repaired
 
+    @implementation_selection_bound
     def repair_acl_records_from_events(
         self,
         *,
@@ -679,6 +684,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             target_item_id=target_item_id,
         )
 
+    @implementation_selection_bound
     def record_acl(
         self,
         *,
@@ -782,6 +788,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             return record
 
+    @implementation_selection_bound
     def repair_missing_default_acls(
         self,
         *,
@@ -851,6 +858,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "repaired_acl_records": repaired,
         }
 
+    @implementation_selection_bound
     def prefetch_acl_neighborhood(
         self,
         *,
@@ -902,6 +910,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "warmed_neighbor_entity_ids": tuple(warmed_neighbors),
         }
 
+    @implementation_selection_bound
     def rebuild_acl_graph_from_truth(self, *, truth_graph: str | None = None) -> dict[str, Any]:
         acl_graph = self._e.acl_graph
         acl_graph.clear()
@@ -941,6 +950,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "truth_graph": truth_graph,
         }
 
+    @implementation_selection_bound
     def decide_acl(
         self,
         *,
@@ -1001,6 +1011,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return ACLDecision(visible=False, record=record, reason="unknown_mode")
 
+    @implementation_selection_bound
     def decide_acl_usage(
         self,
         *,
@@ -1050,6 +1061,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             reason=f"node_and_{item_grain}_visible",
         )
 
+    @implementation_selection_bound
     def decide_acl_node_read(
         self,
         *,
@@ -1124,6 +1136,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             reason="node_and_all_items_visible",
         )
 
+    @implementation_selection_bound
     def get_node_acl_checked(
         self,
         node_id: str,
@@ -1159,6 +1172,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise PermissionError(f"ACL denied node {node_id}: {decision.reason}")
         return nodes[0]
 
+    @implementation_selection_bound
     def get_edge_acl_checked(
         self,
         edge_id: str,

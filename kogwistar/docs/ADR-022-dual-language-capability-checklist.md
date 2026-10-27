@@ -595,6 +595,17 @@ snapshot's denominator.
   provider-dependent ingestion tests skipped**) on Windows CPython 3.13. This
   enforces selector consistency for these orchestration calls but does not
   claim cross-backend transaction atomicity or persistence parity.
+- Bound the ACL record/write, repair/rebuild, decision, prefetch, and checked-read
+  entry points to the owning engine's captured implementation selector. A
+  transaction regression changes the process selector as the ACL unit of work
+  begins and verifies the canonical ACL graph write still observes the
+  originally captured selector. Evidence:
+  `tests/core/test_implementation_selection_context.py::test_acl_write_keeps_one_selector_snapshot_across_unit_of_work`, the
+  ACL entry-point reflection checks, and `tests/acl/test_acl_graph.py` (**44
+  passed, 2 PostgreSQL cases skipped because the optional testcontainers
+  fixture is unavailable**) on Windows CPython 3.13. ACL authorization and
+  persisted data semantics are unchanged; this closes only selector drift
+  within these ACL operations, not full cross-language ACL parity.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains
