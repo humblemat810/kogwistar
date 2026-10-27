@@ -23,6 +23,38 @@ fn graph_record_string_ids(record: &GraphRecord, field: &str) -> Vec<String> {
 }
 
 impl PostgresRunApplicationService {
+    async fn graph_records_snapshot(
+        &self,
+        scope: GraphScope,
+    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), String> {
+        let reads = ["gke_nodes", "gke_edges"]
+            .into_iter()
+            .map(|table| GraphProjectionRead {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10_000,
+            })
+            .collect();
+        let mut snapshots = self
+            .store
+            .graph_projection_snapshot(reads)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter();
+        let nodes = snapshots
+            .next()
+            .ok_or_else(|| "graph snapshot omitted node projection".to_owned())?;
+        let edges = snapshots
+            .next()
+            .ok_or_else(|| "graph snapshot omitted edge projection".to_owned())?;
+        if snapshots.next().is_some() {
+            return Err("graph snapshot returned unexpected projection data".to_owned());
+        }
+        Ok((nodes, edges))
+    }
+
     fn authorize_context_snapshot(
         &self,
         request: &ApiEffectRequest,
@@ -668,30 +700,13 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let read = |table: &'static str| GraphProjectionRead {
-            scope: scope.clone(),
-            table: table.to_owned(),
-            ids: None,
-            metadata: MetadataFilter::default(),
-            limit: 10_000,
-        };
-        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
+        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                );
-            }
-        };
-        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
-            Ok(records) => records,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };
@@ -1036,30 +1051,13 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let read = |table: &'static str| GraphProjectionRead {
-            scope: scope.clone(),
-            table: table.to_owned(),
-            ids: None,
-            metadata: MetadataFilter::default(),
-            limit: 10_000,
-        };
-        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
+        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                );
-            }
-        };
-        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
-            Ok(records) => records,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };
@@ -1126,30 +1124,13 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let read = |table: &'static str| GraphProjectionRead {
-            scope: scope.clone(),
-            table: table.to_owned(),
-            ids: None,
-            metadata: MetadataFilter::default(),
-            limit: 10_000,
-        };
-        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
+        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                );
-            }
-        };
-        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
-            Ok(records) => records,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };
@@ -1222,30 +1203,13 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let read = |table: &'static str| GraphProjectionRead {
-            scope: scope.clone(),
-            table: table.to_owned(),
-            ids: None,
-            metadata: MetadataFilter::default(),
-            limit: 10_000,
-        };
-        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
+        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                );
-            }
-        };
-        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
-            Ok(records) => records,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
+                    error,
                 );
             }
         };

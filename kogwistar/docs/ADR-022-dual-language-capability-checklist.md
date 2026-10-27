@@ -1735,13 +1735,13 @@ The live `postgres_public_mcp_graph_reads_cross_projection_page_boundary`
 regression inserted 10,001 intermediate node rows and 10,001 intermediate edge
 rows into a disposable PostgreSQL 17/pgvector graph and verified that each
 authenticated MCP tool still reaches the ACL-visible target on later pages.
-The complete Rust API
-library suite with live PostgreSQL cases passed **90 tests, 0 ignored**.
-This is a bounded read-completeness fix: multi-page reads are not yet proven
-to be one repeatable-read snapshot under concurrent mutation, the Python
-graph-query path has not been shown equivalent at this size, and full MCP
-operation/transport parity remains open. `DL-16AM` stays IN PROGRESS; no
-checklist ID, status, or denominator changed.
+The reads now run inside one `REPEATABLE READ READ ONLY` transaction, covering
+both node and edge pages from one PostgreSQL snapshot. The complete Rust API
+library suite with live PostgreSQL cases passed **90 tests, 0 ignored** after
+this change. A deterministic concurrent-writer interleaving test and Python
+graph-query equivalence at this size remain open, as do full MCP
+operation/transport parity. `DL-16AM` stays IN PROGRESS; no checklist ID,
+status, or denominator changed.
 
 ## Completion rule
 

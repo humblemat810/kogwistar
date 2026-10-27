@@ -792,6 +792,65 @@ impl PostgresStore {
         graph_projection_records(&**client, &self.tables, page.read, page.after_id, true).await
     }
 
+    /// Read related graph projections from one stable PostgreSQL snapshot.
+    ///
+    /// Each read is keyset-paginated inside the same read-only repeatable-read
+    /// transaction, so concurrent graph writes cannot make a caller combine
+    /// rows from different committed states.
+    pub async fn graph_projection_snapshot(
+        &self,
+        reads: Vec<GraphProjectionRead>,
+    ) -> PostgresStoreResult<Vec<Vec<GraphRecord>>> {
+        self.transaction(move |unit| {
+            Box::pin(async move {
+                unit.transaction
+                    .batch_execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                    .await
+                    .map_err(backend)?;
+
+                let mut snapshots = Vec::with_capacity(reads.len());
+                for read in reads {
+                    let page_size = read.limit;
+                    let mut records = Vec::new();
+                    let mut after_id: Option<String> = None;
+                    if page_size > 0 {
+                        loop {
+                            let page = graph_projection_records(
+                                &unit.transaction,
+                                &unit.tables,
+                                read.clone(),
+                                after_id.clone(),
+                                true,
+                            )
+                            .await?;
+                            let Some(first) = page.first() else {
+                                break;
+                            };
+                            if after_id.as_ref().is_some_and(|cursor| first.id <= *cursor)
+                                || page.windows(2).any(|pair| pair[0].id >= pair[1].id)
+                                || page.len() > page_size
+                            {
+                                return Err(PostgresStoreError::Backend(
+                                    "graph projection snapshot returned a non-advancing or unordered page"
+                                        .to_owned(),
+                                ));
+                            }
+                            let has_more = page.len() == page_size;
+                            after_id = page.last().map(|record| record.id.clone());
+                            records.extend(page);
+                            if !has_more {
+                                break;
+                            }
+                        }
+                    }
+                    snapshots.push(records);
+                }
+                Ok(snapshots)
+            })
+        })
+        .await
+    }
+
     pub async fn graph_projection_vector_query(
         &self,
         query: GraphProjectionVectorQuery,
