@@ -533,6 +533,17 @@ snapshot's denominator.
   plus the two selector-freeze regressions (**3 passed**); Ruff and
   `git diff --check` passed on Windows CPython 3.13. The broader call-site audit
   remains in progress.
+- Added a reusable marker to `implementation_selection_bound` and a reflection
+  invariant that every public `LaneMessagingService` operation is bound to its
+  engine's construction snapshot. This catches future public methods omitted
+  from the selector boundary; behavior is separately covered by the direct
+  projection-repair selector-drift regression. Evidence:
+  `tests/core/test_implementation_selection_context.py::test_every_public_lane_messaging_operation_binds_its_engine_selection`
+  and `tests/core/test_rust_postgres_session_facade.py::test_direct_lane_service_keeps_engine_selector_during_projection_repair`;
+  the full selection-context suite passed (**37 passed**) and the lane-message
+  plus agent-event suites passed (**25 passed**) on Windows CPython 3.13. The
+  marker preserves sync/async wrappers via `functools.wraps`; the remaining
+  cross-stack selector inventory is still open under `DL-15C`.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains

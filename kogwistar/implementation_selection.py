@@ -295,6 +295,7 @@ def implementation_selection_bound(
             with implementation_selection_scope(snapshot):
                 return await async_function(*args, **kwargs)
 
+        setattr(async_wrapper, "__implementation_selection_bound__", True)
         return cast(Callable[_P, _R], async_wrapper)
 
     @wraps(function)
@@ -304,4 +305,5 @@ def implementation_selection_bound(
         with implementation_selection_scope(snapshot):
             return function(*args, **kwargs)
 
+    setattr(sync_wrapper, "__implementation_selection_bound__", True)
     return sync_wrapper

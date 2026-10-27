@@ -245,6 +245,19 @@ def test_runtime_entrypoints_keep_sync_and_async_call_contracts() -> None:
     assert inspect.iscoroutinefunction(AsyncWorkflowRuntime.run)
 
 
+def test_every_public_lane_messaging_operation_binds_its_engine_selection() -> None:
+    from kogwistar.messaging.service import LaneMessagingService
+
+    unbound = [
+        name
+        for name, member in inspect.getmembers(LaneMessagingService, callable)
+        if not name.startswith("_")
+        and not getattr(member, "__implementation_selection_bound__", False)
+    ]
+
+    assert unbound == []
+
+
 def test_bound_runtime_uses_its_construction_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
