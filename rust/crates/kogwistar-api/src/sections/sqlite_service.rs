@@ -1,6 +1,7 @@
 #[derive(Clone)]
 pub struct SqliteRunApplicationService {
     store: SqliteStore,
+    chroma_graph: Option<kogwistar_store_chroma::ChromaGraphStore>,
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
@@ -477,6 +478,7 @@ impl SqliteRunApplicationService {
         SqliteStore::open(path)
             .map(|store| Self {
                 store,
+                chroma_graph: None,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
@@ -497,6 +499,110 @@ impl SqliteRunApplicationService {
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
         self.max_queue = max_queue.max(1);
         self
+    }
+
+    /// Add a separate Chroma graph projection to the SQLite metadata/runtime
+    /// service. SQLite remains authoritative only for its existing metadata
+    /// and queue responsibilities; graph reads are sourced from Chroma.
+    pub fn with_chroma_graph(
+        mut self,
+        graph: kogwistar_store_chroma::ChromaGraphStore,
+    ) -> Self {
+        self.chroma_graph = Some(graph);
+        self
+    }
+
+    async fn chroma_graph_neighbors_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input = match parse_graph_neighbors_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let namespace = scope_value["storage_namespace"]
+            .as_str()
+            .unwrap_or("default");
+        let mut filter = MetadataFilter::default();
+        if let Some(workspace) = request
+            .principal
+            .get("workspace_id")
+            .or_else(|| request.principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            filter
+                .equals
+                .insert("workspace_id".to_owned(), Value::String(workspace.to_owned()));
+        }
+        if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
+            filter
+                .equals
+                .insert("graph_space".to_owned(), Value::String(graph_space.to_owned()));
+        }
+        let Some(graph) = &self.chroma_graph else {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite service has no configured graph projection",
+            );
+        };
+        const MAX_GRAPH_SNAPSHOT_RECORDS: usize = 10_000;
+        let (nodes, edges) = match tokio::try_join!(
+            graph.graph_records_of_kind_bounded(
+                namespace,
+                GraphEntityKind::Node,
+                &filter,
+                MAX_GRAPH_SNAPSHOT_RECORDS,
+            ),
+            graph.graph_records_of_kind_bounded(
+                namespace,
+                GraphEntityKind::Edge,
+                &filter,
+                MAX_GRAPH_SNAPSHOT_RECORDS,
+            ),
+        ) {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (nodes, edges) =
+            graph_records_visible_by_acl(&nodes, &edges, input.truth_graph.trim(), &principal);
+        let neighbors = graph_neighbors_from_records(
+            input.rid.trim(),
+            &nodes,
+            &edges,
+            input.doc_id.as_deref(),
+        );
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({
+                "nodes": neighbors.nodes.into_iter().collect::<Vec<_>>(),
+                "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
+            })),
+        )
     }
 
     fn get_run(&self, run_id: &str) -> Result<Option<ServerRun>, String> {

@@ -1206,3 +1206,119 @@
         assert!(response.contains("\"backend\":\"pg\""));
         server.abort();
     }
+
+    #[tokio::test]
+    async fn sqlite_chroma_graph_neighbors_are_scoped_and_acl_filtered() {
+        use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let fake = tokio::spawn(async move {
+            let mut observed = Vec::new();
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (split, length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(split) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&bytes[..split]);
+                        let length = head.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        }).unwrap_or(0);
+                        if bytes.len() >= split + 4 + length { break (split, length); }
+                    }
+                };
+                let head = String::from_utf8_lossy(&bytes[..split]);
+                let line = head.lines().next().unwrap().to_owned();
+                let input: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length]).unwrap();
+                let payload = if line.contains("/collections HTTP") {
+                    json!({"id": format!("collection-{}", input["name"].as_str().unwrap()), "metadata":{"hnsw:space":"cosine"}})
+                } else if line.contains("collection-nodes/get") {
+                    let metas = [
+                        json!({}), json!({}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n2","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
+                    ];
+                    json!({"ids":["n1","n2","acl-n1","acl-n2","acl-e1"],
+                        "documents":["{}","{}","{}","{}","{}"],
+                        "metadatas":metas.into_iter().map(|m| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","_kogwistar_original_metadata":m.to_string()})).collect::<Vec<_>>(),
+                        "embeddings":[null,null,null,null,null]})
+                } else {
+                    json!({"ids":["e1"],
+                        "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"]}"#],
+                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","_kogwistar_original_metadata":"{}"})],
+                        "embeddings":[null]})
+                };
+                let body = payload.to_string();
+                let response = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", body.len(), body);
+                stream.write_all(response.as_bytes()).await.unwrap();
+                observed.push((line, input));
+            }
+            observed
+        });
+        let shared = ChromaStoreConfig { endpoint, ..Default::default() };
+        let graph = ChromaGraphStore::connect_entity_collections(
+            ChromaStoreConfig { collection: "nodes".to_owned(), ..shared.clone() },
+            ChromaStoreConfig { collection: "edges".to_owned(), ..shared },
+        ).await.unwrap();
+        let filter = MetadataFilter::default();
+        let (nodes, edges) = tokio::try_join!(
+            graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Node, &filter, 100),
+            graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
+        )
+        .unwrap();
+        assert_eq!(nodes.len(), 5, "decoded node records: {nodes:?}");
+        assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
+        let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        assert_eq!(visible_nodes.len(), 2, "ACL-visible nodes: {visible_nodes:?}");
+        assert_eq!(visible_edges.len(), 1, "ACL-visible edges: {visible_edges:?}");
+        assert_eq!(
+            graph_neighbors_from_records("n1", &visible_nodes, &visible_edges, None).nodes,
+            ["n2".to_owned()].into()
+        );
+        let path = std::env::temp_dir().join(format!("kogwistar-sqlite-chroma-{}.sqlite3", uuid::Uuid::new_v4()));
+        let service = SqliteRunApplicationService::open(&path).unwrap().with_chroma_graph(graph);
+        let request = |capabilities| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_NEIGHBORS_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"rid":"n1","truth_graph":"knowledge"})).unwrap(),
+            principal: json!({"sub":"reader-1","storage_ns":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","capabilities":capabilities}),
+        };
+        assert!(service.supports_http_operation("POST", INTERNAL_GRAPH_NEIGHBORS_ROUTE));
+        assert_eq!(service.execute(request(json!([]))).await.status, StatusCode::FORBIDDEN.as_u16());
+        let result = service.execute(request(json!(["read_graph"]))).await;
+        let observed = fake.await.unwrap();
+        assert_eq!(result.status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&result.body).unwrap();
+        assert_eq!(result["nodes"], json!(["n2"]), "response: {result}; observed: {observed:?}");
+        assert_eq!(result["edges"], json!(["e1"]), "response: {result}; observed: {observed:?}");
+        assert_eq!(observed.len(), 6);
+        assert!(observed.iter().any(|(line, _)| line.contains("collection-nodes/get")));
+        assert!(observed.iter().any(|(line, _)| line.contains("collection-edges/get")));
+        let scoped_reads = observed
+            .iter()
+            .filter(|(line, payload)| {
+                line.contains("/get HTTP") && payload["where"].to_string().contains("workspace_id")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(scoped_reads.len(), 2);
+        assert!(
+            scoped_reads.iter().all(|(_, payload)| {
+                payload["where"].to_string().contains("workspace_id")
+                    && payload["where"].to_string().contains("graph_space")
+            }),
+            "scoped Chroma query payloads: {scoped_reads:#?}"
+        );
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }

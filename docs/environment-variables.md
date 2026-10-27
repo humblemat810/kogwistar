@@ -38,6 +38,11 @@ tests, and optional integrations.
 | `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend. The inline embedding worker currently requires `pg`. |
 | `KOGWISTAR_PG_DSN` | Rust `kogwistar-server` | PostgreSQL DSN for the native Rust service and its durable index-job queue. |
 | `KOGWISTAR_PG_SCHEMA_BASE` | Rust `kogwistar-server` | PostgreSQL schema base; defaults to `kogwistar`. |
+| `KOGWISTAR_META_SQLITE_PATH` | Rust `kogwistar-server` | Selects SQLite for metadata/runtime/queue storage when the PostgreSQL backend is not selected. It does not make SQLite authoritative for graph data. |
+| `KOGWISTAR_CHROMA_ENDPOINT` | Rust `kogwistar-server` | Optional Chroma HTTP endpoint. When paired with `KOGWISTAR_META_SQLITE_PATH`, enables the authenticated graph-neighbor read route against Chroma while SQLite remains the metadata/runtime/queue store. Startup fails if Chroma cannot be configured; no graph-write or cross-store transaction path is implied. |
+| `KOGWISTAR_CHROMA_NODE_COLLECTION` | Rust `kogwistar-server` | Node collection for the optional SQLite-metadata/Chroma-graph composition; defaults to `nodes`. |
+| `KOGWISTAR_CHROMA_EDGE_COLLECTION` | Rust `kogwistar-server` | Edge collection for the optional SQLite-metadata/Chroma-graph composition; defaults to `edges`. |
+| `KOGWISTAR_CHROMA_METRIC` | Rust `kogwistar-server` | Distance metric for the optional Chroma collections: `cosine` (default), `l2`/`squared_l2`, or `inner_product`/`ip`. Invalid values fail startup. |
 | `KOGWISTAR_EMBEDDING_PROVIDER` | Rust `kogwistar-server` | Enables Rust-side embedding provider construction; currently accepts `ollama`. |
 | `KOGWISTAR_EMBEDDING_MODEL` | Rust `kogwistar-server` | Ollama embedding model name; required when the provider is configured. |
 | `KOGWISTAR_EMBEDDING_DIMENSION` | Rust `kogwistar-server` | Positive vector dimension expected from the configured provider. |

@@ -400,7 +400,49 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     } else {
         match std::env::var("KOGWISTAR_META_SQLITE_PATH") {
             Ok(path) if !path.trim().is_empty() => {
-                Arc::new(SqliteRunApplicationService::open(path).map_err(std::io::Error::other)?)
+                let mut service = SqliteRunApplicationService::open(path)
+                    .map_err(std::io::Error::other)?;
+                if let Ok(endpoint) = std::env::var("KOGWISTAR_CHROMA_ENDPOINT")
+                    && !endpoint.trim().is_empty()
+                {
+                    let metric = match environment("KOGWISTAR_CHROMA_METRIC", "cosine")
+                        .trim()
+                        .to_ascii_lowercase()
+                        .as_str()
+                    {
+                        "cosine" => DistanceMetric::Cosine,
+                        "l2" | "squared_l2" => DistanceMetric::L2,
+                        "inner_product" | "ip" => DistanceMetric::InnerProduct,
+                        _ => {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                "KOGWISTAR_CHROMA_METRIC must be cosine, l2, or inner_product",
+                            )
+                            .into());
+                        }
+                    };
+                    let common = kogwistar_store_chroma::ChromaStoreConfig {
+                        endpoint,
+                        metric,
+                        ..Default::default()
+                    };
+                    let node_config = kogwistar_store_chroma::ChromaStoreConfig {
+                        collection: environment("KOGWISTAR_CHROMA_NODE_COLLECTION", "nodes"),
+                        ..common.clone()
+                    };
+                    let edge_config = kogwistar_store_chroma::ChromaStoreConfig {
+                        collection: environment("KOGWISTAR_CHROMA_EDGE_COLLECTION", "edges"),
+                        ..common
+                    };
+                    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+                        node_config,
+                        edge_config,
+                    )
+                    .await
+                    .map_err(std::io::Error::other)?;
+                    service = service.with_chroma_graph(graph);
+                }
+                Arc::new(service)
             }
             _ => Arc::new(UnavailableApplicationService),
         }

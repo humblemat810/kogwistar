@@ -248,6 +248,45 @@ impl GraphReadStore for ChromaGraphStore {
 }
 
 impl ChromaGraphStore {
+    /// Read a bounded entity-kind snapshot for callers that must apply
+    /// cross-record policy such as endpoint ACL checks before returning data.
+    /// The method fails rather than returning a partial snapshot when the cap
+    /// is exceeded.
+    pub async fn graph_records_of_kind_bounded(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        filter: &MetadataFilter,
+        max_records: usize,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        records::validate_namespace(namespace)?;
+        if max_records == 0 {
+            return Ok(Vec::new());
+        }
+        let http = self.http_for_kind(kind)?;
+        let mut result = Vec::new();
+        let mut offset = 0_u32;
+        loop {
+            let remaining_plus_one = max_records.saturating_sub(result.len()).saturating_add(1);
+            let limit = u32::try_from(remaining_plus_one.min(500)).unwrap_or(500);
+            let page = Self::get_page(http, namespace, filter, offset, limit).await?;
+            let count = page.len();
+            if result.len().saturating_add(count) > max_records {
+                return Err(Self::backend_error(format!(
+                    "kind-aware graph snapshot exceeds the {max_records}-record limit"
+                )));
+            }
+            result.extend(page);
+            if count < limit as usize {
+                break;
+            }
+            offset = offset
+                .checked_add(limit)
+                .ok_or_else(|| Self::backend_error("Chroma offset overflow"))?;
+        }
+        Ok(result)
+    }
+
     async fn vector_query_in_collection(
         &self,
         http: &ChromaHttpStore,

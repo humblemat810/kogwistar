@@ -799,6 +799,7 @@ dependencies = [
  "kogwistar-engine",
  "kogwistar-runtime",
  "kogwistar-store",
+ "kogwistar-store-chroma",
  "kogwistar-store-postgres",
  "kogwistar-store-sqlite",
  "percent-encoding",

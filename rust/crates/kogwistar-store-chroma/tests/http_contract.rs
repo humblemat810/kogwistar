@@ -191,6 +191,43 @@ async fn legacy_single_collection_rejects_kind_aware_reads_without_network_fallb
     );
 }
 
+#[tokio::test]
+async fn bounded_kind_snapshot_rejects_overflow_instead_of_returning_partial_data() {
+    let (endpoint, server) = fake_chroma(4, "cosine", 0.25).await;
+    let common = ChromaStoreConfig {
+        endpoint,
+        ..Default::default()
+    };
+    let store = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            collection: "bounded-nodes".to_owned(),
+            ..common.clone()
+        },
+        ChromaStoreConfig {
+            collection: "bounded-edges".to_owned(),
+            ..common
+        },
+    )
+    .await
+    .expect("connect kind-specific collections");
+
+    assert!(
+        store
+            .graph_records_of_kind_bounded(
+                "workspace-a",
+                GraphEntityKind::Node,
+                &MetadataFilter::default(),
+                500,
+            )
+            .await
+            .is_err()
+    );
+    let requests = server.await.expect("fixture server");
+    assert_eq!(requests.len(), 4);
+    assert!(requests[2].0.contains("collection-bounded-nodes/get"));
+    assert!(requests[3].0.contains("collection-bounded-nodes/get"));
+}
+
 fn record_metadata() -> Value {
     json!({
         "_kogwistar_namespace": "workspace-a",
