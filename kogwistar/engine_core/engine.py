@@ -1024,16 +1024,19 @@ class GraphKnowledgeEngine:
     def enqueue_index_job(self, *args: object, **kwargs: object) -> str:
         return self.indexing.enqueue_index_job(*args, **kwargs)
 
+    @engine_context
     def send_lane_message(self, *args: object, **kwargs: object) -> LaneMessageSendResult:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).send_message(*args, **kwargs)
 
+    @engine_context
     def update_lane_message_status(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).update_message_status(*args, **kwargs)
 
+    @engine_context
     def claim_projected_lane_messages(
         self, *args: object, **kwargs: object
     ) -> list[ProjectedLaneMessageRow]:
@@ -1041,21 +1044,25 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).claim_pending(*args, **kwargs)
 
+    @engine_context
     def ack_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).ack(*args, **kwargs)
 
+    @engine_context
     def requeue_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).requeue(*args, **kwargs)
 
+    @engine_context
     def dead_letter_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).dead_letter(*args, **kwargs)
 
+    @engine_context
     def list_projected_lane_messages(
         self, *args: object, **kwargs: object
     ) -> list[ProjectedLaneMessageRow]:
@@ -1063,11 +1070,13 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
 
+    @engine_context
     def find_lane_messages(self, *args: object, **kwargs: object) -> list[Node]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).find_messages(*args, **kwargs)
 
+    @engine_context
     def repair_lane_message_projection(
         self, *args: object, **kwargs: object
     ) -> LaneMessageProjectionRepairResult:

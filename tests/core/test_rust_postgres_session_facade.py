@@ -1126,6 +1126,43 @@ def test_replay_keeps_frozen_selector_when_process_selector_changes(
     assert observed_modes == ["python"]
 
 
+def test_recovery_lane_repair_keeps_frozen_selector_through_engine_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.recovery import RecoverySubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    snapshot = capture_implementation_selection()
+    observed_modes: list[str] = []
+
+    class LaneService:
+        def __init__(self, _engine):
+            pass
+
+        def repair_projection(self, **_values):
+            monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+            observed_modes.append(meta_store_implementation_mode())
+            return "repaired"
+
+    monkeypatch.setattr("kogwistar.messaging.LaneMessagingService", LaneService)
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=snapshot,
+        kg_graph_type="knowledge",
+        engine_id="selector-recovery-test",
+    )
+    engine.repair_lane_message_projection = lambda **values: GraphKnowledgeEngine.repair_lane_message_projection(
+        engine, **values
+    )
+
+    result = RecoverySubsystem(engine).repair_lane_projections(["alpha"])
+
+    assert result == ["repaired"]
+    assert observed_modes == ["python"]
+
+
 def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypatch):
     operations: list[dict] = []
 

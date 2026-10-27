@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from ..messaging.models import LaneMessageProjectionRepairResult
+from ..implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from ..runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
     workflow_run_status_projection_namespace,
@@ -185,6 +189,11 @@ class RecoverySubsystem:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def recover_startup(
         self,
         *,
@@ -231,6 +240,7 @@ class RecoverySubsystem:
             repaired_lane_projections=(),
         )
 
+    @implementation_selection_bound
     def repair_lane_projections(
         self, namespaces: list[str]
     ) -> list[LaneMessageProjectionRepairResult]:
