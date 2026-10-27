@@ -7775,8 +7775,34 @@ mod tests {
             },
             embedding_dim: 3,
         };
+        let edge_id = "batch-rollback-edge";
+        let edge_mutation = kogwistar_store::GraphMutation {
+            scope: kogwistar_store::GraphScope {
+                namespace: namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: format!("event-{edge_id}"),
+            op: "ADD".to_owned(),
+            payload: serde_json::json!({
+                "id": edge_id,
+                "source_ids": ["batch-source"],
+                "target_ids": ["batch-target"]
+            }),
+            record: kogwistar_store::GraphRecord {
+                id: edge_id.to_owned(),
+                document: Some(format!(
+                    r#"{{"id":"{edge_id}","source_ids":["batch-source"],"target_ids":["batch-target"]}}"#
+                )),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        };
         let batch = kogwistar_store::GraphMutationBatch {
-            mutations: vec![mutation],
+            mutations: vec![mutation, edge_mutation],
             index_jobs: vec![kogwistar_store::NewIndexJob {
                 job_id: format!("job-{entity_id}"),
                 namespace: namespace.clone(),
@@ -7812,6 +7838,37 @@ mod tests {
                 .await?
                 .is_empty()
         );
+        assert!(
+            store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: kogwistar_store::GraphScope {
+                        namespace: namespace.clone(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_edges".to_owned(),
+                    ids: Some(vec![edge_id.to_owned()]),
+                    metadata: kogwistar_store::MetadataFilter::default(),
+                    limit: 10,
+                })
+                .await?
+                .is_empty()
+        );
+        let endpoint_row_count: i64 = store
+            .client()
+            .await?
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {} WHERE metadata ->> 'edge_id' = $1",
+                    tables.edge_endpoints
+                ),
+                &[&edge_id],
+            )
+            .await
+            .map_err(backend)?
+            .try_get(0)
+            .map_err(backend)?;
+        assert_eq!(endpoint_row_count, 0);
         assert!(
             store
                 .claim_index_jobs(10, 30, Some(&namespace))

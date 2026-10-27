@@ -28,6 +28,19 @@ progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 transactional rollback coverage for derived edge endpoints: the
+  live PostgreSQL failure-injection test now submits a node and edge mutation
+  in one batch, then forces index-intent insertion to fail. It verifies the
+  node and edge projections, event rows, index jobs, and the edge's derived
+  endpoint rows are all absent after rollback. Evidence:
+  `cargo test -p kogwistar-store-postgres
+  graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_available
+  -- --ignored --nocapture` passed against the existing local PostgreSQL
+  service; the ordinary store suite passed (6 passed, 8 DSN-only tests ignored)
+  and `cargo fmt --all --manifest-path Cargo.toml -- --check` passed. This
+  confirms the tested graph/event/index-intent/endpoint transaction boundary;
+  it does not close the broader DL-06E atomicity scope or change checklist
+  counts.
 - 2026-10-27 reverse shared-PostgreSQL graph-write parity: Rust graph mutations
   now maintain Python-compatible `gke_edge_endpoints` rows in the same database
   transaction as the edge projection. An authenticated Rust HTTP mutation batch
