@@ -1729,15 +1729,15 @@ still reaches the ACL-visible target on later pages. The graph and expected
 results now come from `contracts/golden/graph-traversal-v1.json`, also consumed
 by Python's `tests/mcp/test_chat_mcp_tools.py::test_mcp_graph_traversal_matches_shared_golden_contract`.
 The Python MCP test passed (1 passed), and the Rust regression passed against
-the live local PostgreSQL service (1 passed).
+the live local PostgreSQL service (1 passed). Rust supplies the fixture's `D1`
+document filter on every operation and seeds a matching `D2` edge/node; the
+Rust responses match the `D1` fixture without leaking the `D2` edge.
 The reads now run inside one `REPEATABLE READ READ ONLY` transaction, covering
 both node and edge pages from one PostgreSQL snapshot. A deterministic writer
 interleaving now holds the edge table until the live HTTP reader is blocked on
 its edge query: that in-flight read excludes the uncommitted/new edge, while the
 next read sees it. Rust also asserts `implementation_authority=rust` and zero
-seam crossings for the four graph reads. The same golden traversal fixture is
-consumed by Python's MCP test; it passed (1 passed), as did the live Rust
-PostgreSQL HTTP regression (1 passed). Full MCP operation/transport parity
+seam crossings for the four graph reads. Full MCP operation/transport parity
 beyond this tested slice remains open. `DL-16AM` stays IN PROGRESS; no checklist
 ID, status, or denominator changed.
 

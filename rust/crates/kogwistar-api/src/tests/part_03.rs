@@ -1439,14 +1439,18 @@
             graph_space: None,
         };
         for (table, id, document, metadata) in [
-            ("gke_nodes", source_id, json!({"label":"Smoking"}), json!({})),
-            ("gke_nodes", target_id, json!({"label":"Lung Cancer"}), json!({})),
-            ("gke_nodes", "z-third", json!({"label":"Third node"}), json!({})),
-            ("gke_edges", edge_id, json!({"relation":"causes","source_ids":[source_id],"target_ids":[target_id]}), json!({})),
+            ("gke_nodes", source_id, json!({"label":"Smoking","doc_id":"D1"}), json!({})),
+            ("gke_nodes", target_id, json!({"label":"Lung Cancer","doc_id":"D1"}), json!({})),
+            ("gke_nodes", "z-third", json!({"label":"Third node","doc_id":"D1"}), json!({})),
+            ("gke_nodes", "z-d2-target", json!({"label":"Lung Cancer","doc_id":"D2"}), json!({})),
+            ("gke_edges", edge_id, json!({"relation":"causes","source_ids":[source_id],"target_ids":[target_id],"doc_id":"D1"}), json!({})),
+            ("gke_edges", "z-d2-edge", json!({"relation":"causes","source_ids":[source_id],"target_ids":["z-d2-target"],"doc_id":"D2"}), json!({})),
             ("gke_nodes", "acl-source", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":source_id,"acl_version":1,"acl_mode":"public"})),
             ("gke_nodes", "acl-target", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":target_id,"acl_version":1,"acl_mode":"public"})),
             ("gke_nodes", "acl-third", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"z-third","acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-d2-target", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"z-d2-target","acl_version":1,"acl_mode":"public"})),
             ("gke_nodes", "acl-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":edge_id,"acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-d2-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"z-d2-edge","acl_version":1,"acl_mode":"public"})),
             ("gke_nodes", "acl-new-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"z-new-edge","acl_version":1,"acl_mode":"public"})),
         ] {
             service.store.upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
@@ -1505,7 +1509,7 @@
         transaction
             .execute(
                 &format!("INSERT INTO \"{schema}\".gke_edges(id, document, metadata) VALUES ('z-new-edge', $1, '{{\"namespace\":\"alpha\"}}'::jsonb)"),
-                &[&json!({"relation":"causes","source_ids":[source_id],"target_ids":["z-third"]}).to_string()],
+                &[&json!({"relation":"causes","source_ids":[source_id],"target_ids":["z-third"],"doc_id":"D1"}).to_string()],
             )
             .await
             .unwrap();
@@ -1519,7 +1523,7 @@
                         "jsonrpc": "2.0",
                         "id": "snapshot-before-edge-commit",
                         "method": "tools/call",
-                        "params": {"name": "kg_neighbors", "arguments": {"rid": source_id}}
+                        "params": {"name": "kg_neighbors", "arguments": {"rid": source_id, "doc_id": "D1"}}
                     }))
                     .send()
                     .await
@@ -1565,7 +1569,7 @@
                 "jsonrpc": "2.0",
                 "id": "snapshot-after-edge-commit",
                 "method": "tools/call",
-                "params": {"name": "kg_neighbors", "arguments": {"rid": source_id}}
+                "params": {"name": "kg_neighbors", "arguments": {"rid": source_id, "doc_id": "D1"}}
             }))
             .send()
             .await
@@ -1592,25 +1596,25 @@
         for (name, arguments, expected_field, expected) in [
             (
                 "kg_neighbors",
-                json!({"rid":edge_id}),
+                json!({"rid":edge_id,"doc_id":"D1"}),
                 "nodes",
                 json!(map_fixture_ids(&neighbor_case["expected_neighbors"]["nodes"])),
             ),
             (
                 "kg_find_edges",
-                json!({"relation":find_case["relation"],"src_label_contains":find_case["source_label_contains"],"tgt_label_contains":find_case["target_label_contains"]}),
+                json!({"relation":find_case["relation"],"src_label_contains":find_case["source_label_contains"],"tgt_label_contains":find_case["target_label_contains"],"doc_id":find_case["doc_id"]}),
                 "edges",
                 json!(map_fixture_ids(&find_case["expected_edge_ids"])),
             ),
             (
                 "kg_shortest_path",
-                json!({"src_id":source_id,"dst_id":target_id}),
+                json!({"src_id":source_id,"dst_id":target_id,"doc_id":"D1"}),
                 "path",
                 json!(map_fixture_ids(&path_case["expected_path"])),
             ),
             (
                 "kg_k_hop",
-                json!({"start_ids":[source_id],"k":hop_case["k"]}),
+                json!({"start_ids":[source_id],"k":hop_case["k"],"doc_id":"D1"}),
                 "layers",
                 Value::Null,
             ),
