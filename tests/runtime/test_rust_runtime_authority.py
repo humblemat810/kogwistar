@@ -16,7 +16,11 @@ import pytest
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
-from kogwistar.runtime.rust_worker import AsyncRustRuntimeWorker, RustRuntimeWorker
+from kogwistar.runtime.rust_worker import (
+    AsyncRustRuntimeWorker,
+    RustRuntimeWorker,
+    RustWorkerError,
+)
 from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
     RustRuntimeAuthority,
@@ -1296,18 +1300,49 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
         )
         assert submitted.status_code == 202, submitted.text
 
-        with RustRuntimeWorker.from_step_resolver(
+        class LoseOneCommittedResponse(httpx.BaseTransport):
+            def __init__(self) -> None:
+                self.inner = httpx.HTTPTransport()
+                self.lost = False
+
+            def handle_request(self, request: httpx.Request) -> httpx.Response:
+                response = self.inner.handle_request(request)
+                if request.url.path == "/internal/runtime/results" and not self.lost:
+                    response.read()
+                    response.close()
+                    self.lost = True
+                    raise httpx.ReadError(
+                        "simulated response loss after server commit", request=request
+                    )
+                return response
+
+            def close(self) -> None:
+                self.inner.close()
+
+        worker_client = httpx.Client(
+            transport=LoseOneCommittedResponse(),
             base_url=base_url,
-            worker_id="python-worker",
-            journal_path=tmp_path / "python-worker.sqlite",
-            step_resolver=resolver,
             headers=headers,
-        ) as worker:
-            python_before_work = worker.claim(run_id="mixed-live-run")
-            assert len(python_before_work) == 1
-            assert python_before_work[0]["step_id"] == "python-before"
-            first_result = worker.process(python_before_work[0])
-            assert first_result["event_seq"] > 0
+            timeout=10,
+        )
+        with worker_client:
+            with RustRuntimeWorker.from_step_resolver(
+                base_url=base_url,
+                worker_id="python-worker",
+                journal_path=tmp_path / "python-worker.sqlite",
+                step_resolver=resolver,
+                headers=headers,
+                client=worker_client,
+            ) as worker:
+                python_before_work = worker.claim(run_id="mixed-live-run")
+                assert len(python_before_work) == 1
+                assert python_before_work[0]["step_id"] == "python-before"
+                with pytest.raises(RustWorkerError, match="after server commit"):
+                    worker.process(python_before_work[0])
+                # The first result is already durable; replay from the local
+                # journal must be idempotent and must not execute the callback.
+                first_result = worker.process(python_before_work[0])
+                assert first_result["event_seq"] > 0
 
             native_claim = httpx.post(
                 f"{base_url}/internal/runtime/claim",

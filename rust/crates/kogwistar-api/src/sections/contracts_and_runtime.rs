@@ -1079,26 +1079,26 @@ struct RuntimeWorkerResultRequest {
     effect: Option<RecordedWorkerSuccessEffect>,
 }
 
-fn validate_python_worker_trace_binding(
+fn validate_python_worker_submission_trace_binding(
     trace_events: &[Value],
     lease_claim_id: &str,
 ) -> Result<(), &'static str> {
-    let mut prepared_events = trace_events.iter().filter(|event| {
+    let mut submitted_events = trace_events.iter().filter(|event| {
         event.get("event").and_then(Value::as_str)
-            == Some("runtime.python_worker.result_prepared")
+            == Some("runtime.python_worker.result_submitted")
     });
-    let Some(event) = prepared_events.next() else {
+    let Some(event) = submitted_events.next() else {
         return Ok(());
     };
-    if prepared_events.next().is_some() {
-        return Err("multiple Python worker result-prepared trace events");
+    if submitted_events.next().is_some() {
+        return Err("multiple Python worker result-submitted trace events");
     }
 
     let Some((worker_id, lease_nonce)) = lease_claim_id.rsplit_once('#') else {
-        return Err("Python worker lease claim ID is malformed");
+        return Err("Python worker submission lease claim ID is malformed");
     };
     if worker_id.is_empty() || lease_nonce.is_empty() {
-        return Err("Python worker lease claim ID is malformed");
+        return Err("Python worker submission lease claim ID is malformed");
     }
     if event.get("schema_version").and_then(Value::as_u64) != Some(1)
         || event.get("executor_target").and_then(Value::as_str) != Some("python-worker")
@@ -1106,7 +1106,7 @@ fn validate_python_worker_trace_binding(
         || event.get("identity_source").and_then(Value::as_str) != Some("worker_configuration")
         || event.get("lease_claim_id").and_then(Value::as_str) != Some(lease_claim_id)
     {
-        return Err("Python worker trace does not match the claimed lease identity");
+        return Err("Python worker submission trace does not match the claimed lease");
     }
     Ok(())
 }

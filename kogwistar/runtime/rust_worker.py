@@ -151,6 +151,46 @@ def _with_worker_execution_trace(
     return cast(JsonObject, traced)
 
 
+def _with_worker_submission_trace(
+    envelope: Mapping[str, JsonValue], work: Mapping[str, JsonValue], worker_id: str
+) -> JsonObject:
+    """Record the lease used for this delivery, including replay deliveries."""
+    traced = _json_copy(envelope, field="worker result envelope")
+    if not isinstance(traced, dict):
+        raise RustWorkerError("worker result envelope must be an object")
+    effect = traced.get("effect")
+    if not isinstance(effect, dict):
+        raise RustWorkerError("worker result envelope effect must be an object")
+    raw_traces = effect.get("trace_events", [])
+    if not isinstance(raw_traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+    traces = _json_copy(raw_traces, field="worker effect trace_events")
+    if not isinstance(traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+
+    payload = work.get("payload")
+    if not isinstance(payload, dict):
+        raise RustWorkerError("claimed work payload must be an object")
+    traces.append(
+        {
+            "schema_version": 1,
+            "event": "runtime.python_worker.result_submitted",
+            "executor_target": PYTHON_EXECUTOR_TARGET,
+            "worker_id": worker_id,
+            "identity_source": "worker_configuration",
+            "lease_claim_id": str(work["claimed_by"]),
+            "message_id": str(work["message_id"]),
+            "run_id": str(work["run_id"]),
+            "step_id": str(work["step_id"]),
+            "correlation_id": str(work["correlation_id"]),
+            "operation": str(payload["op"]),
+            "op_version": str(payload.get("op_version") or "v1"),
+        }
+    )
+    effect["trace_events"] = traces
+    return cast(JsonObject, traced)
+
+
 def _json_int(value: JsonValue | None, default: int = 0) -> int:
     """Decode an integer field from a JSON payload without widening its type."""
     if isinstance(value, bool):
@@ -1159,7 +1199,10 @@ class RustRuntimeWorker:
             if not isinstance(handoff, dict):
                 raise RustWorkerError("journaled result lacks handoff object")
             handoff["claimed_by"] = work.get("claimed_by")
-        return self._post("/internal/runtime/results", envelope)
+        submitted_envelope = _with_worker_submission_trace(
+            envelope, work, self.worker_id
+        )
+        return self._post("/internal/runtime/results", submitted_envelope)
 
     def poll_once(
         self,
@@ -1329,7 +1372,10 @@ class AsyncRustRuntimeWorker:
             if not isinstance(handoff, dict):
                 raise RustWorkerError("journaled result lacks handoff object")
             handoff["claimed_by"] = work.get("claimed_by")
-        return await self._post("/internal/runtime/results", envelope)
+        submitted_envelope = _with_worker_submission_trace(
+            envelope, work, self.worker_id
+        )
+        return await self._post("/internal/runtime/results", submitted_envelope)
 
     async def poll_once(
         self,

@@ -1072,8 +1072,8 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
     assert accepted[0]["effect"]["state_update"] == [
         ["u", {"answer": "worker"}]
     ]
-    worker_trace = accepted[0]["effect"]["trace_events"][-1]
-    assert worker_trace == {
+    prepared_trace, submitted_trace = accepted[0]["effect"]["trace_events"]
+    assert prepared_trace == {
         "schema_version": 1,
         "event": "runtime.python_worker.result_prepared",
         "executor_target": "python-worker",
@@ -1088,6 +1088,9 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
         "op_version": "v1",
         "required_environment_id": "numpy-cpu-v2",
     }
+    assert submitted_trace["event"] == "runtime.python_worker.result_submitted"
+    assert submitted_trace["worker_id"] == "worker-2"
+    assert submitted_trace["lease_claim_id"] == "worker-2"
 
 
 def test_step_resolver_worker_rejects_callback_inside_transaction(
@@ -1472,10 +1475,13 @@ def test_async_worker_journals_awaited_callback_before_response_retry(tmp_path: 
 
     asyncio.run(invoke())
     assert calls == {"callback": 1, "result": 2}
-    worker_trace = accepted[0]["effect"]["trace_events"][-1]
-    assert worker_trace["worker_id"] == "worker-1"
-    assert worker_trace["lease_claim_id"] == "worker-1"
-    assert worker_trace["required_environment_id"] == "numpy-cpu-v2"
+    prepared_trace, submitted_trace = accepted[0]["effect"]["trace_events"]
+    assert prepared_trace["worker_id"] == "worker-1"
+    assert prepared_trace["lease_claim_id"] == "worker-1"
+    assert prepared_trace["required_environment_id"] == "numpy-cpu-v2"
+    assert submitted_trace["event"] == "runtime.python_worker.result_submitted"
+    assert submitted_trace["worker_id"] == "worker-2"
+    assert submitted_trace["lease_claim_id"] == "worker-2"
 
 
 def test_async_worker_cancellation_leaves_ambiguous_journal_row(tmp_path: Path) -> None:

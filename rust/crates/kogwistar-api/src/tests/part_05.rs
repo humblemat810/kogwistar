@@ -1299,12 +1299,19 @@
                     "worker_id": "effect-worker",
                     "identity_source": "worker_configuration",
                     "lease_claim_id": effect_work["claimed_by"]
+                }, {
+                    "schema_version": 1,
+                    "event": "runtime.python_worker.result_submitted",
+                    "executor_target": "python-worker",
+                    "worker_id": "effect-worker",
+                    "identity_source": "worker_configuration",
+                    "lease_claim_id": effect_work["claimed_by"]
                 }],
                 "successors": [{"node_id": "forged", "join_mask": 0}],
             }
         });
         let mut mismatched_trace = effect_payload.clone();
-        mismatched_trace["effect"]["trace_events"][0]["lease_claim_id"] =
+        mismatched_trace["effect"]["trace_events"][1]["lease_claim_id"] =
             json!("other-worker#other-lease");
         let mismatched_response = app
             .clone()
@@ -1361,19 +1368,33 @@
                 .iter()
                 .filter(|event_type| event_type.as_str() == "workflow.trace.v1")
                 .count(),
-            1
+            2
         );
-        let persisted_worker_trace = store
+        let persisted_worker_traces = store
             .list_server_run_events(&effect_run_id, 0, usize::MAX)
             .unwrap()
             .into_iter()
-            .find(|event| event.event_type == "workflow.trace.v1")
+            .filter(|event| event.event_type == "workflow.trace.v1")
+            .map(|event| serde_json::from_str::<Value>(&event.payload_json).unwrap())
+            .collect::<Vec<_>>();
+        let persisted_worker_trace = persisted_worker_traces
+            .iter()
+            .find(|event| event["trace"]["event"] == "runtime.python_worker.result_prepared")
             .unwrap();
-        let persisted_worker_trace: Value =
-            serde_json::from_str(&persisted_worker_trace.payload_json).unwrap();
-        assert_eq!(persisted_worker_trace["trace"]["worker_id"], "effect-worker");
+        assert_eq!(
+            persisted_worker_trace["trace"]["worker_id"],
+            "effect-worker"
+        );
         assert_eq!(
             persisted_worker_trace["trace"]["lease_claim_id"],
+            effect_work["claimed_by"]
+        );
+        let persisted_submission_trace = persisted_worker_traces
+            .iter()
+            .find(|event| event["trace"]["event"] == "runtime.python_worker.result_submitted")
+            .unwrap();
+        assert_eq!(
+            persisted_submission_trace["trace"]["lease_claim_id"],
             effect_work["claimed_by"]
         );
         let effect_state = store
