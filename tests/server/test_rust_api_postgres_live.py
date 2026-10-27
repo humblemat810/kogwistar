@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -23,6 +26,7 @@ SERVER_SOURCES = tuple(
         for path in RUST_ROOT.rglob("*")
         if path.is_file()
         and "target" not in path.parts
+        and "tests" not in path.parts
         and (path.suffix == ".rs" or path.name in {"Cargo.toml", "Cargo.lock"})
     )
 )
@@ -32,6 +36,16 @@ def _port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _hs256_token(secret: str, claims: dict[str, object]) -> str:
+    def encode(value: object) -> str:
+        raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    signing_input = f'{encode({"alg": "HS256", "typ": "JWT"})}.{encode(claims)}'
+    signature = hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
 def _exercise_postgres_transport(
@@ -641,6 +655,188 @@ def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
             headers={"x-kogwistar-roles": "reader"},
             tmp_path=tmp_path,
         )
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not pg_dsn or not pg_schema or sa_engine is None:
+        pytest.skip("PostgreSQL fixture unavailable")
+    if not SERVER.exists():
+        pytest.skip("build kogwistar-server before live graph parity test")
+    if any(source.stat().st_mtime > SERVER.stat().st_mtime for source in SERVER_SOURCES):
+        pytest.skip("rebuild current kogwistar-server before live graph parity test")
+
+    for name in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+    ):
+        monkeypatch.setenv(name, "python")
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.graph_query import GraphQuery
+    from kogwistar.server.auth_middleware import claims_ctx
+    from tests._helpers.embeddings import build_test_embedding_function
+    from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+
+    namespace = "alpha"
+    graph_type = "knowledge"
+    doc_id = "D-neighbor-parity"
+    id_prefix = uuid.uuid4().hex
+    source = build_entity_node(
+        node_id=f"{id_prefix}-source",
+        doc_id=doc_id,
+        metadata={"visibility": "public"},
+    )
+    visible_target = build_entity_node(
+        node_id=f"{id_prefix}-visible-target",
+        doc_id=doc_id,
+        metadata={"visibility": "public"},
+    )
+    private_target = build_entity_node(
+        node_id=f"{id_prefix}-private-target",
+        doc_id=doc_id,
+        metadata={"visibility": "private", "owner_agent_id": "owner-a"},
+    )
+    other_doc_target = build_entity_node(
+        node_id=f"{id_prefix}-other-doc-target",
+        doc_id="D-neighbor-parity-other",
+        metadata={"visibility": "public"},
+    )
+    visible_edge = build_relationship_edge(
+        edge_id=f"{id_prefix}-visible-edge",
+        src=source.id,
+        tgt=visible_target.id,
+        doc_id=doc_id,
+        metadata={"visibility": "public"},
+    )
+    private_endpoint_edge = build_relationship_edge(
+        edge_id=f"{id_prefix}-private-endpoint-edge",
+        src=source.id,
+        tgt=private_target.id,
+        doc_id=doc_id,
+        metadata={"visibility": "public"},
+    )
+    other_doc_edge = build_relationship_edge(
+        edge_id=f"{id_prefix}-other-doc-edge",
+        src=source.id,
+        tgt=other_doc_target.id,
+        doc_id="D-neighbor-parity-other",
+        metadata={"visibility": "public"},
+    )
+
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
+    backend.ensure_schema()
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "shared_postgres_graph"),
+        backend=backend,
+        namespace=namespace,
+        kg_graph_type=graph_type,
+        embedding_function=build_test_embedding_function("constant", dim=3),
+        acl_enabled=True,
+    )
+    owner_token = claims_ctx.set(
+        {
+            "agent_id": "owner-a",
+            "sub": "owner-a",
+            "role": "rw",
+            "ns": graph_type,
+            "storage_ns": namespace,
+        }
+    )
+    try:
+        for node in (source, visible_target, private_target, other_doc_target):
+            engine.write.add_node(node)
+        for edge in (visible_edge, private_endpoint_edge, other_doc_edge):
+            engine.write.add_edge(edge)
+    finally:
+        claims_ctx.reset(owner_token)
+
+    reader_claims: dict[str, object] = {
+        "sub": "reader-b",
+        "role": "ro",
+        "roles": ["reader"],
+        "ns": [graph_type],
+        "storage_ns": namespace,
+        "capabilities": ["read_graph"],
+        "exp": 4_102_444_800,
+    }
+    reader_token = claims_ctx.set(reader_claims)
+    try:
+        python_result = GraphQuery(engine).neighbors(source.id, doc_id=doc_id)
+    finally:
+        claims_ctx.reset(reader_token)
+
+    port = _port()
+    secret = uuid.uuid4().hex
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "AUTH_MODE": "jwt",
+            "JWT_SECRET": secret,
+            "JWT_ALG": "HS256",
+            "KOGWISTAR_BACKEND": "pg",
+            "KOGWISTAR_PG_DSN": pg_dsn,
+            "KOGWISTAR_PG_SCHEMA_BASE": pg_schema,
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+        }
+    )
+    process = subprocess.Popen(
+        [str(SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(
+                    f"Rust server exited\nstdout={stdout}\nstderr={stderr}"
+                )
+            try:
+                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust PostgreSQL server did not become ready")
+
+        response = httpx.post(
+            f"{base}/internal/graph/neighbors",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, reader_claims)}"
+            },
+            json={"rid": source.id, "doc_id": doc_id, "truth_graph": graph_type},
+            timeout=10,
+        )
+        assert response.status_code == 200, response.text
+        rust_payload = response.json()
+        assert sorted(rust_payload["nodes"]) == sorted(python_result["nodes"])
+        assert sorted(rust_payload["edges"]) == sorted(python_result["edges"])
+        assert rust_payload["nodes"] == [visible_target.id]
+        assert rust_payload["edges"] == [visible_edge.id]
     finally:
         process.terminate()
         try:

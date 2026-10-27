@@ -28,6 +28,17 @@ progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 live shared-PostgreSQL graph-neighbor parity: the authenticated Rust
+  HTTP route and Python `GraphQuery` read the same PostgreSQL projection under
+  equivalent reader claims. Both returned the same public neighbor and edge,
+  excluded an edge with a private endpoint, and excluded a different-document
+  neighbor. Evidence: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_neighbors_match_python_over_shared_projection`
+  passed on Windows CPython 3.13 against the existing PostgreSQL 17/pgvector
+  service; Rust server rebuilt with `cargo build -p kogwistar-api --bin
+  kogwistar-server`; Ruff passed. The test freshness guard now excludes
+  `src/tests/` Rust files, which do not affect the server binary and had caused
+  a false skip. This is one graph-read vertical slice only; DL-08C remains
+  IN PROGRESS and checklist counts and denominator are unchanged.
 - Existing DL-08C bounded neighbor-ACL evidence: Python
   `tests/mcp/test_chat_mcp_tools.py::test_mcp_neighbors_hide_private_endpoint_of_visible_edge`
   and `::test_mcp_neighbors_preserve_acl_visibility_and_hide_topology` passed
