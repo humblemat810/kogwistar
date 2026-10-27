@@ -1394,10 +1394,7 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_public_mcp_graph_reads_cross_projection_page_boundary() {
-        use axum::body::{Body, to_bytes};
-        use axum::http::Request;
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-        use tower::ServiceExt;
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_mcp_graph_pages_{}", uuid::Uuid::new_v4().simple());
@@ -1458,20 +1455,30 @@
             },
             Arc::new(service.clone()),
         );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let http = reqwest::Client::new();
         for (name, arguments, expected_field, expected) in [
             ("kg_neighbors", json!({"rid":"a-source"}), "nodes", json!(["z-target"])),
             ("kg_find_edges", json!({"relation":"links","tgt_label_contains":"Target"}), "edges", json!(["z-edge"])),
             ("kg_shortest_path", json!({"src_id":"a-source","dst_id":"z-target"}), "path", json!(["a-source","z-edge","z-target"])),
             ("kg_k_hop", json!({"start_ids":["a-source"],"k":2}), "layers", Value::Null),
         ] {
-            let response = app.clone().oneshot(Request::builder()
-                .method("POST").uri("/mcp")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::from(json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string()))
-                .unwrap()).await.unwrap();
+            let response = http
+                .post(format!("http://{address}/mcp"))
+                .bearer_auth(&token)
+                .json(&json!({
+                    "jsonrpc": "2.0",
+                    "id": name,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": arguments}
+                }))
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
-            let payload: Value = serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+            let payload: Value = response.json().await.unwrap();
             assert!(payload.get("error").is_none(), "{name}: {payload}");
             assert_eq!(payload["result"]["implementation_authority"], "rust");
             if name == "kg_k_hop" {
@@ -1487,7 +1494,8 @@
                 }
             }
         }
-        drop(app);
+        server.abort();
+        let _ = server.await;
         drop(service);
         client.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
         drop(client);
