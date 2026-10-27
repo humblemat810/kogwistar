@@ -837,6 +837,7 @@ dependencies = [
  "kogwistar-store-chroma",
  "kogwistar-store-memory",
  "kogwistar-store-postgres",
+ "kogwistar-store-sqlite",
  "reqwest",
  "serde",
  "serde_json",

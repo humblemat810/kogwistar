@@ -6,6 +6,7 @@ use kogwistar_store::{
 use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::PostgresStore;
+use kogwistar_store_sqlite::SqliteStore;
 use serde_json::{Value, json};
 use std::{
     env,
@@ -186,6 +187,103 @@ async fn projection_worker_composes_queue_and_chroma_without_shared_transaction(
         requests[1].1["metadatas"][0]["_kogwistar_namespace"],
         "workspace-a"
     );
+}
+
+#[tokio::test]
+async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
+    fn composition_bounds<Queue, Graph>()
+    where
+        Queue: IndexJobWriteStore,
+        Graph: GraphWriteStore,
+    {
+    }
+    composition_bounds::<SqliteStore, ChromaGraphStore>();
+
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let database = env::temp_dir().join(format!(
+        "kg-sqlite-chroma-projection-{}-{nonce}.sqlite3",
+        std::process::id()
+    ));
+    let queue = SqliteStore::open(&database).expect("open SQLite metadata store");
+    queue
+        .enqueue_index_job(NewIndexJob {
+            job_id: "job-sqlite-chroma".to_owned(),
+            namespace: "workspace-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .expect("enqueue durable projection job in SQLite");
+
+    let (endpoint, server) = fake_chroma().await;
+    let graph = ChromaGraphStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "test-sqlite-queue".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect fake Chroma");
+    let summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace-a"),
+            |input| async move {
+                assert_eq!(input.namespace, "workspace-a");
+                assert_eq!(input.entity_id, "node-1");
+                let mut record = GraphRecord::new("node-1");
+                record.document = Some("SQLite metadata, Chroma graph".to_owned());
+                record.metadata.insert("kind".to_owned(), json!("node"));
+                record.embedding = Some(vec![0.25, 0.75]);
+                Ok(record)
+            },
+        )
+        .await
+        .expect("project SQLite queue item to Chroma");
+
+    assert_eq!(summary.claimed, 1);
+    assert_eq!(summary.projected, 1);
+    let completed = queue
+        .index_jobs(
+            Some("workspace-a"),
+            Some("DONE"),
+            Some("node"),
+            Some("node-1"),
+            Some("node_embedding"),
+            10,
+        )
+        .await
+        .expect("read completed SQLite queue item");
+    assert_eq!(completed.len(), 1);
+
+    let requests = server.await.expect("fake Chroma server");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].0.contains("/collections HTTP"));
+    assert!(requests[1].0.contains("/upsert HTTP"));
+    assert_eq!(requests[1].1["ids"], json!(["node-1"]));
+    assert_eq!(
+        requests[1].1["documents"],
+        json!(["SQLite metadata, Chroma graph"])
+    );
+    assert_eq!(
+        requests[1].1["metadatas"][0]["_kogwistar_namespace"],
+        "workspace-a"
+    );
+
+    drop(graph);
+    drop(queue);
+    let _ = std::fs::remove_file(&database);
+    let _ = std::fs::remove_file(format!("{}.kogwistar-authority.lock", database.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", database.display()));
 }
 
 #[tokio::test]
