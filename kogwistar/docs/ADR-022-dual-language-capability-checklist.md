@@ -28,6 +28,22 @@ progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 reverse shared-PostgreSQL graph-write parity: Rust graph mutations
+  now maintain Python-compatible `gke_edge_endpoints` rows in the same database
+  transaction as the edge projection. An authenticated Rust HTTP mutation batch
+  containing node, edge, and their explicit ACL records was then read by
+  Python's ACL-aware `get_nodes()`, `get_edges()`, and `GraphQuery.neighbors()`;
+  Python returned the Rust-written edge and target alongside the original
+  Python-written graph. The test also verifies the endpoint projection rows and
+  retains the earlier Python-write/Rust-read ACL and document-scope checks.
+  Evidence: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_neighbors_match_python_over_shared_projection`
+  passed on Windows CPython 3.13 against the existing PostgreSQL 17/pgvector
+  service; `cargo test -p kogwistar-store-postgres` passed (6 passed, 8
+  DSN-only tests ignored), `cargo fmt --all -- --check`, Ruff, and
+  `git diff --check` passed. ACL records remain explicit mutation data; the
+  Rust mutation route does not infer or synthesize them. This extends one
+  storage/traversal vertical slice only; DL-08C remains IN PROGRESS and
+  checklist counts and denominator are unchanged.
 - 2026-10-27 live shared-PostgreSQL graph-neighbor parity: the authenticated Rust
   HTTP route and Python `GraphQuery` read the same PostgreSQL projection under
   equivalent reader claims. Both returned the same public neighbor and edge,

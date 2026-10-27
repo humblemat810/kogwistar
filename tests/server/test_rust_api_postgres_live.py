@@ -687,6 +687,7 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         monkeypatch.setenv(name, "python")
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Edge, Node
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
     from kogwistar.graph_query import GraphQuery
     from kogwistar.server.auth_middleware import claims_ctx
@@ -837,6 +838,144 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         assert sorted(rust_payload["edges"]) == sorted(python_result["edges"])
         assert rust_payload["nodes"] == [visible_target.id]
         assert rust_payload["edges"] == [visible_edge.id]
+
+        rust_target = build_entity_node(
+            node_id=f"{id_prefix}-rust-target",
+            doc_id=doc_id,
+            embedding=[0.25, 0.5, 0.75],
+            metadata={"visibility": "public"},
+        )
+        target_document, target_metadata = engine.write.node_doc_and_meta(rust_target)
+        target_metadata["_class_name"] = type(rust_target).__name__
+        rust_edge = build_relationship_edge(
+            edge_id=f"{id_prefix}-rust-edge",
+            src=source.id,
+            tgt=rust_target.id,
+            doc_id=doc_id,
+            embedding=[0.75, 0.5, 0.25],
+            metadata={"visibility": "public"},
+        )
+        edge_document = rust_edge.model_dump_json(field_mode="backend")
+        edge_metadata = engine.write.enrich_edge_meta(rust_edge)
+
+        def mutation(
+            *,
+            entity_kind: str,
+            table: str,
+            event_id: str,
+            entity: Node | Edge,
+            document: str,
+            metadata: dict[str, object],
+            entity_id: str,
+            embedding: list[float] | None,
+        ) -> dict[str, object]:
+            payload = entity.model_dump(
+                field_mode="backend", exclude=["embedding"], dump_format="json"
+            )
+            return {
+                "scope": {
+                    "namespace": namespace,
+                    "workspace_id": None,
+                    "graph_space": None,
+                },
+                "table": table,
+                "entity_kind": entity_kind,
+                "event_id": event_id,
+                "op": "ADD",
+                "payload": payload,
+                "record": {
+                    "id": entity_id,
+                    "document": document,
+                    "metadata": metadata,
+                    "embedding": embedding,
+                },
+                "embedding_dim": len(embedding or []),
+            }
+
+        mutations = [
+            mutation(
+                entity_kind="node",
+                table="gke_nodes",
+                event_id=f"{id_prefix}-rust-node-event",
+                entity=rust_target,
+                document=target_document,
+                metadata=target_metadata,
+                entity_id=rust_target.id,
+                embedding=rust_target.embedding or [],
+            ),
+            mutation(
+                entity_kind="edge",
+                table="gke_edges",
+                event_id=f"{id_prefix}-rust-edge-event",
+                entity=rust_edge,
+                document=edge_document,
+                metadata=edge_metadata,
+                entity_id=rust_edge.id,
+                embedding=rust_edge.embedding or [],
+            ),
+        ]
+        for entity, grain in ((rust_target, "node"), (rust_edge, "edge")):
+            for acl_record in engine.acl._default_acl_records_for_item(
+                entity, grain=grain
+            ):
+                acl_node = engine.acl._build_acl_record_node(acl_record)
+                acl_document, acl_metadata = engine.write.node_doc_and_meta(acl_node)
+                mutations.append(
+                    mutation(
+                        entity_kind="node",
+                        table="gke_nodes",
+                        event_id=f"{id_prefix}-acl-{acl_node.id}",
+                        entity=acl_node,
+                        document=acl_document,
+                        metadata=acl_metadata,
+                        entity_id=acl_node.id,
+                        embedding=None,
+                    )
+                )
+        mutation_body = {
+            "contract_version": 1,
+            "atomic": True,
+            "mutations": mutations,
+        }
+        writer_claims = {
+            **reader_claims,
+            "role": "rw",
+            "roles": ["reader", "rw"],
+            "capabilities": ["read_graph", "write_graph"],
+        }
+        mutation_response = httpx.post(
+            f"{base}/internal/graph/mutations",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, writer_claims)}"
+            },
+            json=mutation_body,
+            timeout=10,
+        )
+        assert mutation_response.status_code == 200, mutation_response.text
+        assert mutation_response.json()["results"][0]["mutated"] is True
+        assert mutation_response.json()["results"][1]["mutated"] is True
+        assert backend.node_get(ids=[rust_target.id])["ids"] == [rust_target.id]
+        assert backend.edge_get(ids=[rust_edge.id])["ids"] == [rust_edge.id]
+        endpoint_rows = backend.edge_endpoints_get(
+            where={"edge_id": rust_edge.id}, include=["documents"]
+        )
+        assert len(endpoint_rows["ids"]) == 2, endpoint_rows
+
+        reader_token = claims_ctx.set(reader_claims)
+        try:
+            python_rust_node = engine.read.get_nodes(ids=[rust_target.id])
+            python_rust_edge = engine.read.get_edges(ids=[rust_edge.id])
+            python_after_rust_write = GraphQuery(engine).neighbors(
+                source.id, doc_id=doc_id
+            )
+        finally:
+            claims_ctx.reset(reader_token)
+        assert [node.id for node in python_rust_node] == [rust_target.id]
+        assert [edge.id for edge in python_rust_edge] == [rust_edge.id]
+        assert python_after_rust_write == {
+            "nodes": {visible_target.id, rust_target.id},
+            "edges": {visible_edge.id, rust_edge.id},
+        }
     finally:
         process.terminate()
         try:

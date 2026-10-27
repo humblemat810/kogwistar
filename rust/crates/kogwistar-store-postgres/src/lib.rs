@@ -46,6 +46,7 @@ use tokio_postgres::{Config, GenericClient, NoTls, Row, Transaction};
 // processes can bootstrap the same schema concurrently, so this key is part of
 // the cross-language storage protocol.
 const POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY: i64 = 748_219_503;
+const EDGE_ENDPOINTS_TABLE: &str = "gke_edge_endpoints";
 
 /// Future accepted by [`PostgresStore::transaction`].  The lifetime is tied
 /// to the UoW borrow, so a pooled client cannot escape its transaction.
@@ -231,6 +232,7 @@ struct Tables {
     lane_messages_namespace_inbox_seq_index: String,
     lane_messages_claim_index: String,
     lane_messages_conversation_seq_index: String,
+    edge_endpoints: String,
 }
 
 impl Tables {
@@ -277,6 +279,7 @@ impl Tables {
             lane_messages_conversation_seq_index: quote_identifier(
                 "idx_lane_messages_conversation_seq",
             )?,
+            edge_endpoints: qualified(&quoted_schema, EDGE_ENDPOINTS_TABLE)?,
         })
     }
 }
@@ -3566,6 +3569,7 @@ where
         .into_iter()
         .map(|name| qualified(&tables.quoted_schema, &name))
         .collect::<PostgresStoreResult<Vec<_>>>()?;
+    let edge_endpoints = qualified(&tables.quoted_schema, EDGE_ENDPOINTS_TABLE)?;
     // Relation/type/dimension are validated constants. Data remains bind-bound
     // everywhere possible; pgvector requires explicit `TEXT::vector` casts.
     let sql = format!(
@@ -3575,7 +3579,10 @@ where
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
-         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());",
+         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
+         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_endpoint_id\" ON {} ((metadata->>'endpoint_id')); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_edge\" ON {} ((metadata->>'edge_id'));",
         schema_sql(tables),
         tables.quoted_schema,
         relations[0],
@@ -3586,6 +3593,9 @@ where
         dim,
         relations[3],
         dim,
+        edge_endpoints,
+        edge_endpoints,
+        edge_endpoints,
     );
     client.batch_execute(&sql).await.map_err(backend)
 }
@@ -3667,6 +3677,118 @@ fn vector_literal(vector: &[f32]) -> String {
             .collect::<Vec<_>>()
             .join(",")
     )
+}
+
+fn graph_edge_endpoint_ids(document: &Value, field: &str) -> PostgresStoreResult<Vec<String>> {
+    match document.get(field) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value.as_str().map(str::to_owned).ok_or_else(|| {
+                    PostgresStoreError::Backend(format!(
+                        "edge document field {field:?} must contain only string ids"
+                    ))
+                })
+            })
+            .collect(),
+        Some(_) => Err(PostgresStoreError::Backend(format!(
+            "edge document field {field:?} must be an array of string ids"
+        ))),
+    }
+}
+
+async fn sync_graph_edge_endpoints<C>(
+    client: &C,
+    tables: &Tables,
+    mutation: &GraphMutation,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    if mutation.entity_kind != "edge" {
+        return Ok(());
+    }
+
+    client
+        .execute(
+            &format!(
+                "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
+                tables.edge_endpoints
+            ),
+            &[&mutation.record.id],
+        )
+        .await
+        .map_err(backend)?;
+
+    if mutation.op == "TOMBSTONE" {
+        return Ok(());
+    }
+    let Some(document_json) = mutation.record.document.as_deref() else {
+        return Ok(());
+    };
+    let document: Value = serde_json::from_str(document_json)?;
+    let object = document.as_object().ok_or_else(|| {
+        PostgresStoreError::Backend("edge document must be a JSON object".to_owned())
+    })?;
+    let relation = object.get("relation").filter(|value| !value.is_null());
+    let doc_id = object.get("doc_id").filter(|value| !value.is_null());
+    let causal_type = object
+        .get("metadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("causal_type"))
+        .filter(|value| !value.is_null());
+
+    for (role, field, endpoint_type) in [
+        ("src", "source_ids", "node"),
+        ("tgt", "target_ids", "node"),
+        ("src", "source_edge_ids", "edge"),
+        ("tgt", "target_edge_ids", "edge"),
+    ] {
+        for endpoint_id in graph_edge_endpoint_ids(&document, field)? {
+            let row_id = format!(
+                "{}::{role}::{endpoint_type}::{endpoint_id}",
+                mutation.record.id
+            );
+            let mut row = Map::new();
+            row.insert("id".to_owned(), Value::String(row_id.clone()));
+            row.insert(
+                "edge_id".to_owned(),
+                Value::String(mutation.record.id.clone()),
+            );
+            row.insert("endpoint_id".to_owned(), Value::String(endpoint_id));
+            row.insert(
+                "endpoint_type".to_owned(),
+                Value::String(endpoint_type.to_owned()),
+            );
+            row.insert("role".to_owned(), Value::String(role.to_owned()));
+            if let Some(value) = relation {
+                row.insert("relation".to_owned(), value.clone());
+            }
+            if let Some(value) = doc_id {
+                row.insert("doc_id".to_owned(), value.clone());
+            }
+            if let Some(value) = causal_type {
+                row.insert("causal_type".to_owned(), value.clone());
+            }
+
+            let row_document = serde_json::to_string(&row)?;
+            let metadata = serde_json::to_string(&graph_metadata(&mutation.scope, &row)?)?;
+            client
+                .execute(
+                    &format!(
+                        "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
+                         ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                         metadata = EXCLUDED.metadata, updated_at = NOW()",
+                        tables.edge_endpoints
+                    ),
+                    &[&row_id, &row_document, &metadata],
+                )
+                .await
+                .map_err(backend)?;
+        }
+    }
+    Ok(())
 }
 
 fn sql_text_literal(value: &str) -> String {
@@ -3851,6 +3973,7 @@ where
         )
         .await
         .map_err(|error| PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}")))?;
+    sync_graph_edge_endpoints(client, tables, &mutation).await?;
     Ok(AppliedGraphMutation {
         event,
         inserted: true,

@@ -620,6 +620,13 @@
                     embedding vector(3) NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                CREATE TABLE "{schema}"."gke_edge_endpoints" (
+                    id TEXT PRIMARY KEY,
+                    document TEXT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );"#
             ))
             .await
