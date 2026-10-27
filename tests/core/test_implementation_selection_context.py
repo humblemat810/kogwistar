@@ -266,6 +266,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
     from kogwistar.engine_core.subsystems.acl import ACLSubsystem
     from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
+    from kogwistar.engine_core.subsystems.acl import ACLAwareWriteSubsystem
     from kogwistar.engine_core.subsystems.ingest import IngestSubsystem
     from kogwistar.messaging.service import LaneMessagingService
 
@@ -358,6 +359,43 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         for name in write_entrypoints
         if not getattr(
             getattr(WriteSubsystem, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
+    acl_write_entrypoints = (
+        "add_document",
+        "add_node_async",
+        "add_edge_async",
+        "add_pure_node",
+        "add_pure_edge",
+        "add_domain",
+        "maybe_reindex_edge_refs",
+        "maybe_reindex_node_refs",
+        "prune_node_refs_for_doc",
+        "rebuild_edge_refs_for_doc",
+        "rebuild_all_edge_refs",
+        "rebuild_node_refs_for_doc",
+        "rebuild_all_node_refs",
+        "delete_edges_by_ids",
+        "rust_postgres_delete_existing",
+        "rust_postgres_replace_existing",
+        "uses_rust_postgres_authority",
+        "add_node",
+        "create_node_if_absent",
+        "add_edge",
+        "index_node_docs",
+        "index_node_refs",
+        "index_edge_refs",
+        "delete_edge_ref_rows",
+        "delete_node_ref_rows",
+    )
+    unbound.extend(
+        f"ACLAwareWriteSubsystem.{name}"
+        for name in acl_write_entrypoints
+        if not getattr(
+            getattr(ACLAwareWriteSubsystem, name),
             "__implementation_selection_bound__",
             False,
         )
@@ -564,6 +602,46 @@ def test_acl_write_keeps_one_selector_snapshot_across_unit_of_work(
 
     assert record.target.entity_id == "node-1"
     assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_acl_aware_write_facade_keeps_snapshot_across_acl_and_raw_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    from kogwistar.engine_core.subsystems.acl import ACLAwareWriteSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+
+    @contextmanager
+    def unit_of_work():
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+        yield
+
+    class ACL:
+        def writes_can_share_backend_transaction(self) -> bool:
+            return True
+
+        def record_default_acl_for_item(self, _item: object, *, grain: str) -> None:
+            observed.append(f"acl:{grain}:{runtime_implementation_mode()}")
+
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection(),
+        acl=ACL(),
+        uow=unit_of_work,
+    )
+    raw_write = SimpleNamespace(
+        add_node=lambda _node, **_kwargs: observed.append(
+            f"write:{runtime_implementation_mode()}"
+        )
+    )
+    write = ACLAwareWriteSubsystem(engine, raw_write)
+
+    write.add_node(SimpleNamespace())
+
+    assert observed == ["write:python", "acl:node:python"]
     assert runtime_implementation_mode() == "rust"
 
 

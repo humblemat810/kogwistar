@@ -1714,21 +1714,27 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
 
+    @implementation_selection_bound
     def add_document(self, document: Document) -> None:
         self._raw.add_document(document)
 
+    @implementation_selection_bound
     async def add_node_async(self, node: Node, doc_id: str | None = None) -> None:
         await self._raw.add_node_async(node, doc_id=doc_id)
 
+    @implementation_selection_bound
     async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
         await self._raw.add_edge_async(edge, doc_id=doc_id)
 
+    @implementation_selection_bound
     def add_pure_node(self, node: PureChromaNode) -> None:
         self._raw.add_pure_node(node)
 
+    @implementation_selection_bound
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
         self._raw.add_pure_edge(edge)
 
+    @implementation_selection_bound
     def add_domain(self, domain: Domain) -> None:
         self._raw.add_domain(domain)
 
@@ -1738,30 +1744,39 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None) -> object:
         return self._raw.fanout_endpoints_rows(edge, doc_id)
 
+    @implementation_selection_bound
     def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
         self._raw.maybe_reindex_edge_refs(edge, force=force)
 
+    @implementation_selection_bound
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
         self._raw.maybe_reindex_node_refs(node, force=force)
 
+    @implementation_selection_bound
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         return self._raw.prune_node_refs_for_doc(node_id, doc_id)
 
+    @implementation_selection_bound
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
         return self._raw.rebuild_edge_refs_for_doc(doc_id)
 
+    @implementation_selection_bound
     def rebuild_all_edge_refs(self) -> int:
         return self._raw.rebuild_all_edge_refs()
 
+    @implementation_selection_bound
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
         return self._raw.rebuild_node_refs_for_doc(doc_id)
 
+    @implementation_selection_bound
     def rebuild_all_node_refs(self) -> int:
         return self._raw.rebuild_all_node_refs()
 
+    @implementation_selection_bound
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         self._raw.delete_edges_by_ids(edge_ids)
 
+    @implementation_selection_bound
     def rust_postgres_delete_existing(
         self, *, entity_kind: str, entity_ids: list[str]
     ) -> bool:
@@ -1769,6 +1784,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             entity_kind=entity_kind, entity_ids=entity_ids
         )
 
+    @implementation_selection_bound
     def rust_postgres_replace_existing(
         self,
         *,
@@ -1786,9 +1802,11 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             payload=payload,
         )
 
+    @implementation_selection_bound
     def uses_rust_postgres_authority(self) -> bool:
         return self._raw.uses_rust_postgres_authority()
 
+    @implementation_selection_bound
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
@@ -1806,6 +1824,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
+    @implementation_selection_bound
     def create_node_if_absent(
         self, node: Node, doc_id: str | None = None
     ) -> CreateNodeResult:
@@ -1819,6 +1838,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
                 self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
+    @implementation_selection_bound
     def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
@@ -1848,17 +1868,22 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def json_or_none(self, value: object) -> str | None:
         return self._raw.json_or_none(value)
 
+    @implementation_selection_bound
     def index_node_docs(self, node: Node) -> list[str]:
         return self._raw.index_node_docs(node)
 
+    @implementation_selection_bound
     def index_node_refs(self, node: Node) -> list[str]:
         return self._raw.index_node_refs(node)
 
+    @implementation_selection_bound
     def index_edge_refs(self, edge: Edge) -> list[str]:
         return self._raw.index_edge_refs(edge)
 
+    @implementation_selection_bound
     def delete_edge_ref_rows(self, edge_id: str) -> None:
         self._raw.delete_edge_ref_rows(edge_id)
 
+    @implementation_selection_bound
     def delete_node_ref_rows(self, node_id: str) -> None:
         self._raw.delete_node_ref_rows(node_id)

@@ -1265,6 +1265,20 @@ write-side selector-binding gap; it does not complete the `DL-15C` call-site,
 retry, worker, server-route, or continuation inventory. No checklist IDs or
 denominator changed; the fixed baseline remains **99/130 PASS (76.2%)**.
 
+The public ACL-aware writer facade is now covered separately from the raw writer:
+its effectful forwarding methods bind the same engine snapshot across ACL
+recording, transaction entry, and the underlying graph write. The new
+`test_acl_aware_write_facade_keeps_snapshot_across_acl_and_raw_write` flips the
+process selector inside the unit of work and verifies both the raw write and
+ACL record still observe the construction-time selection. The reflection
+contract includes the facade's effectful methods. That test and the existing
+ACL write selector regression passed (**3 targeted tests passed**); the live
+`test_acl_smoke_across_fake_chroma_and_pg_backends[pg]` also passed (**1 passed**)
+against the already-running Docker pgvector service using its temporary schema.
+This reinforces the `DL-15C` selector-boundary evidence but leaves its broader
+call-site and failure-path inventory open; the fixed checklist baseline remains
+unchanged.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its
