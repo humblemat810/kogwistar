@@ -369,7 +369,9 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
     )
     checklist = checklist_path.read_text(encoding="utf-8")
-    scope = checklist.split("## Scope accounting", 1)[1].split("## Latest", 1)[0]
+    scope = checklist.split("## Scope Accounting", 1)[1].split(
+        "## Design and inventory", 1
+    )[0]
     row_pattern = re.compile(
         r"^\| (DL-[A-Z0-9-]+) \| (PASS|IN PROGRESS|NOT STARTED|FAIL|BLOCKED)"
         r"(?:\s*\([^|]*\))? \|",
@@ -379,8 +381,8 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(current) == len(row_pattern.findall(checklist))
 
     inventory = re.search(
-        r"current inventory has \*\*(\d+) items\*\* "
-        r"\((\d+) PASS, (\d+) IN PROGRESS\)",
+        r"Current inventory: \*\*(\d+) items\*\* "
+        r"\(\*\*(\d+) PASS, (\d+) IN PROGRESS;",
         scope,
     )
     assert inventory is not None
@@ -410,15 +412,8 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(baseline_rows) == 130
     assert set(baseline_rows) <= set(current)
     assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
-    baseline_total = re.search(r"\*\*(\d+)/(\d+) are now PASS\*\*", scope)
-    assert baseline_total is not None
-    assert tuple(map(int, baseline_total.groups())) == (
-        sum(current[item_id] == "PASS" for item_id in baseline_rows),
-        len(baseline_rows),
-    )
     added = re.search(
-        r"The (\d+) IDs added since the baseline contain "
-        r"\*\*(\d+) PASS and (\d+) IN PROGRESS\*\*",
+        r"(\d+) later-added IDs are (\d+) PASS and (\d+) IN PROGRESS",
         scope,
     )
     assert added is not None

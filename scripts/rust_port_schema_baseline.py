@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import sqlalchemy as sa
+
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
@@ -76,10 +78,17 @@ def build_baseline() -> dict[str, Any]:
         for row in rows
     ]
 
-    postgres_store = EnginePostgresMetaStore(engine=object(), schema="kogwistar")
-    postgres_statements = [
-        _normalize_sql(statement) for statement in postgres_store._bootstrap_statements()
-    ]
+    postgres_engine = sa.create_engine("sqlite://")
+    try:
+        postgres_store = EnginePostgresMetaStore(
+            engine=postgres_engine, schema="kogwistar"
+        )
+        postgres_statements = [
+            _normalize_sql(statement)
+            for statement in postgres_store._bootstrap_statements()
+        ]
+    finally:
+        postgres_engine.dispose()
     return {
         "baseline_version": 1,
         "sqlite": {
