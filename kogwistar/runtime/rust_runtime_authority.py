@@ -336,6 +336,9 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
             predicate_registry=runtime.predicate_registry,
             dependency_provider=self._dependencies,
             cache_dir=cache_dir,
+            implementation_selection_snapshot=getattr(
+                runtime, "_implementation_selection_snapshot", None
+            ),
             headers=headers,
             client=self.client,
         )
@@ -792,6 +795,9 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
             predicate_registry=runtime.predicate_registry,
             dependency_provider=self._dependencies,
             cache_dir=cache_dir,
+            implementation_selection_snapshot=getattr(
+                runtime, "_implementation_selection_snapshot", None
+            ),
             headers=headers,
             client=self.client,
         )

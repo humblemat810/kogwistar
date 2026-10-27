@@ -25,7 +25,12 @@ from typing import TYPE_CHECKING, Protocol, cast
 import httpx
 
 from kogwistar.id_provider import stable_id
-from kogwistar.implementation_selection import callback_execution_scope
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    callback_execution_scope,
+    capture_implementation_selection,
+    implementation_selection_bound,
+)
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
 
@@ -164,6 +169,7 @@ class RustStepResolverAdapter:
         predicate_registry: Mapping[str, RustPredicate] | None = None,
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
     ) -> None:
         if not callable(step_resolver):
             raise TypeError("step_resolver must be callable")
@@ -171,6 +177,9 @@ class RustStepResolverAdapter:
         self.predicate_registry = dict(predicate_registry or {})
         self.dependency_provider = dependency_provider
         self.cache_dir = os.fspath(cache_dir) if cache_dir is not None else None
+        self._implementation_selection_snapshot = (
+            implementation_selection_snapshot or capture_implementation_selection()
+        )
 
     def _runtime_state(self, work: JsonObject, durable_state: JsonObject) -> dict[str, object]:
         """Attach process-local dependencies without treating them as wire JSON."""
@@ -349,11 +358,11 @@ class RustStepResolverAdapter:
     def _validate_work_identity(work: Mapping[str, object]) -> None:
         """Reject work that cannot be correlated before invoking user code."""
         required = ("message_id", "run_id", "step_id", "claimed_by", "correlation_id")
-        missing = [
-            field
-            for field in required
-            if not isinstance(work.get(field), str) or not work[field].strip()
-        ]
+        missing: list[str] = []
+        for field in required:
+            value = work.get(field)
+            if not isinstance(value, str) or not value.strip():
+                missing.append(field)
         if missing:
             raise RustWorkerError(
                 f"claimed work missing identity fields: {missing!r}"
@@ -379,6 +388,7 @@ class RustStepResolverAdapter:
         self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
 
+    @implementation_selection_bound
     def __call__(self, work: JsonObject) -> JsonObject:
         # Keep these imports local: this module deliberately avoids importing
         # the public runtime while its protocol helpers are imported.
@@ -674,6 +684,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
 
+    @implementation_selection_bound
     async def execute(self, work: JsonObject) -> JsonObject:
         from kogwistar.runtime.models import RunFailure
         from kogwistar.runtime.runtime import StepContext
@@ -922,6 +933,7 @@ class RustRuntimeWorker:
         predicate_registry: Mapping[str, RustPredicate] | None = None,
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.Client | None = None,
@@ -931,6 +943,7 @@ class RustRuntimeWorker:
             predicate_registry=predicate_registry,
             dependency_provider=dependency_provider,
             cache_dir=cache_dir,
+            implementation_selection_snapshot=implementation_selection_snapshot,
         )
         return cls(
             base_url=base_url,
@@ -1180,6 +1193,7 @@ class AsyncRustRuntimeWorker:
         predicate_registry: Mapping[str, RustPredicate] | None = None,
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
@@ -1189,6 +1203,7 @@ class AsyncRustRuntimeWorker:
             predicate_registry=predicate_registry,
             dependency_provider=dependency_provider,
             cache_dir=cache_dir,
+            implementation_selection_snapshot=implementation_selection_snapshot,
         )
         return cls(
             base_url=base_url,

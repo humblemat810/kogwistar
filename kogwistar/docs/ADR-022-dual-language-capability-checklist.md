@@ -1319,6 +1319,23 @@ the Python lease-fencing contract. A broader suspend/resume matrix passed its
 Windows run; it is not counted as a pass. The fixed baseline remains
 **99/130 PASS (76.2%)**, and DL-15C remains in progress.
 
+Rust-owned sync and async runs now pass the parent runtime's frozen
+implementation-selection snapshot into their Python worker adapters. Each
+adapter binds that snapshot over the entire callback and effect projection,
+including the Python state reducer after the callback returns; changing process
+environment selectors while a worker is queued or while its callback runs can
+no longer switch the reducer midway through one durable step. Regression tests
+`test_sync_rust_authority_passes_parent_selector_snapshot_to_worker`,
+`test_async_rust_authority_passes_parent_selector_snapshot_to_worker`, and the
+matching sync/async worker callback-plus-reduction drift tests passed; the full
+`tests/runtime/test_rust_runtime_python_worker.py` module passed (**64 passed**).
+After a behavior-preserving typing cleanup, the targeted drift and worker
+identity cases passed again (**10 passed**). Pyright on `rust_worker.py` and
+`rust_runtime_authority.py` reported **0 errors**; Ruff and `git diff --check`
+passed. This proves selector consistency for the hybrid Python callback lane,
+not operation registry parity or a seam-free Rust-native workload. The fixed
+baseline remains **99/130 PASS (76.2%)**; DL-15C remains in progress.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

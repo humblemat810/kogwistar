@@ -23,6 +23,7 @@ from kogwistar.runtime.rust_runtime_authority import (
     RustRuntimeAuthorityError,
     freeze_runtime_plan,
 )
+from kogwistar.implementation_selection import capture_implementation_selection
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST_SERVER = (
@@ -92,6 +93,88 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
             "cache_dir": "cache",
         }
     ]
+
+
+def test_sync_rust_authority_passes_parent_selector_snapshot_to_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    snapshot = capture_implementation_selection()
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    observed: dict[str, Any] = {}
+
+    def build_worker(_cls: object, **kwargs: Any) -> SimpleNamespace:
+        observed.update(kwargs)
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(
+        RustRuntimeWorker, "from_step_resolver", classmethod(build_worker)
+    )
+    runtime = SimpleNamespace(
+        step_resolver=lambda _op: None,
+        predicate_registry={},
+        _implementation_selection_snapshot=snapshot,
+    )
+    client = httpx.Client(
+        base_url="http://rust",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={}, request=request)
+        ),
+    )
+    authority = RustRuntimeAuthority(
+        runtime=runtime,
+        base_url="http://rust",
+        cache_dir=tmp_path,
+        client=client,
+    )
+    try:
+        assert observed["implementation_selection_snapshot"] == snapshot
+    finally:
+        authority.close()
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_async_rust_authority_passes_parent_selector_snapshot_to_worker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    snapshot = capture_implementation_selection()
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    observed: dict[str, Any] = {}
+
+    async def close_worker() -> None:
+        return None
+
+    def build_worker(_cls: object, **kwargs: Any) -> SimpleNamespace:
+        observed.update(kwargs)
+        return SimpleNamespace(aclose=close_worker)
+
+    monkeypatch.setattr(
+        AsyncRustRuntimeWorker, "from_step_resolver", classmethod(build_worker)
+    )
+    runtime = SimpleNamespace(
+        step_resolver=lambda _op: None,
+        predicate_registry={},
+        _implementation_selection_snapshot=snapshot,
+    )
+    client = httpx.AsyncClient(
+        base_url="http://rust",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={}, request=request)
+        ),
+    )
+    authority = AsyncRustRuntimeAuthority(
+        runtime=runtime,
+        base_url="http://rust",
+        cache_dir=tmp_path,
+        client=client,
+    )
+    try:
+        assert observed["implementation_selection_snapshot"] == snapshot
+    finally:
+        await authority.aclose()
+        await client.aclose()
 
 
 def test_rust_authority_scopes_live_python_dependencies_by_run() -> None:

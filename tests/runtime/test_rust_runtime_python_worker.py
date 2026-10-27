@@ -27,7 +27,11 @@ from kogwistar.runtime.rust_worker import (
     RustWorkerError,
     WorkerResultJournal,
 )
-from kogwistar.implementation_selection import transaction_authority_scope
+from kogwistar.implementation_selection import (
+    capture_implementation_selection,
+    transaction_authority_scope,
+)
+from kogwistar._rust_bridge import runtime_implementation_mode
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
@@ -286,6 +290,86 @@ def test_step_resolver_adapter_maps_context_mutation_update_and_explicit_route()
         "workflow_status": "succeeded",
         "final_state": {"seed": 1, "items": ["result"], "direct": "kept"},
     }
+
+
+def test_sync_rust_worker_binds_runtime_selection_through_callback_and_reduction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.runtime import base_runtime
+
+    observed: list[str] = []
+    reducer = base_runtime.apply_state_update_inplace
+
+    def observe_reducer(*args: Any, **kwargs: Any) -> None:
+        observed.append(runtime_implementation_mode())
+        reducer(*args, **kwargs)
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    selection_snapshot = capture_implementation_selection()
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        observed.append(runtime_implementation_mode())
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"answer": "ok"})],
+        )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    adapter = RustStepResolverAdapter(
+        resolver,
+        implementation_selection_snapshot=selection_snapshot,
+    )
+    monkeypatch.setattr(base_runtime, "apply_state_update_inplace", observe_reducer)
+
+    effect = adapter(_adapter_work())
+
+    assert observed == ["python", "python"]
+    assert effect["result"]["final_state"] == {"seed": 1, "answer": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_async_rust_worker_binds_runtime_selection_through_callback_and_reduction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.runtime import base_runtime
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    observed: list[str] = []
+    reducer = base_runtime.apply_state_update_inplace
+
+    def observe_reducer(*args: Any, **kwargs: Any) -> None:
+        observed.append(runtime_implementation_mode())
+        reducer(*args, **kwargs)
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    selection_snapshot = capture_implementation_selection()
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def execute(_ctx):
+        observed.append(runtime_implementation_mode())
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"answer": "ok"})],
+        )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    adapter = AsyncRustStepResolverAdapter(
+        resolver,
+        implementation_selection_snapshot=selection_snapshot,
+    )
+    monkeypatch.setattr(base_runtime, "apply_state_update_inplace", observe_reducer)
+    work = _adapter_work()
+    work["payload"]["worker_protocol"] = "async-v2"
+
+    effect = await adapter.execute(work)
+
+    assert observed == ["python", "python"]
+    assert effect["result"]["final_state"] == {"seed": 1, "answer": "ok"}
 
 
 def test_step_idempotency_key_stays_stable_when_another_worker_reclaims() -> None:
