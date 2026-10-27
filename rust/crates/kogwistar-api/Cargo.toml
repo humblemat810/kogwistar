@@ -9,6 +9,7 @@ license.workspace = true
 axum.workspace = true
 base64.workspace = true
 kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-engine = { path = "../kogwistar-engine" }
 kogwistar-store = { path = "../kogwistar-store" }
 kogwistar-store-sqlite = { path = "../kogwistar-store-sqlite" }
 kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }

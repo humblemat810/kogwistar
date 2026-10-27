@@ -796,6 +796,7 @@ dependencies = [
  "base64",
  "jsonwebtoken",
  "kogwistar-contracts",
+ "kogwistar-engine",
  "kogwistar-runtime",
  "kogwistar-store",
  "kogwistar-store-postgres",

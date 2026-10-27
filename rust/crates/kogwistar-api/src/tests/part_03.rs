@@ -595,6 +595,7 @@
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_graph_mutation_{}", uuid::Uuid::new_v4().simple());
+        let embedding_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
@@ -631,7 +632,29 @@
             ))
             .await
             .unwrap();
-        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        let embedding_calls = Arc::new(Mutex::new(Vec::new()));
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap()
+            .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+                profile: kogwistar_engine::embedding::EmbeddingProfile {
+                    provider: "test".to_owned(),
+                    model: "fixed-v1".to_owned(),
+                    dimension: 3,
+                    similarity_metric: "cosine".to_owned(),
+                    endpoint_fingerprint: None,
+                    max_sequence_length: None,
+                    crop_token_budget: None,
+                    tokenizer_fingerprint: None,
+                    crop_policy: None,
+                    embedding_kind: Some("single_vector".to_owned()),
+                    model_revision: None,
+                    preprocessing_fingerprint: None,
+                    max_image_patches: None,
+                },
+                vector: vec![0.0, 0.0, 1.0],
+                calls: embedding_calls.clone(),
+                fail: Some(embedding_failure.clone()),
+            }));
         service.ensure_schema().await.unwrap();
         let mut body: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -922,6 +945,39 @@
             .await
             .unwrap();
         assert_eq!(conflicting_response.status(), StatusCode::CONFLICT);
+
+        let mut generated = body.clone();
+        generated["mutations"] = json!([body["mutations"][0].clone()]);
+        generated["mutations"][0]["event_id"] = json!("graph-route-event-rust-embedding");
+        generated["mutations"][0]["payload"]["id"] = json!("node-rust-embedded");
+        generated["mutations"][0]["record"]["id"] = json!("node-rust-embedded");
+        generated["mutations"][0]["record"]["document"] = json!("Rust-generated vector input");
+        generated["mutations"][0]["record"]["embedding"] = Value::Null;
+        generated["mutations"][0]["embedding_dim"] = json!(0);
+        generated["index_jobs"] = json!([]);
+        let generated_response = reqwest::Client::new()
+            .post(format!("http://{address}/internal/graph/mutations"))
+            .bearer_auth(make_token(&["write_graph"], "alpha"))
+            .json(&generated)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(generated_response.status(), StatusCode::OK);
+        assert_eq!(embedding_calls.lock().unwrap().len(), 1);
+
+        embedding_failure.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut failed_generation = generated.clone();
+        failed_generation["mutations"][0]["event_id"] = json!("graph-route-event-provider-failure");
+        failed_generation["mutations"][0]["payload"]["id"] = json!("node-provider-failure");
+        failed_generation["mutations"][0]["record"]["id"] = json!("node-provider-failure");
+        let failed_response = reqwest::Client::new()
+            .post(format!("http://{address}/internal/graph/mutations"))
+            .bearer_auth(make_token(&["write_graph"], "alpha"))
+            .json(&failed_generation)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed_response.status(), StatusCode::BAD_GATEWAY);
         server.abort();
         let _ = server.await;
 
@@ -930,7 +986,7 @@
             .replay_raw_events("alpha", 0, 100)
             .await
             .unwrap();
-        assert_eq!(events.len(), 6);
+        assert_eq!(events.len(), 7);
         let jobs = service
             .store
             .list_index_jobs(Some("alpha"), None, None, None, None, 10)
@@ -956,6 +1012,39 @@
             .unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].id, "node-1");
+        let generated_records = service
+            .store
+            .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: Some("ws".to_owned()),
+                    graph_space: Some("facts".to_owned()),
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["node-rust-embedded".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(generated_records.len(), 1);
+        assert_eq!(generated_records[0].embedding, Some(vec![0.0, 0.0, 1.0]));
+        let failed_records = service
+            .store
+            .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: Some("ws".to_owned()),
+                    graph_space: Some("facts".to_owned()),
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["node-provider-failure".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(failed_records.is_empty());
         let edge_records = service
             .store
             .graph_projection_records(kogwistar_store::GraphProjectionRead {
@@ -1038,7 +1127,7 @@
                 .await
                 .unwrap()
                 .len(),
-            6
+            7
         );
         assert_eq!(
             service
@@ -1098,7 +1187,7 @@
                 .await
                 .unwrap()
                 .len(),
-            6
+            7
         );
         assert!(
             service

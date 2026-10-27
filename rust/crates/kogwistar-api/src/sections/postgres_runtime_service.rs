@@ -14,6 +14,7 @@ impl PostgresRunApplicationService {
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
+                embedding_provider: None,
             })
             .map_err(|error| error.to_string())
     }
@@ -37,6 +38,13 @@ impl PostgresRunApplicationService {
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
         self.max_queue = max_queue.max(1);
+        self
+    }
+
+    /// Opt in to server-side embedding for synchronous graph mutation batches.
+    /// Batches carrying index jobs retain their asynchronous two-stage path.
+    pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
         self
     }
 
@@ -948,7 +956,7 @@ impl PostgresRunApplicationService {
                 "Graph mutation requires write_graph capability",
             );
         }
-        let input: GraphMutationBatchInput = match serde_json::from_slice(&request.body) {
+        let mut input: GraphMutationBatchInput = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -991,6 +999,30 @@ impl PostgresRunApplicationService {
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_SCOPE_FORBIDDEN",
                 "Graph mutation scope is outside the principal storage scope",
+            );
+        }
+        if let Err(error) = self.embed_missing_graph_vectors(&mut input).await {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                error,
+            );
+        }
+        let mutations = match graph_mutation_batch_value(input.clone()) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        if let Err(error) = validate_graph_mutation_envelopes(&input, &mutations) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
             );
         }
         let applied = if input.index_jobs.is_empty() {
@@ -1040,6 +1072,67 @@ impl PostgresRunApplicationService {
                 error.to_string(),
             ),
         }
+    }
+
+    async fn embed_missing_graph_vectors(
+        &self,
+        input: &mut GraphMutationBatchInput,
+    ) -> Result<(), String> {
+        // A batch with index intents intentionally remains Stage 1 and is
+        // embedded by the durable worker, never synchronously promoted here.
+        if !input.index_jobs.is_empty() {
+            return Ok(());
+        }
+        let Some(provider) = self.embedding_provider.as_ref() else {
+            return Ok(());
+        };
+        let profile = provider.profile();
+        profile.validate().map_err(|error| error.to_string())?;
+
+        let mut positions = Vec::new();
+        let mut texts = Vec::new();
+        for (position, mutation) in input.mutations.iter_mut().enumerate() {
+            if !matches!(mutation.op.as_str(), "ADD" | "REPLACE")
+                || mutation.record.embedding.is_some()
+                || mutation.record.metadata.get("entity_type").and_then(Value::as_str)
+                    == Some("acl_record")
+            {
+                continue;
+            }
+            if mutation.embedding_dim != 0 && mutation.embedding_dim != profile.dimension {
+                return Err("embedding profile dimension conflicts with graph mutation".to_owned());
+            }
+            let text = mutation
+                .record
+                .document
+                .as_ref()
+                .ok_or_else(|| "missing graph document for embedding generation".to_owned())?;
+            positions.push(position);
+            texts.push(text.clone());
+        }
+        if texts.is_empty() {
+            return Ok(());
+        }
+
+        let vectors = provider
+            .embed(&texts)
+            .await
+            .map_err(|_| "embedding provider failed".to_owned())?;
+        if vectors.len() != positions.len() {
+            return Err("embedding provider returned an unexpected vector count".to_owned());
+        }
+        for (position, vector) in positions.into_iter().zip(vectors) {
+            if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
+                return Err("embedding provider returned an invalid vector".to_owned());
+            }
+            let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+            if vector.iter().any(|value| !value.is_finite()) {
+                return Err("embedding provider vector exceeds graph storage range".to_owned());
+            }
+            input.mutations[position].record.embedding = Some(vector);
+            input.mutations[position].embedding_dim = profile.dimension;
+        }
+        input.validate().map_err(|error| error.to_string())
     }
 
     async fn document_projection_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {

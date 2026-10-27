@@ -28,19 +28,29 @@ progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
-- 2026-10-27 Rust embedding-provider foundation: `kogwistar-engine` now has a
-  typed async `EmbeddingProvider` surface and an Ollama implementation matching
-  Python's single-text `/api/embeddings` calls, L2 normalization, and shared
-  `EmbeddingProfile` projection. Endpoint fingerprints match Python for
+- 2026-10-27 Rust embedding-provider vertical slice: `kogwistar-engine` has a
+  typed async `EmbeddingProvider` and Ollama implementation matching Python's
+  single-text `/api/embeddings` calls, L2 normalization, and shared
+  `EmbeddingProfile` projection. The PostgreSQL application service can opt in
+  to that provider for synchronous internal graph-mutation batches: it embeds
+  only missing content vectors before the existing atomic store call, preserves
+  caller-supplied vectors, excludes ACL system nodes, and leaves batches with
+  durable index jobs on the asynchronous Stage-1 path. Provider/profile/vector
+  validation failures return before storage; transaction ownership remains in
+  the selected Rust store. Endpoint fingerprints match Python for
   credential/query removal, empty paths, and explicitly supplied default
   ports; configured endpoints are rejected when they conflict with a profile
-  fingerprint. The shared fixture is consumed by both languages. Evidence:
-  `cargo test -p kogwistar-engine --lib` (**22 passed**) and the Python profile
-  plus normalization modules (**15 passed**) on Windows CPython 3.13; Rust
-  formatting passed. This is provider/profile evidence under DL-05 only; Rust
-  public graph upsert is not yet wired to it, and OpenAI/Azure/Google provider
-  parity remains unimplemented. DL-05 remains IN PROGRESS; no checklist IDs,
-  statuses, or denominators changed.
+  fingerprint. The shared profile fixture is consumed by both languages.
+  Evidence: `cargo test -p kogwistar-engine --lib` (**22 passed**), the Python
+  profile plus normalization modules (**15 passed**) on Windows CPython 3.13,
+  and `cargo test -p kogwistar-api --lib` (**84 passed, 10 ignored**); the live
+  `tests::postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available`
+  passed against local pgvector and verifies persisted generated vectors,
+  preserved staged jobs, and no write after provider failure. Rust formatting
+  passed. This closes only the tested internal synchronous mutation path under
+  DL-05; the high-level `/api/graph/upsert` route remains deferred, as do
+  OpenAI/Azure/Google provider parity and full cross-backend coverage. DL-05
+  remains IN PROGRESS; no checklist IDs, statuses, or denominators changed.
 - 2026-10-27 transactional rollback coverage for derived edge endpoints: the
   live PostgreSQL failure-injection test now submits a node and edge mutation
   in one batch, then forces index-intent insertion to fail. It verifies the

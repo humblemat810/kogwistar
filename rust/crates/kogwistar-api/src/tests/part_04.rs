@@ -1099,3 +1099,131 @@
         );
         assert_eq!(payload.worker_protocol, "async-v2");
     }
+    struct FixedEmbeddingProvider {
+        profile: kogwistar_engine::embedding::EmbeddingProfile,
+        vector: Vec<f64>,
+        calls: Arc<Mutex<Vec<Vec<String>>>>,
+        fail: Option<Arc<std::sync::atomic::AtomicBool>>,
+    }
+
+    impl kogwistar_engine::embedding::EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            &self.profile
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push(texts.to_vec());
+                if self
+                    .fail
+                    .as_ref()
+                    .is_some_and(|fail| fail.load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    return Err(kogwistar_engine::embedding::EmbeddingError::Request(
+                        "test provider failure".to_owned(),
+                    ));
+                }
+                Ok(texts.iter().map(|_| self.vector.clone()).collect())
+            })
+        }
+    }
+
+    fn graph_mutation_batch_without_vector() -> GraphMutationBatchInput {
+        let mut body: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        body["mutations"][0]["record"]["document"] = json!("a source-grounded node");
+        body["mutations"][0]["record"]["embedding"] = Value::Null;
+        body["mutations"][0]["embedding_dim"] = json!(0);
+        serde_json::from_value(body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn configured_rust_provider_fills_missing_graph_vector_before_atomic_store_call() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: calls.clone(),
+            fail: None,
+        });
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgresql://test:test@127.0.0.1:1/test",
+            "public",
+        )
+        .unwrap()
+        .with_embedding_provider(provider);
+        let mut batch = graph_mutation_batch_without_vector();
+
+        service.embed_missing_graph_vectors(&mut batch).await.unwrap();
+
+        assert_eq!(batch.mutations[0].record.embedding, Some(vec![0.6, 0.8]));
+        assert_eq!(batch.mutations[0].embedding_dim, 2);
+        assert_eq!(calls.lock().unwrap().as_slice(), &[vec!["a source-grounded node".to_owned()]]);
+    }
+
+    #[tokio::test]
+    async fn provider_does_not_turn_durable_two_stage_batch_into_synchronous_embedding() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: calls.clone(),
+            fail: None,
+        });
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgresql://test:test@127.0.0.1:1/test",
+            "public",
+        )
+        .unwrap()
+        .with_embedding_provider(provider);
+        let mut batch = graph_mutation_batch_without_vector();
+        batch.index_jobs.push(kogwistar_contracts::GraphIndexJobV1 {
+            job_id: "index-node-1".to_owned(),
+            namespace: "tenant-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        });
+
+        service.embed_missing_graph_vectors(&mut batch).await.unwrap();
+
+        assert_eq!(batch.mutations[0].record.embedding, None);
+        assert!(calls.lock().unwrap().is_empty());
+    }
