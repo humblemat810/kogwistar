@@ -517,6 +517,80 @@ def test_python_facade_graph_batch_rolls_back_across_native_postgres_boundary(
     assert backend.node_get(ids=[entity_id], include=["documents"])["ids"] == []
 
 
+def test_python_facade_graph_batch_retry_is_idempotent_across_native_boundary(
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    store.ensure_initialized()
+    namespace = f"facade-retry-{uuid.uuid4().hex}"
+    entity_id = f"retry-node-{uuid.uuid4().hex}"
+    batch: dict[str, Any] = {
+        "contract_version": 1,
+        "atomic": True,
+        "mutations": [
+            {
+                "scope": {"namespace": namespace},
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": f"event-{entity_id}",
+                "op": "ADD",
+                "payload": {"id": entity_id, "text": "original"},
+                "record": {
+                    "id": entity_id,
+                    "document": "original",
+                    "metadata": {},
+                    "embedding": [1.0, 0.0, 0.0],
+                },
+                "embedding_dim": 3,
+            }
+        ],
+        "index_jobs": [
+            {
+                "job_id": f"job-{entity_id}",
+                "namespace": namespace,
+                "entity_kind": "node",
+                "entity_id": entity_id,
+                "index_kind": "node_docs",
+                "op": "UPSERT",
+                "payload_json": "{\"embedding\":[1.0,0.0,0.0]}",
+                "max_retries": 3,
+            }
+        ],
+    }
+
+    first = store.apply_graph_mutations_atomic(batch)
+    retry = store.apply_graph_mutations_atomic(batch)
+    assert len(first) == len(retry) == 1
+    assert first[0]["inserted"] is True
+    assert first[0]["mutated"] is True
+    assert retry[0]["inserted"] is False
+    assert retry[0]["mutated"] is False
+    assert retry[0]["event"]["seq"] == first[0]["event"]["seq"]
+
+    conflicting = json.loads(json.dumps(batch))
+    conflicting["mutations"][0]["payload"]["text"] = "different"
+    with pytest.raises(RustParityError) as conflict:
+        store.apply_graph_mutations_atomic(conflicting)
+    assert conflict.value.__cause__ is not None
+    assert "reused with different input" in str(conflict.value.__cause__)
+
+    events = list(store.iter_entity_events(namespace=namespace))
+    assert [(item[1], item[2], item[3]) for item in events] == [
+        ("node", entity_id, "ADD")
+    ]
+    jobs = store.list_index_jobs(namespace=namespace)
+    assert [job.job_id for job in jobs] == [f"job-{entity_id}"]
+    projected = backend.node_get(ids=[entity_id], include=["documents", "embeddings"])
+    assert projected["ids"] == [entity_id]
+    assert projected["documents"] == ["original"]
+    assert projected["embeddings"][0] == [1.0, 0.0, 0.0]
+
+
 def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
     monkeypatch: pytest.MonkeyPatch,
     pg_dsn: str | None,
