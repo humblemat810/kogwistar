@@ -606,6 +606,17 @@ snapshot's denominator.
   fixture is unavailable**) on Windows CPython 3.13. ACL authorization and
   persisted data semantics are unchanged; this closes only selector drift
   within these ACL operations, not full cross-language ACL parity.
+- Bound every explicit public operation on `ACLAwareReadSubsystem`, including
+  entity retrieval, semantic search, map hydration, and projection helpers, so
+  raw retrieval and ACL visibility filtering share one captured selector. The
+  selector-drift regression flips the process setting in the raw read and
+  confirms the subsequent visibility check stays on the original selection.
+  Evidence:
+  `tests/core/test_implementation_selection_context.py::test_acl_aware_read_keeps_one_selector_snapshot_through_filtering`, the
+  public-operation reflection invariant, and `tests/acl/test_acl_graph.py` plus
+  `tests/acl/test_acl_protocol.py` (**47 passed, 2 PostgreSQL cases skipped
+  because the optional testcontainers fixture is unavailable**) on Windows
+  CPython 3.13. ACL visibility rules and returned payloads are unchanged.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains

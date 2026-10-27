@@ -1213,6 +1213,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
 
+    @implementation_selection_bound
     def load_node_map(
         self,
         ids: Sequence[str],
@@ -1233,6 +1234,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(node)
         }
 
+    @implementation_selection_bound
     def load_edge_map(
         self,
         ids: Sequence[str],
@@ -1389,6 +1391,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                     return False
         return True
 
+    @implementation_selection_bound
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
@@ -1408,6 +1411,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [node for node in nodes if self._node_visible(node)]
 
+    @implementation_selection_bound
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
@@ -1427,9 +1431,11 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [edge for edge in edges if self._edge_visible(edge)]
 
+    @implementation_selection_bound
     def get_document(self, doc_id: str) -> Document:
         return self._raw.get_document(doc_id)
 
+    @implementation_selection_bound
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -1437,6 +1443,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> bool:
         return bool(self._raw.node_exists(ids=ids, where=where))
 
+    @implementation_selection_bound
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -1444,6 +1451,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> bool:
         return bool(self._raw.edge_exists(ids=ids, where=where))
 
+    @implementation_selection_bound
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -1452,6 +1460,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[dict[str, JsonValue]]:
         return self._raw.get_node_metadatas(ids=ids, where=where, limit=limit)
 
+    @implementation_selection_bound
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -1460,30 +1469,37 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[dict[str, JsonValue]]:
         return self._raw.get_edge_metadatas(ids=ids, where=where, limit=limit)
 
+    @implementation_selection_bound
     def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         return self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    @implementation_selection_bound
     def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         return self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    @implementation_selection_bound
     def edges_by_doc(self, doc_id: str, where: dict[str, JsonValue] | None = None) -> list[str]:
         return self._raw.edges_by_doc(doc_id, where=where)
 
+    @implementation_selection_bound
     def list_edges_with_ref_filter(
         self, doc_id: str, where: dict[str, JsonValue] | None = None
     ) -> list[Edge]:
         return self._raw.list_edges_with_ref_filter(doc_id, where=where)
 
+    @implementation_selection_bound
     def nodes_by_doc(
         self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[str]:
         return self._raw.nodes_by_doc(doc_id, where=where)
 
+    @implementation_selection_bound
     def list_nodes_with_ref_filter(
         self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[Node]:
         return self._raw.list_nodes_with_ref_filter(doc_id, where=where)
 
+    @implementation_selection_bound
     def ids_with_insertion_method(
         self,
         *,
@@ -1499,6 +1515,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             doc_id=doc_id,
         )
 
+    @implementation_selection_bound
     def extract_reference_contexts(
         self,
         node_or_id: Node | Edge | str,
@@ -1514,6 +1531,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             prefer_label_fallback=prefer_label_fallback,
         )
 
+    @implementation_selection_bound
     def query_nodes(
         self,
         *args: object,
@@ -1534,6 +1552,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [[node for node in batch if self._node_visible(node)] for batch in batches]
 
+    @implementation_selection_bound
     def query_edges(
         self,
         *args: object,
@@ -1570,6 +1589,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             raise TypeError("vector query where filter must be an object")
         return result
 
+    @implementation_selection_bound
     def search_nodes_as_of(
         self,
         *,
@@ -1606,6 +1626,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(node)
         ]
 
+    @implementation_selection_bound
     def search_nodes_as_of_scored(
         self,
         *,
@@ -1642,6 +1663,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(hit.node)
         ]
 
+    @implementation_selection_bound
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1649,6 +1671,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[Node]:
         return self._raw.nodes_from_single_or_id_query_result(got, node_type=node_type)
 
+    @implementation_selection_bound
     def edges_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1659,6 +1682,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             got, edge_type=edge_type, include=include
         )
 
+    @implementation_selection_bound
     def nodes_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
@@ -1666,6 +1690,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[list[Node]]:
         return self._raw.nodes_from_query_result(gots, node_type=node_type)
 
+    @implementation_selection_bound
     def edges_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
@@ -1673,6 +1698,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[list[Edge]]:
         return self._raw.edges_from_query_result(gots, edge_type=edge_type)
 
+    @implementation_selection_bound
     def where_update_from_resolve_mode(
         self,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],

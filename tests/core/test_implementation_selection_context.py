@@ -265,6 +265,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.read import ReadSubsystem
     from kogwistar.engine_core.subsystems.rollback import RollbackSubsystem
     from kogwistar.engine_core.subsystems.acl import ACLSubsystem
+    from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
     from kogwistar.messaging.service import LaneMessagingService
 
     unbound: list[str] = []
@@ -274,6 +275,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         LaneMessagingService,
         ReadSubsystem,
         RollbackSubsystem,
+        ACLAwareReadSubsystem,
     ):
         unbound.extend(
             f"{subsystem.__name__}.{name}"
@@ -522,6 +524,32 @@ def test_acl_write_keeps_one_selector_snapshot_across_unit_of_work(
     )
 
     assert record.target.entity_id == "node-1"
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_acl_aware_read_keeps_one_selector_snapshot_through_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+    entity = object()
+
+    class RawRead:
+        def get_nodes(self, **_values: object) -> list[object]:
+            monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+            return [entity]
+
+    acl_read = ACLAwareReadSubsystem(SimpleNamespace(), RawRead())
+    monkeypatch.setattr(
+        acl_read,
+        "_node_visible",
+        lambda _node: observed.append(runtime_implementation_mode()) or True,
+    )
+
+    assert acl_read.get_nodes() == [entity]
     assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 
