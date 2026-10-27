@@ -129,10 +129,15 @@ fn validate_span_against_sources(
     default_doc_id: &str,
     source_texts: &BTreeMap<String, String>,
 ) -> Result<(), GraphExtractionValidationError> {
-    let doc_id = span
-        .get("doc_id")
-        .and_then(Value::as_str)
-        .unwrap_or(default_doc_id);
+    let doc_id = match span.get("doc_id") {
+        Some(Value::String(doc_id)) if !doc_id.is_empty() => doc_id,
+        Some(_) => {
+            return Err(GraphExtractionValidationError::SourceTextUnavailable(
+                "<invalid span doc_id>".to_owned(),
+            ));
+        }
+        None => default_doc_id,
+    };
     let source = source_texts
         .get(doc_id)
         .ok_or_else(|| GraphExtractionValidationError::SourceTextUnavailable(doc_id.to_owned()))?;
@@ -267,5 +272,32 @@ mod tests {
             flattened.validate_source_spans(&source),
             Err(GraphExtractionValidationError::FlattenedSpansUnsupported)
         );
+    }
+
+    #[test]
+    fn malformed_explicit_span_document_ids_fail_closed_from_shared_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/graph-extraction-invalid-span-doc-id-v1.json"
+        ))
+        .unwrap();
+        let source_text = fixture["source_text"].as_str().unwrap();
+        let cases = fixture["cases"].as_array().unwrap();
+        for case in cases {
+            let mut payload: Value = serde_json::from_str(include_str!(
+                "../../../../contracts/golden/graph-extraction-v1.json"
+            ))
+            .unwrap();
+            payload["nodes"][0]["references"][0]["doc_id"] = case["doc_id"].clone();
+            let request: GraphExtractionRequestV1 = serde_json::from_value(payload).unwrap();
+            let sources = BTreeMap::from([("doc-1".to_owned(), source_text.to_owned())]);
+            assert_eq!(
+                request.validate_source_spans(&sources),
+                Err(GraphExtractionValidationError::SourceTextUnavailable(
+                    "<invalid span doc_id>".to_owned()
+                )),
+                "case {:?}",
+                case["name"]
+            );
+        }
     }
 }

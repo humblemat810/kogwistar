@@ -87,6 +87,21 @@ def test_graph_extraction_source_validation_fails_closed_for_missing_text_and_fl
         )
 
 
+def test_malformed_explicit_span_document_ids_fail_closed_from_shared_fixture() -> None:
+    cases_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/graph-extraction-invalid-span-doc-id-v1.json"
+    )
+    cases = json.loads(cases_path.read_text(encoding="utf-8"))
+    source_text = cases["source_text"]
+    for case in cases["cases"]:
+        payload = _fixture()
+        payload["nodes"][0]["references"][0]["doc_id"] = case["doc_id"]
+        request = validate_graph_extraction_request(payload)
+        with pytest.raises(GraphExtractionContractError, match="span doc_id"):
+            request.validate_source_spans({"doc-1": source_text})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
