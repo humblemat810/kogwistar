@@ -1,4 +1,57 @@
     #[tokio::test]
+    async fn postgres_worker_graph_effect_requires_write_graph_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgresql://worker:secret@127.0.0.1:1/unreachable",
+            "worker_effect_authority",
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/runtime/results".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "handoff": {
+                        "message_id": "lane-1",
+                        "claimed_by": "worker-1",
+                        "run_id": "run-1",
+                        "step_id": "step-1",
+                        "correlation_id": "run-1"
+                    },
+                    "effect": {
+                        "contract_version": 1,
+                        "effect_id": "effect-1",
+                        "graph_mutation_batch": {
+                            "contract_version": 1,
+                            "atomic": true,
+                            "mutations": [{
+                                "scope": {"namespace": "alpha"},
+                                "table": "gke_nodes",
+                                "entity_kind": "node",
+                                "event_id": "event-1",
+                                "op": "ADD",
+                                "payload": {"id": "node-1"},
+                                "record": {"id": "node-1"},
+                                "embedding_dim": 0
+                            }]
+                        }
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "read-only-worker",
+                    "role": "reader",
+                    "storage_ns": "alpha",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
+    }
+
+    #[tokio::test]
     async fn sqlite_submit_enforces_atomic_queue_backpressure() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;

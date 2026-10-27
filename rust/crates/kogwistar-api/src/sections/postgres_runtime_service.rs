@@ -477,6 +477,10 @@ impl PostgresRunApplicationService {
         recipient_ids: Vec<String>,
     ) -> Result<Vec<RuntimeClaimedWork>, String> {
         let claim_owner = format!("{}#{}", input.claimed_by, uuid::Uuid::new_v4());
+        let supports_graph_mutation_batch = self
+            .store
+            .graph_authority_capability()
+            .supports_atomic_index_jobs();
         self.store
             .transaction(|uow| {
                 Box::pin(async move {
@@ -547,13 +551,18 @@ impl PostgresRunApplicationService {
                             serde_json::to_string(&payload)?,
                         )
                         .await?;
-                        values.push(runtime_claimed_work(
+                        let mut work = runtime_claimed_work(
                             lane,
                             &claim_owner,
                             run_id,
                             payload,
                             expected_event_seq,
-                        ));
+                        );
+                        if supports_graph_mutation_batch {
+                            work.worker_effect_capabilities
+                                .push("graph_mutation_batch_v1".to_owned());
+                        }
+                        values.push(work);
                     }
                     Ok(values)
                 })
@@ -573,12 +582,13 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        self.apply_runtime_result_input(input).await
+        self.apply_runtime_result_input(input, Some(request)).await
     }
 
     async fn apply_runtime_result_input(
         &self,
         input: RuntimeWorkerResultRequest,
+        request: Option<&ApiEffectRequest>,
     ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
@@ -600,10 +610,99 @@ impl PostgresRunApplicationService {
                 message,
             );
         }
+        let graph_effects = if let Some(batch) = input
+            .effect
+            .as_ref()
+            .and_then(|effect| effect.graph_mutation_batch.as_ref())
+        {
+            if !self
+                .store
+                .graph_authority_capability()
+                .supports_atomic_index_jobs()
+            {
+                return effect_error(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                    "Worker graph effects require atomic graph authority with index jobs",
+                );
+            }
+            let Some(request) = request else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Worker graph effects require an authenticated write_graph principal",
+                );
+            };
+            if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"])
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Worker graph effects require write_graph capability",
+                );
+            }
+            if let Err(error) = batch.validate() {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+            let batch_input = batch.clone();
+            let mutations = match graph_mutation_batch_value(batch_input.clone()) {
+                Ok(value) => value,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error,
+                    );
+                }
+            };
+            if let Err(error) = validate_graph_mutation_envelopes(&batch_input, &mutations) {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+            let security_scope = security_scope_value(&request.principal);
+            if mutations
+                .iter()
+                .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "Worker graph effect scope is outside the principal storage scope",
+                );
+            }
+            let index_jobs = match graph_index_jobs_value(&batch_input, &mutations) {
+                Ok(value) => value,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error,
+                    );
+                }
+            };
+            Some((mutations, index_jobs))
+        } else {
+            None
+        };
         let outcome = self
             .store
             .transaction(|uow| {
                 Box::pin(async move {
+                    if let Some((mutations, index_jobs)) = graph_effects {
+                        for mutation in mutations {
+                            uow.apply_graph_mutation(mutation).await?;
+                        }
+                        for index_job in index_jobs {
+                            uow.enqueue_index_job(index_job).await?;
+                        }
+                    }
                     let handoff = input.handoff;
                     let (applied, effect_id, terminal_result, usage, trace_events) =
                         if let Some(transition) = input.transition {

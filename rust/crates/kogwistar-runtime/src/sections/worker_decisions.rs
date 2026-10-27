@@ -38,6 +38,10 @@ pub struct RecordedWorkerSuccessEffect {
     pub usage: Option<Value>,
     #[serde(default)]
     pub trace_events: Vec<Value>,
+    /// Declarative graph effects are applied by the server in the same
+    /// transaction as this worker result and lane acknowledgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_mutation_batch: Option<kogwistar_contracts::GraphMutationBatchV1>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

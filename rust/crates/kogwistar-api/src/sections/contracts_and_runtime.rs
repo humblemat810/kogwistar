@@ -1248,6 +1248,8 @@ struct RuntimeClaimedWork {
     payload: Value,
     expected_event_seq: i64,
     lease_until: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    worker_effect_capabilities: Vec<String>,
 }
 
 fn runtime_claimed_work(
@@ -1266,6 +1268,7 @@ fn runtime_claimed_work(
         payload,
         expected_event_seq,
         lease_until: lane.lease_until,
+        worker_effect_capabilities: Vec::new(),
     }
 }
 

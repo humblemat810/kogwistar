@@ -1369,7 +1369,6 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
         journal_path = tmp_path / "python-worker.sqlite"
         callback_marker = tmp_path / "python-worker-callbacks.txt"
-        graph_receipt = tmp_path / "python-worker-graph-receipt.json"
         worker_probe = [
             sys.executable,
             "-m",
@@ -1391,8 +1390,6 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     graph_namespace,
                     "--graph-entity-id",
                     graph_entity_id,
-                    "--graph-receipt",
-                    str(graph_receipt),
                     "--auth-token",
                     worker_token,
                 ]
@@ -1424,16 +1421,6 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         if backend == "pg":
             assert pg_dsn is not None and pg_schema is not None
             assert graph_namespace is not None and graph_entity_id is not None
-            graph_receipt_value = json.loads(
-                graph_receipt.read_text(encoding="utf-8")
-            )
-            assert len(graph_receipt_value) == 1
-            assert graph_receipt_value[0]["inserted"] is True
-            assert graph_receipt_value[0]["mutated"] is True
-            assert graph_receipt_value[0]["event"]["entity_id"] == graph_entity_id
-            assert graph_receipt_value[0]["event"]["event_id"].startswith(
-                "graph-effect-"
-            )
             from kogwistar.engine_core.rust_postgres_session import (
                 RustEnginePostgresMetaStore,
             )

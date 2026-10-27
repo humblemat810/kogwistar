@@ -163,6 +163,57 @@ def test_python_worker_application_operation_matches_shared_native_effect_golden
     } == fixture["effect"]
 
 
+def test_python_worker_journals_declarative_graph_batch_only_when_server_advertises_it() -> None:
+    resolver = MappingStepResolver()
+    batch = {
+        "contract_version": 1,
+        "atomic": True,
+        "mutations": [
+            {
+                "scope": {"namespace": "ns"},
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": "effect-1",
+                "op": "ADD",
+                "payload": {"id": "node-1", "text": "evidence"},
+                "record": {"id": "node-1", "document": "evidence"},
+                "embedding_dim": 3,
+            }
+        ],
+        "index_jobs": [
+            {
+                "job_id": "index-1",
+                "namespace": "ns",
+                "entity_kind": "node",
+                "entity_id": "node-1",
+                "index_kind": "node_docs",
+                "op": "UPSERT",
+            }
+        ],
+    }
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[],
+            graph_mutation_batch=batch,
+        )
+
+    work = _adapter_work()
+    work["worker_effect_capabilities"] = ["graph_mutation_batch_v1"]
+    effect = RustStepResolverAdapter(resolver)(work)
+    assert effect["graph_mutation_batch"]["contract_version"] == 1
+    assert effect["graph_mutation_batch"]["mutations"][0]["event_id"] == "effect-1"
+    assert effect["graph_mutation_batch"]["index_jobs"][0]["job_id"] == "index-1"
+    envelope = RustRuntimeWorker._result_envelope(work, effect)
+    assert envelope["effect"]["graph_mutation_batch"] == effect["graph_mutation_batch"]
+
+    unsupported_work = _adapter_work()
+    with pytest.raises(RustWorkerError, match="does not advertise graph_mutation_batch_v1"):
+        RustRuntimeWorker._result_envelope(unsupported_work, effect)
+
+
 def test_python_worker_omitted_operation_version_preserves_v1_effect() -> None:
     fixture = json.loads(
         (

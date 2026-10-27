@@ -409,6 +409,50 @@
             let body: Value = serde_json::from_slice(&response.body).unwrap();
             assert_eq!(body["code"], "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED");
         }
+        let worker_graph_effect = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "handoff": {
+                    "message_id": "lane-1",
+                    "claimed_by": "worker-1",
+                    "run_id": "run-1",
+                    "step_id": "step-1",
+                    "correlation_id": "run-1"
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "effect-1",
+                    "graph_mutation_batch": {
+                        "contract_version": 1,
+                        "atomic": true,
+                        "mutations": [{
+                            "scope": {"namespace": "alpha"},
+                            "table": "gke_nodes",
+                            "entity_kind": "node",
+                            "event_id": "event-1",
+                            "op": "ADD",
+                            "payload": {"id": "node-1"},
+                            "record": {"id": "node-1"},
+                            "embedding_dim": 0
+                        }]
+                    }
+                }
+            }))
+            .unwrap(),
+            principal: json!({"sub":"alice","role":"rw","capabilities":["*"]}),
+        });
+        assert_eq!(
+            worker_graph_effect.status,
+            StatusCode::NOT_IMPLEMENTED.as_u16()
+        );
+        let worker_graph_body: Value =
+            serde_json::from_slice(&worker_graph_effect.body).unwrap();
+        assert_eq!(
+            worker_graph_body["code"],
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
+        );
         drop(service);
         remove_test_sqlite(&path);
     }

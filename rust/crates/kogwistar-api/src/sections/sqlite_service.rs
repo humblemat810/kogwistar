@@ -997,6 +997,17 @@ impl SqliteRunApplicationService {
                 "exactly one of transition or effect is required",
             );
         }
+        if input
+            .effect
+            .as_ref()
+            .is_some_and(|effect| effect.graph_mutation_batch.is_some())
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "Worker graph effects require atomic graph authority with index jobs",
+            );
+        }
         if let Some(effect) = input.effect.as_ref()
             && let Err(message) =
                 validate_python_worker_submission_trace_binding(

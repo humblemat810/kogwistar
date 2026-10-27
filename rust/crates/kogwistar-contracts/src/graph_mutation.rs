@@ -3,13 +3,13 @@
 //! These types deliberately contain no storage or authorization behavior.
 //! Effect owners validate scope and capabilities before applying them.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
 use crate::GraphModelEnvelope;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphMutationBatchV1 {
     pub contract_version: u32,
@@ -19,7 +19,7 @@ pub struct GraphMutationBatchV1 {
     pub index_jobs: Vec<GraphIndexJobV1>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphIndexJobV1 {
     pub job_id: String,
@@ -38,7 +38,7 @@ fn default_index_job_max_retries() -> i64 {
     3
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphMutationV1 {
     pub scope: GraphScopeV1,
@@ -53,7 +53,7 @@ pub struct GraphMutationV1 {
     pub model_envelope: Option<GraphModelEnvelope>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphScopeV1 {
     pub namespace: String,
@@ -63,7 +63,7 @@ pub struct GraphScopeV1 {
     pub graph_space: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphRecordV1 {
     pub id: String,

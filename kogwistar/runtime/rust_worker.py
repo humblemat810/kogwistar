@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 import httpx
 
 from kogwistar.id_provider import stable_id
+from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
 from kogwistar.implementation_selection import (
     ImplementationSelectionSnapshot,
     callback_execution_scope,
@@ -732,6 +733,18 @@ class RustStepResolverAdapter:
             value = getattr(result, field, None)
             if value is not None:
                 effect[field] = _json_copy(value, field=f"result.{field}")
+        extra = getattr(result, "model_extra", None)
+        if isinstance(extra, Mapping) and "graph_mutation_batch" in extra:
+            if result.status != "success":
+                raise RustWorkerError(
+                    "graph_mutation_batch is only valid on successful worker results"
+                )
+            batch = GraphMutationBatchPayload.model_validate(
+                extra["graph_mutation_batch"]
+            )
+            effect["graph_mutation_batch"] = cast(
+                JsonValue, batch.model_dump(mode="json")
+            )
         return effect
 
 
@@ -1142,10 +1155,19 @@ class RustRuntimeWorker:
             "resume_payload",
             "usage",
             "trace_events",
+            "graph_mutation_batch",
         }
         unknown = set(restricted).difference(allowed)
         if unknown:
             raise RustWorkerError(f"worker effect has unknown fields: {sorted(unknown)!r}")
+        if "graph_mutation_batch" in restricted:
+            capabilities = work.get("worker_effect_capabilities", [])
+            if not isinstance(capabilities, list) or (
+                "graph_mutation_batch_v1" not in capabilities
+            ):
+                raise RustWorkerError(
+                    "claimed server does not advertise graph_mutation_batch_v1"
+                )
         fixed = {
             "contract_version": 1,
             "effect_id": str(

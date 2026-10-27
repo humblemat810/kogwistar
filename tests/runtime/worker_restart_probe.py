@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 
 import httpx
@@ -54,7 +53,6 @@ def main() -> None:
     parser.add_argument("--marker", required=True)
     parser.add_argument("--graph-namespace")
     parser.add_argument("--graph-entity-id")
-    parser.add_argument("--graph-receipt")
     parser.add_argument("--auth-token")
     parser.add_argument("--mode", choices=("prepare", "replay"), required=True)
     args = parser.parse_args()
@@ -109,22 +107,10 @@ def main() -> None:
                     ],
                 }
             )
-            response = httpx.post(
-                f"{args.base_url}/internal/graph/mutations",
-                headers={"authorization": f"Bearer {args.auth_token}"},
-                json=batch.model_dump(mode="json"),
-                timeout=10,
-            )
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"authorized graph mutation failed ({response.status_code}): "
-                    f"{response.text}"
-                )
-            graph_results = response.json().get("results")
-            if args.graph_receipt is None:
-                raise AssertionError("graph replay probe requires a receipt path")
-            Path(args.graph_receipt).write_text(
-                json.dumps(graph_results, sort_keys=True), encoding="utf-8"
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"python_before_seen": True})],
+                graph_mutation_batch=batch.model_dump(mode="json"),
             )
         return RunSuccess(
             conversation_node_id=None,

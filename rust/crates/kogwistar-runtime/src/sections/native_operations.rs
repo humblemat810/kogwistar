@@ -411,6 +411,7 @@ pub fn execute_native_step_with_registry(
             attach_rust_native_executor_attestation(&mut trace);
             trace
         }],
+        graph_mutation_batch: None,
     })
 }
 

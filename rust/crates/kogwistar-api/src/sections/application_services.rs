@@ -38,7 +38,7 @@ impl PostgresRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        self.apply_runtime_result_input(result).await
+        self.apply_runtime_result_input(result, Some(request)).await
     }
 }
 
@@ -60,7 +60,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 return Ok(false);
             };
             let result = native_result_for_claimed_work(work, &self.native_operations)?;
-            let applied = self.apply_runtime_result_input(result).await;
+            let applied = self.apply_runtime_result_input(result, None).await;
             if !(200..300).contains(&applied.status) {
                 return Err(format!(
                     "native runtime result application returned HTTP {}",
