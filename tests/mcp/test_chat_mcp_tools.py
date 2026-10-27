@@ -474,6 +474,14 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
                 query_embeddings=fixture["query_embeddings"],
                 n_results=fixture["n_results"],
             )
+            scored_node_results = [
+                engine.read.search_nodes_as_of_scored(
+                    query_embeddings=[embedding],
+                    as_of_ts="2099-01-01T00:00:00+00:00",
+                    n_results=fixture["n_results"],
+                )
+                for embedding in fixture["query_embeddings"]
+            ]
             edge_results = engine.read.query_edges(
                 query_embeddings=fixture["query_embeddings"],
                 n_results=fixture["n_results"],
@@ -484,6 +492,16 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
         assert [[edge.id for edge in batch] for batch in edge_results] == principal[
             "expected"
         ]["edges"]
+        for query_index, hits in enumerate(scored_node_results):
+            assert [hit.node.id for hit in hits] == principal["expected"]["nodes"][
+                query_index
+            ]
+            assert [hit.raw_distance for hit in hits] == pytest.approx(
+                principal["expected"]["distances"]["nodes"][query_index]
+            )
+            assert [hit.similarity for hit in hits] == pytest.approx(
+                [1.0 - distance for distance in principal["expected"]["distances"]["nodes"][query_index]]
+            )
 
     with _claims("ro", fixture["truth_graph"], sub="owner-b"):
         public_nodes = engine.read.query_nodes(

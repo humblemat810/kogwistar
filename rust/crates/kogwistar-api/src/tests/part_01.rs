@@ -1575,7 +1575,8 @@
                     "entity_kind": entity_kind,
                     "query_embeddings": fixture["query_embeddings"],
                     "metric": fixture["metric"],
-                    "n_results": fixture["n_results"]
+                    "n_results": fixture["n_results"],
+                    "include": ["distances"]
                 });
                 let response = service
                     .execute_async(ApiEffectRequest {
@@ -1599,6 +1600,24 @@
                     principal["expected"][expected_key],
                     "unexpected {entity_kind} vector results for {subject}"
                 );
+                let actual_distances = result["distances"].as_array().unwrap();
+                let expected_distances = principal["expected"]["distances"][expected_key]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(actual_distances.len(), expected_distances.len());
+                for (actual, expected) in actual_distances.iter().zip(expected_distances) {
+                    let actual = actual.as_array().unwrap();
+                    let expected = expected.as_array().unwrap();
+                    assert_eq!(actual.len(), expected.len());
+                    for (actual, expected) in actual.iter().zip(expected) {
+                        let actual = actual.as_f64().unwrap();
+                        let expected = expected.as_f64().unwrap();
+                        assert!(
+                            (actual - expected).abs() < 1e-5,
+                            "unexpected {entity_kind} vector distance for {subject}: {actual} != {expected}"
+                        );
+                    }
+                }
             }
         }
 

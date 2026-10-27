@@ -42,7 +42,11 @@
       "id": "reader-a",
       "expected": {
         "nodes": [["visible-public"], ["visible-public"]],
-        "edges": [["edge-public"], ["edge-public"]]
+        "edges": [["edge-public"], ["edge-public"]],
+        "distances": {
+          "nodes": [[0.2], [0.4]],
+          "edges": [[0.2], [0.4]]
+        }
       }
     },
     {
@@ -55,7 +59,11 @@
         "edges": [
           ["edge-private-endpoint", "edge-public"],
           ["edge-public", "edge-private-endpoint"]
-        ]
+        ],
+        "distances": {
+          "nodes": [[0.0, 0.2], [0.4, 1.0]],
+          "edges": [[0.0, 0.2], [0.4, 1.0]]
+        }
       }
     }
   ]
