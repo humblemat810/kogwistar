@@ -363,6 +363,64 @@ async def test_mcp_neighbors_preserve_acl_visibility_and_hide_topology(
     }
 
 
+@pytest.mark.asyncio
+async def test_mcp_neighbors_hide_private_endpoint_of_visible_edge(monkeypatch, tmp_path):
+    from kogwistar.server import mcp_tools
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "acl_visible_edge"),
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        embedding_function=build_test_embedding_function("constant", dim=3),
+        acl_enabled=True,
+    )
+    source = build_entity_node(
+        node_id="source-public",
+        doc_id="D-visible-edge",
+        metadata={"visibility": "public"},
+    )
+    target = build_entity_node(
+        node_id="target-private",
+        doc_id="D-visible-edge",
+        metadata={"visibility": "private", "owner_agent_id": "owner-a"},
+    )
+    edge = build_relationship_edge(
+        edge_id="edge-public",
+        src=source.id,
+        tgt=target.id,
+        doc_id="D-visible-edge",
+        metadata={"visibility": "public"},
+    )
+    owner_token = claims_ctx.set(
+        {"agent_id": "owner-a", "sub": "owner-a", "role": "rw", "ns": "knowledge"}
+    )
+    try:
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(edge)
+    finally:
+        claims_ctx.reset(owner_token)
+
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    with _claims("ro", "knowledge", sub="reader-b"):
+        assert [node.id for node in engine.read.get_nodes(ids=[source.id])] == [
+            source.id
+        ]
+        assert not engine.read.get_nodes(ids=[target.id])
+        assert not engine.read.get_edges(ids=[edge.id])
+        neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": source.id, "doc_id": "D-visible-edge"}
+            )
+        )
+        async_neighbors = await GraphQuery(engine).neighbors_async(
+            source.id, doc_id="D-visible-edge"
+        )
+
+    assert neighbors == {"nodes": [], "edges": []}
+    assert async_neighbors == {"nodes": set(), "edges": set()}
+
+
 def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
     fixture = json.loads(
         (

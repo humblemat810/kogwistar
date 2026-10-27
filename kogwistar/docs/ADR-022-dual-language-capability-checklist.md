@@ -28,6 +28,14 @@ progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
+- Existing DL-08C bounded neighbor-ACL evidence: Python
+  `tests/mcp/test_chat_mcp_tools.py::test_mcp_neighbors_hide_private_endpoint_of_visible_edge`
+  and `::test_mcp_neighbors_preserve_acl_visibility_and_hide_topology` passed
+  (**2 passed**) for sync/async MCP traversal. Rust
+  `graph_acl_traversal_matches_shared_python_contract` and
+  `graph_edge_visibility_fails_closed_on_non_string_endpoint_ids` passed
+  (**1 each**) against the same endpoint-visibility rule. DL-08C remains
+  IN PROGRESS; no checklist IDs, counts, or denominator changed.
 - 2026-10-27 live PostgreSQL recorded-runtime recovery recheck: the existing
   pgvector/PostgreSQL 17 container on `127.0.0.1:55433` was used directly rather
   than starting a new test container. `tests/runtime/test_rust_runtime_postgres.py`
