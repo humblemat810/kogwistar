@@ -172,6 +172,7 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 - As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design, or governance-oriented integration. As your needs grow, you can compose more consistently and coherently.
 
 - Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
+- Rust workspace build commands and Cargo artifact-size guidance: [rust/BUILDING.md](rust/BUILDING.md)
 - Application-layer example on top of this substrate: [`humblemat810/kogwistar-chat`](https://github.com/humblemat810/kogwistar-chat)
 - OpenClaw governance example built on this substrate: [`humblemat810/cloistar`](https://github.com/humblemat810/cloistar)
 - Token-safe / guard-pattern example using the same primitives: [`humblemat810/kogwistar-tokensafe`](https://github.com/humblemat810/kogwistar-tokensafe)

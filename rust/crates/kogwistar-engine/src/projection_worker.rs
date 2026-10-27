@@ -6,8 +6,8 @@
 //! result after a crash between admission and projection.
 
 use kogwistar_store::{
-    GraphRecord, GraphWriteStore, IndexJob, IndexJobProviderInput, IndexJobWriteStore, StoreError,
-    StoreResult,
+    GraphProjectionWriteStore, GraphRecord, IndexJob, IndexJobClaimFilter, IndexJobProviderInput,
+    IndexJobWriteStore, StoreError, StoreResult,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -240,12 +240,20 @@ pub async fn run_graph_projection_jobs_once<Q, G, F, Fut>(
 ) -> StoreResult<ProjectionWorkerSummary>
 where
     Q: IndexJobWriteStore,
-    G: GraphWriteStore,
+    G: GraphProjectionWriteStore,
     F: FnMut(IndexJob) -> Fut,
     Fut: Future<Output = StoreResult<GraphRecord>>,
 {
-    run_graph_projection_jobs_once_inner(queue, graph, limit, lease_seconds, namespace, provider)
-        .await
+    run_graph_projection_jobs_once_inner(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        namespace,
+        None,
+        provider,
+    )
+    .await
 }
 
 /// Safe provider boundary that withholds the queue claim token and transition
@@ -260,7 +268,7 @@ pub async fn run_graph_projection_jobs_once_with_provider_input<Q, G, F, Fut>(
 ) -> StoreResult<ProjectionWorkerSummary>
 where
     Q: IndexJobWriteStore,
-    G: GraphWriteStore,
+    G: GraphProjectionWriteStore,
     F: FnMut(IndexJobProviderInput) -> Fut,
     Fut: Future<Output = StoreResult<GraphRecord>>,
 {
@@ -270,6 +278,36 @@ where
         limit,
         lease_seconds,
         namespace,
+        None,
+        move |job| provider(IndexJobProviderInput::from(&job)),
+    )
+    .await
+}
+
+/// Safe provider boundary for a queue claim restricted to supported index
+/// kinds. Stores that cannot filter atomically fail closed rather than leasing
+/// unrelated work.
+pub async fn run_graph_projection_jobs_once_filtered_with_provider_input<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    filter: IndexJobClaimFilter,
+    mut provider: F,
+) -> StoreResult<ProjectionWorkerSummary>
+where
+    Q: IndexJobWriteStore,
+    G: GraphProjectionWriteStore,
+    F: FnMut(IndexJobProviderInput) -> Fut,
+    Fut: Future<Output = StoreResult<GraphRecord>>,
+{
+    run_graph_projection_jobs_once_inner(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        None,
+        Some(filter),
         move |job| provider(IndexJobProviderInput::from(&job)),
     )
     .await
@@ -281,17 +319,24 @@ async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
     limit: usize,
     lease_seconds: i64,
     namespace: Option<&str>,
+    claim_filter: Option<IndexJobClaimFilter>,
     mut provider: F,
 ) -> StoreResult<ProjectionWorkerSummary>
 where
     Q: IndexJobWriteStore,
-    G: GraphWriteStore,
+    G: GraphProjectionWriteStore,
     F: FnMut(IndexJob) -> Fut,
     Fut: Future<Output = StoreResult<GraphRecord>>,
 {
-    let jobs = queue
-        .claim_index_jobs(limit, lease_seconds, namespace)
-        .await?;
+    let jobs = if let Some(filter) = claim_filter {
+        queue
+            .claim_index_jobs_filtered(limit, lease_seconds, filter)
+            .await?
+    } else {
+        queue
+            .claim_index_jobs(limit, lease_seconds, namespace)
+            .await?
+    };
     let mut summary = ProjectionWorkerSummary {
         claimed: jobs.len(),
         ..ProjectionWorkerSummary::default()
@@ -400,13 +445,19 @@ where
         };
         let projection = match action {
             ProjectionAction::Upsert(record) => {
-                graph.upsert_graph_record(&job.namespace, record).await
+                graph
+                    .upsert_graph_projection_record(&job.namespace, &job.entity_kind, record)
+                    .await
             }
             ProjectionAction::Delete => {
                 // A repeated delete after lost acknowledgement is already the
                 // desired state, so `false` is still a successful projection.
                 graph
-                    .delete_graph_record(&job.namespace, &job.entity_id)
+                    .delete_graph_projection_record(
+                        &job.namespace,
+                        &job.entity_kind,
+                        &job.entity_id,
+                    )
                     .await
                     .map(|_| ())
             }
@@ -435,8 +486,8 @@ where
 mod tests {
     use super::*;
     use kogwistar_store::{
-        DistanceMetric, GraphReadStore, IndexJobReadStore, MetadataFilter, NewIndexJob,
-        VectorMatch, VectorQuery,
+        DistanceMetric, GraphReadStore, GraphWriteStore, IndexJobReadStore, MetadataFilter,
+        NewIndexJob, VectorMatch, VectorQuery,
     };
     use kogwistar_store_memory::InMemoryStore;
     use std::sync::{

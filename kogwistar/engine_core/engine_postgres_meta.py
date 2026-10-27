@@ -20,12 +20,16 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
-from ..implementation_selection import assert_transaction_entry_allowed
+from ..implementation_selection import assert_no_python_transaction_during_rust_scope
 from ..messaging.models import ProjectedLaneMessageRow
 from ..typing_interfaces import SqlAlchemyConnectionLike, SqlAlchemyResultLike
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
-from .postgres_backend import _set_active_conn, get_active_conn
+from .postgres_backend import (
+    _guard_sqlalchemy_transaction_entry,
+    _set_active_conn,
+    get_active_conn,
+)
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # All processes must serialize the startup DDL batch.  This is deliberately a
@@ -263,6 +267,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     def __post_init__(self) -> None:
         if not _SCHEMA_RE.match(self.schema):
             raise ValueError(f"invalid schema: {self.schema!r}")
+        _guard_sqlalchemy_transaction_entry(self.engine)
         self._is_async_engine = isinstance(self.engine, AsyncEngine)
 
     # ----------------------------
@@ -517,7 +522,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     # ----------------------------
     @contextmanager
     def transaction(self) -> Iterator[SqlAlchemyConnectionLike]:
-        assert_transaction_entry_allowed()
+        # PostgreSQL begin-event enforcement makes external Python observation
+        # read-only under Rust selection; nested work inside a Rust UoW is still
+        # rejected before a second SQLAlchemy transaction can start.
+        assert_no_python_transaction_during_rust_scope()
         existing = get_active_conn()
         if existing is not None:
             if isinstance(existing, _AsyncConnectionAdapter):

@@ -249,7 +249,19 @@ class AsyncPostgresTwoStageProjectionAdapter:
             ids=kwargs.get("ids"), metadata=kwargs.get("metadata"),
             limit=kwargs.get("limit", 200),
         )
-        return [dict(row) for row in rows]
+        return [
+            {
+                "key": f"{row['entity_kind']}:{row['entity_id']}",
+                "payload": {
+                    "id": row["entity_id"],
+                    "entity_kind": row["entity_kind"],
+                    "document": row["document"],
+                    "metadata": _row_mapping(row.get("metadata")),
+                    "source_fingerprint": row["source_fingerprint"],
+                },
+            }
+            for row in rows
+        ]
 
     async def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
         await self._backend().stage1_projection_delete_async(
@@ -322,17 +334,23 @@ class AsyncPostgresTwoStageProjectionAdapter:
         embedding = normalize_embedding_vector(
             list((await _embed(self.engine._ef, [document]))[0]), allow_none=False
         )
-        current = await self._current(entity_kind, entity_id)
-        if current is None or current.state != "active":
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
-            return
-        if expected and expected != await self._fingerprint(entity_kind, entity_id):
-            return
-        metadata = _row_mapping(row.get("metadata"))
-        metadata["_kogwistar_stage2_ready"] = True
-        metadata["_kogwistar_source_fingerprint"] = expected
         async with self._backend_transaction():
+            locked_row = await self._backend().stage1_projection_get_async(
+                namespace=self._namespace(), entity_kind=entity_kind,
+                entity_id=entity_id, for_update=True,
+            )
+            if locked_row is None or any(
+                row.get(field) != locked_row.get(field)
+                for field in ("document", "metadata", "source_fingerprint", "revision")
+            ):
+                return
+            staged_fingerprint = str(locked_row.get("source_fingerprint") or "")
+            if expected and expected != staged_fingerprint:
+                return
+            document = str(locked_row["document"])
+            metadata = _row_mapping(locked_row.get("metadata"))
+            metadata["_kogwistar_stage2_ready"] = True
+            metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
             await self._backend()._upsert_async(
                 getattr(self._backend(), f"{entity_kind}s"), ids=[entity_id],
                 documents=[document], metadatas=[metadata], embeddings=[embedding],
@@ -353,7 +371,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
     async def apply_embedding_jobs_batch(
         self, jobs: list[object]
     ) -> dict[str, BaseException | None]:
-        prepared: list[tuple[str, str, str, dict[str, object]]] = []
+        prepared: list[tuple[str, str, str, dict[str, object], str]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
             job_id = str(_job_value(job, "job_id") or "")
@@ -379,7 +397,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 )
                 if row is None:
                     raise RuntimeError("current PostgreSQL Stage-1 projection is missing")
-                prepared.append((job_id, kind, entity_id, _row_mapping(row)))
+                prepared.append((job_id, kind, entity_id, _row_mapping(row), expected))
             except BaseException as exc:
                 outcomes[job_id] = exc
         if not prepared:
@@ -387,7 +405,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
         try:
             embeddings = await _embed(
                 self.engine._ef,
-                [str(row.get("document") or "") for *_, row in prepared],
+                [str(row.get("document") or "") for _, _, _, row, _ in prepared],
             )
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
@@ -395,25 +413,34 @@ class AsyncPostgresTwoStageProjectionAdapter:
             for job_id, *_ in prepared:
                 outcomes[job_id] = exc
             return outcomes
-        for (job_id, kind, entity_id, row), embedding in zip(prepared, embeddings):
+        for (job_id, kind, entity_id, row, expected), embedding in zip(prepared, embeddings):
             try:
-                current = await self._current(kind, entity_id)
-                if current is None or current.state != "active":
-                    continue
-                source_fingerprint = str(row.get("source_fingerprint") or "")
-                if source_fingerprint and source_fingerprint != await self._fingerprint(kind, entity_id):
-                    continue
-                metadata = _row_mapping(row.get("metadata"))
-                metadata["_kogwistar_stage2_ready"] = True
-                metadata["_kogwistar_source_fingerprint"] = source_fingerprint
                 async with self._backend_transaction():
+                    locked_row = await self._backend().stage1_projection_get_async(
+                        namespace=self._namespace(), entity_kind=kind,
+                        entity_id=entity_id, for_update=True,
+                    )
+                    if locked_row is None or any(
+                        row.get(field) != locked_row.get(field)
+                        for field in ("document", "metadata", "source_fingerprint", "revision")
+                    ):
+                        outcomes[job_id] = None
+                        continue
+                    source_fingerprint = str(locked_row.get("source_fingerprint") or "")
+                    if expected and expected != source_fingerprint:
+                        outcomes[job_id] = None
+                        continue
+                    document = str(locked_row["document"])
+                    metadata = _row_mapping(locked_row.get("metadata"))
+                    metadata["_kogwistar_stage2_ready"] = True
+                    metadata["_kogwistar_source_fingerprint"] = source_fingerprint
                     await self._backend()._upsert_async(
                         getattr(self._backend(), f"{kind}s"), ids=[entity_id],
-                        documents=[str(row["document"])], metadatas=[metadata],
+                        documents=[document], metadatas=[metadata],
                         embeddings=[normalize_embedding_vector(embedding, allow_none=False)],
                     )
                     if kind == "edge":
-                        await self._promote_edge_endpoints(str(row["document"]))
+                        await self._promote_edge_endpoints(document)
                     await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 outcomes[job_id] = None
             except BaseException as exc:
@@ -430,8 +457,11 @@ class AsyncPostgresTwoStageProjectionAdapter:
     async def reconcile_projection(self, **_: object) -> int:
         removed = 0
         for row in await self.stage1_query(entity_kind="node") + await self.stage1_query(entity_kind="edge"):
-            entity_kind = str(row["entity_kind"])
-            entity_id = str(row["entity_id"])
+            payload = _row_mapping(row.get("payload"))
+            entity_kind = str(payload.get("entity_kind") or "node")
+            entity_id = str(payload.get("id") or "")
+            if not entity_id:
+                continue
             current = await self._current(entity_kind, entity_id)
             if current is None or current.state != "active":
                 await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
@@ -449,7 +479,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 _object_list(stage2.get("ids"))
                 and isinstance(stage2_metadata, dict)
                 and stage2_metadata.get("_kogwistar_source_fingerprint")
-                == row.get("source_fingerprint")
+                == payload.get("source_fingerprint")
             ):
                 if entity_kind == "edge":
                     documents = _object_list(stage2.get("documents"))

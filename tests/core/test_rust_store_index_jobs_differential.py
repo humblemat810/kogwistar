@@ -52,6 +52,31 @@ def test_python_queue_row_models_expose_the_same_fields() -> None:
     assert sqlite_fields == postgres_fields
 
 
+def test_index_reconciliation_does_not_claim_jobs_under_rust_authority(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Metadata:
+        def claim_index_jobs(self, **_: object) -> list[object]:
+            raise AssertionError("Rust-owned index jobs must remain unclaimed")
+
+    engine = SimpleNamespace(
+        metadata=Metadata(),
+        namespace="rust-authority",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=(
+            ("KOGWISTAR_IMPL_MODE", "rust"),
+            ("KOGWISTAR_IMPL_META_STORE", "rust"),
+            ("KOGWISTAR_IMPL_GRAPH_STORE", "rust"),
+            ("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust"),
+        ),
+    )
+    reconciler = IndexingSubsystem(cast(GraphKnowledgeEngine, engine))
+
+    assert reconciler.reconcile_indexes(max_jobs=10) == 0
+    assert "leaving index jobs pending" in caplog.text
+
+
 def test_sqlite_python_to_rust_and_rust_to_python_queue_contract(tmp_path: Path) -> None:
     python = EngineSQLite(tmp_path)
     python.ensure_initialized()

@@ -27,16 +27,21 @@ class _Backend:
     def node_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
         rows = [self.rows[value] for value in ids if value in self.rows]
-        return {
+        result = {
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
             "metadatas": [row["metadata"] for row in rows],
-            "embeddings": [row.get("embedding") for row in rows],
         }
+        if "embeddings" in kwargs.get("include", []):
+            result["embeddings"] = [row.get("embedding") for row in rows]
+        return result
 
     def node_upsert(self, **kwargs):
         for node_id, document, metadata, embedding in zip(
-            kwargs["ids"], kwargs["documents"], kwargs["metadatas"], kwargs["embeddings"]
+            kwargs["ids"],
+            kwargs["documents"],
+            kwargs["metadatas"],
+            kwargs["embeddings"],
         ):
             self.rows[str(node_id)] = {
                 "id": str(node_id),
@@ -64,10 +69,7 @@ class _Backend:
             if not isinstance(clause, dict):
                 continue
             for key, value in clause.items():
-                rows = [
-                    row for row in rows
-                    if row["metadata"].get(key) == value
-                ]
+                rows = [row for row in rows if row["metadata"].get(key) == value]
         return {
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
@@ -79,7 +81,9 @@ class _Backend:
             kwargs["ids"], kwargs["documents"], kwargs["metadatas"]
         ):
             self.endpoint_rows[str(endpoint_id)] = {
-                "id": str(endpoint_id), "document": document, "metadata": metadata
+                "id": str(endpoint_id),
+                "document": document,
+                "metadata": metadata,
             }
 
     def edge_endpoints_delete(self, **kwargs):
@@ -87,7 +91,9 @@ class _Backend:
         where = kwargs.get("where") or {}
         edge_id = where.get("edge_id")
         for endpoint_id, row in list(self.endpoint_rows.items()):
-            if endpoint_id in ids or (edge_id is not None and row["metadata"].get("edge_id") == edge_id):
+            if endpoint_id in ids or (
+                edge_id is not None and row["metadata"].get("edge_id") == edge_id
+            ):
                 self.endpoint_rows.pop(endpoint_id, None)
 
 
@@ -119,21 +125,33 @@ def _engine(tmp_path: Path):
     backend = _Backend()
     engine = SimpleNamespace(
         namespace="tenant-a",
+        kg_graph_type="knowledge",
         meta_sqlite=meta,
+        metadata=meta,
         backend=backend,
         indexing=_Indexing(),
+        _phase1_enable_index_jobs=True,
         write=SimpleNamespace(
             node_doc_and_meta=lambda node: (
-                f"document:{node.safe_get_id()}",
-                {"node_id": node.safe_get_id(), "kind": "entity"},
+                node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+                {
+                    "node_id": node.safe_get_id(),
+                    "kind": "entity",
+                    "_class_name": type(node).__name__,
+                },
             ),
-            enrich_edge_meta=lambda edge: {"edge_id": edge.safe_get_id()},
+            enrich_edge_meta=lambda edge: {
+                "edge_id": edge.safe_get_id(),
+                "_class_name": type(edge).__name__,
+            },
         ),
         embed=SimpleNamespace(
             iterative_defensive_emb=lambda document: [float(len(document)), 1.0]
         ),
         persistence_mode="two_stage",
     )
+    engine._resolve_redirect_chain = lambda *, initial_items, **_: initial_items
+    engine._filter_items_by_resolve_mode = lambda items, _: items
     adapter = SQLiteChromaTwoStageProjectionAdapter(engine)
     engine.two_stage_projection_adapter = adapter
     engine.read = ReadSubsystem(engine)
@@ -147,7 +165,13 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
     node = build_entity_node(node_id="n1", doc_id="d1")
 
     adapter.add_node(node)
-    pending = ReadSubsystem(engine)._node_get_raw(ids=["n1"], where=None, limit=10, include=["documents", "metadatas", "embeddings"])
+    adapter.enqueue_embedding_job(entity_kind="node", entity_id="n1", op="UPSERT")
+    pending = ReadSubsystem(engine)._node_get_raw(
+        ids=["n1"],
+        where=None,
+        limit=10,
+        include=["documents", "metadatas", "embeddings"],
+    )
     assert pending["ids"] == ["n1"]
     assert pending["embeddings"] == [None]
     assert not engine.backend.rows
@@ -161,7 +185,10 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
             entity_kind="node", entity_id="n1"
         ),
     )
-    assert engine.backend.rows["n1"]["embedding"] == [len("document:n1"), 1.0]
+    expected_document = node.model_dump_json(
+        field_mode="backend", exclude=["embedding"]
+    )
+    assert engine.backend.rows["n1"]["embedding"] == [len(expected_document), 1.0]
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
 
 
@@ -176,7 +203,9 @@ def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
 
     engine._ef = batch_embed
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    adapter.enqueue_embedding_job(entity_kind="node", entity_id="n1", op="UPSERT")
     adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
+    adapter.enqueue_embedding_job(entity_kind="node", entity_id="n2", op="UPSERT")
 
     jobs = [
         SimpleNamespace(job_id=f"job-{index}", **job)
@@ -186,7 +215,13 @@ def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
 
     assert set(outcomes) == {"job-1", "job-2"}
     assert all(error is None for error in outcomes.values())
-    assert calls == [["document:n1", "document:n2"]]
+    documents = [
+        build_entity_node(node_id=node_id, doc_id=f"d{index}").model_dump_json(
+            field_mode="backend", exclude=["embedding"]
+        )
+        for index, node_id in enumerate(("n1", "n2"), 1)
+    ]
+    assert calls == [documents]
     assert engine.backend.rows["n1"]["embedding"] == [1.0, 1.0]
     assert engine.backend.rows["n2"]["embedding"] == [2.0, 1.0]
     assert engine.meta_sqlite.list_stage1_node_projections("tenant-a") == []
@@ -209,7 +244,9 @@ def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     assert graph.neighbors("e1")["nodes"] == {"n1", "n2"}
 
 
-def test_graph_query_hides_deleted_stage1_edge_before_reconciliation(tmp_path: Path) -> None:
+def test_graph_query_hides_deleted_stage1_edge_before_reconciliation(
+    tmp_path: Path,
+) -> None:
     engine, adapter = _engine(tmp_path)
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
     adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
@@ -248,7 +285,9 @@ def test_stage1_fallback_hides_tombstoned_entity_before_reconciliation(
     assert read(ids=[entity_id]) is False
 
 
-def test_stage1_fallback_hides_stale_revision_before_reconciliation(tmp_path: Path) -> None:
+def test_stage1_fallback_hides_stale_revision_before_reconciliation(
+    tmp_path: Path,
+) -> None:
     engine, adapter = _engine(tmp_path)
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
 
@@ -283,7 +322,9 @@ def test_chroma_endpoint_promotion_reuses_edge_vector_not_provider(tmp_path):
     )
     adapter.add_edge(edge)
     adapter.apply_embedding_job(
-        entity_kind="edge", entity_id="e1", op="UPSERT",
+        entity_kind="edge",
+        entity_id="e1",
+        op="UPSERT",
         payload_json=engine.indexing.canonical_revision_payload(
             entity_kind="edge", entity_id="e1"
         ),
@@ -415,9 +456,7 @@ def test_chroma_reconciles_missing_edge_endpoints_before_stage1_cleanup(tmp_path
     assert adapter.reconcile_projection() == 1
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "edge:e1") is None
     assert engine.backend.endpoint_rows
-    assert GraphQuery(engine).neighbors("n1") == {
-        "nodes": {"n2"}, "edges": {"e1"}
-    }
+    assert GraphQuery(engine).neighbors("n1") == {"nodes": {"n2"}, "edges": {"e1"}}
 
 
 def test_chroma_capability_requires_eventual_reconciliation():
@@ -440,13 +479,14 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
         node = build_entity_node(node_id="n1", doc_id="d1")
         engine.write.add_node(node)
         pending = engine.read._node_get_raw(
-            ids=["n1"], where=None, limit=10, include=["documents", "metadatas", "embeddings"]
+            ids=["n1"],
+            where=None,
+            limit=10,
+            include=["documents", "metadatas", "embeddings"],
         )
         assert pending["ids"] == ["n1"]
         assert pending["embeddings"] == [None]
-        assert not engine.read.query_nodes(
-            query_embeddings=[[0.1, 0.2]], n_results=10
-        )
+        assert not engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
 
         jobs = engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
         job = next(job for job in jobs if job.index_kind == "node_embedding")
@@ -460,7 +500,10 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
             payload_json=job.payload_json,
         )
         ready = engine.read._node_get_raw(
-            ids=["n1"], where=None, limit=10, include=["documents", "metadatas", "embeddings"]
+            ids=["n1"],
+            where=None,
+            limit=10,
+            include=["documents", "metadatas", "embeddings"],
         )
         assert ready["ids"] == ["n1"]
         assert ready["embeddings"][0] is not None
@@ -468,7 +511,10 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
             query_embeddings=[[0.1, 0.2]], n_results=10
         )
         assert [[node.id for node in row] for row in ready_hits] == [["n1"]]
-        assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1") is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
     finally:
         engine.close()
 
@@ -494,16 +540,19 @@ def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
         assert metrics.claimed >= 1
         assert metrics.done >= 1
         assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
-        assert engine.meta_sqlite.get_stage1_node_projection(
-            engine.namespace, "n1"
-        ) is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
     finally:
         engine.close()
 
 
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(tmp_path):
+def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
+    tmp_path,
+):
     """A restart leaves Stage 1 recoverable; the worker completes promotion."""
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -528,9 +577,10 @@ def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
         metrics = worker.tick()
         assert metrics.done >= 1
         assert restarted.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
-        assert restarted.meta_sqlite.get_stage1_node_projection(
-            restarted.namespace, "n1"
-        ) is None
+        assert (
+            restarted.meta_sqlite.get_stage1_node_projection(restarted.namespace, "n1")
+            is None
+        )
     finally:
         restarted.close()
 
@@ -559,9 +609,10 @@ def test_real_chroma_provider_failure_keeps_stage1_retryable(tmp_path, monkeypat
         assert failed.claimed == 1
         assert failed.done == 0
         assert failed.retried == 1
-        assert engine.meta_sqlite.get_stage1_node_projection(
-            engine.namespace, "n1"
-        ) is not None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is not None
+        )
         assert any(
             item.status == "PENDING"
             for item in engine.meta_sqlite.list_index_jobs(
@@ -573,9 +624,10 @@ def test_real_chroma_provider_failure_keeps_stage1_retryable(tmp_path, monkeypat
         time.sleep(1.1)
         recovered = worker.tick()
         assert recovered.done == 1
-        assert engine.meta_sqlite.get_stage1_node_projection(
-            engine.namespace, "n1"
-        ) is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
         assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
     finally:
         engine.close()
@@ -583,7 +635,9 @@ def test_real_chroma_provider_failure_keeps_stage1_retryable(tmp_path, monkeypat
 
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_path, monkeypatch):
+def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(
+    tmp_path, monkeypatch
+):
     """A promotion crash converges without leaving dual projection visibility."""
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -604,7 +658,9 @@ def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_pat
         def fail_cleanup(**kwargs):
             raise RuntimeError("simulated crash after Stage-2 write")
 
-        monkeypatch.setattr(engine.two_stage_projection_adapter, "remove_stage1", fail_cleanup)
+        monkeypatch.setattr(
+            engine.two_stage_projection_adapter, "remove_stage1", fail_cleanup
+        )
         with pytest.raises(RuntimeError, match="after Stage-2"):
             engine.two_stage_projection_adapter.apply_embedding_job(
                 entity_kind="node",
@@ -615,9 +671,14 @@ def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_pat
         assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
         assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
 
-        monkeypatch.setattr(engine.two_stage_projection_adapter, "remove_stage1", original)
+        monkeypatch.setattr(
+            engine.two_stage_projection_adapter, "remove_stage1", original
+        )
         assert engine.two_stage_projection_adapter.reconcile_projection() == 1
-        assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1") is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
     finally:
         engine.close()
 
@@ -653,9 +714,10 @@ def test_real_chroma_rebuilds_lost_embedding_job_after_restart(tmp_path):
         )
         assert worker.tick().done >= 1
         assert restarted.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
-        assert restarted.meta_sqlite.get_stage1_node_projection(
-            restarted.namespace, "n1"
-        ) is None
+        assert (
+            restarted.meta_sqlite.get_stage1_node_projection(restarted.namespace, "n1")
+            is None
+        )
     finally:
         restarted.close()
 

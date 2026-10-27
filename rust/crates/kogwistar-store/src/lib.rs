@@ -2256,6 +2256,15 @@ pub trait IndexJobReadStore: Send + Sync {
     ) -> impl Future<Output = StoreResult<Vec<IndexJob>>> + Send;
 }
 
+/// Restricts a queue claim to explicitly supported job kinds. Implementations
+/// must apply this filter inside the same atomic claim operation; claiming
+/// broadly and returning unrelated work is not equivalent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexJobClaimFilter {
+    pub namespace: Option<String>,
+    pub index_kinds: Vec<String>,
+}
+
 /// Durable index-job state machine. `None` token intentionally retains the
 /// legacy Python administrative behavior. A supplied token authorizes queue
 /// mutations only while it matches the current claim and its lease is live.
@@ -2270,6 +2279,23 @@ pub trait IndexJobWriteStore: IndexJobReadStore {
         lease_seconds: i64,
         namespace: Option<&str>,
     ) -> impl Future<Output = StoreResult<Vec<IndexJob>>> + Send;
+    /// Atomically claim only jobs matching the supplied index kinds.
+    ///
+    /// The default fails closed so older stores do not accidentally lease work
+    /// they cannot execute.
+    fn claim_index_jobs_filtered(
+        &self,
+        _limit: usize,
+        _lease_seconds: i64,
+        _filter: IndexJobClaimFilter,
+    ) -> impl Future<Output = StoreResult<Vec<IndexJob>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "index-job-queue".to_owned(),
+                message: "filtered index-job claims are not supported by this store".to_owned(),
+            })
+        }
+    }
     fn mark_index_job_done(
         &self,
         job_id: &str,
@@ -2399,6 +2425,47 @@ pub trait GraphWriteStore: GraphReadStore {
         namespace: &str,
         id: &str,
     ) -> impl Future<Output = StoreResult<bool>> + Send;
+}
+
+/// Minimal materialized-projection mutation seam for durable index workers.
+///
+/// The worker does not query graph state. Requiring `GraphWriteStore` also
+/// requires unrelated graph reads and prevents native projection stores from
+/// participating without pretending to implement those queries.
+pub trait GraphProjectionWriteStore: Send + Sync {
+    fn upsert_graph_projection_record(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        record: GraphRecord,
+    ) -> impl Future<Output = StoreResult<()>> + Send;
+
+    fn delete_graph_projection_record(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        id: &str,
+    ) -> impl Future<Output = StoreResult<bool>> + Send;
+}
+
+impl<T: GraphWriteStore> GraphProjectionWriteStore for T {
+    fn upsert_graph_projection_record(
+        &self,
+        namespace: &str,
+        _entity_kind: &str,
+        record: GraphRecord,
+    ) -> impl Future<Output = StoreResult<()>> + Send {
+        self.upsert_graph_record(namespace, record)
+    }
+
+    fn delete_graph_projection_record(
+        &self,
+        namespace: &str,
+        _entity_kind: &str,
+        id: &str,
+    ) -> impl Future<Output = StoreResult<bool>> + Send {
+        self.delete_graph_record(namespace, id)
+    }
 }
 
 pub trait EventReadStore: Send + Sync {

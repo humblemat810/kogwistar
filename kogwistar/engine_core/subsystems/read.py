@@ -403,6 +403,45 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             result["embeddings"] = [None for _ in payloads]
         return result
 
+    @staticmethod
+    def _merge_stage1_get_results(
+        stage2: JsonObject,
+        stage1: JsonObject | None,
+        *,
+        include: list[str],
+        limit: int | None,
+    ) -> JsonObject:
+        """Return the visible union of promoted and still-pending entities."""
+        if stage1 is None:
+            return stage2
+        stage2_ids = _json_strings(stage2.get("ids"))
+        stage1_ids = _json_strings(stage1.get("ids"))
+        existing = set(stage2_ids)
+        additions = [entity_id for entity_id in stage1_ids if entity_id not in existing]
+        if limit is not None:
+            additions = additions[: max(0, int(limit) - len(stage2_ids))]
+        if not additions:
+            return stage2
+
+        result = dict(stage2)
+        result["ids"] = [*stage2_ids, *additions]
+        stage1_positions = {entity_id: index for index, entity_id in enumerate(stage1_ids)}
+        for field in include:
+            pending_values = stage1.get(field)
+            if not isinstance(pending_values, list):
+                continue
+            promoted_values = stage2.get(field)
+            if isinstance(promoted_values, list):
+                values = list(promoted_values)
+            elif not stage2_ids:
+                values = []
+            else:
+                values = [None] * len(stage2_ids)
+            for entity_id in additions:
+                values.append(pending_values[stage1_positions[entity_id]])
+            result[field] = cast(JsonValue, values)
+        return cast(JsonObject, result)
+
     def _node_get_raw(
         self,
         *,
@@ -428,11 +467,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             where=where,
             limit=limit,
         )))
-        if not result.get("ids"):
-            return self._stage1_fallback_get(
-                entity_kind="node", ids=ids, where=where, limit=limit, include=include
-            ) or result
-        return result
+        stage1 = self._stage1_fallback_get(
+            entity_kind="node", ids=ids, where=where, limit=limit, include=include
+        )
+        return self._merge_stage1_get_results(
+            result, stage1, include=include, limit=limit
+        )
 
     def _edge_get_raw(
         self,
@@ -459,11 +499,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             where=where,
             limit=limit,
         )))
-        if not result.get("ids"):
-            return self._stage1_fallback_get(
-                entity_kind="edge", ids=ids, where=where, limit=limit, include=include
-            ) or result
-        return result
+        stage1 = self._stage1_fallback_get(
+            entity_kind="edge", ids=ids, where=where, limit=limit, include=include
+        )
+        return self._merge_stage1_get_results(
+            result, stage1, include=include, limit=limit
+        )
 
     @implementation_selection_bound
     def node_exists(

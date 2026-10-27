@@ -92,6 +92,12 @@ def transaction_authority_for_selection(
     return "python"
 
 
+def selected_transaction_authority() -> TransactionAuthority:
+    """Return the owner selected by the active run snapshot or process config."""
+    snapshot = _selection_snapshot.get() or capture_implementation_selection()
+    return transaction_authority_for_selection(snapshot)
+
+
 def active_transaction_authority() -> TransactionAuthority | None:
     """Return the owner of the current unit of work, if one is active."""
     return _transaction_authority.get()
@@ -102,6 +108,33 @@ def assert_transaction_entry_allowed() -> None:
     if _callback_execution_active.get():
         raise RuntimeError(
             "transaction authority cannot be opened from a worker callback"
+        )
+
+
+def assert_python_transaction_entry_allowed() -> None:
+    """Reject Python-owned transactions when another authority owns the run."""
+    assert_transaction_entry_allowed()
+    active = _transaction_authority.get()
+    if active == "rust":
+        raise RuntimeError(
+            "Python transaction entry is forbidden while Rust owns transaction authority"
+        )
+    snapshot = _selection_snapshot.get() or capture_implementation_selection()
+    if (
+        snapshot is not None
+        and transaction_authority_for_selection(snapshot) == "rust"
+    ):
+        raise RuntimeError(
+            "Python transaction entry is forbidden by the frozen Rust transaction authority"
+        )
+
+
+def assert_no_python_transaction_during_rust_scope() -> None:
+    """Reject Python SQL transactions nested inside a Rust-owned unit of work."""
+    assert_transaction_entry_allowed()
+    if _transaction_authority.get() == "rust":
+        raise RuntimeError(
+            "Python SQL transaction entry is forbidden while Rust owns the active unit"
         )
 
 

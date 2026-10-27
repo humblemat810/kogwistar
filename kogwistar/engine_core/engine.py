@@ -1817,6 +1817,18 @@ class GraphKnowledgeEngine:
                 )
 
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
+        selected_transaction_authority = transaction_authority_for_selection(
+            self._implementation_selection_snapshot
+        )
+        metadata_implementation = getattr(
+            self.metadata, "sqlite_implementation", "python"
+        )
+        if metadata_implementation != selected_transaction_authority:
+            raise RuntimeError(
+                "metadata transaction implementation does not match the selected "
+                f"transaction authority ({metadata_implementation!r} != "
+                f"{selected_transaction_authority!r})"
+            )
         self._backend_uow = _build_postgres_uow_if_needed(self.backend)
         self.atomic_mutation_capability: AtomicMutationCapability = (
             get_atomic_mutation_capability(self.backend)
@@ -1832,12 +1844,12 @@ class GraphKnowledgeEngine:
                 raise TypeError("async PostgreSQL UoW requires an AsyncEngine")
             self._async_backend_uow = AsyncPostgresUnitOfWork(engine=async_engine)
         if (
-            self.persistence_mode == "two_stage"
-            and _is_pgvector_backend_instance(self.backend)
+            _is_pgvector_backend_instance(self.backend)
             and postgres_authority_mode == "rust"
         ):
-            # The native adapter writes through this same Rust-owned UoW.
+            # Rust is the sole transaction owner; never compose a Python SQLAlchemy UoW.
             self._backend_uow = self.metadata
+            self._async_backend_uow = None
         self.two_stage_projection_capability = get_two_stage_projection_capability(
             self.backend
         )
@@ -2355,6 +2367,15 @@ class GraphKnowledgeEngine:
         with transaction_authority_scope(authority):
             backend_uow = getattr(self, "_async_backend_uow", None)
             transaction = getattr(backend_uow, "transaction", None)
+            if authority == "rust":
+                transaction = getattr(self.metadata, "transaction", None)
+                if not callable(transaction):
+                    raise RuntimeError(
+                        "Rust transaction authority requires a native metadata transaction"
+                    )
+                with transaction():
+                    yield None
+                return
             if not callable(transaction):
                 yield None
                 return

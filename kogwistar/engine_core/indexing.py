@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from pydantic_extension.model_slicing.mixin import use_mode
 from ..implementation_selection import (
     ImplementationSelectionSnapshot,
     implementation_selection_bound,
+    selected_transaction_authority,
 )
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
 
 
 EntityT = TypeVar("EntityT")
+_logger = logging.getLogger(__name__)
 
 
 def _is_tombstoned(meta: dict | None) -> bool:
@@ -150,14 +153,37 @@ class IndexingSubsystem:
         else:
             raise ValueError(f"unsupported entity kind for index work: {entity_kind!r}")
 
-        got = _backend_object(
-            run_awaitable_blocking(
-                getter(ids=[entity_id], include=["documents", "metadatas"])
+        from .rust_postgres_session import RustEnginePostgresMetaStore
+
+        metadata_store = self.metadata
+        if isinstance(metadata_store, RustEnginePostgresMetaStore):
+            table = (
+                self.engine.backend.nodes.name
+                if entity_kind == "node"
+                else self.engine.backend.edges.name
             )
-        )
-        ids = got.get("ids") or []
-        documents = got.get("documents") or []
-        metadatas = got.get("metadatas") or []
+            records = metadata_store.graph_projection_records(
+                namespace=self.engine.namespace,
+                workspace_id=None,
+                graph_space=None,
+                table=table,
+                ids=[entity_id],
+                metadata={},
+                limit=1,
+                for_update=bool(getattr(metadata_store, "transaction_active", False)),
+            )
+            ids = [str(record.get("id") or "") for record in records]
+            documents = [record.get("document") for record in records]
+            metadatas = [record.get("metadata") or {} for record in records]
+        else:
+            got = _backend_object(
+                run_awaitable_blocking(
+                    getter(ids=[entity_id], include=["documents", "metadatas"])
+                )
+            )
+            ids = got.get("ids") or []
+            documents = got.get("documents") or []
+            metadatas = got.get("metadatas") or []
         if not ids:
             source: dict[str, Any] = {
                 "entity_kind": entity_kind,
@@ -420,6 +446,37 @@ class IndexingSubsystem:
         ordering succeed on its own.
         """
         if not getattr(self.engine, "_phase1_enable_index_jobs", False):
+            return 0
+        if selected_transaction_authority() == "rust":
+            reconcile_native = getattr(self.metadata, "reconcile_join_index_jobs", None)
+            backend = getattr(self.engine, "backend", None)
+            table_names = {
+                "nodes_table": getattr(getattr(backend, "nodes", None), "name", None),
+                "edges_table": getattr(getattr(backend, "edges", None), "name", None),
+                "node_docs_table": getattr(getattr(backend, "node_docs", None), "name", None),
+                "node_refs_table": getattr(getattr(backend, "node_refs", None), "name", None),
+                "edge_refs_table": getattr(getattr(backend, "edge_refs", None), "name", None),
+                "edge_endpoints_table": getattr(
+                    getattr(backend, "edge_endpoints", None), "name", None
+                ),
+            }
+            if callable(reconcile_native) and all(
+                isinstance(name, str) and name for name in table_names.values()
+            ):
+                ns = self.engine.namespace if namespace is None else namespace
+                started = time.perf_counter()
+                reconciled = reconcile_native(
+                    limit=max_jobs,
+                    lease_seconds=lease_seconds,
+                    namespace=ns,
+                    **cast(dict[str, str], table_names),
+                )
+                self._profile_step("reconcile.rust_join_index_jobs", started)
+                return reconciled
+            _logger.warning(
+                "leaving index jobs pending: Rust transaction authority has no "
+                "native PostgreSQL join-index reconciler for this backend"
+            )
             return 0
         claim = getattr(self.metadata, "claim_index_jobs", None)
         if claim is None:

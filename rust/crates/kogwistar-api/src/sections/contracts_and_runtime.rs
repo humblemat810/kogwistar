@@ -312,6 +312,25 @@ fn embedding_provider_from_settings(
     Ok(Some(Arc::new(provider)))
 }
 
+fn parse_inline_worker_flag(name: &str, value: Option<&str>) -> Result<bool, String> {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") | Some("0") | Some("false") | Some("no") | Some("off") => Ok(false),
+        Some("1") | Some("true") | Some("yes") | Some("on") => Ok(true),
+        Some(_) => Err(format!("{name} must be a boolean")),
+    }
+}
+
+fn boolean_environment(name: &str) -> Result<bool, std::io::Error> {
+    match std::env::var(name) {
+        Ok(value) => parse_inline_worker_flag(name, Some(&value)).map_err(std::io::Error::other),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(std::env::VarError::NotUnicode(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{name} is not valid Unicode"),
+        )),
+    }
+}
+
 /// Run the packaged Rust server using the same environment contract as the
 /// standalone binary.  PyO3 calls this function so native wheels need not ship
 /// a second platform-specific executable beside the extension module.
@@ -326,6 +345,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         .map(str::to_owned)
         .collect();
     let backend = environment("KOGWISTAR_BACKEND", "in_memory");
+    let inline_embedding_worker = boolean_environment("KOGWISTAR_EMBEDDING_WORKER_INLINE")?;
     let state = ApiState {
         health: HealthSnapshot {
             backend: backend.clone(),
@@ -349,6 +369,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         implementation: ImplementationSnapshot::default(),
         auth: AuthConfig::from_environment(),
     };
+    let mut embedding_worker_service = None;
     let application: Arc<dyn ApplicationService> = if backend == "pg" {
         match std::env::var("KOGWISTAR_PG_DSN") {
             Ok(dsn) if !dsn.trim().is_empty() => {
@@ -366,6 +387,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                 .map_err(std::io::Error::other)?;
                 if let Some(provider) = embedding_provider {
                     service = service.with_embedding_provider(provider);
+                    embedding_worker_service = Some(service.clone());
                 }
                 service
                     .ensure_schema()
@@ -383,21 +405,14 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
             _ => Arc::new(UnavailableApplicationService),
         }
     };
-    let inline_native_runtime = match std::env::var("KOGWISTAR_RUNTIME_NATIVE_INLINE") {
-        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
-            "1" | "true" | "yes" | "on" => true,
-            "0" | "false" | "no" | "off" | "" => false,
-            _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "KOGWISTAR_RUNTIME_NATIVE_INLINE must be a boolean",
-                )
-                .into());
-            }
-        },
-        Err(std::env::VarError::NotPresent) => false,
-        Err(error) => return Err(error.into()),
-    };
+    if inline_embedding_worker && embedding_worker_service.is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "KOGWISTAR_EMBEDDING_WORKER_INLINE requires the Rust PostgreSQL backend and a configured embedding provider",
+        )
+        .into());
+    }
+    let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
     let native_worker = if inline_native_runtime {
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         let application = Arc::clone(&application);
@@ -411,6 +426,16 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     } else {
         None
     };
+    let embedding_worker = if inline_embedding_worker {
+        let service = embedding_worker_service.expect("validated above");
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        Some((
+            shutdown,
+            tokio::spawn(supervise_inline_embedding_worker(service, shutdown_rx)),
+        ))
+    } else {
+        None
+    };
     let server_result = axum::serve(listener, router_with_application(state, application))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -419,6 +444,10 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     if let Some((shutdown, native_worker)) = native_worker {
         let _ = shutdown.send(());
         let _ = native_worker.await;
+    }
+    if let Some((shutdown, embedding_worker)) = embedding_worker {
+        let _ = shutdown.send(());
+        let _ = embedding_worker.await;
     }
     server_result?;
     Ok(())
@@ -509,6 +538,67 @@ async fn run_inline_native_worker(application: Arc<dyn ApplicationService>) {
                     break;
                 }
             }
+        }
+    }
+}
+
+async fn run_inline_embedding_worker(
+    service: PostgresRunApplicationService,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    const BATCH_LIMIT: usize = 32;
+    const LEASE_SECONDS: i64 = 60;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => return,
+            _ = interval.tick() => {}
+        }
+        loop {
+            match service
+                .run_embedding_projection_jobs_once(BATCH_LIMIT, LEASE_SECONDS, None)
+                .await
+            {
+                Ok(summary) if summary.claimed == BATCH_LIMIT => continue,
+                Ok(_) => break,
+                Err(error) => {
+                    eprintln!("inline Rust embedding worker failed: {error}");
+                    tokio::select! {
+                        _ = &mut shutdown => return,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => break,
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn supervise_inline_embedding_worker(
+    service: PostgresRunApplicationService,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    loop {
+        let (worker_shutdown, worker_shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut worker = tokio::spawn(run_inline_embedding_worker(
+            service.clone(),
+            worker_shutdown_rx,
+        ));
+        tokio::select! {
+            result = &mut worker => {
+                match result {
+                    Ok(()) => eprintln!("inline Rust embedding worker exited unexpectedly"),
+                    Err(error) => eprintln!("inline Rust embedding worker task failed: {error}"),
+                }
+            }
+            _ = &mut shutdown => {
+                let _ = worker_shutdown.send(());
+                let _ = worker.await;
+                return;
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            _ = &mut shutdown => return,
         }
     }
 }

@@ -352,6 +352,250 @@ def test_postgres_two_stage_delete_during_embedding_cannot_resurrect(
     ) is None
 
 
+def test_postgres_two_stage_python_authority_rejects_stale_inflight_promotion(
+    sa_engine, pg_schema, monkeypatch
+) -> None:
+    _require_postgres(sa_engine, pg_schema)
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "python")
+    engine = _engine(sa_engine, pg_schema)
+    embedding_started = threading.Event()
+    release_embedding = threading.Event()
+    errors: list[BaseException] = []
+
+    def provider(document: str) -> list[float]:
+        if "old canonical revision" in document:
+            embedding_started.set()
+            if not release_embedding.wait(timeout=10):
+                raise TimeoutError("test did not release the stale embedding")
+            return [0.1, 0.2, 0.3]
+        return [0.4, 0.5, 0.6]
+
+    try:
+        engine.write.add_node(
+            build_entity_node(
+                node_id="python-stale-race",
+                doc_id="d1",
+                summary="old canonical revision",
+                embedding=None,
+            )
+        )
+        old_job = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "python-stale-race"
+            and job.index_kind == "node_embedding"
+        )
+        monkeypatch.setattr(engine.embed, "iterative_defensive_emb", provider)
+
+        def promote_old_revision() -> None:
+            try:
+                engine.two_stage_projection_adapter.apply_embedding_job(
+                    entity_kind=old_job.entity_kind,
+                    entity_id=old_job.entity_id,
+                    op=old_job.op,
+                    payload_json=old_job.payload_json,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        promotion = threading.Thread(target=promote_old_revision)
+        promotion.start()
+        assert embedding_started.wait(timeout=10)
+        engine.write.add_node(
+            build_entity_node(
+                node_id="python-stale-race",
+                doc_id="d2",
+                summary="new canonical revision",
+                embedding=None,
+            )
+        )
+        release_embedding.set()
+        promotion.join(timeout=10)
+        assert not promotion.is_alive()
+        assert errors == []
+
+        staged = engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id="python-stale-race"
+        )
+        assert staged is not None and "new canonical revision" in staged["document"]
+        assert engine.backend.node_get(
+            ids=["python-stale-race"], include=["embeddings"]
+        )["ids"] == []
+
+        new_job = max(
+            (
+                job
+                for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+                if job.entity_id == "python-stale-race"
+                and job.index_kind == "node_embedding"
+            ),
+            key=lambda job: job.created_at,
+        )
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=new_job.entity_kind,
+            entity_id=new_job.entity_id,
+            op=new_job.op,
+            payload_json=new_job.payload_json,
+        )
+        ready = engine.backend.node_get(
+            ids=["python-stale-race"], include=["documents", "embeddings"]
+        )
+        assert "new canonical revision" in ready["documents"][0]
+        assert ready["embeddings"] == [[0.4, 0.5, 0.6]]
+    finally:
+        release_embedding.set()
+        engine.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_two_stage_async_python_authority_rejects_stale_inflight_promotion(
+    async_pg_backend, monkeypatch
+) -> None:
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "python")
+    embedding_started = asyncio.Event()
+    release_embedding = asyncio.Event()
+
+    async def provider(texts: list[str]) -> list[list[float]]:
+        if any("old canonical revision" in text for text in texts):
+            embedding_started.set()
+            await release_embedding.wait()
+            return [[0.1, 0.2, 0.3] for _ in texts]
+        return [[0.4, 0.5, 0.6] for _ in texts]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    try:
+        assert engine.async_two_stage_projection_adapter.__class__.__name__ == (
+            "AsyncPostgresTwoStageProjectionAdapter"
+        )
+        await engine.async_add_node(
+            build_entity_node(
+                node_id="async-python-stale-race",
+                doc_id="d1",
+                summary="old canonical revision",
+                embedding=None,
+            )
+        )
+        old_job = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "async-python-stale-race"
+            and job.index_kind == "node_embedding"
+        )
+        promotion = asyncio.create_task(
+            engine.async_two_stage_projection_adapter.apply_embedding_job(
+                entity_kind=old_job.entity_kind,
+                entity_id=old_job.entity_id,
+                op=old_job.op,
+                payload_json=old_job.payload_json,
+            )
+        )
+        await asyncio.wait_for(embedding_started.wait(), timeout=10)
+        await engine.async_add_node(
+            build_entity_node(
+                node_id="async-python-stale-race",
+                doc_id="d2",
+                summary="new canonical revision",
+                embedding=None,
+            )
+        )
+        release_embedding.set()
+        await promotion
+
+        staged = await async_pg_backend.stage1_projection_get_async(
+            namespace="default", entity_kind="node", entity_id="async-python-stale-race"
+        )
+        assert staged is not None and "new canonical revision" in staged["document"]
+        assert (await async_pg_backend.node_get(
+            ids=["async-python-stale-race"], include=["embeddings"]
+        ))["ids"] == []
+
+        new_job = max(
+            (
+                job
+                for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+                if job.entity_id == "async-python-stale-race"
+                and job.index_kind == "node_embedding"
+            ),
+            key=lambda job: job.created_at,
+        )
+        await engine.async_two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=new_job.entity_kind,
+            entity_id=new_job.entity_id,
+            op=new_job.op,
+            payload_json=new_job.payload_json,
+        )
+        ready = await async_pg_backend.node_get(
+            ids=["async-python-stale-race"], include=["documents", "embeddings"]
+        )
+        assert "new canonical revision" in ready["documents"][0]
+        assert ready["embeddings"] == [[0.4, 0.5, 0.6]]
+    finally:
+        release_embedding.set()
+        engine.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_two_stage_async_admission_rolls_back_event_and_stage1_together(
+    async_pg_backend, monkeypatch
+) -> None:
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "python")
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    adapter = engine.async_two_stage_projection_adapter
+    assert adapter is not None
+    add_node = adapter.add_node
+
+    async def fail_after_stage1(node, *, doc_id=None):
+        await add_node(node, doc_id=doc_id)
+        raise RuntimeError("injected async Stage-1 failure")
+
+    monkeypatch.setattr(adapter, "add_node", fail_after_stage1)
+    try:
+        with pytest.raises(RuntimeError, match="injected async Stage-1 failure"):
+            await engine.async_add_node(
+                build_entity_node(
+                    node_id="async-admission-rollback", doc_id="d1", embedding=None
+                )
+            )
+
+        events = list(
+            engine.metadata.iter_entity_events(namespace="default", from_seq=1)
+        )
+        assert events == []
+        assert await async_pg_backend.stage1_projection_get_async(
+            namespace="default",
+            entity_kind="node",
+            entity_id="async-admission-rollback",
+        ) is None
+        assert (await async_pg_backend.node_get(
+            ids=["async-admission-rollback"], include=["embeddings"]
+        ))["ids"] == []
+    finally:
+        engine.close()
+
+
 @two_stage_case("stale_revision")
 def test_postgres_two_stage_late_v1_cannot_overwrite_v2(
     sa_engine, pg_schema

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
@@ -24,6 +24,7 @@ from kogwistar._rust_bridge import (
     store_memory_read,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, engine_context
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.in_memory_backend import InMemoryBackend, build_in_memory_backend
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
@@ -44,6 +45,7 @@ from kogwistar.implementation_selection import (
     implementation_selection_metadata,
     implementation_selection_bound,
     implementation_selection_scope,
+    assert_python_transaction_entry_allowed,
     postgres_authority_selectors_aligned,
     resolve_implementation_selection,
     transaction_authority_for_selection,
@@ -951,6 +953,130 @@ def test_transaction_authority_scope_matches_frozen_selection(
                 pass
         with transaction_authority_scope("rust"):
             assert active_transaction_authority() == "rust"
+
+
+def test_python_transaction_entry_fails_closed_for_rust_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+
+    with implementation_selection_scope():
+        with pytest.raises(RuntimeError, match="frozen Rust transaction authority"):
+            assert_python_transaction_entry_allowed()
+
+    with transaction_authority_scope("rust"):
+        with pytest.raises(RuntimeError, match="while Rust owns transaction authority"):
+            assert_python_transaction_entry_allowed()
+
+    with pytest.raises(RuntimeError, match="frozen Rust transaction authority"):
+        assert_python_transaction_entry_allowed()
+
+
+def test_python_transaction_entry_remains_available_for_python_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    with implementation_selection_scope():
+        assert_python_transaction_entry_allowed()
+
+
+def test_python_postgres_uow_never_begins_under_rust_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EngineWithoutTransactions:
+        def begin(self) -> None:
+            pytest.fail("Python SQLAlchemy transaction started under Rust authority")
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+    with implementation_selection_scope():
+        uow = PostgresUnitOfWork(engine=EngineWithoutTransactions())  # type: ignore[arg-type]
+        with pytest.raises(RuntimeError, match="frozen Rust transaction authority"):
+            with uow.transaction():
+                pytest.fail("Python UoW must not enter the transaction")
+
+
+def test_raw_sqlalchemy_transaction_cannot_nest_inside_rust_owner() -> None:
+    import sqlalchemy as sa
+
+    engine = sa.create_engine("sqlite://")
+    EnginePostgresMetaStore(engine=engine)
+    try:
+        with transaction_authority_scope("rust"):
+            with pytest.raises(RuntimeError, match="Rust owns the active unit"):
+                with engine.begin():
+                    pytest.fail("SQLAlchemy transaction began under Rust authority")
+
+        with transaction_authority_scope("python"):
+            with engine.begin():
+                pass
+    finally:
+        engine.dispose()
+
+
+def test_python_sqlite_and_memory_transactions_reject_rust_selection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+    contexts = (
+        EngineSQLite(tmp_path / "python-meta.sqlite").transaction(),
+        InMemoryMetaStore().transaction(),
+    )
+    with implementation_selection_scope():
+        for context in contexts:
+            with pytest.raises(RuntimeError, match="frozen Rust transaction authority"):
+                with context:
+                    pytest.fail("Python metadata transaction started under Rust selection")
+
+
+def test_engine_rejects_python_metadata_under_rust_transaction_selection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+
+    def mismatched_backend(engine):
+        backend = build_in_memory_backend(engine)
+        engine.metadata = InMemoryMetaStore()
+        return backend
+
+    with pytest.raises(
+        RuntimeError,
+        match="metadata transaction implementation does not match",
+    ):
+        GraphKnowledgeEngine(
+            persist_directory=str(tmp_path),
+            embedding_function=ConstantEmbeddingFunction(dim=4),
+            backend_factory=mismatched_backend,
+        )
+
+
+@pytest.mark.asyncio
+async def test_rust_async_uow_uses_native_metadata_transaction_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RustMetadata:
+        @contextmanager
+        def transaction(self):
+            assert active_transaction_authority() == "rust"
+            yield object()
+
+    class PythonAsyncUow:
+        def transaction(self):
+            pytest.fail("Python async UoW entered under Rust transaction authority")
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+    engine = object.__new__(GraphKnowledgeEngine)
+    engine.metadata = RustMetadata()
+    engine._async_backend_uow = PythonAsyncUow()
+    engine._implementation_selection_snapshot = capture_implementation_selection()
+
+    async with engine.async_uow():
+        assert active_transaction_authority() == "rust"
 
 
 def test_async_projection_transaction_uses_engine_authority_snapshot(

@@ -11,7 +11,7 @@ use kogwistar_store::{
 };
 use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::{
-    NamedProjectionCas as PostgresNamedProjectionCas,
+    GraphIndexTableNames, NamedProjectionCas as PostgresNamedProjectionCas,
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresStore, PostgresStoreError,
     PostgresUnitOfWork, RawEntityEvent as PostgresRawEntityEvent,
 };
@@ -3267,6 +3267,20 @@ enum PostgresStoreOperation {
         #[serde(default = "default_optional_namespace")]
         namespace: Option<String>,
     },
+    ReconcileJoinIndexJobs {
+        #[serde(default = "default_claim_limit")]
+        limit: usize,
+        #[serde(default = "default_lease_seconds")]
+        lease_seconds: i64,
+        #[serde(default = "default_optional_namespace")]
+        namespace: Option<String>,
+        nodes_table: String,
+        edges_table: String,
+        node_docs_table: String,
+        node_refs_table: String,
+        edge_refs_table: String,
+        edge_endpoints_table: String,
+    },
     MarkIndexJobDone {
         job_id: String,
         #[serde(default)]
@@ -4280,6 +4294,33 @@ async fn postgres_store_operation_json(
                 .map(index_job_json)
                 .collect(),
         )),
+        PostgresStoreOperation::ReconcileJoinIndexJobs {
+            limit,
+            lease_seconds,
+            namespace,
+            nodes_table,
+            edges_table,
+            node_docs_table,
+            node_refs_table,
+            edge_refs_table,
+            edge_endpoints_table,
+        } => Ok(json!(
+            store
+                .reconcile_join_index_jobs(
+                    limit,
+                    lease_seconds,
+                    namespace.as_deref(),
+                    GraphIndexTableNames {
+                        nodes: nodes_table,
+                        edges: edges_table,
+                        node_docs: node_docs_table,
+                        node_refs: node_refs_table,
+                        edge_refs: edge_refs_table,
+                        edge_endpoints: edge_endpoints_table,
+                    },
+                )
+                .await?
+        )),
         PostgresStoreOperation::MarkIndexJobDone {
             job_id,
             claim_token,
@@ -5045,6 +5086,32 @@ async fn postgres_uow_operation_json(
                 .into_iter()
                 .map(index_job_json)
                 .collect(),
+        )),
+        PostgresStoreOperation::ReconcileJoinIndexJobs {
+            limit,
+            lease_seconds,
+            namespace,
+            nodes_table,
+            edges_table,
+            node_docs_table,
+            node_refs_table,
+            edge_refs_table,
+            edge_endpoints_table,
+        } => Ok(json!(
+            uow.reconcile_join_index_jobs(
+                limit,
+                lease_seconds,
+                namespace.as_deref(),
+                GraphIndexTableNames {
+                    nodes: nodes_table,
+                    edges: edges_table,
+                    node_docs: node_docs_table,
+                    node_refs: node_refs_table,
+                    edge_refs: edge_refs_table,
+                    edge_endpoints: edge_endpoints_table,
+                },
+            )
+            .await?
         )),
         PostgresStoreOperation::MarkIndexJobDone {
             job_id,
@@ -6295,6 +6362,18 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         }
         "read_recorded_runtime_state" => &["kind", "run_id", "workflow_id", "conversation_id"][..],
         "claim_index_jobs" => &["kind", "limit", "lease_seconds", "namespace"][..],
+        "reconcile_join_index_jobs" => &[
+            "kind",
+            "limit",
+            "lease_seconds",
+            "namespace",
+            "nodes_table",
+            "edges_table",
+            "node_docs_table",
+            "node_refs_table",
+            "edge_refs_table",
+            "edge_endpoints_table",
+        ][..],
         "mark_index_job_done" => &["kind", "job_id", "claim_token"][..],
         "accept_index_job_result" => &[
             "kind",

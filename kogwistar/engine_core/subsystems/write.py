@@ -496,13 +496,14 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             await asyncio.to_thread(self._run_pre_add_node_hooks, node)
             await asyncio.to_thread(_validate_graph_model_contract, node)
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
-            await asyncio.to_thread(
-                self._e._append_event_for_entity,
-                namespace=self._e.namespace,
-                entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
-                payload=payload if isinstance(payload, dict) else {}, required=True,
-            )
-            return await adapter.add_node(node, doc_id=doc_id)
+            async with self._e.async_uow():
+                await self._e._append_event_for_entity_async(
+                    namespace=self._e.namespace,
+                    entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
+                    payload=payload if isinstance(payload, dict) else {}, required=True,
+                )
+                result = await adapter.add_node(node, doc_id=doc_id)
+            return result
 
         return await self._add_node_async_single_stage(node, doc_id=doc_id)
 
@@ -540,13 +541,14 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return
         await asyncio.to_thread(_validate_graph_model_contract, edge)
         payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
-        await asyncio.to_thread(
-            self._e._append_event_for_entity,
-            namespace=self._e.namespace,
-            entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
-            payload=payload if isinstance(payload, dict) else {}, required=True,
-        )
-        return await adapter.add_edge(edge, doc_id=doc_id)
+        async with self._e.async_uow():
+            await self._e._append_event_for_entity_async(
+                namespace=self._e.namespace,
+                entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
+                payload=payload if isinstance(payload, dict) else {}, required=True,
+            )
+            result = await adapter.add_edge(edge, doc_id=doc_id)
+        return result
 
     async def _embedding_async(self, document: str) -> list[float]:
         """Await async providers; isolate legacy sync providers from the loop."""
@@ -2244,13 +2246,19 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 metadata_patch=metadata,
                 payload=payload if isinstance(payload, dict) else {},
             )
-            if not native_replaced:
-                run_awaitable_blocking(
-                    self._e.backend.node_update(ids=[node_id], documents=[document])
+            if native_replaced:
+                # The Rust replacement commits a durable node_docs UPSERT job
+                # with the canonical node update. Do not open a second Python
+                # transaction for this derived index while Rust owns the run.
+                return changed
+            run_awaitable_blocking(
+                self._e.backend.node_update(ids=[node_id], documents=[document])
+            )
+            run_awaitable_blocking(
+                self._e.backend.node_docs_delete(
+                    where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
                 )
-            run_awaitable_blocking(self._e.backend.node_docs_delete(
-                where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
-            ))
+            )
             self.index_node_docs(node)
         return changed
 

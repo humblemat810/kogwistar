@@ -34,6 +34,15 @@ class _PostgresProjectionBackend(Protocol):
     def __getattr__(self, name: str) -> Callable[..., object]: ...
 
 
+def _same_stage1_revision(
+    original: dict[str, Any], current: dict[str, Any]
+) -> bool:
+    return all(
+        original.get(field) == current.get(field)
+        for field in ("document", "metadata", "source_fingerprint", "revision")
+    )
+
+
 def postgres_two_stage_capability() -> TwoStageProjectionCapability:
     return TwoStageProjectionCapability(
         supports_two_stage=True,
@@ -241,23 +250,38 @@ class PostgresTwoStageProjectionAdapter:
         # Embedding happens outside SQL transaction. Recheck identity, then make
         # vector upsert + Stage-1 deletion one local PostgreSQL handoff.
         with self.engine.uow():
+            locked_row = self._backend().stage1_projection_get(
+                namespace=self._namespace(), entity_kind=entity_kind,
+                entity_id=entity_id, for_update=True,
+            )
+            if locked_row is None or not _same_stage1_revision(row, locked_row):
+                return
             current = self._current(entity_kind=entity_kind, entity_id=entity_id)
             if current is None or current.state != "active":
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
                 return
-            if expected and expected != self._current_fingerprint(
+            current_fingerprint = self._current_fingerprint(
                 entity_kind=entity_kind, entity_id=entity_id
+            )
+            staged_fingerprint = str(locked_row.get("source_fingerprint") or "")
+            if (
+                (expected and expected != current_fingerprint)
+                or (staged_fingerprint and staged_fingerprint != current_fingerprint)
             ):
                 return
+            metadata = dict(locked_row.get("metadata") or {})
+            metadata["_kogwistar_stage2_ready"] = True
+            metadata["_kogwistar_source_fingerprint"] = current_fingerprint
+            locked_document = str(locked_row["document"])
             getattr(self._backend(), f"{entity_kind}_upsert")(
                 ids=[entity_id],
-                documents=[document],
+                documents=[locked_document],
                 metadatas=[metadata],
                 embeddings=[embedding],
             )
             if entity_kind == "edge":
-                self._promote_edge_endpoints(document)
+                self._promote_edge_endpoints(locked_document)
             self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     def apply_embedding_jobs_batch(
@@ -329,24 +353,40 @@ class PostgresTwoStageProjectionAdapter:
             ):
                 if embedding is None or job_id in outcomes:
                     continue
+                locked_row = self._backend().stage1_projection_get(
+                    namespace=self._namespace(), entity_kind=entity_kind,
+                    entity_id=entity_id, for_update=True,
+                )
+                if locked_row is None or not _same_stage1_revision(row, locked_row):
+                    outcomes[job_id] = None
+                    continue
                 current = self._current(entity_kind=entity_kind, entity_id=entity_id)
-                if current is None or current.state != "active" or (
-                    expected and expected != self._current_fingerprint(
-                        entity_kind=entity_kind, entity_id=entity_id
+                if current is None or current.state != "active":
+                    outcomes[job_id] = None
+                    continue
+                current_fingerprint = self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                staged_fingerprint = str(locked_row.get("source_fingerprint") or "")
+                if (
+                    (expected and expected != current_fingerprint)
+                    or (
+                        staged_fingerprint
+                        and staged_fingerprint != current_fingerprint
                     )
                 ):
+                    outcomes[job_id] = None
                     continue
-                metadata = dict(row.get("metadata") or {})
+                metadata = dict(locked_row.get("metadata") or {})
                 metadata["_kogwistar_stage2_ready"] = True
-                metadata["_kogwistar_source_fingerprint"] = expected or str(
-                    row.get("source_fingerprint") or ""
-                )
+                metadata["_kogwistar_source_fingerprint"] = current_fingerprint
+                locked_document = str(locked_row["document"])
                 getattr(self._backend(), f"{entity_kind}_upsert")(
-                    ids=[entity_id], documents=[str(row["document"])],
+                    ids=[entity_id], documents=[locked_document],
                     metadatas=[metadata], embeddings=[embedding]
                 )
                 if entity_kind == "edge":
-                    self._promote_edge_endpoints(str(row["document"]))
+                    self._promote_edge_endpoints(locked_document)
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 outcomes[job_id] = None
         return outcomes

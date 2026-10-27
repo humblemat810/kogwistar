@@ -316,7 +316,13 @@ class GraphQuery:
             (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
             for row in rows
         }
-        for row in await self._stage1_endpoint_rows_async(edge_id=edge_id):
+        staged_rows = await self._stage1_endpoint_rows_async(edge_id=edge_id)
+        staged_edge_ids = {
+            str(row.get("edge_id"))
+            for row in staged_rows
+            if matches(row) and row.get("edge_id")
+        }
+        for row in staged_rows:
             key = (
                 str(row.get("edge_id")),
                 str(row.get("endpoint_id")),
@@ -325,9 +331,14 @@ class GraphQuery:
             if matches(row) and key not in existing:
                 rows.append(row)
                 existing.add(key)
-        return self._visible_endpoint_rows(rows)
+        return self._visible_endpoint_rows(rows, known_visible_edge_ids=staged_edge_ids)
 
-    def _visible_endpoint_rows(self, rows: list[GraphRow]) -> list[GraphRow]:
+    def _visible_endpoint_rows(
+        self,
+        rows: list[GraphRow],
+        *,
+        known_visible_edge_ids: set[str] | None = None,
+    ) -> list[GraphRow]:
         edge_ids = sorted(
             {
                 str(row.get("edge_id"))
@@ -337,10 +348,14 @@ class GraphQuery:
         )
         if not edge_ids:
             return []
-        visible_edge_ids = {
+        visible_edge_ids = set(known_visible_edge_ids or ())
+        visible_edge_ids.update(
             str(edge.safe_get_id())
-            for edge in self._read_edges(ids=edge_ids, limit=len(edge_ids))
-        }
+            for edge in self._read_edges(
+                ids=[edge_id for edge_id in edge_ids if edge_id not in visible_edge_ids],
+                limit=len(edge_ids),
+            )
+        )
         return [row for row in rows if str(row.get("edge_id")) in visible_edge_ids]
 
     async def _async_collection_call(

@@ -37,6 +37,7 @@ import math
 from collections.abc import Awaitable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, TypeGuard, cast
 
@@ -1147,7 +1148,16 @@ def build_in_memory_backend(engine: GraphKnowledgeEngine) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
     setattr(engine, "backend_kind", "memory")
     backend.backend_kind = "memory"
-    meta_store = InMemoryMetaStore()
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+
+    if meta_store_implementation_mode() == "rust":
+        from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
+
+        meta_store = build_sqlite_meta_store(
+            Path(engine.persist_directory or "./chroma_db"), "meta.sqlite"
+        )
+    else:
+        meta_store = InMemoryMetaStore()
     meta_store.ensure_initialized()
     setattr(engine, "metadata", meta_store)
     setattr(engine, "collection_lock", {

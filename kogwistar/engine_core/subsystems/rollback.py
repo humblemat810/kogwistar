@@ -750,13 +750,17 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
 
-        def _delete_base_edge(edge_id: str) -> None:
-            if not self._e.write.rust_postgres_delete_existing(
+        def _delete_base_edge(edge_id: str) -> bool:
+            if self._e.write.rust_postgres_delete_existing(
                 entity_kind="edge", entity_ids=[edge_id]
             ):
-                run_awaitable_blocking(self._e.backend.edge_delete(ids=[edge_id]))
+                return True
+            run_awaitable_blocking(self._e.backend.edge_delete(ids=[edge_id]))
+            return False
 
-        def _replace_base_edge(edge: Edge, metadata: dict[str, Any] | None) -> None:
+        def _replace_base_edge(
+            edge: Edge, metadata: dict[str, Any] | None
+        ) -> bool:
             replacement_metadata = strip_none(
                 {
                     "doc_id": (metadata or {}).get("doc_id"),
@@ -777,19 +781,21 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 }
             )
             document = edge.model_dump_json(field_mode="backend")
-            if not self._e.write.rust_postgres_replace_existing(
+            if self._e.write.rust_postgres_replace_existing(
                 entity_kind="edge",
                 entity_id=edge.safe_get_id(),
                 document=document,
                 metadata_patch=replacement_metadata,
                 payload=edge.model_dump(field_mode="backend", exclude=["embedding"]),
             ):
-                run_awaitable_blocking(self._e.backend.edge_update(
-                    ids=[edge.safe_get_id()],
-                    documents=[document],
-                    metadatas=[replacement_metadata],
-                ))
-                self._e.write.index_edge_refs(edge)
+                return True
+            run_awaitable_blocking(self._e.backend.edge_update(
+                ids=[edge.safe_get_id()],
+                documents=[document],
+                metadatas=[replacement_metadata],
+            ))
+            self._e.write.index_edge_refs(edge)
+            return False
 
         for eid, edoc, meta in zip(
             _backend_strings(edges.get("ids")),
@@ -806,70 +812,74 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     removed_node_id=node_id,
                 )
                 if edge_deleted or (new_edge is None):
-                    _delete_base_edge(eid)
-                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
+                    native_deleted = _delete_base_edge(eid)
+                    if not native_deleted:
+                        run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     removed_edge_ids.add(eid)
                 else:
-                    _replace_base_edge(new_edge, metadata)
-                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
-                    ep_ids, ep_docs, ep_metas = [], [], []
-                    for role, node_ids in (
-                        ("src", new_edge.source_ids or []),
-                        ("tgt", new_edge.target_ids or []),
-                    ):
-                        for nid in node_ids:
-                            ep_id = f"{eid}::{role}::{nid}"
-                            node_doc = _backend_object(
-                                run_awaitable_blocking(
-                                    self._e.backend.node_get(
-                                        ids=[nid], include=["documents"]
+                    native_replaced = _replace_base_edge(new_edge, metadata)
+                    if not native_replaced:
+                        run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
+                        ep_ids, ep_docs, ep_metas = [], [], []
+                        for role, node_ids in (
+                            ("src", new_edge.source_ids or []),
+                            ("tgt", new_edge.target_ids or []),
+                        ):
+                            for nid in node_ids:
+                                ep_id = f"{eid}::{role}::{nid}"
+                                node_doc = _backend_object(
+                                    run_awaitable_blocking(
+                                        self._e.backend.node_get(
+                                            ids=[nid], include=["documents"]
+                                        )
                                     )
                                 )
-                            )
-                            per_doc_id = None
-                            if node_doc_doc := _backend_strings(node_doc.get("documents")):
-                                try:
-                                    n = Node.model_validate_json(node_doc_doc[0])
-                                    per_doc_id = getattr(n, "doc_id", None)
-                                except Exception:
-                                    per_doc_id = None
-                            meta_ep = strip_none(
-                                {
-                                    "id": ep_id,
-                                    "edge_id": eid,
-                                    "node_id": nid,
-                                    "role": role,
-                                    "relation": new_edge.relation,
-                                    "doc_id": per_doc_id,
-                                }
-                            )
-                            ep_ids.append(ep_id)
-                            ep_docs.append(json.dumps(meta_ep))
-                            ep_metas.append(meta_ep)
-                    if ep_ids:
-                        run_awaitable_blocking(self._e.backend.edge_endpoints_add(
-                            ids=ep_ids,
-                            documents=ep_docs,
-                            metadatas=ep_metas,
-                            embeddings=[
-                                self._e._iterative_defensive_emb(d) for d in ep_docs
-                            ],
-                        ))
+                                per_doc_id = None
+                                if node_doc_doc := _backend_strings(node_doc.get("documents")):
+                                    try:
+                                        n = Node.model_validate_json(node_doc_doc[0])
+                                        per_doc_id = getattr(n, "doc_id", None)
+                                    except Exception:
+                                        per_doc_id = None
+                                meta_ep = strip_none(
+                                    {
+                                        "id": ep_id,
+                                        "edge_id": eid,
+                                        "node_id": nid,
+                                        "role": role,
+                                        "relation": new_edge.relation,
+                                        "doc_id": per_doc_id,
+                                    }
+                                )
+                                ep_ids.append(ep_id)
+                                ep_docs.append(json.dumps(meta_ep))
+                                ep_metas.append(meta_ep)
+                        if ep_ids:
+                            run_awaitable_blocking(self._e.backend.edge_endpoints_add(
+                                ids=ep_ids,
+                                documents=ep_docs,
+                                metadatas=ep_metas,
+                                embeddings=[
+                                    self._e._iterative_defensive_emb(d) for d in ep_docs
+                                ],
+                            ))
                     updated_edge_ids.add(eid)
                 continue
 
             new_src = [x for x in (e.source_ids or []) if x != node_id]
             new_tgt = [x for x in (e.target_ids or []) if x != node_id]
             if not new_src or not new_tgt:
-                _delete_base_edge(eid)
-                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
+                native_deleted = _delete_base_edge(eid)
+                if not native_deleted:
+                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
-                _replace_base_edge(e, metadata)
-                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
-                    where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
-                ))
+                native_replaced = _replace_base_edge(e, metadata)
+                if not native_replaced:
+                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
+                        where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
+                    ))
                 updated_edge_ids.add(eid)
 
         return {

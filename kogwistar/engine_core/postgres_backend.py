@@ -61,7 +61,11 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
-from ..implementation_selection import assert_transaction_entry_allowed
+from ..implementation_selection import (
+    assert_no_python_transaction_during_rust_scope,
+    assert_python_transaction_entry_allowed,
+    selected_transaction_authority,
+)
 from ..utils.embedding_vectors import (
     normalize_embedding_rows,
     normalize_embedding_vector,
@@ -115,6 +119,36 @@ JSONB = psql.JSONB
 
 
 _VECTOR_TYPE_RE = re.compile(r"^vector\((?P<dimension>\d+)\)$")
+_postgres_schema_bootstrap_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "kogwistar_postgres_schema_bootstrap_active", default=False
+)
+
+
+def _reject_sqlalchemy_transaction_during_rust_scope(connection: Connection) -> None:
+    assert_no_python_transaction_during_rust_scope()
+    if (
+        selected_transaction_authority() == "rust"
+        and not _postgres_schema_bootstrap_active.get()
+        and not connection.get_execution_options().get(
+            "kogwistar_schema_bootstrap", False
+        )
+    ):
+        if connection.dialect.name != "postgresql":
+            raise RuntimeError(
+                "Rust-selected PostgreSQL authority requires PostgreSQL read-only enforcement"
+            )
+        connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+
+
+def _guard_sqlalchemy_transaction_entry(engine: sa.Engine | AsyncEngine) -> None:
+    """Guard raw engine access from opening a second owner inside Rust UoWs."""
+    sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
+    if not event.contains(
+        sync_engine, "begin", _reject_sqlalchemy_transaction_during_rust_scope
+    ):
+        event.listen(
+            sync_engine, "begin", _reject_sqlalchemy_transaction_during_rust_scope
+        )
 
 
 @dataclass(frozen=True)
@@ -291,7 +325,7 @@ class PostgresUnitOfWork:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             # Join outer transaction
@@ -311,7 +345,7 @@ class AsyncPostgresUnitOfWork:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             yield
@@ -407,7 +441,7 @@ class PgCollectionFacade:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
@@ -466,7 +500,7 @@ class PgCollectionFacade:
     def delete(
         self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if self._b._is_async_engine:
             return cast(None, self._call_async(
                 lambda: self._b._delete_async(self._t, ids=ids, where=where)
@@ -532,7 +566,7 @@ class PgCollectionFacade:
         For vector collections we also allow updating embeddings (atomic in Postgres).
         For non-vector collections embeddings are ignored.
         """
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
@@ -812,6 +846,7 @@ class PgVectorBackend:
             ) from _pgvector_import_error
 
         self.engine = engine
+        _guard_sqlalchemy_transaction_entry(engine)
         self._is_async_engine = isinstance(engine, AsyncEngine)
         self.embedding_dim = int(embedding_dim)
         self.distance = str(self._normalize_distance(distance)).lower()
@@ -1156,10 +1191,21 @@ class PgVectorBackend:
     def ensure_schema(self) -> None:
         """Dev convenience: create extension/schema/tables if missing."""
         if self._is_async_engine:
-            _run_coro_sync(self._ensure_schema_async())
+            _run_coro_sync(self._ensure_schema_with_bootstrap_scope_async())
             return
-        with cast(Engine, self.engine).begin() as conn:
-            self._ensure_schema_sync(conn)
+        token = _postgres_schema_bootstrap_active.set(True)
+        try:
+            with cast(Engine, self.engine).begin() as conn:
+                self._ensure_schema_sync(conn)
+        finally:
+            _postgres_schema_bootstrap_active.reset(token)
+
+    async def _ensure_schema_with_bootstrap_scope_async(self) -> None:
+        token = _postgres_schema_bootstrap_active.set(True)
+        try:
+            await self._ensure_schema_async()
+        finally:
+            _postgres_schema_bootstrap_active.reset(token)
 
     # ----------------------------
     # Shared helpers
@@ -1204,7 +1250,7 @@ class PgVectorBackend:
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1234,21 +1280,32 @@ class PgVectorBackend:
             conn.execute(stmt)
 
     def stage1_projection_get(
-        self, *, namespace: str, entity_kind: str, entity_id: str
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        for_update: bool = False,
     ) -> dict[str, JsonValue] | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        active = get_active_conn()
+        if for_update and (
+            not isinstance(active, Connection) or not active.in_transaction()
+        ):
+            raise RuntimeError(
+                "row-locking Stage-1 reads require an active PostgreSQL UoW"
+            )
+        query = sa.select(self.stage1_projections).where(
+            self.stage1_projections.c.namespace == str(namespace),
+            self.stage1_projections.c.entity_kind == entity_kind,
+            self.stage1_projections.c.entity_id == str(entity_id),
+        )
+        if for_update:
+            query = query.with_for_update()
         with self._conn() as conn:
             row = (
-                conn.execute(
-                    sa.select(self.stage1_projections).where(
-                        self.stage1_projections.c.namespace == str(namespace),
-                        self.stage1_projections.c.entity_kind == entity_kind,
-                        self.stage1_projections.c.entity_id == str(entity_id),
-                    )
-                )
-                .mappings()
-                .first()
+                conn.execute(query).mappings().first()
             )
         return dict(row) if row is not None else None
 
@@ -1286,7 +1343,7 @@ class PgVectorBackend:
     def stage1_projection_delete(
         self, *, namespace: str, entity_kind: str, entity_id: str
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         with self._conn() as conn:
@@ -1309,7 +1366,7 @@ class PgVectorBackend:
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1339,20 +1396,33 @@ class PgVectorBackend:
             await conn.execute(stmt)
 
     async def stage1_projection_get_async(
-        self, *, namespace: str, entity_kind: str, entity_id: str
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        for_update: bool = False,
     ) -> dict[str, JsonValue] | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        active = get_active_conn()
+        if for_update and (
+            not isinstance(active, AsyncConnection) or not active.in_transaction()
+        ):
+            raise RuntimeError(
+                "row-locking Stage-1 reads require an active async PostgreSQL UoW"
+            )
+        query = sa.select(self.stage1_projections).where(
+            self.stage1_projections.c.namespace == str(namespace),
+            self.stage1_projections.c.entity_kind == entity_kind,
+            self.stage1_projections.c.entity_id == str(entity_id),
+        )
+        if for_update:
+            query = query.with_for_update()
         async with self._async_conn() as conn:
             row = (
                 (
-                    await conn.execute(
-                        sa.select(self.stage1_projections).where(
-                            self.stage1_projections.c.namespace == str(namespace),
-                            self.stage1_projections.c.entity_kind == entity_kind,
-                            self.stage1_projections.c.entity_id == str(entity_id),
-                        )
-                    )
+                    await conn.execute(query)
                 )
                 .mappings()
                 .first()
@@ -1393,7 +1463,7 @@ class PgVectorBackend:
     async def stage1_projection_delete_async(
         self, *, namespace: str, entity_kind: str, entity_id: str
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
@@ -1653,7 +1723,7 @@ class PgVectorBackend:
     def _delete(
         self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         stmt = sa.delete(table)
         if ids is not None:
             stmt = stmt.where(table.c.id.in_(list(ids)))
@@ -1667,7 +1737,7 @@ class PgVectorBackend:
     async def _delete_async(
         self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         stmt = sa.delete(table)
         if ids is not None:
             stmt = stmt.where(table.c.id.in_(list(ids)))
@@ -1687,7 +1757,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -1737,7 +1807,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -1987,7 +2057,7 @@ class PgVectorBackend:
           non-vector tables, it is ignored.
         """
 
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
 
         if documents is None and metadatas is None and embeddings is None:
             return
@@ -2048,7 +2118,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
-        assert_transaction_entry_allowed()
+        assert_python_transaction_entry_allowed()
         if documents is None and metadatas is None and embeddings is None:
             return
 

@@ -30,6 +30,20 @@ tests, and optional integrations.
 | `JWT_ALG` | `kogwistar.server.auth_middleware` | JWT algorithm, usually `HS256` or `RS256`. |
 | `JWT_ISS` | `kogwistar.server.auth_middleware` | Optional JWT issuer check. |
 | `JWT_AUD` | `kogwistar.server.auth_middleware` | Optional JWT audience check. |
+
+## Native Rust API Server
+
+| Variable | Used By | Purpose |
+| --- | --- | --- |
+| `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend. The inline embedding worker currently requires `pg`. |
+| `KOGWISTAR_PG_DSN` | Rust `kogwistar-server` | PostgreSQL DSN for the native Rust service and its durable index-job queue. |
+| `KOGWISTAR_PG_SCHEMA_BASE` | Rust `kogwistar-server` | PostgreSQL schema base; defaults to `kogwistar`. |
+| `KOGWISTAR_EMBEDDING_PROVIDER` | Rust `kogwistar-server` | Enables Rust-side embedding provider construction; currently accepts `ollama`. |
+| `KOGWISTAR_EMBEDDING_MODEL` | Rust `kogwistar-server` | Ollama embedding model name; required when the provider is configured. |
+| `KOGWISTAR_EMBEDDING_DIMENSION` | Rust `kogwistar-server` | Positive vector dimension expected from the configured provider. |
+| `KOGWISTAR_EMBEDDING_ENDPOINT` | Rust `kogwistar-server` | Ollama endpoint; defaults to `http://127.0.0.1:11434`. |
+| `KOGWISTAR_EMBEDDING_WORKER_INLINE` | Rust `kogwistar-server` | Opts into an in-process Rust worker that polls PostgreSQL embedding jobs (batches up to 32, 60-second leases). Defaults off. Enabling it without the Rust PostgreSQL service and configured provider fails startup. Health reports `embedding_inline_worker_enabled`. |
+| `KOGWISTAR_RUNTIME_NATIVE_INLINE` | Rust `kogwistar-server` | Opts into the separate inline recorded-workflow runtime worker. Defaults off. |
 | `JWT_PROTECTED_PATHS` | `kogwistar.server.auth_middleware` | Comma-separated list of protected paths. |
 | `DEV_STREAM_GUARD` | `kogwistar.server.auth_middleware` | Enables or disables the dev stream guard. |
 | `DEV_AUTH_EMAIL` | `kogwistar.server.auth.router` | Default developer auth email. |

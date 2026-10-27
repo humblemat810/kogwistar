@@ -365,7 +365,7 @@ def test_native_postgres_sessions_are_isolated_by_schema(
             {"kind": "latest_retained_event_seq", "namespace": "native-session"},
         ) == 1
     finally:
-        with sa_engine.begin() as connection:
+        with sa_engine.execution_options(kogwistar_schema_bootstrap=True).begin() as connection:
             connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{other_schema}" CASCADE')
 
 
@@ -461,7 +461,7 @@ def test_python_facade_graph_batch_rolls_back_across_native_postgres_boundary(
     store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
     store.ensure_initialized()
     quoted_schema = f'"{schema}"'
-    with sa_engine.begin() as connection:
+    with sa_engine.execution_options(kogwistar_schema_bootstrap=True).begin() as connection:
         connection.exec_driver_sql(
             f"CREATE FUNCTION {quoted_schema}.reject_facade_batch_index_job() "
             "RETURNS trigger LANGUAGE plpgsql AS $$ "
@@ -591,6 +591,206 @@ def test_python_facade_graph_batch_retry_is_idempotent_across_native_boundary(
     assert projected["embeddings"][0] == [1.0, 0.0, 0.0]
 
 
+def test_rust_graph_mutation_materializes_python_readable_node_docs(
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    store.ensure_initialized()
+    namespace = f"rust-node-docs-{uuid.uuid4().hex}"
+    node_id = f"rust-node-{uuid.uuid4().hex}"
+    document = json.dumps(
+        {
+            "id": node_id,
+            "mentions": [
+                {"spans": [{"doc_id": "source-b"}, {"doc_id": "source-a"}]},
+                {"spans": [{"doc_id": "source-b"}]},
+            ],
+        },
+        separators=(",", ":"),
+    )
+    store.apply_graph_mutations_atomic(
+        {
+            "contract_version": 1,
+            "atomic": True,
+            "mutations": [
+                {
+                    "scope": {"namespace": namespace},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": f"event-{node_id}",
+                    "op": "ADD",
+                    "payload": {"id": node_id, "text": "native graph write"},
+                    "record": {
+                        "id": node_id,
+                        "document": document,
+                        "metadata": {},
+                        "embedding": [1.0, 0.0, 0.0],
+                    },
+                    "embedding_dim": 3,
+                }
+            ],
+            "index_jobs": [],
+        }
+    )
+
+    rows = backend.node_docs_get(
+        where={"node_id": node_id}, include=["documents", "metadatas"]
+    )
+    assert rows["ids"] == [f"{node_id}::source-a", f"{node_id}::source-b"]
+    assert rows["metadatas"] == [
+        {
+            "id": f"{node_id}::source-a",
+            "node_id": node_id,
+            "doc_id": "source-a",
+            "mention_count": 1,
+            "namespace": namespace,
+        },
+        {
+            "id": f"{node_id}::source-b",
+            "node_id": node_id,
+            "doc_id": "source-b",
+            "mention_count": 1,
+            "namespace": namespace,
+        },
+    ]
+    node = backend.node_get(ids=[node_id], include=["metadatas"])
+    assert node["metadatas"][0]["doc_ids"] == '["source-a","source-b"]'
+
+
+def test_rust_authority_reconciles_metadata_join_jobs_natively(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    _, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    namespace = f"rust-join-reconcile-{uuid.uuid4().hex}"
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        namespace=namespace,
+        embedding_function=lambda documents_or_texts: [
+            [1.0, 0.0, 0.0] for _ in documents_or_texts
+        ],
+    )
+    reconcile = engine.reconcile_indexes
+    monkeypatch.setattr(engine, "reconcile_indexes", lambda **kwargs: 0)
+    node = build_entity_node(
+        node_id=f"rust-reconcile-node-{uuid.uuid4().hex}",
+        doc_id="source-reconcile",
+        embedding=[0.0, 1.0, 0.0],
+    )
+    target = build_entity_node(
+        node_id=f"rust-reconcile-target-{uuid.uuid4().hex}",
+        doc_id="source-target",
+        embedding=[0.0, 0.0, 1.0],
+    )
+    engine.write.add_node(node)
+    engine.write.add_node(target)
+    edge = build_relationship_edge(
+        edge_id=f"rust-reconcile-edge-{uuid.uuid4().hex}",
+        src=node.id,
+        tgt=target.id,
+        doc_id="source-edge",
+        embedding=[0.0, 1.0, 0.0],
+    )
+    engine.write.add_edge(edge)
+    monkeypatch.setattr(engine, "reconcile_indexes", reconcile)
+
+    python_meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    pending = python_meta.list_index_jobs(namespace=namespace)
+    supported_kinds = {"node_docs", "node_refs", "edge_refs", "edge_endpoints"}
+    join_jobs = [job for job in pending if job.index_kind in supported_kinds]
+    assert {job.index_kind for job in join_jobs} == supported_kinds
+    assert all(job.status == "PENDING" for job in join_jobs)
+    native_meta = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=schema)
+    embedding_job_id = f"unsupported-embedding-{uuid.uuid4().hex}"
+    native_meta.enqueue_index_job(
+        job_id=embedding_job_id,
+        namespace=namespace,
+        entity_kind="node",
+        entity_id=node.id,
+        index_kind="node_embedding",
+        op="UPSERT",
+        payload_json=None,
+        max_retries=3,
+    )
+    stale_job_id = f"stale-join-{uuid.uuid4().hex}"
+    native_meta.enqueue_index_job(
+        job_id=stale_job_id,
+        namespace=namespace,
+        entity_kind="edge",
+        entity_id=f"missing-edge-{uuid.uuid4().hex}",
+        index_kind="edge_refs",
+        op="UPSERT",
+        payload_json=None,
+        max_retries=3,
+    )
+    missing_delete_job_id = f"missing-delete-{uuid.uuid4().hex}"
+    native_meta.enqueue_index_job(
+        job_id=missing_delete_job_id,
+        namespace=namespace,
+        entity_kind="edge",
+        entity_id=f"already-deleted-edge-{uuid.uuid4().hex}",
+        index_kind="edge_endpoints",
+        op="DELETE",
+        payload_json=None,
+        max_retries=3,
+    )
+
+    assert reconcile(max_jobs=10, namespace=namespace) == 7
+    completed = python_meta.list_index_jobs(namespace=namespace)
+    assert {
+        (job.index_kind, job.status)
+        for job in completed
+        if job.index_kind in supported_kinds
+        and job.entity_id in {node.id, target.id, edge.id}
+    } == {
+        ("node_docs", "DONE"),
+        ("node_refs", "DONE"),
+        ("edge_refs", "DONE"),
+        ("edge_endpoints", "DONE"),
+    }
+    assert backend.node_docs_get(
+        where={"node_id": node.id}, include=["metadatas"]
+    )["ids"] == [f"{node.id}::source-reconcile"]
+    assert backend.node_refs_get(
+        where={"node_id": node.id}, include=["metadatas"]
+    )["ids"] == [f"{node.id}::mention::0::span::0"]
+    assert backend.edge_refs_get(
+        where={"edge_id": edge.id}, include=["metadatas"]
+    )["ids"] == [f"{edge.id}::mention::0::span::0"]
+    assert len(backend.edge_endpoints_get(
+        where={"edge_id": edge.id}, include=["metadatas"]
+    )["ids"]) == 2
+    assert next(
+        job
+        for job in python_meta.list_index_jobs(namespace=namespace)
+        if job.job_id == embedding_job_id
+    ).status == "PENDING"
+    requeued = next(
+        job
+        for job in python_meta.list_index_jobs(namespace=namespace)
+        if job.job_id == stale_job_id
+    )
+    assert requeued.status == "PENDING"
+    assert requeued.retry_count == 1
+    assert requeued.last_error and "not found" in requeued.last_error
+    assert next(
+        job
+        for job in python_meta.list_index_jobs(namespace=namespace)
+        if job.job_id == missing_delete_job_id
+    ).status == "DONE"
+
+
 def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
     monkeypatch: pytest.MonkeyPatch,
     pg_dsn: str | None,
@@ -644,6 +844,39 @@ def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
         ("public-committed", "node_docs"),
         ("public-committed", "node_refs"),
     }
+    node_doc_rows = backend.node_docs_get(
+        where={"node_id": "public-committed"}, include=["metadatas"]
+    )
+    assert node_doc_rows["ids"] == ["public-committed::doc"]
+    assert node_doc_rows["metadatas"] == [
+        {
+            "id": "public-committed::doc",
+            "node_id": "public-committed",
+            "doc_id": "doc",
+            "mention_count": 1,
+            "namespace": engine.namespace,
+        }
+    ]
+    node_ref_rows = backend.node_refs_get(
+        where={"node_id": "public-committed"}, include=["metadatas"]
+    )
+    assert node_ref_rows["ids"] == [
+        "public-committed::mention::0::span::0"
+    ]
+    assert node_ref_rows["metadatas"][0] == {
+        "id": "public-committed::mention::0::span::0",
+        "node_id": "public-committed",
+        "doc_id": "doc",
+        "insertion_method": "test",
+        "verification_method": "human",
+        "is_verified": True,
+        "verificication_score": 1.0,
+        "page_number": 1,
+        "excerpt": "x",
+        "start_char": 0,
+        "end_char": 1,
+        "namespace": engine.namespace,
+    }
 
     def fail_enqueue(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
@@ -671,6 +904,9 @@ def test_python_postgres_node_add_rolls_back_event_when_projection_write_fails(
     _, schema = _require_pg(pg_dsn, pg_schema)
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
@@ -761,6 +997,9 @@ def test_mixed_python_rust_postgres_writers_keep_event_and_projection_ordered(
     )
     assert isinstance(python_engine.metadata, EnginePostgresMetaStore)
 
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
@@ -1126,6 +1365,10 @@ def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(
     _, schema = _require_pg(pg_dsn, pg_schema)
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
     for node_id in ("edge-source", "edge-target"):
         backend.node_add(
             ids=[node_id],
@@ -1133,6 +1376,10 @@ def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(
             metadatas=[{}],
             embeddings=[[1.0, 0.0, 0.0]],
         )
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     engine = GraphKnowledgeEngine(
@@ -1161,6 +1408,12 @@ def test_public_rust_postgres_edge_add_is_atomic_with_event_and_jobs(
         (edge.id, "edge_refs"),
         (edge.id, "edge_endpoints"),
     }
+    edge_ref_rows = backend.edge_refs_get(
+        where={"edge_id": edge.id}, include=["metadatas"]
+    )
+    assert edge_ref_rows["ids"] == [f"{edge.id}::mention::0::span::0"]
+    assert edge_ref_rows["metadatas"][0]["doc_id"] == "doc"
+    assert edge_ref_rows["metadatas"][0]["verification_method"] == "human"
 
     def fail_enqueue(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
@@ -1345,6 +1598,10 @@ def test_public_rust_postgres_legacy_default_row_is_claimed_but_custom_scope_fai
     _, schema = _require_pg(pg_dsn, pg_schema)
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
     backend.node_add(
         ids=["legacy-default", "legacy-unknown-scope"],
         documents=[
@@ -1354,6 +1611,10 @@ def test_public_rust_postgres_legacy_default_row_is_claimed_but_custom_scope_fai
         metadatas=[{"old": True}, {"old": True}],
         embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
     )
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
 
@@ -1479,12 +1740,19 @@ def test_public_sync_postgres_rejects_partial_rust_authority(
 
 
 def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
-    pg_dsn: str | None, pg_schema: str | None, sa_engine: Any
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
 ) -> None:
     dsn, schema = _require_pg(pg_dsn, pg_schema)
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
     _call(dsn, schema, {"kind": "ensure_schema"})
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
     backend.node_add(
         ids=["delete-me", "wrong-scope"],
         documents=["delete", "wrong"],
@@ -1494,6 +1762,10 @@ def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
         ],
         embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
     )
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     operation = {
         "kind": "graph_delete_mutation",
         "namespace": "delete",
@@ -1553,12 +1825,20 @@ def test_native_graph_delete_is_atomic_idempotent_and_scope_safe(
         "wrong-scope"
     ]
 
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
     backend.node_add(
         ids=["rollback-delete"],
         documents=["rollback"],
         metadatas=[{"namespace": "delete"}],
         embeddings=[[0.0, 0.0, 1.0]],
     )
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     transaction_id = uuid.uuid4().hex
     _call(
         dsn,
@@ -1888,7 +2168,7 @@ def test_public_rust_postgres_replay_repairs_projection_without_new_events(
     python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     events_before = list(python.iter_entity_events(namespace=engine.namespace))
     assert [op for _, _, _, op, _ in events_before] == ["ADD", "TOMBSTONE"]
-    with sa_engine.begin() as connection:
+    with sa_engine.execution_options(kogwistar_schema_bootstrap=True).begin() as connection:
         connection.exec_driver_sql(f'TRUNCATE TABLE "{schema}"."{backend.nodes.name}"')
     assert backend.node_get(ids=[node.id], include=[])["ids"] == []
 
@@ -1962,23 +2242,43 @@ def test_public_rust_postgres_prune_node_routes_edge_replace_and_delete(
         }
         for edge_id in (deleted_edge.id, updated_edge.id)
     ]
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
     backend.edge_endpoints_add(
         ids=[row["id"] for row in endpoint_rows],
         documents=[json.dumps(row) for row in endpoint_rows],
         metadatas=endpoint_rows,
         embeddings=[[1.0, 0.0, 0.0] for _ in endpoint_rows],
     )
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
 
     result = engine.rollback.prune_node_from_edges("prune-remove")
     assert result["deleted_edges"] == {deleted_edge.id}
     assert result["updated_edges"] == {updated_edge.id}
     assert backend.edge_get(ids=[deleted_edge.id], include=[])["ids"] == []
+    assert backend.edge_endpoints_get(
+        where={"edge_id": deleted_edge.id}, include=[]
+    )["ids"] == []
     updated = backend.edge_get(
         ids=[updated_edge.id], include=["documents", "embeddings"]
     )
     parsed = Edge.model_validate_json(updated["documents"][0])
     assert parsed.source_ids == ["prune-survivor"]
     assert updated["embeddings"][0] == pytest.approx([0.0, 1.0, 0.0])
+    endpoints = backend.edge_endpoints_get(
+        where={"edge_id": updated_edge.id}, include=["metadatas"]
+    )
+    endpoint_ids = {
+        metadata.get("endpoint_id")
+        for metadata in endpoints.get("metadatas", [])
+        if isinstance(metadata, dict)
+    }
+    assert endpoint_ids == {"prune-survivor", "prune-target"}
     python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     edge_events = [
         (entity_id, op)
@@ -2152,6 +2452,22 @@ def test_public_rust_postgres_prune_node_refs_replaces_atomically(
         )
         if kind == "node"
     ] == [(node.id, "ADD"), (node.id, "REPLACE")]
+    assert any(
+        job.entity_id == node.id
+        and job.index_kind == "node_docs"
+        and job.op == "UPSERT"
+        for job in python.list_index_jobs(namespace=engine.namespace)
+    )
+    node_doc_rows = backend.node_docs_get(
+        where={"node_id": node.id}, include=["metadatas"]
+    )
+    assert node_doc_rows["ids"] == [f"{node.id}::doc-two"]
+    assert node_doc_rows["metadatas"][0]["doc_id"] == "doc-two"
+    node_ref_rows = backend.node_refs_get(
+        where={"node_id": node.id}, include=["metadatas"]
+    )
+    assert node_ref_rows["ids"] == [f"{node.id}::mention::0::span::0"]
+    assert node_ref_rows["metadatas"][0]["doc_id"] == "doc-two"
 
 
 def test_public_rust_postgres_extraction_rollback_deletes_atomically(

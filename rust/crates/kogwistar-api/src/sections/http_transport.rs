@@ -13,6 +13,18 @@ async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
             "native_inline_worker_enabled".to_owned(),
             json!(inline_native_worker_enabled),
         );
+        let inline_embedding_worker_enabled = std::env::var("KOGWISTAR_EMBEDDING_WORKER_INLINE")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+        object.insert(
+            "embedding_inline_worker_enabled".to_owned(),
+            json!(inline_embedding_worker_enabled),
+        );
         let mut implementation = state.api.implementation.clone();
         implementation.implemented_route_operations =
             state.application.implemented_http_operations();

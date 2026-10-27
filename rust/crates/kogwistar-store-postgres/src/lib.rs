@@ -21,9 +21,10 @@ use kogwistar_store::{
     EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
     EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability, GraphMutation,
     GraphMutationBatch, GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead,
-    GraphProjectionVectorQuery, GraphRecord, IndexJob, IndexJobReadStore, IndexJobWriteStore,
-    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    GraphProjectionVectorQuery, GraphProjectionWriteStore, GraphRecord, GraphScope, IndexJob,
+    IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
+    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
+    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
@@ -47,6 +48,9 @@ use tokio_postgres::{Config, GenericClient, NoTls, Row, Transaction};
 // the cross-language storage protocol.
 const POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY: i64 = 748_219_503;
 const EDGE_ENDPOINTS_TABLE: &str = "gke_edge_endpoints";
+const NODE_DOCS_TABLE: &str = "gke_node_docs";
+const NODE_REFS_TABLE: &str = "gke_node_refs";
+const EDGE_REFS_TABLE: &str = "gke_edge_refs";
 
 /// Future accepted by [`PostgresStore::transaction`].  The lifetime is tied
 /// to the UoW borrow, so a pooled client cannot escape its transaction.
@@ -135,6 +139,31 @@ pub struct GraphTableNames {
     pub edges: String,
     pub documents: String,
     pub domains: String,
+}
+
+/// Backend projection names needed when the native Rust store drains its
+/// deterministic, metadata-only graph join-index jobs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphIndexTableNames {
+    pub nodes: String,
+    pub edges: String,
+    pub node_docs: String,
+    pub node_refs: String,
+    pub edge_refs: String,
+    pub edge_endpoints: String,
+}
+
+impl Default for GraphIndexTableNames {
+    fn default() -> Self {
+        Self {
+            nodes: "gke_nodes".to_owned(),
+            edges: "gke_edges".to_owned(),
+            node_docs: NODE_DOCS_TABLE.to_owned(),
+            node_refs: NODE_REFS_TABLE.to_owned(),
+            edge_refs: EDGE_REFS_TABLE.to_owned(),
+            edge_endpoints: EDGE_ENDPOINTS_TABLE.to_owned(),
+        }
+    }
 }
 
 /// One atomic metadata patch for an existing Python pgvector graph row.
@@ -233,6 +262,9 @@ struct Tables {
     lane_messages_claim_index: String,
     lane_messages_conversation_seq_index: String,
     edge_endpoints: String,
+    node_docs: String,
+    node_refs: String,
+    edge_refs: String,
 }
 
 impl Tables {
@@ -280,6 +312,9 @@ impl Tables {
                 "idx_lane_messages_conversation_seq",
             )?,
             edge_endpoints: qualified(&quoted_schema, EDGE_ENDPOINTS_TABLE)?,
+            node_docs: qualified(&quoted_schema, NODE_DOCS_TABLE)?,
+            node_refs: qualified(&quoted_schema, NODE_REFS_TABLE)?,
+            edge_refs: qualified(&quoted_schema, EDGE_REFS_TABLE)?,
         })
     }
 }
@@ -751,6 +786,48 @@ impl PostgresStore {
     ) -> PostgresStoreResult<()> {
         self.transaction(move |uow| {
             Box::pin(async move { uow.upsert_graph_projection(write).await })
+        })
+        .await
+    }
+
+    /// Admit an embedding result only if its source document and metadata are
+    /// still the current canonical projection. Promotion changes the vector
+    /// only; a delayed provider result cannot overwrite a newer graph record.
+    pub async fn promote_graph_embedding_projection(
+        &self,
+        namespace: String,
+        entity_kind: String,
+        candidate: GraphRecord,
+    ) -> PostgresStoreResult<bool> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.promote_graph_embedding_projection(&namespace, &entity_kind, candidate)
+                    .await
+            })
+        })
+        .await
+    }
+
+    /// Physically remove a serving projection only after its canonical row is
+    /// tombstoned. The lifecycle event is already durable; this operation only
+    /// performs the idempotent materialized cleanup used by index workers.
+    pub async fn delete_graph_projection_if_tombstoned(
+        &self,
+        scope: GraphScope,
+        entity_kind: String,
+        entity_id: String,
+    ) -> PostgresStoreResult<bool> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                delete_graph_projection_if_tombstoned(
+                    &uow.transaction,
+                    &uow.tables,
+                    &scope,
+                    &entity_kind,
+                    &entity_id,
+                )
+                .await
+            })
         })
         .await
     }
@@ -1494,6 +1571,50 @@ impl PostgresStore {
         })
         .await
     }
+    pub async fn claim_index_jobs_filtered(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        filter: IndexJobClaimFilter,
+    ) -> PostgresStoreResult<Vec<IndexJob>> {
+        if filter.index_kinds.is_empty()
+            || filter.index_kinds.iter().any(|kind| kind.trim().is_empty())
+        {
+            return Err(PostgresStoreError::Backend(
+                "filtered index-job claim requires non-empty index kinds".to_owned(),
+            ));
+        }
+        let namespace = filter.namespace;
+        let index_kinds = filter.index_kinds;
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.claim_index_jobs_filtered(
+                    limit,
+                    lease_seconds,
+                    namespace.as_deref(),
+                    &index_kinds,
+                )
+                .await
+            })
+        })
+        .await
+    }
+    pub async fn reconcile_join_index_jobs(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        namespace: Option<&str>,
+        names: GraphIndexTableNames,
+    ) -> PostgresStoreResult<usize> {
+        let namespace = namespace.map(ToOwned::to_owned);
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.reconcile_join_index_jobs(limit, lease_seconds, namespace.as_deref(), names)
+                    .await
+            })
+        })
+        .await
+    }
     pub async fn mark_index_job_done(
         &self,
         job_id: &str,
@@ -1874,6 +1995,78 @@ impl PostgresUnitOfWork<'_> {
         upsert_graph_projection(&self.transaction, &self.tables, write).await
     }
 
+    pub async fn promote_graph_embedding_projection(
+        &mut self,
+        namespace: &str,
+        entity_kind: &str,
+        mut candidate: GraphRecord,
+    ) -> PostgresStoreResult<bool> {
+        require_namespace(namespace)?;
+        let table = match entity_kind {
+            "node" => "gke_nodes",
+            "edge" => "gke_edges",
+            _ => {
+                return Err(StoreError::InvalidEntityEventPayload {
+                    message: "embedding promotion supports node or edge only".to_owned(),
+                }
+                .into());
+            }
+        };
+        let embedding_dim = candidate
+            .embedding
+            .as_ref()
+            .map(Vec::len)
+            .filter(|dimension| *dimension > 0)
+            .ok_or_else(|| {
+                PostgresStoreError::Backend(
+                    "embedding promotion requires a non-empty vector".to_owned(),
+                )
+            })?;
+        let scope = GraphScope {
+            namespace: namespace.to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let current = self
+            .graph_projection_records_for_update(GraphProjectionRead {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                ids: Some(vec![candidate.id.clone()]),
+                metadata: Default::default(),
+                limit: 1,
+            })
+            .await?
+            .into_iter()
+            .next();
+        let Some(mut current) = current else {
+            return Ok(false);
+        };
+        if current
+            .metadata
+            .get("lifecycle_status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+        {
+            return Ok(false);
+        }
+        let expected_metadata = graph_metadata(&scope, &candidate.metadata)?;
+        if current.document != candidate.document || current.metadata != expected_metadata {
+            return Ok(false);
+        }
+
+        // The provider is allowed to supply the vector only. Preserve the
+        // canonical row values read and locked above.
+        current.embedding = candidate.embedding.take();
+        self.upsert_graph_projection(GraphProjectionUpsert {
+            scope,
+            table: table.to_owned(),
+            record: current,
+            embedding_dim,
+        })
+        .await?;
+        Ok(true)
+    }
+
     pub async fn patch_graph_projection_metadata(
         &mut self,
         patch: GraphProjectionMetadataPatch,
@@ -2094,6 +2287,46 @@ impl PostgresUnitOfWork<'_> {
             limit,
             lease_seconds,
             namespace,
+            None,
+        )
+        .await
+    }
+    pub async fn claim_index_jobs_filtered(
+        &mut self,
+        limit: usize,
+        lease_seconds: i64,
+        namespace: Option<&str>,
+        index_kinds: &[String],
+    ) -> PostgresStoreResult<Vec<IndexJob>> {
+        if index_kinds.is_empty() || index_kinds.iter().any(|kind| kind.trim().is_empty()) {
+            return Err(PostgresStoreError::Backend(
+                "filtered index-job claim requires non-empty index kinds".to_owned(),
+            ));
+        }
+        claim_index_jobs(
+            &self.transaction,
+            &self.tables,
+            limit,
+            lease_seconds,
+            namespace,
+            Some(index_kinds),
+        )
+        .await
+    }
+    pub async fn reconcile_join_index_jobs(
+        &mut self,
+        limit: usize,
+        lease_seconds: i64,
+        namespace: Option<&str>,
+        names: GraphIndexTableNames,
+    ) -> PostgresStoreResult<usize> {
+        reconcile_join_index_jobs(
+            &self.transaction,
+            &self.tables,
+            limit,
+            lease_seconds,
+            namespace,
+            names,
         )
         .await
     }
@@ -2633,6 +2866,16 @@ impl IndexJobWriteStore for PostgresStore {
         namespace: Option<&str>,
     ) -> StoreResult<Vec<IndexJob>> {
         PostgresStore::claim_index_jobs(self, limit, lease_seconds, namespace)
+            .await
+            .map_err(trait_error)
+    }
+    async fn claim_index_jobs_filtered(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        filter: IndexJobClaimFilter,
+    ) -> StoreResult<Vec<IndexJob>> {
+        PostgresStore::claim_index_jobs_filtered(self, limit, lease_seconds, filter)
             .await
             .map_err(trait_error)
     }
@@ -3615,6 +3858,9 @@ where
         .map(|name| qualified(&tables.quoted_schema, &name))
         .collect::<PostgresStoreResult<Vec<_>>>()?;
     let edge_endpoints = qualified(&tables.quoted_schema, EDGE_ENDPOINTS_TABLE)?;
+    let node_docs = qualified(&tables.quoted_schema, NODE_DOCS_TABLE)?;
+    let node_refs = qualified(&tables.quoted_schema, NODE_REFS_TABLE)?;
+    let edge_refs = qualified(&tables.quoted_schema, EDGE_REFS_TABLE)?;
     // Relation/type/dimension are validated constants. Data remains bind-bound
     // everywhere possible; pgvector requires explicit `TEXT::vector` casts.
     let sql = format!(
@@ -3627,7 +3873,16 @@ where
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_endpoint_id\" ON {} ((metadata->>'endpoint_id')); \
-         CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_edge\" ON {} ((metadata->>'edge_id'));",
+         CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_edge\" ON {} ((metadata->>'edge_id')); \
+         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_node_docs_node\" ON {} ((metadata->>'node_id')); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_node_docs_doc\" ON {} ((metadata->>'doc_id')); \
+         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_node_refs_node\" ON {} ((metadata->>'node_id')); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_node_refs_doc\" ON {} ((metadata->>'doc_id')); \
+         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_edge_refs_edge\" ON {} ((metadata->>'edge_id')); \
+         CREATE INDEX IF NOT EXISTS \"ix_gke_edge_refs_doc\" ON {} ((metadata->>'doc_id'));",
         schema_sql(tables),
         tables.quoted_schema,
         relations[0],
@@ -3641,6 +3896,15 @@ where
         edge_endpoints,
         edge_endpoints,
         edge_endpoints,
+        node_docs,
+        node_docs,
+        node_docs,
+        node_refs,
+        node_refs,
+        node_refs,
+        edge_refs,
+        edge_refs,
+        edge_refs,
     );
     client.batch_execute(&sql).await.map_err(backend)
 }
@@ -3836,6 +4100,242 @@ where
     Ok(())
 }
 
+fn node_document_ids(document: &Value) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    let Some(mentions) = document.get("mentions").and_then(Value::as_array) else {
+        return ids;
+    };
+    for mention in mentions {
+        let spans = mention
+            .get("spans")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or(std::slice::from_ref(mention));
+        for span in spans {
+            if let Some(doc_id) = span
+                .get("doc_id")
+                .and_then(Value::as_str)
+                .filter(|doc_id| !doc_id.is_empty())
+            {
+                ids.insert(doc_id.to_owned());
+                continue;
+            }
+            if let Some(url) = span.get("document_page_url").and_then(Value::as_str)
+                && let Some(path) = url.split_once("document/").map(|(_, path)| path)
+            {
+                let doc_id = path
+                    .chars()
+                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '-')
+                    .collect::<String>();
+                if !doc_id.is_empty() {
+                    ids.insert(doc_id);
+                }
+            }
+        }
+    }
+    ids
+}
+
+async fn sync_graph_node_docs<C>(
+    client: &C,
+    tables: &Tables,
+    mutation: &GraphMutation,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    if mutation.entity_kind != "node" {
+        return Ok(());
+    }
+    client
+        .execute(
+            &format!(
+                "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
+                tables.node_docs
+            ),
+            &[&mutation.record.id],
+        )
+        .await
+        .map_err(backend)?;
+    if mutation.op == "TOMBSTONE" {
+        return Ok(());
+    }
+
+    let Some(document_json) = mutation.record.document.as_deref() else {
+        return Ok(());
+    };
+    let Ok(document) = serde_json::from_str::<Value>(document_json) else {
+        // GraphMutation also supports opaque documents. Only model-shaped JSON
+        // records participate in the Python-compatible node/document index.
+        return Ok(());
+    };
+    if !document.is_object() {
+        return Ok(());
+    }
+
+    let doc_ids = node_document_ids(&document);
+    for doc_id in &doc_ids {
+        let row_id = format!("{}::{doc_id}", mutation.record.id);
+        let row = serde_json::json!({
+            "id": row_id,
+            "node_id": mutation.record.id,
+            "doc_id": doc_id,
+            "mention_count": 1,
+        });
+        let row_json = serde_json::to_string(&row)?;
+        let metadata_json = serde_json::to_string(&graph_metadata(
+            &mutation.scope,
+            row.as_object().expect("row is an object"),
+        )?)?;
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
+                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                     metadata = EXCLUDED.metadata, updated_at = NOW()",
+                    tables.node_docs
+                ),
+                &[&row_id, &row_json, &metadata_json],
+            )
+            .await
+            .map_err(backend)?;
+    }
+
+    let doc_ids_json = serde_json::to_string(&doc_ids.into_iter().collect::<Vec<_>>())?;
+    let graph_table = graph_table(tables, &mutation.table)?;
+    client
+        .execute(
+            &format!(
+                "UPDATE {graph_table} SET metadata = metadata || jsonb_build_object('doc_ids', $1::TEXT), updated_at = NOW() WHERE id = $2"
+            ),
+            &[&doc_ids_json, &mutation.record.id],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+fn graph_reference_rows(
+    entity_kind: &str,
+    entity_id: &str,
+    document: &Value,
+) -> Vec<Map<String, Value>> {
+    let (owner_key, entity_doc_id) = match entity_kind {
+        "node" => ("node_id", document.get("doc_id")),
+        "edge" => ("edge_id", document.get("doc_id")),
+        _ => return Vec::new(),
+    };
+    let Some(mentions) = document.get("mentions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for (mention_index, mention) in mentions.iter().enumerate() {
+        let spans = mention
+            .get("spans")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .or_else(|| {
+                (mention.get("doc_id").is_some() || mention.get("document_page_url").is_some())
+                    .then_some(std::slice::from_ref(mention))
+            })
+            .unwrap_or(&[]);
+        for (span_index, span) in spans.iter().enumerate() {
+            let Some(span) = span.as_object() else {
+                continue;
+            };
+            let mut row = Map::new();
+            let row_id = format!("{entity_id}::mention::{mention_index}::span::{span_index}");
+            row.insert("id".to_owned(), Value::String(row_id));
+            row.insert(owner_key.to_owned(), Value::String(entity_id.to_owned()));
+            for field in [
+                "insertion_method",
+                "page_number",
+                "excerpt",
+                "start_char",
+                "end_char",
+            ] {
+                if let Some(value) = span.get(field).filter(|value| !value.is_null()) {
+                    row.insert(field.to_owned(), value.clone());
+                }
+            }
+            if let Some(doc_id) = span
+                .get("doc_id")
+                .filter(|value| value.as_str().is_some_and(|value| !value.is_empty()))
+                .or_else(|| entity_doc_id.filter(|value| !value.is_null()))
+            {
+                row.insert("doc_id".to_owned(), doc_id.clone());
+            }
+            if let Some(verification) = span.get("verification").and_then(Value::as_object) {
+                for (source, target) in [
+                    ("method", "verification_method"),
+                    ("is_verified", "is_verified"),
+                    ("score", "verificication_score"),
+                ] {
+                    if let Some(value) = verification.get(source).filter(|value| !value.is_null()) {
+                        row.insert(target.to_owned(), value.clone());
+                    }
+                }
+            }
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+async fn sync_graph_refs<C>(
+    client: &C,
+    tables: &Tables,
+    mutation: &GraphMutation,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    let (table, owner_key) = match mutation.entity_kind.as_str() {
+        "node" => (&tables.node_refs, "node_id"),
+        "edge" => (&tables.edge_refs, "edge_id"),
+        _ => return Ok(()),
+    };
+    client
+        .execute(
+            &format!("DELETE FROM {table} WHERE metadata ->> '{owner_key}' = $1"),
+            &[&mutation.record.id],
+        )
+        .await
+        .map_err(backend)?;
+    if mutation.op == "TOMBSTONE" {
+        return Ok(());
+    }
+    let Some(document_json) = mutation.record.document.as_deref() else {
+        return Ok(());
+    };
+    let Ok(document) = serde_json::from_str::<Value>(document_json) else {
+        return Ok(());
+    };
+    if !document.is_object() {
+        return Ok(());
+    }
+    for row in graph_reference_rows(&mutation.entity_kind, &mutation.record.id, &document) {
+        let row_id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| PostgresStoreError::Backend("reference row is missing id".to_owned()))?;
+        let row_json = serde_json::to_string(&row)?;
+        let metadata_json = serde_json::to_string(&graph_metadata(&mutation.scope, &row)?)?;
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {table} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
+                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                     metadata = EXCLUDED.metadata, updated_at = NOW()"
+                ),
+                &[&row_id, &row_json, &metadata_json],
+            )
+            .await
+            .map_err(backend)?;
+    }
+    Ok(())
+}
+
 fn sql_text_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -4019,6 +4519,8 @@ where
         .await
         .map_err(|error| PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}")))?;
     sync_graph_edge_endpoints(client, tables, &mutation).await?;
+    sync_graph_node_docs(client, tables, &mutation).await?;
+    sync_graph_refs(client, tables, &mutation).await?;
     Ok(AppliedGraphMutation {
         event,
         inserted: true,
@@ -4076,10 +4578,10 @@ where
         tables,
         &mutation.scope.namespace,
         NewRawEntityEvent {
-            event_id: mutation.event_id,
-            entity_kind: mutation.entity_kind,
+            event_id: mutation.event_id.clone(),
+            entity_kind: mutation.entity_kind.clone(),
             entity_id: mutation.entity_id.clone(),
-            op: mutation.op,
+            op: mutation.op.clone(),
             payload_json,
         },
     )
@@ -4125,6 +4627,26 @@ where
         .map_err(|error| {
             PostgresStoreError::Backend(format!("graph metadata patch failed: {error:?}"))
         })?;
+    if matches!(mutation.entity_kind.as_str(), "node" | "edge") {
+        let derived_mutation = GraphMutation {
+            scope: mutation.scope,
+            table: mutation.table,
+            entity_kind: mutation.entity_kind,
+            event_id: mutation.event_id,
+            op: mutation.op,
+            payload: mutation.payload,
+            record: GraphRecord {
+                id: mutation.entity_id,
+                document: Some(patched_document),
+                metadata: current_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        sync_graph_edge_endpoints(client, tables, &derived_mutation).await?;
+        sync_graph_node_docs(client, tables, &derived_mutation).await?;
+        sync_graph_refs(client, tables, &derived_mutation).await?;
+    }
     Ok(Some(AppliedGraphMutation {
         event,
         inserted: true,
@@ -4198,7 +4720,7 @@ where
         &mutation.scope.namespace,
         NewRawEntityEvent {
             event_id: mutation.event_id,
-            entity_kind: mutation.entity_kind,
+            entity_kind: mutation.entity_kind.clone(),
             entity_id: mutation.entity_id.clone(),
             op: "DELETE".to_owned(),
             payload_json: serde_json::to_string(&mutation.payload)?,
@@ -4215,6 +4737,50 @@ where
         .map_err(|error| {
             PostgresStoreError::Backend(format!("graph projection delete failed: {error:?}"))
         })?;
+    if mutation.entity_kind == "edge" {
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
+                    tables.edge_endpoints
+                ),
+                &[&mutation.entity_id],
+            )
+            .await
+            .map_err(backend)?;
+    } else if mutation.entity_kind == "node" {
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
+                    tables.node_docs
+                ),
+                &[&mutation.entity_id],
+            )
+            .await
+            .map_err(backend)?;
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
+                    tables.node_refs
+                ),
+                &[&mutation.entity_id],
+            )
+            .await
+            .map_err(backend)?;
+    } else if mutation.entity_kind == "edge" {
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
+                    tables.edge_refs
+                ),
+                &[&mutation.entity_id],
+            )
+            .await
+            .map_err(backend)?;
+    }
     Ok(Some(AppliedGraphMutation {
         event,
         inserted: true,
@@ -4291,6 +4857,92 @@ where
             PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
         })?;
     Ok(())
+}
+
+async fn delete_graph_projection_if_tombstoned<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &GraphScope,
+    entity_kind: &str,
+    entity_id: &str,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&scope.namespace)?;
+    if entity_id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let (table_name, derived_key) = match entity_kind {
+        "node" => ("gke_nodes", "node_id"),
+        "edge" => ("gke_edges", "edge_id"),
+        _ => {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "projection deletion supports node or edge only".to_owned(),
+            }
+            .into());
+        }
+    };
+    let table = graph_table(tables, table_name)?;
+    let Some(row) = client
+        .query_opt(
+            &format!("SELECT metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&entity_id],
+        )
+        .await
+        .map_err(backend)?
+    else {
+        return Ok(false);
+    };
+    let metadata_json: String = row.try_get(0).map_err(backend)?;
+    let metadata: Map<String, Value> = serde_json::from_str(&metadata_json)?;
+    if !graph_scope_matches_or_legacy_default(scope, &metadata)? {
+        return Err(PostgresStoreError::Backend(
+            "graph record id belongs to a different scope".to_owned(),
+        ));
+    }
+    // A stale DELETE intent must never erase an active or replacement record.
+    if !canonical_tombstone_present(&metadata) {
+        return Ok(false);
+    }
+
+    client
+        .execute(&format!("DELETE FROM {table} WHERE id = $1"), &[&entity_id])
+        .await
+        .map_err(backend)?;
+    if entity_kind == "node" {
+        for derived in [&tables.node_docs, &tables.node_refs] {
+            client
+                .execute(
+                    &format!("DELETE FROM {derived} WHERE metadata ->> $1 = $2"),
+                    &[&derived_key, &entity_id],
+                )
+                .await
+                .map_err(backend)?;
+        }
+    } else {
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
+                    tables.edge_endpoints
+                ),
+                &[&entity_id],
+            )
+            .await
+            .map_err(backend)?;
+        client
+            .execute(
+                &format!(
+                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
+                    tables.edge_refs
+                ),
+                &[&entity_id],
+            )
+            .await
+            .map_err(backend)?;
+    }
+    Ok(true)
 }
 
 async fn patch_graph_projection_metadata<C>(
@@ -6196,6 +6848,7 @@ async fn claim_index_jobs<C>(
     limit: usize,
     lease_seconds: i64,
     namespace: Option<&str>,
+    index_kinds: Option<&[String]>,
 ) -> PostgresStoreResult<Vec<IndexJob>>
 where
     C: GenericClient + Sync,
@@ -6205,13 +6858,216 @@ where
     };
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let lease_seconds = lease_seconds.to_string();
+    let index_kinds = index_kinds.map(<[String]>::to_vec);
     client.execute(
-        &format!("UPDATE {} SET status='FAILED',last_error='lease ownership exceeded',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE status='DOING' AND lease_until<NOW() AND claim_attempts>=$1", tables.index_jobs),
-        &[&3_i32],
+        &format!("UPDATE {} SET status='FAILED',last_error='lease ownership exceeded',lease_until=NULL,claim_token=NULL,updated_at=NOW() WHERE status='DOING' AND lease_until<NOW() AND claim_attempts>=$1 AND ($2::TEXT[] IS NULL OR index_kind=ANY($2))", tables.index_jobs),
+        &[&3_i32, &index_kinds],
     ).await.map_err(backend)?;
-    let rows=client.query(&format!("WITH candidates AS (SELECT job_id FROM {} WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at<=NOW())) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until<NOW())) AND ($1::TEXT IS NULL OR namespace=$1) ORDER BY created_at ASC,job_id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) UPDATE {} j SET status='DOING',lease_until=NOW()+($3::TEXT||' seconds')::interval,claim_token=md5(random()::TEXT||clock_timestamp()::TEXT||j.job_id),claim_attempts=j.claim_attempts+CASE WHEN j.status='DOING' THEN 1 ELSE 0 END,updated_at=NOW() FROM candidates c WHERE j.job_id=c.job_id RETURNING j.job_id,j.namespace,j.entity_kind,j.entity_id,j.index_kind,j.coalesce_key,j.op,j.status,j.lease_until::TEXT,j.next_run_at::TEXT,j.max_retries,j.retry_count,j.last_error,j.payload_json,j.created_at::TEXT,j.updated_at::TEXT,j.claim_token,j.claim_attempts,j.accepted_result_json,j.accepted_result_sha256,j.accepted_at::TEXT",tables.index_jobs,tables.index_jobs), &[&namespace,&limit,&lease_seconds]).await.map_err(backend)?;
+    let rows=client.query(&format!("WITH candidates AS (SELECT job_id FROM {} WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at<=NOW())) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until<NOW())) AND ($1::TEXT IS NULL OR namespace=$1) AND ($4::TEXT[] IS NULL OR index_kind=ANY($4)) ORDER BY created_at ASC,job_id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) UPDATE {} j SET status='DOING',lease_until=NOW()+($3::TEXT||' seconds')::interval,claim_token=md5(random()::TEXT||clock_timestamp()::TEXT||j.job_id),claim_attempts=j.claim_attempts+CASE WHEN j.status='DOING' THEN 1 ELSE 0 END,updated_at=NOW() FROM candidates c WHERE j.job_id=c.job_id RETURNING j.job_id,j.namespace,j.entity_kind,j.entity_id,j.index_kind,j.coalesce_key,j.op,j.status,j.lease_until::TEXT,j.next_run_at::TEXT,j.max_retries,j.retry_count,j.last_error,j.payload_json,j.created_at::TEXT,j.updated_at::TEXT,j.claim_token,j.claim_attempts,j.accepted_result_json,j.accepted_result_sha256,j.accepted_at::TEXT",tables.index_jobs,tables.index_jobs), &[&namespace,&limit,&lease_seconds,&index_kinds]).await.map_err(backend)?;
     rows.iter().map(index_job_from_row).collect()
 }
+
+async fn reconcile_join_index_jobs<C>(
+    client: &C,
+    base_tables: &Tables,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    names: GraphIndexTableNames,
+) -> PostgresStoreResult<usize>
+where
+    C: GenericClient + Sync,
+{
+    if limit == 0 {
+        return Ok(0);
+    }
+    if lease_seconds <= 0 {
+        return Err(PostgresStoreError::Backend(
+            "index job lease must be positive".to_owned(),
+        ));
+    }
+    for name in [
+        &names.nodes,
+        &names.edges,
+        &names.node_docs,
+        &names.node_refs,
+        &names.edge_refs,
+        &names.edge_endpoints,
+    ] {
+        quote_identifier(name)?;
+    }
+    let mut tables = base_tables.clone();
+    tables.node_docs = qualified(&tables.quoted_schema, &names.node_docs)?;
+    tables.node_refs = qualified(&tables.quoted_schema, &names.node_refs)?;
+    tables.edge_refs = qualified(&tables.quoted_schema, &names.edge_refs)?;
+    tables.edge_endpoints = qualified(&tables.quoted_schema, &names.edge_endpoints)?;
+
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let lease_seconds = lease_seconds.to_string();
+    client.execute(
+        &format!(
+            "UPDATE {} SET status='FAILED',last_error='lease ownership exceeded',lease_until=NULL,claim_token=NULL,updated_at=NOW() \
+             WHERE status='DOING' AND lease_until<NOW() AND claim_attempts>=3 AND accepted_result_json IS NULL \
+             AND ((entity_kind='node' AND index_kind IN ('node_docs','node_refs')) OR \
+                  (entity_kind='edge' AND index_kind IN ('edge_refs','edge_endpoints'))) \
+             AND ($1::TEXT IS NULL OR namespace=$1)",
+            tables.index_jobs
+        ),
+        &[&namespace],
+    ).await.map_err(backend)?;
+    let jobs = client.query(
+        &format!(
+            "WITH candidates AS (SELECT job_id FROM {} \
+             WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at<=NOW())) OR \
+                    (status='DOING' AND lease_until IS NOT NULL AND lease_until<NOW())) \
+               AND accepted_result_json IS NULL \
+               AND ((entity_kind='node' AND index_kind IN ('node_docs','node_refs')) OR \
+                    (entity_kind='edge' AND index_kind IN ('edge_refs','edge_endpoints'))) \
+               AND ($1::TEXT IS NULL OR namespace=$1) \
+             ORDER BY created_at ASC,job_id ASC LIMIT $2 FOR UPDATE SKIP LOCKED) \
+             UPDATE {} j SET status='DOING',lease_until=NOW()+($3::TEXT||' seconds')::interval, \
+               claim_token=md5(random()::TEXT||clock_timestamp()::TEXT||j.job_id), \
+               claim_attempts=j.claim_attempts+CASE WHEN j.status='DOING' THEN 1 ELSE 0 END,updated_at=NOW() \
+             FROM candidates c WHERE j.job_id=c.job_id \
+             RETURNING j.job_id,j.namespace,j.entity_kind,j.entity_id,j.index_kind,j.coalesce_key,j.op,j.status, \
+               j.lease_until::TEXT,j.next_run_at::TEXT,j.max_retries,j.retry_count,j.last_error,j.payload_json, \
+               j.created_at::TEXT,j.updated_at::TEXT,j.claim_token,j.claim_attempts,j.accepted_result_json, \
+               j.accepted_result_sha256,j.accepted_at::TEXT",
+            tables.index_jobs, tables.index_jobs
+        ),
+        &[&namespace, &limit, &lease_seconds],
+    ).await.map_err(backend)?;
+
+    let mut applied = 0;
+    for row in jobs {
+        let job = index_job_from_row(&row)?;
+        let Some(claim_token) = job.claim_token.as_deref() else {
+            continue;
+        };
+        client
+            .batch_execute("SAVEPOINT reconcile_join_index_job")
+            .await
+            .map_err(backend)?;
+        let result = async {
+            let (table, entity_kind, index_table) =
+                match (job.entity_kind.as_str(), job.index_kind.as_str()) {
+                    ("node", "node_docs") => (&names.nodes, "node", "node_docs"),
+                    ("node", "node_refs") => (&names.nodes, "node", "node_refs"),
+                    ("edge", "edge_refs") => (&names.edges, "edge", "edge_refs"),
+                    ("edge", "edge_endpoints") => (&names.edges, "edge", "edge_endpoints"),
+                    _ => {
+                        return Err(PostgresStoreError::Backend(
+                            "unsupported join index job was claimed".to_owned(),
+                        ));
+                    }
+                };
+            let scope = kogwistar_store::GraphScope {
+                namespace: job.namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            };
+            let record = if job.op == "DELETE" {
+                GraphRecord {
+                    id: job.entity_id.clone(),
+                    document: None,
+                    metadata: Map::new(),
+                    embedding: None,
+                }
+            } else {
+                graph_projection_records_with_lock(
+                    client,
+                    &tables,
+                    GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: table.clone(),
+                        ids: Some(vec![job.entity_id.clone()]),
+                        metadata: Default::default(),
+                        limit: 1,
+                    },
+                    None,
+                    false,
+                    true,
+                )
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    PostgresStoreError::Backend(format!(
+                        "{} {} not found in its namespace",
+                        job.entity_kind, job.entity_id
+                    ))
+                })?
+            };
+            let tombstoned = job.op == "DELETE"
+                || record
+                    .metadata
+                    .get("lifecycle_status")
+                    .and_then(Value::as_str)
+                    == Some("tombstoned");
+            let mutation = GraphMutation {
+                scope,
+                table: table.clone(),
+                entity_kind: entity_kind.to_owned(),
+                event_id: format!("index-reconcile:{}", job.job_id),
+                op: if job.op == "DELETE" || tombstoned {
+                    "TOMBSTONE"
+                } else {
+                    "REPLACE"
+                }
+                .to_owned(),
+                payload: Value::Null,
+                record,
+                embedding_dim: 1,
+            };
+            match index_table {
+                "node_docs" => sync_graph_node_docs(client, &tables, &mutation).await?,
+                "node_refs" | "edge_refs" => sync_graph_refs(client, &tables, &mutation).await?,
+                "edge_endpoints" => sync_graph_edge_endpoints(client, &tables, &mutation).await?,
+                _ => unreachable!(),
+            }
+            if !mark_index_job_done(client, &tables, &job.job_id, Some(claim_token)).await? {
+                return Err(PostgresStoreError::Backend(
+                    "lost index job claim before acknowledgement".to_owned(),
+                ));
+            }
+            Ok::<(), PostgresStoreError>(())
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                client
+                    .batch_execute("RELEASE SAVEPOINT reconcile_join_index_job")
+                    .await
+                    .map_err(backend)?;
+                applied += 1;
+            }
+            Err(error) => {
+                client
+                    .batch_execute("ROLLBACK TO SAVEPOINT reconcile_join_index_job")
+                    .await
+                    .map_err(backend)?;
+                let delay = 2_i64
+                    .saturating_pow(job.retry_count.clamp(0, 8) as u32)
+                    .min(300);
+                bump_retry_and_requeue(
+                    client,
+                    &tables,
+                    &job.job_id,
+                    &error.to_string(),
+                    delay,
+                    Some(claim_token),
+                )
+                .await?;
+                client
+                    .batch_execute("RELEASE SAVEPOINT reconcile_join_index_job")
+                    .await
+                    .map_err(backend)?;
+            }
+        }
+    }
+    Ok(applied)
+}
+
 async fn mark_index_job_done<C>(
     client: &C,
     tables: &Tables,
@@ -6864,6 +7720,52 @@ fn trait_error(error: PostgresStoreError) -> StoreError {
     }
 }
 
+impl GraphProjectionWriteStore for PostgresStore {
+    async fn upsert_graph_projection_record(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        record: GraphRecord,
+    ) -> StoreResult<()> {
+        require_trait_namespace(namespace)?;
+        match entity_kind {
+            "node" | "edge" => {}
+            _ => {
+                return Err(StoreError::InvalidEntityEventPayload {
+                    message: "projection upsert supports node or edge only".to_owned(),
+                });
+            }
+        }
+        self.promote_graph_embedding_projection(
+            namespace.to_owned(),
+            entity_kind.to_owned(),
+            record,
+        )
+        .await
+        .map(|_| ())
+        .map_err(trait_error)
+    }
+
+    async fn delete_graph_projection_record(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        id: &str,
+    ) -> StoreResult<bool> {
+        self.delete_graph_projection_if_tombstoned(
+            GraphScope {
+                namespace: namespace.to_owned(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            entity_kind.to_owned(),
+            id.to_owned(),
+        )
+        .await
+        .map_err(trait_error)
+    }
+}
+
 fn backend(error: impl std::fmt::Display) -> PostgresStoreError {
     PostgresStoreError::Backend(error.to_string())
 }
@@ -7050,6 +7952,427 @@ mod tests {
             std::process::id(),
             NEXT_SCHEMA.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    #[test]
+    fn node_document_ids_match_python_sorted_unique_projection() {
+        let document = serde_json::json!({
+            "mentions": [
+                {"spans": [
+                    {"doc_id": "doc-b"},
+                    {"document_page_url": "https://example.test/document/doc-a/page"},
+                    {"doc_id": "", "document_page_url": "https://example.test/document/doc-c"}
+                ]},
+                {"doc_id": "doc-b"}
+            ]
+        });
+        assert_eq!(
+            node_document_ids(&document).into_iter().collect::<Vec<_>>(),
+            vec!["doc-a".to_owned(), "doc-b".to_owned(), "doc-c".to_owned()]
+        );
+    }
+
+    #[test]
+    fn graph_reference_rows_match_python_reference_projection_contract() {
+        let document = serde_json::json!({
+            "doc_id": "doc-fallback",
+            "mentions": [{"spans": [
+                {
+                    "doc_id": "doc-explicit",
+                    "insertion_method": "parser",
+                    "page_number": 4,
+                    "excerpt": "evidence",
+                    "start_char": 8,
+                    "end_char": 16,
+                    "verification": {
+                        "method": "human",
+                        "is_verified": true,
+                        "score": 0.9,
+                        "notes": "not projected"
+                    }
+                },
+                {"doc_id": null, "page_number": 5}
+            ]}]
+        });
+        let rows = graph_reference_rows("node", "n-1", &document);
+        assert_eq!(
+            rows,
+            vec![
+                serde_json::json!({
+                    "id": "n-1::mention::0::span::0",
+                    "node_id": "n-1",
+                    "doc_id": "doc-explicit",
+                    "insertion_method": "parser",
+                    "verification_method": "human",
+                    "is_verified": true,
+                    "verificication_score": 0.9,
+                    "page_number": 4,
+                    "excerpt": "evidence",
+                    "start_char": 8,
+                    "end_char": 16
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+                serde_json::json!({
+                    "id": "n-1::mention::0::span::1",
+                    "node_id": "n-1",
+                    "doc_id": "doc-fallback",
+                    "page_number": 5
+                })
+                .as_object()
+                .unwrap()
+                .clone()
+            ]
+        );
+        assert!(graph_reference_rows("document", "d-1", &document).is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn graph_mutations_materialize_node_docs_in_the_same_transaction()
+    -> PostgresStoreResult<()> {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = test_schema("node_docs_projection");
+        let store = PostgresStore::from_dsn(&dsn, &schema)?;
+        let tables = Tables::new(&schema)?;
+        store.ensure_schema().await?;
+        store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await?;
+        let scope = kogwistar_store::GraphScope {
+            namespace: format!("node-docs-{}", std::process::id()),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let node_id = "node-docs-native";
+        let mutation = |event_id: &str, op: &str, mention_ids: &[&str]| {
+            let document = serde_json::json!({
+                "id": node_id,
+                "mentions": mention_ids.iter().map(|doc_id| {
+                    serde_json::json!({"spans": [{"doc_id": doc_id}]})
+                }).collect::<Vec<_>>()
+            });
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: event_id.to_owned(),
+                op: op.to_owned(),
+                payload: serde_json::json!({"id": node_id}),
+                record: GraphRecord {
+                    id: node_id.to_owned(),
+                    document: Some(document.to_string()),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }
+        };
+
+        store
+            .apply_graph_mutation(mutation(
+                "node-docs-add",
+                "ADD",
+                &["doc-b", "doc-a", "doc-b"],
+            ))
+            .await?;
+        let client = store.client().await?;
+        let rows = client
+            .query(
+                &format!(
+                    "SELECT id, metadata::TEXT FROM {} WHERE metadata->>'node_id'=$1 ORDER BY metadata->>'doc_id'",
+                    tables.node_docs
+                ),
+                &[&node_id],
+            )
+            .await
+            .map_err(backend)?;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get::<_, String>(0), "node-docs-native::doc-a");
+        assert_eq!(rows[1].get::<_, String>(0), "node-docs-native::doc-b");
+        let projection = store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![node_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(
+            projection[0].metadata.get("doc_ids"),
+            Some(&Value::String("[\"doc-a\",\"doc-b\"]".to_owned()))
+        );
+
+        store
+            .apply_graph_mutation(mutation("node-docs-replace", "REPLACE", &["doc-c"]))
+            .await?;
+        let rows = client
+            .query(
+                &format!(
+                    "SELECT id FROM {} WHERE metadata->>'node_id'=$1",
+                    tables.node_docs
+                ),
+                &[&node_id],
+            )
+            .await
+            .map_err(backend)?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get::<_, String>(0), "node-docs-native::doc-c");
+
+        store
+            .apply_graph_mutation(mutation("node-docs-tombstone", "TOMBSTONE", &["doc-c"]))
+            .await?;
+        let rows = client
+            .query(
+                &format!(
+                    "SELECT id FROM {} WHERE metadata->>'node_id'=$1",
+                    tables.node_docs
+                ),
+                &[&node_id],
+            )
+            .await
+            .map_err(backend)?;
+        assert!(rows.is_empty());
+
+        client
+            .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn rust_projection_worker_uses_postgres_native_writes_and_tombstone_gate()
+    -> PostgresStoreResult<()> {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = test_schema("native_projection_worker");
+        let store = PostgresStore::from_dsn(&dsn, &schema)?;
+        store.ensure_schema().await?;
+        store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await?;
+        let namespace = format!("native-projection-worker-{}", std::process::id());
+        let scope = GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let node_id = "native-worker-node";
+        let graph_mutation = |event_id: &str, op: &str| {
+            let mut metadata = Map::new();
+            if op == "TOMBSTONE" {
+                metadata.insert(
+                    "lifecycle_status".to_owned(),
+                    Value::String("tombstoned".to_owned()),
+                );
+            }
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: event_id.to_owned(),
+                op: op.to_owned(),
+                payload: serde_json::json!({"id": node_id}),
+                record: GraphRecord {
+                    id: node_id.to_owned(),
+                    document: Some("native projection worker text".to_owned()),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }
+        };
+        store
+            .apply_graph_mutation(graph_mutation("native-worker-add", "ADD"))
+            .await?;
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "native-worker-upsert".to_owned(),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: node_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .await?;
+
+        let provider_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = provider_calls.clone();
+        let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &store,
+            &store,
+            1,
+            30,
+            Some(&namespace),
+            move |input| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(GraphRecord {
+                        id: input.entity_id,
+                        document: Some("native projection worker text".to_owned()),
+                        metadata: Map::new(),
+                        embedding: Some(vec![0.0, 1.0, 0.0]),
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(summary.projected, 1);
+        assert_eq!(provider_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            store
+                .index_jobs(Some(&namespace), Some("DONE"), None, None, None, 10)
+                .await?
+                .len(),
+            1
+        );
+        let projected = store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![node_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(projected[0].embedding, Some(vec![0.0, 1.0, 0.0]));
+
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "native-worker-stale-provider".to_owned(),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: node_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .await?;
+        let stale_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &store,
+            &store,
+            1,
+            30,
+            Some(&namespace),
+            move |input| async move {
+                Ok(GraphRecord {
+                    id: input.entity_id,
+                    document: Some("stale source text".to_owned()),
+                    metadata: Map::new(),
+                    embedding: Some(vec![1.0, 0.0, 0.0]),
+                })
+            },
+        )
+        .await?;
+        assert_eq!(stale_summary.projected, 1);
+        let after_stale_result = store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![node_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(
+            after_stale_result[0].document.as_deref(),
+            Some("native projection worker text")
+        );
+        assert_eq!(after_stale_result[0].embedding, Some(vec![0.0, 1.0, 0.0]));
+
+        // A stale DELETE must not remove a live replacement.
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "native-worker-stale-delete".to_owned(),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: node_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "DELETE".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .await?;
+        let delete_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &store,
+            &store,
+            1,
+            30,
+            Some(&namespace),
+            |_input| async { panic!("DELETE must not invoke the embedding provider") },
+        )
+        .await?;
+        assert_eq!(delete_summary.projected, 1);
+        assert_eq!(
+            store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec![node_id.to_owned()]),
+                    metadata: kogwistar_store::MetadataFilter::default(),
+                    limit: 1,
+                })
+                .await?
+                .len(),
+            1
+        );
+
+        store
+            .apply_graph_mutation(graph_mutation("native-worker-tombstone", "TOMBSTONE"))
+            .await?;
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "native-worker-tombstone-delete".to_owned(),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: node_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "DELETE".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .await?;
+        let tombstone_summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &store,
+            &store,
+            1,
+            30,
+            Some(&namespace),
+            |_input| async { panic!("DELETE must not invoke the embedding provider") },
+        )
+        .await?;
+        assert_eq!(tombstone_summary.projected, 1);
+        assert!(
+            store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec![node_id.to_owned()]),
+                    metadata: kogwistar_store::MetadataFilter::default(),
+                    limit: 1,
+                })
+                .await?
+                .is_empty()
+        );
+
+        let client = store.client().await?;
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA {} CASCADE",
+                Tables::new(&schema)?.quoted_schema
+            ))
+            .await
+            .map_err(backend)?;
+        Ok(())
     }
 
     #[tokio::test]

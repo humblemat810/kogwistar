@@ -8,6 +8,7 @@ from kogwistar.engine_core.chroma_backend import (
     _chroma_safe_kwargs,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.storage_backend import (
     TwoStageProjectionCapability,
     get_async_two_stage_projection_adapter,
@@ -17,6 +18,37 @@ from kogwistar.engine_core.storage_backend import (
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
+
+
+def test_postgres_stage1_row_lock_requires_active_sync_uow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.get_active_conn", lambda: None
+    )
+    backend = object.__new__(PgVectorBackend)
+
+    with pytest.raises(RuntimeError, match="active PostgreSQL UoW"):
+        backend.stage1_projection_get(
+            namespace="default",
+            entity_kind="node",
+            entity_id="n1",
+            for_update=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_postgres_stage1_row_lock_requires_active_async_uow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.get_active_conn", lambda: None
+    )
+    backend = object.__new__(PgVectorBackend)
+
+    with pytest.raises(RuntimeError, match="active async PostgreSQL UoW"):
+        await backend.stage1_projection_get_async(
+            namespace="default",
+            entity_kind="node",
+            entity_id="n1",
+            for_update=True,
+        )
 
 
 def test_chroma_safe_kwargs_drops_null_metadata_and_preserves_supported_values() -> None:
@@ -836,6 +868,7 @@ def test_rust_sqlite_meta_authority_runs_two_stage_in_memory_profile(
         persistence_mode="two_stage",
     )
     try:
+        assert engine.metadata.sqlite_implementation == "rust"
         engine.write.add_node(
             build_entity_node(node_id="rust-sqlite-n1", doc_id="d1", embedding=None)
         )

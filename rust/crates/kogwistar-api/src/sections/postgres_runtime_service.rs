@@ -201,6 +201,124 @@ impl PostgresRunApplicationService {
         self
     }
 
+    /// Run one bounded batch of durable embedding jobs entirely through the
+    /// Rust-owned PostgreSQL queue, canonical projection reads, and promotion
+    /// transaction. Other index-job kinds remain unclaimed.
+    pub async fn run_embedding_projection_jobs_once(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        namespace: Option<&str>,
+    ) -> Result<kogwistar_engine::projection_worker::ProjectionWorkerSummary, String> {
+        if limit == 0 || limit > 1000 || lease_seconds <= 0 {
+            return Err("limit must be 1..=1000 and lease_seconds must be positive".to_owned());
+        }
+        if namespace.is_some_and(|value| value.trim().is_empty()) {
+            return Err("namespace must not be empty".to_owned());
+        }
+        let provider = self
+            .embedding_provider
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "Rust embedding provider is not configured".to_owned())?;
+        provider
+            .profile()
+            .validate()
+            .map_err(|error| error.to_string())?;
+        self.ensure_schema().await?;
+
+        let store = self.store.clone();
+        let index_filter = IndexJobClaimFilter {
+            namespace: namespace.map(str::to_owned),
+            index_kinds: vec!["node_embedding".to_owned()],
+        };
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
+            &self.store,
+            &self.store,
+            limit,
+            lease_seconds,
+            index_filter,
+            move |input| {
+                let provider = provider.clone();
+                let store = store.clone();
+                async move {
+                    if input.schema_version != 1
+                        || input.index_kind != "node_embedding"
+                        || !matches!(input.entity_kind.as_str(), "node" | "edge")
+                    {
+                        return Err(kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "unsupported embedding job contract".to_owned(),
+                        });
+                    }
+                    let table = kogwistar_store::graph_projection_table(&input.entity_kind)?;
+                    let mut records = store
+                        .graph_projection_records(GraphProjectionRead {
+                            scope: GraphScope {
+                                namespace: input.namespace.clone(),
+                                workspace_id: None,
+                                graph_space: None,
+                            },
+                            table: table.to_owned(),
+                            ids: Some(vec![input.entity_id.clone()]),
+                            metadata: MetadataFilter::default(),
+                            limit: 1,
+                        })
+                        .await
+                        .map_err(|_| kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "canonical graph projection read failed".to_owned(),
+                        })?;
+                    let Some(mut record) = records.pop() else {
+                        return Err(kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "canonical graph projection is missing".to_owned(),
+                        });
+                    };
+                    if record.id != input.entity_id {
+                        return Err(kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "canonical graph projection identity mismatch".to_owned(),
+                        });
+                    }
+                    let document = record.document.clone().ok_or_else(|| {
+                        kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "canonical graph document is missing".to_owned(),
+                        }
+                    })?;
+                    let vectors = provider
+                        .embed(std::slice::from_ref(&document))
+                        .await
+                        .map_err(|_| kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "embedding provider request failed".to_owned(),
+                        })?;
+                    if vectors.len() != 1
+                        || vectors[0].len() != provider.profile().dimension
+                        || vectors[0].iter().any(|value| !value.is_finite())
+                    {
+                        return Err(kogwistar_store::StoreError::Backend {
+                            backend: "postgres-embedding-worker".to_owned(),
+                            message: "embedding provider returned an invalid vector".to_owned(),
+                        });
+                    }
+                    let vector = vectors[0]
+                        .iter()
+                        .map(|value| *value as f32)
+                        .collect::<Vec<_>>();
+                    if vector.iter().any(|value| !value.is_finite()) {
+                        return Err(kogwistar_store::StoreError::NonFiniteVector);
+                    }
+                    record.embedding = Some(vector);
+                    Ok(record)
+                }
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+
     async fn submit_run(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
             Ok(value) => value,

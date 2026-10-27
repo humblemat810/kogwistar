@@ -290,6 +290,36 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     def graph_authority_capability(self) -> JsonObject:
         return self._native_session.graph_authority_capability()
 
+    def reconcile_join_index_jobs(
+        self,
+        *,
+        limit: int,
+        lease_seconds: int,
+        namespace: str,
+        nodes_table: str,
+        edges_table: str,
+        node_docs_table: str,
+        node_refs_table: str,
+        edge_refs_table: str,
+        edge_endpoints_table: str,
+    ) -> int:
+        """Drain supported PostgreSQL join-index jobs in native Rust transactions."""
+        result = self._call(
+            "reconcile_join_index_jobs",
+            limit=limit,
+            lease_seconds=lease_seconds,
+            namespace=namespace,
+            nodes_table=nodes_table,
+            edges_table=edges_table,
+            node_docs_table=node_docs_table,
+            node_refs_table=node_refs_table,
+            edge_refs_table=edge_refs_table,
+            edge_endpoints_table=edge_endpoints_table,
+        )
+        if type(result) is not int or result < 0:
+            raise RuntimeError("native join-index reconciler returned an invalid count")
+        return result
+
     def apply_graph_metadata_patch_mutation(
         self, **values: JsonValue
     ) -> JsonObject | None:
