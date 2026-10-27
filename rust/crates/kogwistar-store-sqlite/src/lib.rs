@@ -49,8 +49,6 @@ const STORE_SCHEMA_VERSION: i64 = 1;
 static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
 
 static PROCESS_AUTHORITY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
-static ACTIVE_DATABASE_IDENTITIES: OnceLock<Mutex<BTreeMap<PathBuf, (String, usize)>>> =
-    OnceLock::new();
 static DATABASE_INITIALIZATION_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<Mutex<()>>>>> =
     OnceLock::new();
 
@@ -69,46 +67,9 @@ fn database_initialization_lock(database: &Path) -> Arc<Mutex<()>> {
     lock
 }
 
-fn register_active_database_identity(
-    path: PathBuf,
-    identity: &str,
-    display_path: &Path,
-) -> SqliteStoreResult<()> {
-    let identities = ACTIVE_DATABASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut active = identities
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match active.get_mut(&path) {
-        Some((existing, _)) if existing != identity => Err(SqliteStoreError::AuthorityConflict {
-            path: display_path.display().to_string(),
-            message: "database file identity changed while its authority was active".to_owned(),
-        }),
-        Some((_, count)) => {
-            *count += 1;
-            Ok(())
-        }
-        None => {
-            active.insert(path, (identity.to_owned(), 1));
-            Ok(())
-        }
-    }
-}
-
-fn unregister_active_database_identity(path: &Path, identity: &str) {
-    let identities = ACTIVE_DATABASE_IDENTITIES.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut active = identities
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((current, count)) = active.get_mut(path)
-        && current == identity
-    {
-        if *count <= 1 {
-            active.remove(path);
-        } else {
-            *count -= 1;
-        }
-    }
-}
+#[cfg(test)]
+use authority_identity::ACTIVE_DATABASE_IDENTITIES;
+use authority_identity::{register_active_database_identity, unregister_active_database_identity};
 
 #[cfg(windows)]
 static WINDOWS_PROCESS_AUTHORITY_MUTEXES: OnceLock<
@@ -541,6 +502,7 @@ pub struct SqliteAuthStore {
 }
 
 mod auth;
+mod authority_identity;
 mod connection_uow;
 mod events_recovery;
 mod index_jobs;
