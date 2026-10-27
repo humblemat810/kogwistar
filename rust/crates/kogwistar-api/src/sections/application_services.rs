@@ -134,14 +134,20 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
-        let is_composed_graph_neighbors = self.chroma_graph.is_some()
+        let is_composed_graph_read = self.chroma_graph.is_some()
             && method == "POST"
-            && path.split('?').next() == Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE);
-        (FROZEN_OPENAPI_ROUTES.contains(&(method, path)) || is_composed_graph_neighbors)
+            && matches!(
+                path.split('?').next(),
+                Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
+                    | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
+                    | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
+            );
+        (FROZEN_OPENAPI_ROUTES.contains(&(method, path)) || is_composed_graph_read)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
-                || is_composed_graph_neighbors)
+                || is_composed_graph_read)
     }
 
     fn execute(
@@ -149,15 +155,24 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
-            if request.method == "POST"
-                && request.path_and_query.split('?').next()
-                    == Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
-                && self.chroma_graph.is_some()
-            {
-                self.chroma_graph_neighbors_effect(&request).await
-            } else {
-                self.execute_sync(request)
+            if request.method == "POST" && self.chroma_graph.is_some() {
+                match request.path_and_query.split('?').next() {
+                    Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
+                        return self.chroma_graph_neighbors_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE) => {
+                        return self.chroma_graph_find_edges_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE) => {
+                        return self.chroma_graph_shortest_path_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_K_HOP_ROUTE) => {
+                        return self.chroma_graph_k_hop_effect(&request).await;
+                    }
+                    _ => {}
+                }
             }
+            self.execute_sync(request)
         })
     }
 }

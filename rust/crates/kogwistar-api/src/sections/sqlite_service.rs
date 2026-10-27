@@ -512,27 +512,11 @@ impl SqliteRunApplicationService {
         self
     }
 
-    async fn chroma_graph_neighbors_effect(
+    async fn chroma_graph_snapshot(
         &self,
         request: &ApiEffectRequest,
-    ) -> ApiEffectResponse {
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Graph read requires read_graph capability",
-            );
-        }
-        let input = match parse_graph_neighbors_request(&request.body) {
-            Ok(value) => value,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_INVALID_REQUEST",
-                    error.to_string(),
-                );
-            }
-        };
+        truth_graph: &str,
+    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), ApiEffectResponse> {
         let scope_value = security_scope_value(&request.principal);
         let namespace = scope_value["storage_namespace"]
             .as_str()
@@ -554,11 +538,11 @@ impl SqliteRunApplicationService {
                 .insert("graph_space".to_owned(), Value::String(graph_space.to_owned()));
         }
         let Some(graph) = &self.chroma_graph else {
-            return effect_error(
+            return Err(effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
                 "The SQLite service has no configured graph projection",
-            );
+            ));
         };
         const MAX_GRAPH_SNAPSHOT_RECORDS: usize = 10_000;
         let (nodes, edges) = match tokio::try_join!(
@@ -577,19 +561,49 @@ impl SqliteRunApplicationService {
         ) {
             Ok(records) => records,
             Err(error) => {
-                return effect_error(
+                return Err(effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
                     error.to_string(),
-                );
+                ));
             }
         };
         let principal = graph_acl_principal_from_claims(
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (nodes, edges) =
-            graph_records_visible_by_acl(&nodes, &edges, input.truth_graph.trim(), &principal);
+        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, truth_graph, &principal);
+        Ok((nodes, edges))
+    }
+
+    async fn chroma_graph_neighbors_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input = match parse_graph_neighbors_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let (nodes, edges) = match self
+            .chroma_graph_snapshot(request, input.truth_graph.trim())
+            .await
+        {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
         let neighbors = graph_neighbors_from_records(
             input.rid.trim(),
             &nodes,
@@ -602,6 +616,150 @@ impl SqliteRunApplicationService {
                 "nodes": neighbors.nodes.into_iter().collect::<Vec<_>>(),
                 "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
             })),
+        )
+    }
+
+    async fn chroma_graph_find_edges_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input = match parse_graph_find_edges_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let query = GraphFindEdgesQuery {
+            relation: input.relation,
+            src_label_contains: input.src_label_contains,
+            tgt_label_contains: input.tgt_label_contains,
+            doc_id: input.doc_id,
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({
+                "edges": graph_find_edges_from_records(&query, &nodes, &edges),
+            })),
+        )
+    }
+
+    async fn chroma_graph_shortest_path_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input: GraphShortestPathRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if input.src_id.trim().is_empty()
+            || input.dst_id.trim().is_empty()
+            || input.max_depth > 128
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "src_id and dst_id are required and max_depth must be <= 128",
+            );
+        }
+        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let query = GraphShortestPathQuery {
+            src_id: input.src_id,
+            dst_id: input.dst_id,
+            doc_id: input.doc_id,
+            max_depth: input.max_depth,
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({
+                "path": graph_shortest_path_from_records(&query, &nodes, &edges),
+            })),
+        )
+    }
+
+    async fn chroma_graph_k_hop_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input: GraphKHopRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if input.start_ids.is_empty() || input.start_ids.iter().any(|id| id.trim().is_empty()) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "start_ids must contain at least one non-empty ID",
+            );
+        }
+        if input.k > 32 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "k must be <= 32",
+            );
+        }
+        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let query = GraphKHopQuery {
+            start_ids: input.start_ids,
+            k: input.k,
+            doc_id: input.doc_id,
+        };
+        let layers = graph_k_hop_from_records(&query, &nodes, &edges)
+            .into_iter()
+            .map(|layer| {
+                json!({
+                    "nodes": layer.nodes.into_iter().collect::<Vec<_>>(),
+                    "edges": layer.edges.into_iter().collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"layers": layers})),
         )
     }
 

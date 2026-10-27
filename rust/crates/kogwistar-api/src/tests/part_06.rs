@@ -1208,7 +1208,7 @@
     }
 
     #[tokio::test]
-    async fn sqlite_chroma_graph_neighbors_are_scoped_and_acl_filtered() {
+    async fn sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered() {
         use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1216,7 +1216,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..6 {
+            for _ in 0..12 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1287,22 +1287,84 @@
         );
         let path = std::env::temp_dir().join(format!("kogwistar-sqlite-chroma-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = SqliteRunApplicationService::open(&path).unwrap().with_chroma_graph(graph);
-        let request = |capabilities| ApiEffectRequest {
+        let request = |path: &str, body: Value, capabilities: Value| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
-            path_and_query: INTERNAL_GRAPH_NEIGHBORS_ROUTE.to_owned(),
-            body: serde_json::to_vec(&json!({"rid":"n1","truth_graph":"knowledge"})).unwrap(),
+            path_and_query: path.to_owned(),
+            body: serde_json::to_vec(&body).unwrap(),
             principal: json!({"sub":"reader-1","storage_ns":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","capabilities":capabilities}),
         };
-        assert!(service.supports_http_operation("POST", INTERNAL_GRAPH_NEIGHBORS_ROUTE));
-        assert_eq!(service.execute(request(json!([]))).await.status, StatusCode::FORBIDDEN.as_u16());
-        let result = service.execute(request(json!(["read_graph"]))).await;
-        let observed = fake.await.unwrap();
+        let neighbor_body = json!({"rid":"n1","truth_graph":"knowledge"});
+        let read_capability = json!(["read_graph"]);
+        for route in [
+            INTERNAL_GRAPH_NEIGHBORS_ROUTE,
+            INTERNAL_GRAPH_FIND_EDGES_ROUTE,
+            INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
+            INTERNAL_GRAPH_K_HOP_ROUTE,
+        ] {
+            assert!(service.supports_http_operation("POST", route), "route {route}");
+        }
+        assert_eq!(
+            service
+                .execute(request(
+                    INTERNAL_GRAPH_NEIGHBORS_ROUTE,
+                    neighbor_body.clone(),
+                    json!([]),
+                ))
+                .await
+                .status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        let result = service
+            .execute(request(
+                INTERNAL_GRAPH_NEIGHBORS_ROUTE,
+                neighbor_body,
+                read_capability.clone(),
+            ))
+            .await;
         assert_eq!(result.status, StatusCode::OK.as_u16());
         let result: Value = serde_json::from_slice(&result.body).unwrap();
-        assert_eq!(result["nodes"], json!(["n2"]), "response: {result}; observed: {observed:?}");
-        assert_eq!(result["edges"], json!(["e1"]), "response: {result}; observed: {observed:?}");
-        assert_eq!(observed.len(), 6);
+        assert_eq!(result["nodes"], json!(["n2"]), "response: {result}");
+        assert_eq!(result["edges"], json!(["e1"]), "response: {result}");
+
+        let find_edges = service
+            .execute(request(
+                INTERNAL_GRAPH_FIND_EDGES_ROUTE,
+                json!({}),
+                read_capability.clone(),
+            ))
+            .await;
+        assert_eq!(find_edges.status, StatusCode::OK.as_u16());
+        assert_eq!(serde_json::from_slice::<Value>(&find_edges.body).unwrap()["edges"], json!(["e1"]));
+
+        let shortest_path = service
+            .execute(request(
+                INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
+                json!({"src_id":"n1","dst_id":"n2"}),
+                read_capability.clone(),
+            ))
+            .await;
+        assert_eq!(shortest_path.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&shortest_path.body).unwrap()["path"],
+            json!(["n1", "e1", "n2"])
+        );
+
+        let k_hop = service
+            .execute(request(
+                INTERNAL_GRAPH_K_HOP_ROUTE,
+                json!({"start_ids":["n1"],"k":1}),
+                read_capability,
+            ))
+            .await;
+        assert_eq!(k_hop.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&k_hop.body).unwrap()["layers"],
+            json!([{"nodes":[],"edges":["e1"]}])
+        );
+
+        let observed = fake.await.unwrap();
+        assert_eq!(observed.len(), 12);
         assert!(observed.iter().any(|(line, _)| line.contains("collection-nodes/get")));
         assert!(observed.iter().any(|(line, _)| line.contains("collection-edges/get")));
         let scoped_reads = observed
@@ -1311,7 +1373,7 @@
                 line.contains("/get HTTP") && payload["where"].to_string().contains("workspace_id")
             })
             .collect::<Vec<_>>();
-        assert_eq!(scoped_reads.len(), 2);
+        assert_eq!(scoped_reads.len(), 8);
         assert!(
             scoped_reads.iter().all(|(_, payload)| {
                 payload["where"].to_string().contains("workspace_id")
