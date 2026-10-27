@@ -1714,10 +1714,12 @@ the observed failure when workflow implementation-selection metadata reached
 Chroma's scalar-only metadata API. The focused Chroma round-trip and projection
 tests passed (**33 passed**); the affected runtime/backend suite passed
 (**112 passed, 11 skipped**) on Windows CPython 3.13. The Rust workspace
-library suite passed; PostgreSQL tests requiring an explicit DSN and the
-manual scale probe remained intentionally ignored. Ruff and `git diff --check`
-passed. This backend compatibility fix does not change checklist IDs, status,
-or denominator; baseline remains **99/130 PASS (76.2%)**.
+library suite passed. The PostgreSQL crate's live integration tests were then
+run explicitly against the existing local PostgreSQL 17/pgvector container
+with a process-local DSN: **13 passed, 0 ignored**. Only the unrelated manual
+scale probe remains intentionally ignored in the workspace run. Ruff and
+`git diff --check` passed. This backend compatibility fix does not change
+checklist IDs, status, or denominator; baseline remains **99/130 PASS (76.2%)**.
 
 ## Completion rule
 
