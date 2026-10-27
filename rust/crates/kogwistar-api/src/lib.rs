@@ -32,7 +32,7 @@ use kogwistar_store::{
     DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
     GraphAclIndex, GraphAclPrincipal, GraphAuthorityCapability, GraphEntityKind,
     GraphFindEdgesQuery, GraphKHopQuery, GraphMutation, GraphMutationBatch, GraphMutationStore,
-    GraphProjectionRead, GraphProjectionVectorQuery, GraphRecord, GraphScope,
+    GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope,
     GraphShortestPathQuery, IndexJobClaimFilter, LaneMessageClaimFilter, LaneMessageFilter,
     MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,

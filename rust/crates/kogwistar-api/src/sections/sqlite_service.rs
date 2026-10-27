@@ -763,6 +763,308 @@ impl SqliteRunApplicationService {
         )
     }
 
+    async fn chroma_graph_vector_query_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph vector query requires read_graph capability",
+            );
+        }
+        let input = match parse_graph_vector_query_request(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+
+        let kind = if input.entity_kind == "node" {
+            GraphEntityKind::Node
+        } else {
+            GraphEntityKind::Edge
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let namespace = scope_value["storage_namespace"]
+            .as_str()
+            .unwrap_or("default");
+        let mut metadata = input.where_filter.clone();
+        if let Some(workspace) = request
+            .principal
+            .get("workspace_id")
+            .or_else(|| request.principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            metadata
+                .equals
+                .insert("workspace_id".to_owned(), Value::String(workspace.to_owned()));
+        }
+        if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
+            metadata
+                .equals
+                .insert("graph_space".to_owned(), Value::String(graph_space.to_owned()));
+        }
+
+        let Some(graph) = &self.chroma_graph else {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite service has no configured graph projection",
+            );
+        };
+        let mut matches_by_query = Vec::with_capacity(input.query_embeddings.len());
+        for embedding in &input.query_embeddings {
+            match graph
+                .vector_query_of_kind(
+                    namespace,
+                    kind,
+                    &VectorQuery {
+                        embedding: embedding.clone(),
+                        limit: input.n_results,
+                        metadata: metadata.clone(),
+                        metric: input.metric,
+                    },
+                )
+                .await
+            {
+                Ok(matches) => matches_by_query.push(matches),
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_VECTOR_QUERY_ERROR",
+                        error.to_string(),
+                    );
+                }
+            }
+        }
+
+        let mut candidate_by_id = BTreeMap::new();
+        for matched in matches_by_query.iter().flatten() {
+            candidate_by_id
+                .entry(matched.record.id.clone())
+                .or_insert_with(|| matched.record.clone());
+        }
+        if candidate_by_id.len() > 10_000 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_VECTOR_QUERY_ERROR",
+                "vector candidate ACL set exceeds the 10000-record limit",
+            );
+        }
+        let candidate_records = candidate_by_id.into_values().collect::<Vec<_>>();
+        let (candidate_nodes, candidate_edges) = if kind == GraphEntityKind::Node {
+            (candidate_records, Vec::new())
+        } else {
+            let mut edges = candidate_records;
+            let mut known_edge_ids = edges
+                .iter()
+                .map(|record| record.id.clone())
+                .collect::<BTreeSet<_>>();
+            let mut frontier = edges
+                .iter()
+                .flat_map(|record| {
+                    graph_record_string_ids(record, "source_edge_ids")
+                        .into_iter()
+                        .chain(graph_record_string_ids(record, "target_edge_ids"))
+                })
+                .collect::<BTreeSet<_>>();
+            while !frontier.is_empty() {
+                let pending = frontier
+                    .iter()
+                    .filter(|edge_id| !known_edge_ids.contains(*edge_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                frontier.clear();
+                if known_edge_ids.len().saturating_add(pending.len()) > 10_000 {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_VECTOR_QUERY_ERROR",
+                        "edge ACL dependency closure exceeds 10000 records",
+                    );
+                }
+                let referenced = match graph
+                    .graph_records_by_ids_of_kind(namespace, GraphEntityKind::Edge, &pending)
+                    .await
+                {
+                    Ok(records) => records,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                for record in referenced {
+                    if !known_edge_ids.insert(record.id.clone()) {
+                        continue;
+                    }
+                    frontier.extend(graph_record_string_ids(&record, "source_edge_ids"));
+                    frontier.extend(graph_record_string_ids(&record, "target_edge_ids"));
+                    edges.push(record);
+                }
+            }
+            let node_ids = edges
+                .iter()
+                .flat_map(|record| {
+                    graph_record_string_ids(record, "source_ids")
+                        .into_iter()
+                        .chain(graph_record_string_ids(record, "target_ids"))
+                })
+                .collect::<BTreeSet<_>>();
+            let node_ids = node_ids.into_iter().collect::<Vec<_>>();
+            if node_ids.len() > 10_000 {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_VECTOR_QUERY_ERROR",
+                    "edge endpoint ACL set exceeds the 10000-record limit",
+                );
+            }
+            let nodes = match graph
+                .graph_records_by_ids_of_kind(namespace, GraphEntityKind::Node, &node_ids)
+                .await
+            {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            (nodes, edges)
+        };
+        let mut acl_filter = MetadataFilter {
+            equals: BTreeMap::from([
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("acl_truth_graph".to_owned(), json!(input.truth_graph)),
+            ]),
+        };
+        if let Some(workspace) = request
+            .principal
+            .get("workspace_id")
+            .or_else(|| request.principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            acl_filter
+                .equals
+                .insert("workspace_id".to_owned(), json!(workspace));
+        }
+        if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
+            acl_filter
+                .equals
+                .insert("graph_space".to_owned(), json!(graph_space));
+        }
+        let acl_records = match graph
+            .graph_records_of_kind_bounded(namespace, GraphEntityKind::Node, &acl_filter, 10_000)
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut acl_index = GraphAclIndex::default();
+        acl_index.extend_from_records(&acl_records, &input.truth_graph);
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
+            &candidate_nodes,
+            &candidate_edges,
+            &acl_index,
+            &principal,
+        );
+        let visible_ids = visible_nodes
+            .iter()
+            .chain(visible_edges.iter())
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+
+        let mut ids = Vec::with_capacity(matches_by_query.len());
+        let mut documents = Vec::with_capacity(matches_by_query.len());
+        let mut metadatas = Vec::with_capacity(matches_by_query.len());
+        let mut embeddings = Vec::with_capacity(matches_by_query.len());
+        let mut distances = Vec::with_capacity(matches_by_query.len());
+        for matches in matches_by_query {
+            let matches = matches
+                .into_iter()
+                .filter(|matched| {
+                    visible_ids.contains(matched.record.id.as_str())
+                        && !matched
+                            .record
+                            .metadata
+                            .get("lifecycle_status")
+                            .and_then(Value::as_str)
+                            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                })
+                .collect::<Vec<_>>();
+            ids.push(matches.iter().map(|matched| json!(matched.record.id)).collect::<Vec<_>>());
+            if input.include.iter().any(|field| field == "documents") {
+                documents.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.record.document))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if input.include.iter().any(|field| field == "metadatas") {
+                metadatas.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.record.metadata))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if input.include.iter().any(|field| field == "embeddings") {
+                embeddings.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.record.embedding))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if input.include.iter().any(|field| field == "distances") {
+                distances.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.distance))
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+        let mut response = serde_json::Map::new();
+        response.insert("ids".to_owned(), json!(ids));
+        if input.include.iter().any(|field| field == "documents") {
+            response.insert("documents".to_owned(), json!(documents));
+        }
+        if input.include.iter().any(|field| field == "metadatas") {
+            response.insert("metadatas".to_owned(), json!(metadatas));
+        }
+        if input.include.iter().any(|field| field == "embeddings") {
+            response.insert("embeddings".to_owned(), json!(embeddings));
+        }
+        if input.include.iter().any(|field| field == "distances") {
+            response.insert("distances".to_owned(), json!(distances));
+        }
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(Value::Object(response)),
+        )
+    }
+
     fn get_run(&self, run_id: &str) -> Result<Option<ServerRun>, String> {
         self.store
             .get_server_run(run_id)

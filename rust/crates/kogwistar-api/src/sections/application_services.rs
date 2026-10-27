@@ -139,6 +139,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && matches!(
                 path.split('?').next(),
                 Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
                     | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
@@ -159,6 +160,9 @@ impl ApplicationService for SqliteRunApplicationService {
                 match request.path_and_query.split('?').next() {
                     Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
                         return self.chroma_graph_neighbors_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE) => {
+                        return self.chroma_graph_vector_query_effect(&request).await;
                     }
                     Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE) => {
                         return self.chroma_graph_find_edges_effect(&request).await;

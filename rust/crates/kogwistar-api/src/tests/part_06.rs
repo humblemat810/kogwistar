@@ -1216,7 +1216,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..12 {
+            for _ in 0..15 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1240,17 +1240,33 @@
                 let input: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length]).unwrap();
                 let payload = if line.contains("/collections HTTP") {
                     json!({"id": format!("collection-{}", input["name"].as_str().unwrap()), "metadata":{"hnsw:space":"cosine"}})
+                } else if line.contains("collection-nodes/query") {
+                    let scoped = |document: &str| json!({
+                        "_kogwistar_namespace":"scope-a",
+                        "workspace_id":"workspace-a",
+                        "graph_space":"knowledge",
+                        "_kogwistar_original_metadata":"{}",
+                        "_test_document": document
+                    });
+                    json!({
+                        "ids":[["n3","n2"]],
+                        "documents":[["doc3","doc2"]],
+                        "metadatas":[[scoped("doc3"),scoped("doc2")]],
+                        "embeddings":[[[0.1,0.2],[0.1,0.2]]],
+                        "distances":[[0.03,0.1]]
+                    })
                 } else if line.contains("collection-nodes/get") {
                     let metas = [
-                        json!({}), json!({}),
+                        json!({}), json!({}), json!({}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n2","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n3","acl_version":1,"acl_mode":"private"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
                     ];
-                    json!({"ids":["n1","n2","acl-n1","acl-n2","acl-e1"],
-                        "documents":["{}","{}","{}","{}","{}"],
+                    json!({"ids":["n1","n2","n3","acl-n1","acl-n2","acl-n3","acl-e1"],
+                        "documents":["{}","{}","{}","{}","{}","{}","{}"],
                         "metadatas":metas.into_iter().map(|m| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","_kogwistar_original_metadata":m.to_string()})).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null]})
+                        "embeddings":[null,null,null,null,null,null,null]})
                 } else {
                     json!({"ids":["e1"],
                         "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"]}"#],
@@ -1275,7 +1291,7 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 5, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 7, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
@@ -1285,6 +1301,12 @@
             graph_neighbors_from_records("n1", &visible_nodes, &visible_edges, None).nodes,
             ["n2".to_owned()].into()
         );
+        let requested = vec!["n2".to_owned(), "n2".to_owned(), "missing".to_owned()];
+        let batched = graph
+            .graph_records_by_ids_of_kind("scope-a", GraphEntityKind::Node, &requested)
+            .await
+            .unwrap();
+        assert_eq!(batched.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), ["n2"]);
         let path = std::env::temp_dir().join(format!("kogwistar-sqlite-chroma-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = SqliteRunApplicationService::open(&path).unwrap().with_chroma_graph(graph);
         let request = |path: &str, body: Value, capabilities: Value| ApiEffectRequest {
@@ -1298,6 +1320,7 @@
         let read_capability = json!(["read_graph"]);
         for route in [
             INTERNAL_GRAPH_NEIGHBORS_ROUTE,
+            INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
             INTERNAL_GRAPH_FIND_EDGES_ROUTE,
             INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
             INTERNAL_GRAPH_K_HOP_ROUTE,
@@ -1354,7 +1377,7 @@
             .execute(request(
                 INTERNAL_GRAPH_K_HOP_ROUTE,
                 json!({"start_ids":["n1"],"k":1}),
-                read_capability,
+                read_capability.clone(),
             ))
             .await;
         assert_eq!(k_hop.status, StatusCode::OK.as_u16());
@@ -1363,17 +1386,39 @@
             json!([{"nodes":[],"edges":["e1"]}])
         );
 
+        let vector_query = service
+            .execute(request(
+                INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
+                json!({
+                    "entity_kind":"node",
+                    "query_embeddings":[[0.1,0.2]],
+                    "metric":"cosine",
+                    "n_results":2,
+                    "include":["documents","distances"]
+                }),
+                read_capability,
+            ))
+            .await;
+        assert_eq!(vector_query.status, StatusCode::OK.as_u16());
+        let vector_query: Value = serde_json::from_slice(&vector_query.body).unwrap();
+        assert_eq!(vector_query["ids"], json!([["n2"]]));
+        assert_eq!(vector_query["documents"], json!([["doc2"]]));
+        assert_eq!(vector_query["distances"], json!([[0.1]]));
+
         let observed = fake.await.unwrap();
-        assert_eq!(observed.len(), 12);
+        assert_eq!(observed.len(), 15);
         assert!(observed.iter().any(|(line, _)| line.contains("collection-nodes/get")));
         assert!(observed.iter().any(|(line, _)| line.contains("collection-edges/get")));
+        assert!(observed.iter().any(|(line, payload)| {
+            line.contains("collection-nodes/get") && payload["ids"] == json!(["n2", "missing"])
+        }));
         let scoped_reads = observed
             .iter()
             .filter(|(line, payload)| {
                 line.contains("/get HTTP") && payload["where"].to_string().contains("workspace_id")
             })
             .collect::<Vec<_>>();
-        assert_eq!(scoped_reads.len(), 8);
+        assert_eq!(scoped_reads.len(), 9);
         assert!(
             scoped_reads.iter().all(|(_, payload)| {
                 payload["where"].to_string().contains("workspace_id")
@@ -1381,6 +1426,13 @@
             }),
             "scoped Chroma query payloads: {scoped_reads:#?}"
         );
+        let vector_request = observed
+            .iter()
+            .find(|(line, _)| line.contains("collection-nodes/query"))
+            .expect("scoped node vector request");
+        assert_eq!(vector_request.1["n_results"], 2);
+        assert!(vector_request.1["where"].to_string().contains("workspace_id"));
+        assert!(vector_request.1["where"].to_string().contains("graph_space"));
         drop(service);
         let _ = std::fs::remove_file(path);
     }

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use kogwistar_store::{
     DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
     StoreError, StoreResult, VectorMatch, VectorQuery,
@@ -176,6 +178,16 @@ impl GraphReadStore for ChromaGraphStore {
         Ok(decode_records(&payload, false)?.into_iter().next())
     }
 
+    async fn graph_records_by_ids_of_kind(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        ids: &[String],
+    ) -> StoreResult<Vec<GraphRecord>> {
+        self.graph_records_by_ids_in_collection(namespace, kind, ids)
+            .await
+    }
+
     async fn graph_records(
         &self,
         namespace: &str,
@@ -248,6 +260,55 @@ impl GraphReadStore for ChromaGraphStore {
 }
 
 impl ChromaGraphStore {
+    async fn graph_records_by_ids_in_collection(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        ids: &[String],
+    ) -> StoreResult<Vec<GraphRecord>> {
+        records::validate_namespace(namespace)?;
+        if ids.len() > 10_000 {
+            return Err(Self::backend_error(
+                "typed ID batch exceeds the 10000-record limit",
+            ));
+        }
+        if ids.iter().any(|id| id.trim().is_empty()) {
+            return Err(Self::backend_error("typed ID batch contains an empty ID"));
+        }
+        let mut seen = BTreeSet::new();
+        let unique_ids = ids
+            .iter()
+            .filter(|id| seen.insert(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if unique_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let http = self.http_for_kind(kind)?;
+        let url = http.collection_url("get").map_err(Self::backend_error)?;
+        let response = http
+            .request(
+                Method::POST,
+                url,
+                Some(json!({
+                    "ids": &unique_ids,
+                    "where": records::query_where(namespace, &MetadataFilter::default()),
+                    "include": ["documents", "metadatas", "embeddings"]
+                })),
+            )
+            .await
+            .map_err(Self::backend_error)?;
+        let payload: Value = response.json().await.map_err(Self::backend_error)?;
+        let mut records = decode_records(&payload, false)?
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        Ok(unique_ids
+            .iter()
+            .filter_map(|id| records.remove(id))
+            .collect())
+    }
+
     /// Read a bounded entity-kind snapshot for callers that must apply
     /// cross-record policy such as endpoint ACL checks before returning data.
     /// The method fails rather than returning a partial snapshot when the cap

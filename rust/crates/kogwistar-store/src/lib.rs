@@ -2432,6 +2432,44 @@ pub trait GraphReadStore: Send + Sync {
             })
         }
     }
+    /// Read a bounded set of records by typed identity. Missing IDs are
+    /// omitted, duplicates are returned once, and result order follows the
+    /// first occurrence in `ids`. The default preserves compatibility for
+    /// stores that only implement single-record reads; backends can override
+    /// it with one native batch request.
+    fn graph_records_by_ids_of_kind(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        ids: &[String],
+    ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send {
+        let namespace = namespace.to_owned();
+        let ids = ids.to_vec();
+        async move {
+            if ids.len() > 10_000 {
+                return Err(StoreError::Backend {
+                    backend: "graph-read".to_owned(),
+                    message: "typed ID batch exceeds the 10000-record limit".to_owned(),
+                });
+            }
+            let mut seen = BTreeSet::new();
+            let mut records = Vec::with_capacity(ids.len());
+            for id in ids {
+                if id.trim().is_empty() {
+                    return Err(StoreError::InvalidIdentifier {
+                        identifier: "graph record id",
+                    });
+                }
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                if let Some(record) = self.graph_record_of_kind(&namespace, kind, &id).await? {
+                    records.push(record);
+                }
+            }
+            Ok(records)
+        }
+    }
     /// Metadata matches in implementation-defined stable rank order.
     ///
     /// The Phase-2 in-memory implementation's cosine mode follows the public
