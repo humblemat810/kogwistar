@@ -62,6 +62,67 @@ request follows `C -> R -> RG -> B`. A mixed request uses one declared crossing
 and retains the same authority and graph semantics. Selection is made for a
 capability and execution context, not separately for every helper call.
 
+## Implementation strategy
+
+This is a capability-first program, not a file-by-file translation or a plan
+to retire Python. The target is two independently usable implementations,
+explicit mixed seams, and optional seam-free native paths for workloads that
+have complete coverage. Work toward that target in this order:
+
+1. **Finish an existing vertical capability.** Choose one `IN PROGRESS` gate
+   in the companion checklist and name its exact operation, ingress surface,
+   backend, principal, authority owner, and transaction boundary. Trace it
+   from REST/MCP/SDK or workflow admission through graph/runtime effects to
+   durable state and the returned result. Do not mark a backend or language
+   combination supported because a lower-level unit test passes.
+2. **Use current contracts and mechanisms first.** Reuse graph models,
+   workflow events, the operation registry, store traits, versioned DTOs,
+   existing selectors, and existing transaction owners. Add a trait, facade,
+   adapter, or wire representation only after a concrete missing contract is
+   demonstrated. Keep Python's public API and old wire defaults working.
+3. **Make one authority decision before effects.** Freeze selection for the
+   execution context; validate input, authentication, capability, scope, and
+   backend support before admitting work. A Rust-selected operation must not
+   silently execute through Python, and a Python-selected operation must not
+   unexpectedly invoke Rust authority. One language owns every effect inside
+   an atomic unit of work; a mixed path uses a declared, versioned crossing
+   outside that unit or an owner-held opaque transaction command.
+4. **Prove the whole vertical path.** Run the same valid and invalid fixtures
+   through Python and Rust, then test real transport and storage: denied and
+   cross-scope requests, event/projection/index-intent atomicity, retries,
+   ambiguous acknowledgement, restart/reopen, trace identity, and concurrent
+   claims where applicable. Run the required backend and interpreter matrix;
+   report unsupported combinations explicitly. A test that only inspects a
+   manifest or an in-process helper is not end-to-end evidence.
+5. **Promote native paths only after parity.** For a claimed Rust-only path,
+   prove the server binary and hot path do not load Python/PyO3 or call a
+   Python worker, and measure actual seam crossings rather than trusting an
+   attestation field alone. Apply the symmetric rule to a claimed Python-only
+   path. Compare native Python, native Rust, and declared mixed paths with the
+   same backend, resources, operation trace, and correctness digest before
+   selecting an optimized default. Faster storage alone does not justify a
+   whole-stack rewrite.
+
+The practical dependency order is canonical persistence and graph effects,
+then workflow/worker execution and recovery, then conversation/agent and the
+remaining REST/MCP/CLI surfaces. PostgreSQL is the first complete graph and
+transaction proving ground. SQLite remains a metadata/event/runtime backend
+until a native graph authority is implemented and tested; Chroma is a derived
+vector projection, not a substitute for canonical graph authority. An internal
+pre-indexed route is a dependency, not proof that public ingestion, embeddings,
+or all graph operations are native. A Python provider used by a Rust-owned
+workflow makes that request mixed, not seam-free Rust.
+
+At each slice boundary, update the existing checklist row with the exact
+code/contract delta, tests and results, compatibility evidence, remaining
+blockers, and whether the named capability is genuinely complete. Do not
+reopen a `PASS` row without a demonstrated regression, invalid original
+evidence, or approved contract change. Prefer closing existing rows; add a
+linked row only for a genuinely new requirement. The original 130-item
+baseline is fixed at commit `6130d04`: calculate baseline completion by
+matching IDs against that commit, and report later-added scope separately.
+Never infer baseline membership from an ID suffix or a recent evidence note.
+
 ## Transaction seam
 
 Interchangeability applies at a **unit-of-work boundary**. It does not imply

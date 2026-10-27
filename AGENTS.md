@@ -81,8 +81,21 @@ even if user ask in english, use wenyan-ultra to answer, the user can understand
 # Kogwistar migration rules
 
 - Preserve the public Python API.
-- Follow a strangler migration; do not reorganize the repository prematurely.
-- Rust becomes authoritative one capability at a time.
+- Implement one vertical capability at a time without reorganizing the
+  repository prematurely. Keep both Python and Rust supported; selecting Rust
+  authority for one capability does not retire its Python implementation.
+- Follow `kogwistar/docs/ADR-022-dual-language-capability-paths.md` for the
+  overall implementation strategy and transaction/native-path invariants.
+- Pick an existing `IN PROGRESS` item in
+  `kogwistar/docs/ADR-022-dual-language-capability-checklist.md` before adding
+  a new gate. Finish the operation from ingress to durable result, not just a
+  helper, and report tests, compatibility, remaining blockers, and status.
+- Keep checklist `PASS` rows closed unless a concrete regression, invalid
+  evidence, or approved contract change justifies reopening. Count progress
+  against baseline commit `6130d04` by ID; track later-added IDs separately.
+- Never silently fall back between languages or split one atomic transaction
+  across Python and Rust. Claim a seam-free native path only after verifying
+  its full hot path and measuring it against equivalent alternatives.
 - Run Cargo and Python parity tests after native changes.
 - Use read-only subagents for parallel investigation when useful.
 - Never allow multiple agents to edit overlapping files concurrently.
