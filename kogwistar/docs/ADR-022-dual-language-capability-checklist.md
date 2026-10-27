@@ -1725,6 +1725,24 @@ scale probe remains intentionally ignored in the workspace run. Ruff and
 `git diff --check` passed. This backend compatibility fix does not change
 checklist IDs, status, or denominator; baseline remains **99/130 PASS (76.2%)**.
 
+### DL-16AM Public graph-read pagination evidence (2026-10-27)
+
+The four PostgreSQL-backed public MCP graph-read operations (`kg_neighbors`,
+`kg_find_edges`, `kg_shortest_path`, and `kg_k_hop`) now consume all keyset
+projection pages through the existing `graph_projection_records_all` store
+helper, rather than silently stopping at the first 10,000 node or edge rows.
+The live `postgres_public_mcp_graph_reads_cross_projection_page_boundary`
+regression inserted 10,001 intermediate node rows and 10,001 intermediate edge
+rows into a disposable PostgreSQL 17/pgvector graph and verified that each
+authenticated MCP tool still reaches the ACL-visible target on later pages.
+The complete Rust API
+library suite with live PostgreSQL cases passed **90 tests, 0 ignored**.
+This is a bounded read-completeness fix: multi-page reads are not yet proven
+to be one repeatable-read snapshot under concurrent mutation, the Python
+graph-query path has not been shown equivalent at this size, and full MCP
+operation/transport parity remains open. `DL-16AM` stays IN PROGRESS; no
+checklist ID, status, or denominator changed.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

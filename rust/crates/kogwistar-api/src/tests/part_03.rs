@@ -1393,6 +1393,109 @@
 
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_public_mcp_graph_reads_cross_projection_page_boundary() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
+        let schema = format!("rust_mcp_graph_pages_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        let scope = GraphScope {
+            namespace: "alpha".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        for (table, id, document, metadata) in [
+            ("gke_nodes", "a-source", json!({"label":"Source"}), json!({})),
+            ("gke_nodes", "z-target", json!({"label":"Target"}), json!({})),
+            ("gke_edges", "z-edge", json!({"relation":"links","source_ids":["a-source"],"target_ids":["z-target"]}), json!({})),
+            ("gke_nodes", "acl-source", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"a-source","acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-target", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"z-target","acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"z-edge","acl_version":1,"acl_mode":"public"})),
+        ] {
+            service.store.upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: (!document.is_null()).then(|| document.to_string()),
+                    metadata: metadata.as_object().unwrap().clone(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }).await.unwrap();
+        }
+        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let connection_task = tokio::spawn(connection);
+        client.execute(
+            &format!("INSERT INTO \"{schema}\".gke_nodes(id, metadata) SELECT 'm' || lpad(n::text, 5, '0'), '{{\"namespace\":\"alpha\"}}'::jsonb FROM generate_series(0, 10000) AS n"),
+            &[],
+        ).await.unwrap();
+        client.execute(
+            &format!("INSERT INTO \"{schema}\".gke_edges(id, metadata) SELECT 'm' || lpad(n::text, 5, '0'), '{{\"namespace\":\"alpha\"}}'::jsonb FROM generate_series(0, 10000) AS n"),
+            &[],
+        ).await.unwrap();
+        let key = "graph-pages-test-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({"sub":"alice","role":"ro","roles":["reader"],"ns":"workflow","storage_ns":"alpha","capabilities":["read_graph"],"exp":4102444800_u64}),
+            &EncodingKey::from_secret(key.as_bytes()),
+        ).unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {mode:"jwt".to_owned(), algorithm:Some("HS256".to_owned()), key:Some(key.to_owned()), ..AuthConfig::default()},
+            },
+            Arc::new(service.clone()),
+        );
+        for (name, arguments, expected_field, expected) in [
+            ("kg_neighbors", json!({"rid":"a-source"}), "nodes", json!(["z-target"])),
+            ("kg_find_edges", json!({"relation":"links","tgt_label_contains":"Target"}), "edges", json!(["z-edge"])),
+            ("kg_shortest_path", json!({"src_id":"a-source","dst_id":"z-target"}), "path", json!(["a-source","z-edge","z-target"])),
+            ("kg_k_hop", json!({"start_ids":["a-source"],"k":2}), "layers", Value::Null),
+        ] {
+            let response = app.clone().oneshot(Request::builder()
+                .method("POST").uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(json!({"jsonrpc":"2.0","id":name,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string()))
+                .unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let payload: Value = serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+            assert!(payload.get("error").is_none(), "{name}: {payload}");
+            assert_eq!(payload["result"]["implementation_authority"], "rust");
+            if name == "kg_k_hop" {
+                assert_eq!(payload["result"]["layers"][0]["edges"], json!(["z-edge"]));
+                assert!(payload["result"]["layers"][1]["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("z-target")));
+            } else {
+                assert_eq!(payload["result"][expected_field], expected, "{name}");
+                if name == "kg_neighbors" {
+                    assert_eq!(payload["result"]["edges"], json!(["z-edge"]));
+                }
+            }
+        }
+        drop(app);
+        drop(service);
+        client.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");

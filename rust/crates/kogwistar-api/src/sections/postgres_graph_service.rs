@@ -675,7 +675,7 @@ impl PostgresRunApplicationService {
             metadata: MetadataFilter::default(),
             limit: 10_000,
         };
-        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -685,7 +685,7 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1043,7 +1043,7 @@ impl PostgresRunApplicationService {
             metadata: MetadataFilter::default(),
             limit: 10_000,
         };
-        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1053,7 +1053,7 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1133,7 +1133,7 @@ impl PostgresRunApplicationService {
             metadata: MetadataFilter::default(),
             limit: 10_000,
         };
-        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1143,7 +1143,7 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1229,7 +1229,7 @@ impl PostgresRunApplicationService {
             metadata: MetadataFilter::default(),
             limit: 10_000,
         };
-        let nodes = match self.store.graph_projection_records(read("gke_nodes")).await {
+        let nodes = match graph_projection_records_all(&self.store, read("gke_nodes")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1239,7 +1239,7 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let edges = match self.store.graph_projection_records(read("gke_edges")).await {
+        let edges = match graph_projection_records_all(&self.store, read("gke_edges")).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
