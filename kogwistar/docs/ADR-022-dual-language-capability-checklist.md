@@ -1279,6 +1279,18 @@ This reinforces the `DL-15C` selector-boundary evidence but leaves its broader
 call-site and failure-path inventory open; the fixed checklist baseline remains
 unchanged.
 
+Replay now freezes the implementation selector across all state deltas in one
+`replay_to` operation, and `load_checkpoint` uses the same engine-bound
+selection rule. `implementation_selection_bound` resolves keyword-only
+`engine`/`conversation_engine` owners as well as positional subsystem owners.
+The regression `tests/runtime/test_checkpoint_resume_contract.py::test_replay_to_keeps_engine_selector_across_state_deltas` flips
+the process selector after each delta and proves both reductions retain the
+engine's original mode while replay reconstructs the expected state. The full
+checkpoint/resume/replay contract module passed (**15 passed**); Ruff and
+`git diff --check` passed. This closes a replay-specific selector-drift path,
+not the remaining `DL-15C` retries, worker claims, server routes, or all-callsite
+inventory. The fixed baseline remains **99/130 PASS (76.2%)**.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

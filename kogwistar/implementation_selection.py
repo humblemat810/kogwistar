@@ -285,12 +285,21 @@ def implementation_selection_bound(
     function: Callable[_P, _R],
 ) -> Callable[_P, _R]:
     """Bind selector configuration across a sync or async execution boundary."""
+    def selection_owner(args: tuple[object, ...], kwargs: dict[str, object]) -> object | None:
+        if args:
+            return args[0]
+        for parameter in ("engine", "conversation_engine"):
+            owner = kwargs.get(parameter)
+            if owner is not None and _owner_implementation_snapshot(owner) is not None:
+                return owner
+        return None
+
     if inspect.iscoroutinefunction(inspect.unwrap(function)):
         async_function = cast(Callable[_P, Awaitable[object]], function)
 
         @wraps(function)
         async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> object:
-            owner = args[0] if args else None
+            owner = selection_owner(args, cast(dict[str, object], kwargs))
             snapshot = _owner_implementation_snapshot(owner)
             with implementation_selection_scope(snapshot):
                 return await async_function(*args, **kwargs)
@@ -300,7 +309,7 @@ def implementation_selection_bound(
 
     @wraps(function)
     def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        owner = args[0] if args else None
+        owner = selection_owner(args, cast(dict[str, object], kwargs))
         snapshot = _owner_implementation_snapshot(owner)
         with implementation_selection_scope(snapshot):
             return function(*args, **kwargs)

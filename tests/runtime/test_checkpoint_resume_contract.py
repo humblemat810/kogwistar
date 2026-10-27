@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from importlib import import_module
+from types import SimpleNamespace
 
 import pytest
 
@@ -312,3 +313,65 @@ def test_replay_to_is_read_only_and_does_not_append_new_history():
     )()
     state = replay_to(conversation_engine=eng, run_id="run-1", target_step_seq=1)
     assert state["ops"] == ["append"]
+
+
+def test_replay_to_keeps_engine_selector_across_state_deltas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar._rust_bridge import runtime_implementation_mode
+    from kogwistar.implementation_selection import capture_implementation_selection
+    replay_module = import_module("kogwistar.runtime.replay")
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    engine = _DummyEngine(
+        [
+            _ckpt(0),
+            SimpleNamespace(
+                id="wf_step|run-1|1",
+                metadata={
+                    "entity_type": "workflow_step_exec",
+                    "run_id": "run-1",
+                    "step_seq": 1,
+                    "result_json": json.dumps(
+                        {"state_update": [("a", {"ops": "first"})]}
+                    ),
+                },
+            ),
+            SimpleNamespace(
+                id="wf_step|run-1|2",
+                metadata={
+                    "entity_type": "workflow_step_exec",
+                    "run_id": "run-1",
+                    "step_seq": 2,
+                    "result_json": json.dumps(
+                        {"state_update": [("a", {"ops": "second"})]}
+                    ),
+                },
+            ),
+        ]
+    )
+    setattr(
+        engine,
+        "_implementation_selection_snapshot",
+        capture_implementation_selection(),
+    )
+    original_apply = replay_module.apply_state_update_inplace
+    observed: list[str] = []
+
+    def flip_selector_after_each_delta(*args, **kwargs):
+        observed.append(runtime_implementation_mode())
+        result = original_apply(*args, **kwargs)
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        return result
+
+    monkeypatch.setattr(
+        replay_module, "apply_state_update_inplace", flip_selector_after_each_delta
+    )
+
+    state = replay_to(
+        conversation_engine=engine, run_id="run-1", target_step_seq=2
+    )
+
+    assert state["ops"] == ["first", "second"]
+    assert observed == ["python", "python"]
+    assert runtime_implementation_mode() == "rust"

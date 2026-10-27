@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ..typing_interfaces import EngineLike
+from ..implementation_selection import implementation_selection_bound
 from .base_runtime import apply_state_update_inplace
 
 State = dict[str, Any]
@@ -29,6 +30,7 @@ def _load_json_text(value: object) -> State:
     return loaded
 
 
+@implementation_selection_bound
 def load_checkpoint(*, conversation_engine: EngineLike, run_id: str, step_seq: int) -> State:
     """
     Load a workflow checkpoint state snapshot from conversation_engine.
@@ -60,6 +62,7 @@ def _apply_state_update(state: State, state_update: list[Any]) -> None:
     apply_state_update_inplace(state, state_update, None)
 
 
+@implementation_selection_bound
 def replay_to(*, conversation_engine: EngineLike, run_id: str, target_step_seq: int) -> State:
     """
     Reconstruct state by:
