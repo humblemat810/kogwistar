@@ -1254,6 +1254,26 @@ def test_postgres_meta_facade_forwards_optional_graph_projection_cursor(monkeypa
     ]
 
 
+def test_postgres_meta_facade_requires_active_rust_transaction_for_row_lock(
+    monkeypatch,
+):
+    def unexpected_store_call(**_values):
+        raise AssertionError("row-locking read crossed the native boundary")
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        unexpected_store_call,
+    )
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+
+    with pytest.raises(RustPostgresConnectionUnavailable, match="active Rust PostgreSQL UoW"):
+        store.graph_projection_records(
+            table="gke_nodes", namespace="alpha", for_update=True
+        )
+
+
 def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatch):
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     store = RustEnginePostgresMetaStore(

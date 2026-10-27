@@ -666,14 +666,12 @@ async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_pr
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
-    provider_started = asyncio.Event()
-    release_provider = asyncio.Event()
+    promotion_started = threading.Event()
+    release_promotion = threading.Event()
     calls: list[list[str]] = []
 
     async def provider(texts):
         calls.append(list(texts))
-        provider_started.set()
-        await release_provider.wait()
         return [[0.1, 0.2, 0.3] for _ in texts]
 
     engine = GraphKnowledgeEngine(
@@ -696,6 +694,16 @@ async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_pr
             if job.entity_id == "async-rust-stale-race"
             and job.index_kind == "node_embedding"
         )
+        adapter = engine.async_two_stage_projection_adapter._sync_adapter
+        promote = adapter._promote_record
+
+        def pause_before_promote(**values):
+            promotion_started.set()
+            if not release_promotion.wait(timeout=10):
+                raise TimeoutError("test did not release the stale promotion")
+            promote(**values)
+
+        monkeypatch.setattr(adapter, "_promote_record", pause_before_promote)
 
         old_promotion = asyncio.create_task(
             engine.async_two_stage_projection_adapter.apply_embedding_job(
@@ -705,7 +713,7 @@ async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_pr
                 payload_json=old_job.payload_json,
             )
         )
-        await asyncio.wait_for(provider_started.wait(), timeout=10)
+        assert await asyncio.to_thread(promotion_started.wait, 10)
 
         await engine.async_add_node(
             build_entity_node(
@@ -715,7 +723,7 @@ async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_pr
                 embedding=None,
             )
         )
-        release_provider.set()
+        release_promotion.set()
         await old_promotion
 
         current = await async_pg_backend.node_get(
@@ -737,7 +745,7 @@ async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_pr
         assert "old canonical revision" in calls[0][0]
         assert "new canonical revision" in calls[1][0]
     finally:
-        release_provider.set()
+        release_promotion.set()
         engine.close()
 
 

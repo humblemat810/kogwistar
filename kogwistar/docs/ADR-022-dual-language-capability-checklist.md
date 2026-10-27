@@ -1248,6 +1248,24 @@ The additive `PersistentGraphEntityV2` now participates in the shared Rust graph
   skipped**). This adds in-flight stale-revision evidence to DL-07I; it does
   not claim generic cross-store atomicity or full lifecycle parity.
 
+- A deeper interleaving exposed a time-of-check/time-of-use gap: the canonical
+  revision could change after the previous pre-promotion check but before the
+  projection upsert. The promotion path now opens the existing Rust-owned
+  PostgreSQL UoW, locks the current projection row, revalidates its document,
+  metadata, active revision, and fingerprint under that transaction, then
+  writes the embedding before releasing the lock. Embedding inference remains
+  outside the transaction. A live PostgreSQL 16/pgvector regression pauses
+  exactly between the precheck and promotion and verifies that a stale result
+  cannot overwrite the newer revision; the focused regression passes (**1
+  passed, 0 skipped**). The Python facade also rejects `for_update=True`
+  outside an active Rust transaction before crossing the native boundary.
+  This closes the demonstrated Rust-authority promotion race only; broader
+  cross-store transaction guarantees remain open. The 2026-10-28 local
+  recheck passed the facade suite (**49 passed, 1 skipped**) but the live race
+  test itself was skipped because this environment did not provide an async
+  PostgreSQL DSN; the earlier live-container result remains the evidence for
+  the database interleaving.
+
 ### Latest Workflow Runtime Edge Contract Update
 
 - Rust `WorkflowRuntimeEdge` validation now matches the Python model's actual

@@ -315,6 +315,10 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         return bool(self._call("patch_graph_projection_metadata", **values))
 
     def graph_projection_records(self, **values: JsonValue) -> list[JsonObject]:
+        if values.get("for_update") and not self._native_session.transaction_active:
+            raise RustPostgresConnectionUnavailable(
+                "row-locking graph projection reads require an active Rust PostgreSQL UoW"
+            )
         result = self._call("graph_projection_records", **values)
         if not isinstance(result, list) or not all(
             _valid_graph_projection_record(record) for record in result

@@ -773,6 +773,19 @@ impl PostgresStore {
         graph_projection_records(&**client, &self.tables, read, None, false).await
     }
 
+    /// Read and lock graph projection rows within one explicit native UoW.
+    /// This is for revision-gated projection updates; ordinary reads should
+    /// continue to use `graph_projection_records`.
+    pub async fn graph_projection_records_for_update(
+        &self,
+        read: GraphProjectionRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        self.transaction(move |uow| {
+            Box::pin(async move { uow.graph_projection_records_for_update(read).await })
+        })
+        .await
+    }
+
     /// Report whether any of the Python-compatible graph/vector tables already
     /// contain rows. Embedding-profile binding uses this to reject unverified
     /// legacy vector spaces before admitting a new provider.
@@ -1873,6 +1886,14 @@ impl PostgresUnitOfWork<'_> {
         read: GraphProjectionRead,
     ) -> PostgresStoreResult<Vec<GraphRecord>> {
         graph_projection_records(&self.transaction, &self.tables, read, None, false).await
+    }
+
+    pub async fn graph_projection_records_for_update(
+        &self,
+        read: GraphProjectionRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        graph_projection_records_with_lock(&self.transaction, &self.tables, read, None, false, true)
+            .await
     }
 
     pub async fn graph_projection_vector_query(
@@ -4350,6 +4371,20 @@ async fn graph_projection_records<C>(
 where
     C: GenericClient + Sync,
 {
+    graph_projection_records_with_lock(client, tables, read, after_id, keyset_page, false).await
+}
+
+async fn graph_projection_records_with_lock<C>(
+    client: &C,
+    tables: &Tables,
+    read: GraphProjectionRead,
+    after_id: Option<String>,
+    keyset_page: bool,
+    for_update: bool,
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
     let table = graph_table(tables, &read.table)?;
     let (filter_sql, mut values) = graph_filter_sql(&read.scope, &read.metadata, 1)?;
     let mut clauses = vec![filter_sql];
@@ -4385,10 +4420,11 @@ where
     } else {
         "id ASC"
     };
+    let locking = if for_update { " FOR UPDATE" } else { "" };
     let rows = client
         .query(
             &format!(
-                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {} ORDER BY {ordering} LIMIT ${}::TEXT::BIGINT",
+                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {} ORDER BY {ordering} LIMIT ${}::TEXT::BIGINT{locking}",
                 clauses.join(" AND "),
                 values.len()
             ),

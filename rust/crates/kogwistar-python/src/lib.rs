@@ -3030,6 +3030,8 @@ enum PostgresStoreOperation {
         after_id: Option<String>,
         #[serde(default = "default_list_limit")]
         limit: usize,
+        #[serde(default)]
+        for_update: bool,
     },
     GraphProjectionVectorQuery {
         namespace: String,
@@ -3763,6 +3765,7 @@ async fn postgres_store_operation_json(
             metadata,
             after_id,
             limit,
+            for_update,
         } => {
             let read = GraphProjectionRead {
                 scope: graph_scope(namespace, workspace_id, graph_space),
@@ -3771,8 +3774,8 @@ async fn postgres_store_operation_json(
                 metadata: metadata_filter(metadata),
                 limit,
             };
-            let records = match after_id {
-                Some(after_id) => {
+            let records = match (after_id, for_update) {
+                (Some(after_id), false) => {
                     store
                         .graph_projection_page(GraphProjectionPageRead {
                             read,
@@ -3780,7 +3783,13 @@ async fn postgres_store_operation_json(
                         })
                         .await?
                 }
-                None => store.graph_projection_records(read).await?,
+                (None, false) => store.graph_projection_records(read).await?,
+                (None, true) => store.graph_projection_records_for_update(read).await?,
+                (Some(_), true) => {
+                    return Err(PostgresStoreError::Backend(
+                        "row-locking graph projection reads cannot be paginated".to_owned(),
+                    ));
+                }
             };
             Ok(Value::Array(
                 records.into_iter().map(graph_record_json).collect(),
@@ -4759,6 +4768,36 @@ async fn postgres_uow_operation_json(
             )
             .await?
         )),
+        PostgresStoreOperation::GraphProjectionRecords {
+            namespace,
+            workspace_id,
+            graph_space,
+            table,
+            ids,
+            metadata,
+            after_id,
+            limit,
+            for_update,
+        } => {
+            if after_id.is_some() || !for_update {
+                return Err(PostgresStoreError::Backend(
+                    "transactional graph projection reads require for_update=true and no page cursor"
+                        .to_owned(),
+                ));
+            }
+            let records = uow
+                .graph_projection_records_for_update(GraphProjectionRead {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    table,
+                    ids,
+                    metadata: metadata_filter(metadata),
+                    limit,
+                })
+                .await?;
+            Ok(Value::Array(
+                records.into_iter().map(graph_record_json).collect(),
+            ))
+        }
         PostgresStoreOperation::PruneEntityEventsAfter { namespace, to_seq } => Ok(json!(
             uow.prune_entity_events_after(&namespace, to_seq).await?
         )),
@@ -6133,6 +6172,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "metadata",
             "after_id",
             "limit",
+            "for_update",
         ][..],
         "graph_projection_vector_query" => &[
             "kind",
