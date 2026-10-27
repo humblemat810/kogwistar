@@ -773,6 +773,30 @@ impl PostgresStore {
         graph_projection_records(&**client, &self.tables, read, None, false).await
     }
 
+    /// Report whether any of the Python-compatible graph/vector tables already
+    /// contain rows. Embedding-profile binding uses this to reject unverified
+    /// legacy vector spaces before admitting a new provider.
+    pub async fn has_graph_projection_rows(&self) -> PostgresStoreResult<bool> {
+        let client = self.client().await?;
+        for table in ["gke_nodes", "gke_edges", "gke_documents", "gke_domains"] {
+            let relation = qualified(&self.tables.quoted_schema, table)?;
+            let exists: Option<String> = client
+                .query_one("SELECT to_regclass($1)::text", &[&relation])
+                .await
+                .map_err(backend)?
+                .get(0);
+            if exists.is_none() {
+                continue;
+            }
+            let sql = format!("SELECT EXISTS (SELECT 1 FROM {relation} LIMIT 1)");
+            let has_rows: bool = client.query_one(&sql, &[]).await.map_err(backend)?.get(0);
+            if has_rows {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Read ACL records for a bounded set of graph entities without scanning
     /// every ACL record in the namespace. Item-level rules share their entity
     /// ID, so this returns node/edge, grounding, and span rules together.

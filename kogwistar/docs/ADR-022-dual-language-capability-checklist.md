@@ -46,18 +46,31 @@ progress counts belong here and are not repeated in those entries.
   Endpoint fingerprints match Python for
   credential/query removal, empty paths, and explicitly supplied default
   ports; configured endpoints are rejected when they conflict with a profile
-  fingerprint. The shared profile fixture is consumed by both languages.
-  Evidence: `cargo test -p kogwistar-engine --lib` (**22 passed**), the Python
+  fingerprint. Rust PostgreSQL startup now binds the complete shared profile
+  fingerprint to the same physical-storage scope and named-projection registry
+  used by Python. It rejects same-dimension model/profile changes and refuses
+  to silently adopt non-empty legacy vector storage without a Python registry
+  binding; an unsupported multi-host scope is deferred until embedding is
+  enabled, so the provider-disabled PostgreSQL path remains constructible. The
+  shared profile fixture is consumed by both languages, including the canonical
+  sorted-key fingerprint. Evidence: `cargo test -p kogwistar-engine --lib`
+  (**22 passed**), the Python
   profile plus normalization modules (**15 passed**) on Windows CPython 3.13,
-  `cargo test -p kogwistar-api --lib` (**85 passed, 10 ignored**), and
+  `cargo test -p kogwistar-store-postgres` (**6 passed, 8 ignored**),
+  `cargo test -p kogwistar-api --lib` (**88 passed, 10 ignored**), and
   `tests::rust_server_embedding_configuration_is_opt_in_and_fails_closed`; the live
   `tests::postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available`
   passed against local pgvector and verifies persisted generated vectors,
-  preserved staged jobs, and no write after provider failure. Rust formatting
-  passed. This closes only the tested internal synchronous mutation path under
-  DL-05; the high-level `/api/graph/upsert` route remains deferred, as do
-  OpenAI/Azure/Google provider parity and full cross-backend coverage. DL-05
-  remains IN PROGRESS; no checklist IDs, statuses, or denominators changed.
+  preserved staged jobs, no write after provider failure, profile binding,
+  profile-drift rejection, and refusal to auto-bind a non-empty unregistered
+  schema. `tests::registered_embedding_profile_matches_by_full_fingerprint`
+  and `tests::postgres_multi_host_dsn_remains_constructible_without_embedding_provider`
+  cover full-profile comparison and disabled-provider compatibility. Rust
+  formatting and `git diff --check` passed. This closes only the tested
+  internal synchronous mutation path under DL-05; the high-level
+  `/api/graph/upsert` route remains deferred, as do OpenAI/Azure/Google provider
+  parity and full cross-backend coverage. DL-05 remains IN PROGRESS; no
+  checklist IDs, statuses, or denominators changed.
 - 2026-10-27 transactional rollback coverage for derived edge endpoints: the
   live PostgreSQL failure-injection test now submits a node and edge mutation
   in one batch, then forces index-intent insertion to fail. It verifies the

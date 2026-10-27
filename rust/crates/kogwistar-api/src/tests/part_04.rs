@@ -1,3 +1,14 @@
+    #[test]
+    fn postgres_multi_host_dsn_remains_constructible_without_embedding_provider() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgresql://writer@db-a.example,db-b.example:5544/graph",
+            "tenant",
+        )
+        .expect("the opt-in embedding profile guard must not narrow legacy DSN support");
+        assert!(service.embedding_provider.is_none());
+        assert!(service.embedding_storage_scope.is_err());
+    }
+
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_design_capability_mutates_and_undoes_when_dsn_available() {
@@ -1261,6 +1272,56 @@
             Some("nomic-embed-text"),
             Some("768"),
             Some("not-a-url"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rust_postgres_embedding_scope_matches_python_physical_scope() {
+        let config: tokio_postgres::Config =
+            "postgresql://writer:secret@EXAMPLE.com:5544/dbname".parse().unwrap();
+        assert_eq!(
+            rust_pgvector_embedding_scope(&config, "tenant").unwrap(),
+            "pgvector:5eafd1a9e29e59fdabd83f04e36ed6ae"
+        );
+    }
+
+    #[test]
+    fn registered_embedding_profile_matches_by_full_fingerprint() {
+        let profile: kogwistar_engine::embedding::EmbeddingProfile = serde_json::from_str(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../contracts/golden/embedding-profile-v1.json"
+            )),
+        )
+        .unwrap();
+        let payload = json!({
+            "profile_schema_version": 1,
+            "embedding_profile": profile.as_value(),
+            "embedding_fingerprint": profile.fingerprint(),
+            "legacy_adopted": false,
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let projection = NamedProjection {
+            namespace: EMBEDDING_PROFILE_NAMESPACE.to_owned(),
+            key: "pgvector:fixture".to_owned(),
+            payload,
+            last_authoritative_seq: 0,
+            last_materialized_seq: 0,
+            projection_schema_version: 1,
+            materialization_status: "bound".to_owned(),
+            updated_at_ms: 0,
+        };
+        validate_embedding_profile_projection(&projection, &profile, "pgvector:fixture").unwrap();
+
+        let mut changed_profile = profile;
+        changed_profile.model = "different-model-same-dimension".to_owned();
+        assert!(validate_embedding_profile_projection(
+            &projection,
+            &changed_profile,
+            "pgvector:fixture"
         )
         .is_err());
     }

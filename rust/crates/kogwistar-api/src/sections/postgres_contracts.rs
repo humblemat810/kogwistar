@@ -5,6 +5,7 @@ pub struct PostgresRunApplicationService {
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    embedding_storage_scope: Result<String, String>,
 }
 
 fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1, String> {

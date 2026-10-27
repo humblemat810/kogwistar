@@ -22,11 +22,9 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["net", "time"] }
 tower.workspace = true
+tokio-postgres.workspace = true
 url.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-tokio-postgres.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

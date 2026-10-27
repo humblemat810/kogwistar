@@ -48,6 +48,22 @@ fn default_similarity_metric() -> String {
     "cosine".to_owned()
 }
 
+fn python_json_string(value: &str) -> Vec<u8> {
+    let escaped = serde_json::to_string(value).expect("serializing a JSON string cannot fail");
+    let mut output = Vec::with_capacity(escaped.len());
+    for character in escaped.chars() {
+        if character.is_ascii() {
+            output.push(character as u8);
+        } else {
+            let mut utf16 = [0; 2];
+            for unit in character.encode_utf16(&mut utf16).iter() {
+                output.extend_from_slice(format!("\\u{unit:04x}").as_bytes());
+            }
+        }
+    }
+    output
+}
+
 impl EmbeddingProfile {
     pub fn validate(&self) -> Result<(), EmbeddingError> {
         if self.provider.trim().is_empty() || self.model.trim().is_empty() {
@@ -164,6 +180,35 @@ impl EmbeddingProfile {
             }
         }
         Value::Object(value)
+    }
+
+    /// Return the same sorted compact-JSON SHA-256 fingerprint as Python's
+    /// `EmbeddingProfile.fingerprint`.
+    pub fn fingerprint(&self) -> String {
+        let Value::Object(value) = self.as_value() else {
+            unreachable!("embedding profile projection is always an object");
+        };
+        let mut entries = value.into_iter().collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut canonical = Vec::new();
+        canonical.push(b'{');
+        for (index, (key, item)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                canonical.push(b',');
+            }
+            canonical.extend_from_slice(&python_json_string(&key));
+            canonical.push(b':');
+            if let Value::String(string) = item {
+                canonical.extend_from_slice(&python_json_string(&string));
+            } else {
+                canonical.extend_from_slice(
+                    &serde_json::to_vec(&item).expect("serializing a JSON value cannot fail"),
+                );
+            }
+        }
+        canonical.push(b'}');
+        hex::encode(Sha256::digest(canonical))
     }
 
     /// Match Python's endpoint fingerprinting: exclude credentials, query, and
@@ -389,6 +434,16 @@ mod tests {
         assert_eq!(profile.model, "all-minilm:l6-v2");
         assert_eq!(profile.dimension, 384);
         assert_eq!(profile.similarity_metric, "cosine");
+        assert_eq!(
+            profile.fingerprint(),
+            "95c96aad2b13c3ce9d170556cc1ad0c1b302450f5590dfd2af7a3ef0eb858ca6"
+        );
+        let mut unicode_profile = profile;
+        unicode_profile.model = "模型/🌲".to_owned();
+        assert_eq!(
+            unicode_profile.fingerprint(),
+            "78243203af5b2209af041734f63f557ebbe0ebef6adb467e0b3b1d68f5ead2cf"
+        );
     }
 
     #[test]

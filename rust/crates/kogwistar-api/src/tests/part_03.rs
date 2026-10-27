@@ -633,29 +633,90 @@
             .await
             .unwrap();
         let embedding_calls = Arc::new(Mutex::new(Vec::new()));
+        let embedding_profile = kogwistar_engine::embedding::EmbeddingProfile {
+            provider: "test".to_owned(),
+            model: "fixed-v1".to_owned(),
+            dimension: 3,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        };
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
             .unwrap()
             .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
-                profile: kogwistar_engine::embedding::EmbeddingProfile {
-                    provider: "test".to_owned(),
-                    model: "fixed-v1".to_owned(),
-                    dimension: 3,
-                    similarity_metric: "cosine".to_owned(),
-                    endpoint_fingerprint: None,
-                    max_sequence_length: None,
-                    crop_token_budget: None,
-                    tokenizer_fingerprint: None,
-                    crop_policy: None,
-                    embedding_kind: Some("single_vector".to_owned()),
-                    model_revision: None,
-                    preprocessing_fingerprint: None,
-                    max_image_patches: None,
-                },
+                profile: embedding_profile.clone(),
                 vector: vec![0.0, 0.0, 1.0],
                 calls: embedding_calls.clone(),
                 fail: Some(embedding_failure.clone()),
             }));
         service.ensure_schema().await.unwrap();
+        let embedding_storage_scope = service.embedding_storage_scope.as_ref().unwrap();
+        let registered_profile = service
+            .store
+            .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, embedding_storage_scope)
+            .await
+            .unwrap()
+            .expect("server startup binds the configured profile");
+        validate_embedding_profile_projection(
+            &registered_profile,
+            &embedding_profile,
+            embedding_storage_scope,
+        )
+        .unwrap();
+        let mut different_profile = embedding_profile.clone();
+        different_profile.model = "other-model-same-dimension".to_owned();
+        let mismatched_service = service
+            .clone()
+            .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+                profile: different_profile,
+                vector: vec![0.0, 0.0, 1.0],
+                calls: Arc::new(Mutex::new(Vec::new())),
+                fail: None,
+            }));
+        assert!(mismatched_service.ensure_schema().await.is_err());
+        let legacy_schema = format!("{schema}_legacy");
+        client
+            .batch_execute(&format!(
+                r#"CREATE SCHEMA "{legacy_schema}";
+                CREATE TABLE "{legacy_schema}"."gke_nodes" (
+                    id TEXT PRIMARY KEY,
+                    document TEXT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector(3) NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                INSERT INTO "{legacy_schema}"."gke_nodes" (id, document)
+                    VALUES ('legacy-row', 'existing vector store row');"#
+            ))
+            .await
+            .unwrap();
+        let legacy_service = PostgresRunApplicationService::from_dsn(&dsn, &legacy_schema)
+            .unwrap()
+            .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+                profile: embedding_profile.clone(),
+                vector: vec![0.0, 0.0, 1.0],
+                calls: Arc::new(Mutex::new(Vec::new())),
+                fail: None,
+            }));
+        let legacy_error = legacy_service.ensure_schema().await.unwrap_err();
+        assert!(legacy_error.contains("unbound for non-empty PostgreSQL vector storage"));
+        assert!(legacy_service
+            .store
+            .get_named_projection(
+                EMBEDDING_PROFILE_NAMESPACE,
+                legacy_service.embedding_storage_scope.as_ref().unwrap(),
+            )
+            .await
+            .unwrap()
+            .is_none());
         let mut body: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-mutation-batch-v1.json"
@@ -1531,6 +1592,15 @@
                 "unexpected visible edges for {subject}"
             );
         }
+        drop(mismatched_service);
+        drop(legacy_service);
+        drop(service);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA \"{schema}\" CASCADE; DROP SCHEMA \"{legacy_schema}\" CASCADE"
+            ))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1805,7 +1875,10 @@
         server.abort();
         let _ = server.await;
         drop(service);
-        client.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
+        client
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
         drop(client);
         drop(observer);
         observer_task.await.unwrap().unwrap();
