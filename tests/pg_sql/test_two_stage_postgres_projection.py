@@ -658,6 +658,89 @@ async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
         engine.close()
 
 
+@pytest.mark.asyncio
+async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_promotion(
+    async_pg_backend, monkeypatch
+) -> None:
+    """An older embedding result cannot promote over a newer canonical revision."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+    calls: list[list[str]] = []
+
+    async def provider(texts):
+        calls.append(list(texts))
+        provider_started.set()
+        await release_provider.wait()
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    try:
+        await engine.async_add_node(
+            build_entity_node(
+                node_id="async-rust-stale-race",
+                doc_id="d1",
+                summary="old canonical revision",
+                embedding=None,
+            )
+        )
+        old_job = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "async-rust-stale-race"
+            and job.index_kind == "node_embedding"
+        )
+
+        old_promotion = asyncio.create_task(
+            engine.async_two_stage_projection_adapter.apply_embedding_job(
+                entity_kind=old_job.entity_kind,
+                entity_id=old_job.entity_id,
+                op=old_job.op,
+                payload_json=old_job.payload_json,
+            )
+        )
+        await asyncio.wait_for(provider_started.wait(), timeout=10)
+
+        await engine.async_add_node(
+            build_entity_node(
+                node_id="async-rust-stale-race",
+                doc_id="d2",
+                summary="new canonical revision",
+                embedding=None,
+            )
+        )
+        release_provider.set()
+        await old_promotion
+
+        current = await async_pg_backend.node_get(
+            ids=["async-rust-stale-race"], include=["documents", "embeddings"]
+        )
+        assert current["embeddings"] == [None]
+        assert "new canonical revision" in current["documents"][0]
+
+        metrics = await AsyncIndexJobWorker(
+            engine=engine, batch_size=4, max_jobs_per_tick=4
+        ).tick()
+        assert metrics.done >= 1
+        promoted = await async_pg_backend.node_get(
+            ids=["async-rust-stale-race"], include=["documents", "embeddings"]
+        )
+        assert "new canonical revision" in promoted["documents"][0]
+        assert promoted["embeddings"][0] is not None
+        assert len(calls) == 2
+        assert "old canonical revision" in calls[0][0]
+        assert "new canonical revision" in calls[1][0]
+    finally:
+        release_provider.set()
+        engine.close()
+
+
 @two_stage_case("pending_visibility")
 @two_stage_case("promotion_handoff")
 @two_stage_case("batch_embedding")

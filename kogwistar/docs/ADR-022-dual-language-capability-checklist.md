@@ -1240,6 +1240,13 @@ The additive `PersistentGraphEntityV2` now participates in the shared Rust graph
   schema version and matching fields, and excludes claim/lease/result state.
   Python fixture test passed and Rust `provider_input_matches_shared_python_golden_without_claim_authority`
   passed as part of the **15-test** engine library suite.
+- The async Rust-authority PostgreSQL projection path now has a live race
+  regression: `tests/pg_sql/test_two_stage_postgres_projection.py::test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_promotion`
+  pauses embedding of an old source, commits a newer canonical revision, and
+  proves the old result is not promoted while the newer queued source later is.
+  The test passed against disposable PostgreSQL 16/pgvector (**1 passed, 0
+  skipped**). This adds in-flight stale-revision evidence to DL-07I; it does
+  not claim generic cross-store atomicity or full lifecycle parity.
 
 ### Latest Workflow Runtime Edge Contract Update
 
