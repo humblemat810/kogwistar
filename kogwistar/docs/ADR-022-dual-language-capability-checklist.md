@@ -1725,7 +1725,11 @@ The live `postgres_public_mcp_graph_reads_cross_projection_page_boundary`
 regression inserted 10,001 intermediate node rows and 10,001 intermediate edge
 rows into a disposable PostgreSQL 17/pgvector graph and exercised all four
 authenticated `tools/call` operations over real localhost HTTP, verifying each
-still reaches the ACL-visible target on later pages.
+still reaches the ACL-visible target on later pages. The graph and expected
+results now come from `contracts/golden/graph-traversal-v1.json`, also consumed
+by Python's `tests/mcp/test_chat_mcp_tools.py::test_mcp_graph_traversal_matches_shared_golden_contract`.
+The Python MCP test passed (1 passed), and the Rust regression passed against
+the live local PostgreSQL service (1 passed).
 The reads now run inside one `REPEATABLE READ READ ONLY` transaction, covering
 both node and edge pages from one PostgreSQL snapshot. The complete Rust API
 library suite with live PostgreSQL cases passed **90 tests, 0 ignored** after

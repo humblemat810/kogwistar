@@ -1396,6 +1396,34 @@
     async fn postgres_public_mcp_graph_reads_cross_projection_page_boundary() {
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-traversal-v1.json"
+        )))
+        .unwrap();
+        let cases = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|case| (case["name"].as_str().unwrap(), case))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let source_id = "z-source";
+        let target_id = "z-target";
+        let edge_id = "z-edge";
+        let map_fixture_id = |id: &str| match id {
+            "A" => source_id.to_owned(),
+            "B" => target_id.to_owned(),
+            "E1" => edge_id.to_owned(),
+            other => other.to_owned(),
+        };
+        let map_fixture_ids = |ids: &Value| {
+            ids.as_array()
+                .unwrap()
+                .iter()
+                .map(|id| map_fixture_id(id.as_str().unwrap()))
+                .collect::<Vec<_>>()
+        };
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_mcp_graph_pages_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
@@ -1411,12 +1439,12 @@
             graph_space: None,
         };
         for (table, id, document, metadata) in [
-            ("gke_nodes", "a-source", json!({"label":"Source"}), json!({})),
-            ("gke_nodes", "z-target", json!({"label":"Target"}), json!({})),
-            ("gke_edges", "z-edge", json!({"relation":"links","source_ids":["a-source"],"target_ids":["z-target"]}), json!({})),
-            ("gke_nodes", "acl-source", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"a-source","acl_version":1,"acl_mode":"public"})),
-            ("gke_nodes", "acl-target", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"z-target","acl_version":1,"acl_mode":"public"})),
-            ("gke_nodes", "acl-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"z-edge","acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", source_id, json!({"label":"Smoking"}), json!({})),
+            ("gke_nodes", target_id, json!({"label":"Lung Cancer"}), json!({})),
+            ("gke_edges", edge_id, json!({"relation":"causes","source_ids":[source_id],"target_ids":[target_id]}), json!({})),
+            ("gke_nodes", "acl-source", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":source_id,"acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-target", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":target_id,"acl_version":1,"acl_mode":"public"})),
+            ("gke_nodes", "acl-edge", Value::Null, json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":edge_id,"acl_version":1,"acl_mode":"public"})),
         ] {
             service.store.upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                 scope: scope.clone(),
@@ -1459,11 +1487,35 @@
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let http = reqwest::Client::new();
+        let neighbor_case = cases["edge_to_nodes"];
+        let find_case = cases["find_edges"];
+        let path_case = cases["shortest_path"];
+        let hop_case = cases["k_hop"];
         for (name, arguments, expected_field, expected) in [
-            ("kg_neighbors", json!({"rid":"a-source"}), "nodes", json!(["z-target"])),
-            ("kg_find_edges", json!({"relation":"links","tgt_label_contains":"Target"}), "edges", json!(["z-edge"])),
-            ("kg_shortest_path", json!({"src_id":"a-source","dst_id":"z-target"}), "path", json!(["a-source","z-edge","z-target"])),
-            ("kg_k_hop", json!({"start_ids":["a-source"],"k":2}), "layers", Value::Null),
+            (
+                "kg_neighbors",
+                json!({"rid":edge_id}),
+                "nodes",
+                json!(map_fixture_ids(&neighbor_case["expected_neighbors"]["nodes"])),
+            ),
+            (
+                "kg_find_edges",
+                json!({"relation":find_case["relation"],"src_label_contains":find_case["source_label_contains"],"tgt_label_contains":find_case["target_label_contains"]}),
+                "edges",
+                json!(map_fixture_ids(&find_case["expected_edge_ids"])),
+            ),
+            (
+                "kg_shortest_path",
+                json!({"src_id":source_id,"dst_id":target_id}),
+                "path",
+                json!(map_fixture_ids(&path_case["expected_path"])),
+            ),
+            (
+                "kg_k_hop",
+                json!({"start_ids":[source_id],"k":hop_case["k"]}),
+                "layers",
+                Value::Null,
+            ),
         ] {
             let response = http
                 .post(format!("http://{address}/mcp"))
@@ -1482,15 +1534,25 @@
             assert!(payload.get("error").is_none(), "{name}: {payload}");
             assert_eq!(payload["result"]["implementation_authority"], "rust");
             if name == "kg_k_hop" {
-                assert_eq!(payload["result"]["layers"][0]["edges"], json!(["z-edge"]));
-                assert!(payload["result"]["layers"][1]["nodes"]
+                let expected_layers = hop_case["expected_layers"]
                     .as_array()
                     .unwrap()
-                    .contains(&json!("z-target")));
+                    .iter()
+                    .map(|layer| {
+                        json!({
+                            "nodes": map_fixture_ids(&layer["nodes"]),
+                            "edges": map_fixture_ids(&layer["edges"])
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(payload["result"]["layers"], json!(expected_layers));
             } else {
                 assert_eq!(payload["result"][expected_field], expected, "{name}");
                 if name == "kg_neighbors" {
-                    assert_eq!(payload["result"]["edges"], json!(["z-edge"]));
+                    assert_eq!(
+                        payload["result"]["edges"],
+                        json!(map_fixture_ids(&neighbor_case["expected_neighbors"]["edges"]))
+                    );
                 }
             }
         }
