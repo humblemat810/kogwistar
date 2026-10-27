@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import httpx
 
+from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
@@ -50,31 +52,101 @@ def main() -> None:
     parser.add_argument("--worker-id", required=True)
     parser.add_argument("--journal", required=True)
     parser.add_argument("--marker", required=True)
+    parser.add_argument("--graph-namespace")
+    parser.add_argument("--graph-entity-id")
+    parser.add_argument("--graph-receipt")
+    parser.add_argument("--auth-token")
     parser.add_argument("--mode", choices=("prepare", "replay"), required=True)
     args = parser.parse_args()
+
+    graph_values = (args.graph_namespace, args.graph_entity_id)
+    if any(value is not None for value in graph_values):
+        if not all(graph_values) or not args.auth_token:
+            raise SystemExit("graph replay probe requires its scope and auth token")
 
     resolver = MappingStepResolver()
 
     @resolver.register("application.before")
-    def before(_ctx):
+    def before(ctx):
         with Path(args.marker).open("a", encoding="utf-8") as marker:
             marker.write("callback\n")
+        if args.graph_namespace is not None:
+            assert args.graph_namespace is not None
+            assert args.graph_entity_id is not None
+            assert args.auth_token is not None
+            assert ctx.idempotency_key
+            batch = GraphMutationBatchPayload.model_validate(
+                {
+                    "contract_version": 1,
+                    "atomic": True,
+                    "mutations": [
+                        {
+                            "scope": {"namespace": args.graph_namespace},
+                            "table": "gke_nodes",
+                            "entity_kind": "node",
+                            "event_id": f"graph-effect-{ctx.idempotency_key}",
+                            "op": "ADD",
+                            "payload": {
+                                "id": args.graph_entity_id,
+                                "text": "worker effect",
+                            },
+                            "record": {
+                                "id": args.graph_entity_id,
+                                "document": "worker effect",
+                            },
+                            "embedding_dim": 3,
+                        }
+                    ],
+                    "index_jobs": [
+                        {
+                            "job_id": f"graph-index-{ctx.idempotency_key}",
+                            "namespace": args.graph_namespace,
+                            "entity_kind": "node",
+                            "entity_id": args.graph_entity_id,
+                            "index_kind": "node_docs",
+                            "op": "UPSERT",
+                        }
+                    ],
+                }
+            )
+            response = httpx.post(
+                f"{args.base_url}/internal/graph/mutations",
+                headers={"authorization": f"Bearer {args.auth_token}"},
+                json=batch.model_dump(mode="json"),
+                timeout=10,
+            )
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"authorized graph mutation failed ({response.status_code}): "
+                    f"{response.text}"
+                )
+            graph_results = response.json().get("results")
+            if args.graph_receipt is None:
+                raise AssertionError("graph replay probe requires a receipt path")
+            Path(args.graph_receipt).write_text(
+                json.dumps(graph_results, sort_keys=True), encoding="utf-8"
+            )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"python_before_seen": True})],
         )
 
+    worker_headers = (
+        {"authorization": f"Bearer {args.auth_token}"}
+        if args.auth_token
+        else {"x-kogwistar-roles": "reader"}
+    )
     client = (
         httpx.Client(
             transport=_LoseResultBeforeDelivery(),
             base_url=args.base_url,
-            headers={"x-kogwistar-roles": "reader"},
+            headers=worker_headers,
         )
         if args.mode == "prepare"
         else httpx.Client(
             transport=_LoseDuplicateAckAfterCommit(),
             base_url=args.base_url,
-            headers={"x-kogwistar-roles": "reader"},
+            headers=worker_headers,
         )
         if args.mode == "replay"
         else None
@@ -84,7 +156,7 @@ def main() -> None:
         worker_id=args.worker_id,
         journal_path=args.journal,
         step_resolver=resolver,
-        headers={"x-kogwistar-roles": "reader"},
+        headers=worker_headers,
         client=client,
     ) as worker:
         work = worker.claim(run_id="mixed-live-run", lease_seconds=1)

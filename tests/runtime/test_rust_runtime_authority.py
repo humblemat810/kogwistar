@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -42,6 +45,16 @@ RUST_SERVER = (
     / "debug"
     / ("kogwistar-server.exe" if os.name == "nt" else "kogwistar-server")
 )
+
+
+def _test_hs256_token(secret: str, claims: dict[str, object]) -> str:
+    def encode(value: object) -> str:
+        raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+    signing_input = f'{encode({"alg": "HS256", "typ": "JWT"})}.{encode(claims)}'
+    signature = hmac.new(secret.encode(), signing_input.encode(), hashlib.sha256).digest()
+    return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
 @pytest.mark.parametrize(
@@ -1220,6 +1233,21 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
     pg_schema = (
         f"kw_worker_replay_{os.urandom(8).hex()}" if backend == "pg" else None
     )
+    graph_namespace = f"worker-graph-{os.urandom(8).hex()}" if backend == "pg" else None
+    graph_entity_id = f"worker-effect-{os.urandom(8).hex()}" if backend == "pg" else None
+    graph_sqlalchemy_engine = None
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        import sqlalchemy as sa
+
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+        graph_sqlalchemy_engine = sa.create_engine(pg_dsn, future=True)
+        PgVectorBackend(
+            engine=graph_sqlalchemy_engine,
+            embedding_dim=3,
+            schema=pg_schema,
+        ).ensure_schema()
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
@@ -1234,10 +1262,27 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
         }
     )
+    worker_token = None
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
         env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+        jwt_secret = f"test-{os.urandom(24).hex()}"
+        env["JWT_SECRET"] = jwt_secret
+        env["JWT_ALG"] = "HS256"
+        assert graph_namespace is not None
+        worker_token = _test_hs256_token(
+            jwt_secret,
+            {
+                "sub": "worker-replay-test",
+                "role": "rw",
+                "roles": ["reader", "rw"],
+                "ns": "workflow",
+                "storage_ns": graph_namespace,
+                "capabilities": ["write_graph"],
+                "exp": int(time.time()) + 3600,
+            },
+        )
     else:
         env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "mixed-language.sqlite3")
     process = subprocess.Popen(
@@ -1284,7 +1329,11 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 state_update=[("u", {"python_after_seen": True})],
             )
 
-        headers = {"x-kogwistar-roles": "reader"}
+        headers = (
+            {"authorization": f"Bearer {worker_token}"}
+            if worker_token is not None
+            else {"x-kogwistar-roles": "reader"}
+        )
         submitted = httpx.post(
             f"{base_url}/api/workflow/runs",
             headers=headers,
@@ -1320,6 +1369,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
         journal_path = tmp_path / "python-worker.sqlite"
         callback_marker = tmp_path / "python-worker-callbacks.txt"
+        graph_receipt = tmp_path / "python-worker-graph-receipt.json"
         worker_probe = [
             sys.executable,
             "-m",
@@ -1331,9 +1381,28 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             "--marker",
             str(callback_marker),
         ]
+        worker_env = os.environ.copy()
+        if backend == "pg":
+            assert worker_token is not None
+            assert graph_namespace is not None and graph_entity_id is not None
+            worker_probe.extend(
+                [
+                    "--graph-namespace",
+                    graph_namespace,
+                    "--graph-entity-id",
+                    graph_entity_id,
+                    "--graph-receipt",
+                    str(graph_receipt),
+                    "--auth-token",
+                    worker_token,
+                ]
+            )
+            worker_env["JWT_SECRET"] = env["JWT_SECRET"]
+            worker_env["JWT_ALG"] = "HS256"
         prepare = subprocess.run(
             [*worker_probe, "--worker-id", "python-worker-a", "--mode", "prepare"],
             cwd=ROOT,
+            env=worker_env,
             capture_output=True,
             text=True,
             timeout=20,
@@ -1345,12 +1414,49 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         replay = subprocess.run(
             [*worker_probe, "--worker-id", "python-worker-b", "--mode", "replay"],
             cwd=ROOT,
+            env=worker_env,
             capture_output=True,
             text=True,
             timeout=20,
         )
         assert replay.returncode == 0, replay.stderr
         assert callback_marker.read_text(encoding="utf-8").splitlines() == ["callback"]
+        if backend == "pg":
+            assert pg_dsn is not None and pg_schema is not None
+            assert graph_namespace is not None and graph_entity_id is not None
+            graph_receipt_value = json.loads(
+                graph_receipt.read_text(encoding="utf-8")
+            )
+            assert len(graph_receipt_value) == 1
+            assert graph_receipt_value[0]["inserted"] is True
+            assert graph_receipt_value[0]["mutated"] is True
+            assert graph_receipt_value[0]["event"]["entity_id"] == graph_entity_id
+            assert graph_receipt_value[0]["event"]["event_id"].startswith(
+                "graph-effect-"
+            )
+            from kogwistar.engine_core.rust_postgres_session import (
+                RustEnginePostgresMetaStore,
+            )
+
+            graph_store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+            graph_events = list(
+                graph_store.iter_entity_events(namespace=graph_namespace)
+            )
+            assert len(graph_events) == 1
+            assert graph_events[0][1:4] == ("node", graph_entity_id, "ADD")
+            graph_jobs = graph_store.list_index_jobs(namespace=graph_namespace)
+            assert len(graph_jobs) == 1
+            assert graph_jobs[0].entity_id == graph_entity_id
+            assert graph_sqlalchemy_engine is not None
+            from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+            projected = PgVectorBackend(
+                engine=graph_sqlalchemy_engine,
+                embedding_dim=3,
+                schema=pg_schema,
+            ).node_get(ids=[graph_entity_id], include=["documents"])
+            assert projected["ids"] == [graph_entity_id]
+            assert projected["documents"] == ["worker effect"]
         callbacks.append("before")
 
         with RustRuntimeWorker.from_step_resolver(
@@ -1579,6 +1685,8 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     )
             finally:
                 cleanup_engine.dispose()
+                if graph_sqlalchemy_engine is not None:
+                    graph_sqlalchemy_engine.dispose()
 
 
 @pytest.mark.integration
