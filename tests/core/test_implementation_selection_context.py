@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -28,6 +28,7 @@ from kogwistar.engine_core.in_memory_backend import InMemoryBackend, build_in_me
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.json_types import JsonValue
 from kogwistar.engine_core.postgres_backend import (
     CollectionSpec,
     PgCollectionFacade,
@@ -260,10 +261,16 @@ def test_every_public_lane_messaging_operation_binds_its_engine_selection() -> N
 
 def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None:
     from kogwistar.engine_core.recovery import RecoverySubsystem
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
     from kogwistar.messaging.service import LaneMessagingService
 
     unbound: list[str] = []
-    for subsystem in (RecoverySubsystem, IndexingSubsystem, LaneMessagingService):
+    for subsystem in (
+        RecoverySubsystem,
+        IndexingSubsystem,
+        LaneMessagingService,
+        ReadSubsystem,
+    ):
         unbound.extend(
             f"{subsystem.__name__}.{name}"
             for name, member in inspect.getmembers(subsystem, callable)
@@ -320,6 +327,44 @@ def test_recovery_inspection_keeps_one_selector_snapshot(
 
     recovery = RecoverySubsystem(SimpleNamespace(metadata=Metadata()))
     assert recovery.inspect_queues(["alpha"]) == []
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_read_operation_keeps_one_selector_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.engine_core.models import Node
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+    engine = SimpleNamespace(
+        _resolve_redirect_chain=lambda **values: values["initial_items"],
+        _filter_items_by_resolve_mode=lambda items, _mode: items,
+    )
+    subsystem = ReadSubsystem(engine)
+    original_convert = subsystem.nodes_from_single_or_id_query_result
+
+    def fetch(**_values: object) -> dict[str, object]:
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+        return {"ids": [], "documents": [], "metadatas": []}
+
+    def observe_conversion(
+        got: object, **values: object
+    ) -> list[Node]:
+        observed.append(runtime_implementation_mode())
+        return original_convert(
+            cast(Mapping[str, JsonValue], got),
+            node_type=cast(type[Node], values["node_type"]),
+        )
+
+    monkeypatch.setattr(subsystem, "_node_get_raw", fetch)
+    monkeypatch.setattr(
+        subsystem, "nodes_from_single_or_id_query_result", observe_conversion
+    )
+
+    assert subsystem.get_nodes(node_type=Node) == []
     assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 

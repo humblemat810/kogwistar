@@ -465,6 +465,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ) or result
         return result
 
+    @implementation_selection_bound
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -479,6 +480,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return bool(got.get("ids"))
 
+    @implementation_selection_bound
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -493,6 +495,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return bool(got.get("ids"))
 
+    @implementation_selection_bound
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -507,6 +510,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return _json_objects(got.get("metadatas"))
 
+    @implementation_selection_bound
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -521,6 +525,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return _json_objects(got.get("metadatas"))
 
+    @implementation_selection_bound
     def get_edge_endpoints(
         self,
         *,
@@ -538,6 +543,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
 
     # Canonical read API
+    @implementation_selection_bound
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
@@ -591,6 +597,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return cast(list[Node], self._e._filter_items_by_resolve_mode(nodes, resolve_mode))
 
+    @implementation_selection_bound
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
@@ -646,6 +653,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
+    @implementation_selection_bound
     def get_incident_edges(
         self,
         endpoint_id: str,
@@ -721,6 +729,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         ]
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
+    @implementation_selection_bound
     def get_document(self, doc_id: str) -> Document:
         raw_doc_get_result = self._rust_postgres_projection_get(
             entity_kind="document",
@@ -760,6 +769,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return doc
 
+    @implementation_selection_bound
     def query_nodes(
         self,
         *args: object,
@@ -917,6 +927,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 cache[next_id] = nxt
             current = nxt
 
+    @implementation_selection_bound
     def search_nodes_as_of(
         self,
         *,
@@ -950,6 +961,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             for node in (hit.node,)
         ]
 
+    @implementation_selection_bound
     def search_nodes_as_of_scored(
         self,
         *,
@@ -1106,6 +1118,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return out
 
+    @implementation_selection_bound
     def query_edges(
         self,
         *args: object,
@@ -1158,6 +1171,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             for row in rows
         ]
 
+    @implementation_selection_bound
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1196,6 +1210,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 res.append(cast(TNode, selected_type.model_validate(json_d)))
         return res
 
+    @implementation_selection_bound
     def edges_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1233,6 +1248,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 res.append(cast(TEdge, selected_type.model_validate(json_d)))
         return res
 
+    @implementation_selection_bound
     def nodes_from_query_result(
         self, gots: Mapping[str, JsonValue], node_type: type[TNode] = Node
     ) -> list[list[TNode]]:
@@ -1252,6 +1268,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             res.append(self.nodes_from_single_or_id_query_result(got, node_type=node_type))
         return res
 
+    @implementation_selection_bound
     def edges_from_query_result(
         self, gots: Mapping[str, JsonValue], edge_type: type[TEdge] = Edge
     ) -> list[list[TEdge]]:
@@ -1272,6 +1289,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             res.append(self.edges_from_single_or_id_query_result(got, edge_type=edge_type))
         return res
 
+    @implementation_selection_bound
     def where_update_from_resolve_mode(
         self,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
@@ -1291,6 +1309,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         except Exception:
             return None
 
+    @implementation_selection_bound
     def extract_reference_contexts(
         self,
         node_or_id: Node | Edge | str,
@@ -1427,6 +1446,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return out
 
     # Doc-index helpers
+    @implementation_selection_bound
     def node_ids_by_doc(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
@@ -1467,6 +1487,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
+    @implementation_selection_bound
     def edge_ids_by_doc(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
@@ -1502,6 +1523,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
+    @implementation_selection_bound
     def edges_by_doc(
         self, doc_id: str, where: dict[str, JsonValue] | None = None
     ) -> list[str]:
@@ -1513,6 +1535,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = _json_object(run_awaitable_blocking(self._e.backend.edge_refs_get(where=query_where, include=["documents"])))
         return list({json.loads(d)["edge_id"] for d in _json_strings(rows.get("documents"))})
 
+    @implementation_selection_bound
     def list_edges_with_ref_filter(
         self, doc_id: str, where: dict | None = None
     ) -> list[Edge]:
@@ -1523,6 +1546,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         with use_mode("backend"):
             return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
+    @implementation_selection_bound
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
         where = (
             {"doc_id": doc_id}
@@ -1532,6 +1556,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = _json_object(run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"])))
         return list({json.loads(d)["node_id"] for d in _json_strings(rows.get("documents"))})
 
+    @implementation_selection_bound
     def list_nodes_with_ref_filter(
         self, doc_id: str, *, where: dict | None = None
     ) -> list[Node]:
@@ -1542,6 +1567,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         with use_mode("backend"):
             return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
+    @implementation_selection_bound
     def ids_with_insertion_method(
         self,
         *,
@@ -1598,16 +1624,19 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return sorted(keep)
 
     # Legacy names retained during migration
+    @implementation_selection_bound
     def nodes_by_doc_index(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    @implementation_selection_bound
     def edge_ids_by_doc_index(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    @implementation_selection_bound
     def load_node_map(self, *args: object, **kwargs: object) -> dict[str, Node]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
@@ -1627,6 +1656,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return {n.safe_get_id(): n for n in nodes}
 
+    @implementation_selection_bound
     def load_edge_map(self, *args: object, **kwargs: object) -> dict[str, Edge]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:

@@ -559,6 +559,18 @@ snapshot's denominator.
   separate run currently fails because its test principal omits the required
   `read_security_scope` capability. This is bounded selector-boundary evidence,
   not completion of the full cross-stack inventory.
+- Bound all 31 public `ReadSubsystem` methods to the engine's captured selector,
+  including direct reads, semantic queries, result hydration, and document/ref
+  lookup helpers. A regression changes the process selector during the backend
+  fetch and confirms nested model hydration retains the original selection.
+  Evidence: `tests/core/test_implementation_selection_context.py::test_read_operation_keeps_one_selector_snapshot`
+  and the reflection invariant covering `ReadSubsystem` (2 focused tests
+  passed); `tests/core/test_read_probe_contract.py`,
+  `tests/core/test_lifecycle_read_contract.py`, and
+  `tests/core/test_backend_contract.py` completed with **28 passed, 6 skipped**
+  (PostgreSQL cases skipped without a configured test DSN) on Windows CPython
+  3.13 with local socket access enabled. Read boundary coverage is now broader,
+  but the overall selector/call-site inventory remains open under `DL-15C`.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains
