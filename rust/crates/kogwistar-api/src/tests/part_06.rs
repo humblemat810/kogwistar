@@ -1216,7 +1216,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..15 {
+            for _ in 0..18 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1254,6 +1254,24 @@
                         "metadatas":[[scoped("doc3"),scoped("doc2")]],
                         "embeddings":[[[0.1,0.2],[0.1,0.2]]],
                         "distances":[[0.03,0.1]]
+                    })
+                } else if line.contains("collection-edges/query") {
+                    let scoped = |document: &str| json!({
+                        "_kogwistar_namespace":"scope-a",
+                        "workspace_id":"workspace-a",
+                        "graph_space":"knowledge",
+                        "_kogwistar_original_metadata":"{}",
+                        "_test_document": document
+                    });
+                    json!({
+                        "ids":[["e2","e1"]],
+                        "documents":[[
+                            r#"{"source_ids":["n1"],"target_ids":["n3"]}"#,
+                            r#"{"source_ids":["n1"],"target_ids":["n2"]}"#
+                        ]],
+                        "metadatas":[[scoped("edge2"),scoped("edge1")]],
+                        "embeddings":[[[0.1,0.2],[0.1,0.2]]],
+                        "distances":[[0.02,0.1]]
                     })
                 } else if line.contains("collection-nodes/get") {
                     let metas = [
@@ -1405,8 +1423,29 @@
         assert_eq!(vector_query["documents"], json!([["doc2"]]));
         assert_eq!(vector_query["distances"], json!([[0.1]]));
 
+        let edge_vector_query = service
+            .execute(request(
+                INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
+                json!({
+                    "entity_kind":"edge",
+                    "query_embeddings":[[0.1,0.2]],
+                    "metric":"cosine",
+                    "n_results":2,
+                    "include":["documents","distances"]
+                }),
+                json!(["read_graph"]),
+            ))
+            .await;
+        assert_eq!(edge_vector_query.status, StatusCode::OK.as_u16());
+        let edge_vector_query: Value = serde_json::from_slice(&edge_vector_query.body).unwrap();
+        assert_eq!(edge_vector_query["ids"], json!([["e1"]]));
+        assert_eq!(edge_vector_query["documents"], json!([[
+            r#"{"source_ids":["n1"],"target_ids":["n2"]}"#
+        ]]));
+        assert_eq!(edge_vector_query["distances"], json!([[0.1]]));
+
         let observed = fake.await.unwrap();
-        assert_eq!(observed.len(), 15);
+        assert_eq!(observed.len(), 18);
         assert!(observed.iter().any(|(line, _)| line.contains("collection-nodes/get")));
         assert!(observed.iter().any(|(line, _)| line.contains("collection-edges/get")));
         assert!(observed.iter().any(|(line, payload)| {
@@ -1418,7 +1457,7 @@
                 line.contains("/get HTTP") && payload["where"].to_string().contains("workspace_id")
             })
             .collect::<Vec<_>>();
-        assert_eq!(scoped_reads.len(), 9);
+        assert_eq!(scoped_reads.len(), 10);
         assert!(
             scoped_reads.iter().all(|(_, payload)| {
                 payload["where"].to_string().contains("workspace_id")
