@@ -1292,7 +1292,13 @@
                 "effect_id": effect_id,
                 "state_update": [["u", {"effect_first": true}]],
                 "usage": {"input_tokens": 3, "output_tokens": 2, "total_cost": 0.01},
-                "trace_events": [{"type": "step_completed", "span_id": "effect-start"}],
+                "trace_events": [{
+                    "schema_version": 1,
+                    "event": "runtime.python_worker.result_prepared",
+                    "worker_id": "worker-a",
+                    "identity_source": "worker_configuration",
+                    "lease_claim_id": "worker-a#lease"
+                }],
                 "successors": [{"node_id": "forged", "join_mask": 0}],
             }
         });
@@ -1335,6 +1341,19 @@
                 .filter(|event_type| event_type.as_str() == "workflow.trace.v1")
                 .count(),
             1
+        );
+        let persisted_worker_trace = store
+            .list_server_run_events(&effect_run_id, 0, usize::MAX)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "workflow.trace.v1")
+            .unwrap();
+        let persisted_worker_trace: Value =
+            serde_json::from_str(&persisted_worker_trace.payload_json).unwrap();
+        assert_eq!(persisted_worker_trace["trace"]["worker_id"], "worker-a");
+        assert_eq!(
+            persisted_worker_trace["trace"]["lease_claim_id"],
+            "worker-a#lease"
         );
         let effect_state = store
             .read_recorded_runtime_state(&effect_run_id, "workflow-effect", "conversation-effect")

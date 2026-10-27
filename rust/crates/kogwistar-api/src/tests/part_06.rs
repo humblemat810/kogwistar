@@ -727,6 +727,239 @@
     }
 
     #[tokio::test]
+    async fn sqlite_environment_pinned_work_resumes_on_another_compatible_worker() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-worker-env-{nonce}.sqlite3"));
+        let workflow_id = "pinned-python-workflow";
+        let conversation_id = "pinned-python-conversation";
+        let environment_id = "numpy-cpu-v2";
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .put_workflow_design_snapshot(
+                workflow_id,
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({
+                        "nodes": [
+                            {"id":"first","metadata":{"wf_start":true,"wf_op":"application.compute","wf_environment_id":environment_id}},
+                            {"id":"second","metadata":{"wf_op":"application.compute","wf_environment_id":environment_id}}
+                        ],
+                        "edges": [{
+                            "id":"edge-first-second",
+                            "source_ids":["first"],
+                            "target_ids":["second"],
+                            "metadata":{}
+                        }]
+                    }))
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+
+        let reopen = || {
+            router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: vec!["reader".to_owned()],
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig::default(),
+                },
+                Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+            )
+        };
+        let call = |app: Router, method: &'static str, uri: String, body: Value| async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 32768).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        };
+
+        let app = reopen();
+        let (status, submitted) = call(
+            app.clone(),
+            "POST",
+            "/api/workflow/runs".to_owned(),
+            json!({
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "initial_state": {"seed": 7}
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let run_id = submitted["run_id"].as_str().unwrap().to_owned();
+
+        let generic_worker = call(
+            app.clone(),
+            "POST",
+            "/internal/runtime/claim".to_owned(),
+            json!({
+                "claimed_by": "generic-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["python-worker"],
+                "run_id": run_id
+            }),
+        )
+        .await;
+        assert_eq!(generic_worker.0, StatusCode::OK);
+        assert_eq!(generic_worker.1["work"], json!([]));
+
+        let wrong_environment = call(
+            app.clone(),
+            "POST",
+            "/internal/runtime/claim".to_owned(),
+            json!({
+                "claimed_by": "worker-wrong-env",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": [crate::runtime_contract::runtime_worker_recipient(Some("numpy-gpu-v1"))]
+            }),
+        )
+        .await;
+        assert_eq!(wrong_environment.0, StatusCode::OK);
+        assert_eq!(wrong_environment.1["work"], json!([]));
+
+        let (status, claimed) = call(
+            app.clone(),
+            "POST",
+            "/internal/runtime/claim".to_owned(),
+            json!({
+                "claimed_by": "worker-a",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": [crate::runtime_contract::runtime_worker_recipient(Some(environment_id))],
+                "run_id": run_id
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let first_work = claimed["work"][0].clone();
+        assert_eq!(first_work["step_id"], "first");
+        assert_eq!(first_work["payload"]["op_environment_id"], environment_id);
+        let first_result = call(
+            app,
+            "POST",
+            "/internal/runtime/results".to_owned(),
+            json!({
+                "handoff": {
+                    "message_id": first_work["message_id"],
+                    "claimed_by": first_work["claimed_by"],
+                    "run_id": first_work["run_id"],
+                    "step_id": first_work["step_id"],
+                    "correlation_id": first_work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": format!("first-{}", run_id),
+                    "state_update": [["u", {"first_worker": "worker-a"}]],
+                    "successors": [{"node_id":"second","join_mask":0}],
+                    "result": null
+                }
+            }),
+        )
+        .await;
+        assert_eq!(first_result.0, StatusCode::OK);
+
+        // Reopen the authoritative service between steps. A different worker
+        // advertising the same environment must recover the next durable task.
+        let app = reopen();
+        let (status, resumed) = call(
+            app.clone(),
+            "POST",
+            "/internal/runtime/claim".to_owned(),
+            json!({
+                "claimed_by": "worker-b",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": [crate::runtime_contract::runtime_worker_recipient(Some(environment_id))],
+                "run_id": run_id
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let second_work = resumed["work"][0].clone();
+        assert!(second_work["claimed_by"]
+            .as_str()
+            .unwrap()
+            .starts_with("worker-b#"));
+        assert_eq!(second_work["step_id"], "second");
+        assert_eq!(second_work["payload"]["op_environment_id"], environment_id);
+        assert_eq!(second_work["payload"]["state"]["first_worker"], "worker-a");
+        let (status, _) = call(
+            app.clone(),
+            "POST",
+            "/internal/runtime/results".to_owned(),
+            json!({
+                "handoff": {
+                    "message_id": second_work["message_id"],
+                    "claimed_by": second_work["claimed_by"],
+                    "run_id": second_work["run_id"],
+                    "step_id": second_work["step_id"],
+                    "correlation_id": second_work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": format!("second-{}", run_id),
+                    "successors": [],
+                    "result": {"workflow_status":"succeeded"}
+                }
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_, run) = call(
+            app,
+            "GET",
+            format!("/api/workflow/runs/{run_id}"),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(run["status"], "succeeded");
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn sqlite_predicate_snapshot_accepts_only_graph_valid_worker_selection() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;

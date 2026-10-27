@@ -114,6 +114,43 @@ def _json_object_copy(value: object, *, field: str) -> JsonObject:
     return copied
 
 
+def _with_worker_execution_trace(
+    effect: Mapping[str, JsonValue], work: Mapping[str, JsonValue], worker_id: str
+) -> JsonObject:
+    """Attach operational worker attribution without treating it as attestation."""
+    traced = dict(effect)
+    raw_traces = traced.get("trace_events", [])
+    if not isinstance(raw_traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+    traces = _json_copy(raw_traces, field="worker effect trace_events")
+    if not isinstance(traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+
+    payload = work.get("payload")
+    if not isinstance(payload, dict):
+        raise RustWorkerError("claimed work payload must be an object")
+    event: JsonObject = {
+        "schema_version": 1,
+        "event": "runtime.python_worker.result_prepared",
+        "executor_target": PYTHON_EXECUTOR_TARGET,
+        "worker_id": worker_id,
+        "identity_source": "worker_configuration",
+        "lease_claim_id": str(work["claimed_by"]),
+        "message_id": str(work["message_id"]),
+        "run_id": str(work["run_id"]),
+        "step_id": str(work["step_id"]),
+        "correlation_id": str(work["correlation_id"]),
+        "operation": str(payload["op"]),
+        "op_version": str(payload.get("op_version") or "v1"),
+    }
+    environment_id = payload.get("op_environment_id")
+    if isinstance(environment_id, str):
+        event["required_environment_id"] = environment_id
+    traces.append(event)
+    traced["trace_events"] = traces
+    return cast(JsonObject, traced)
+
+
 def _json_int(value: JsonValue | None, default: int = 0) -> int:
     """Decode an integer field from a JSON payload without widening its type."""
     if isinstance(value, bool):
@@ -1114,7 +1151,8 @@ class RustRuntimeWorker:
             effect = self.execute(dict(work))
             if not isinstance(effect, Mapping):
                 raise RustWorkerError("worker callback must return an object")
-            envelope = self._result_envelope(work, effect)
+            traced_effect = _with_worker_execution_trace(effect, work, self.worker_id)
+            envelope = self._result_envelope(work, traced_effect)
             self.journal.complete(message_id=message_id, result=envelope)
         else:
             handoff = envelope.get("handoff")
@@ -1283,7 +1321,8 @@ class AsyncRustRuntimeWorker:
                 effect = await effect
             if not isinstance(effect, Mapping):
                 raise RustWorkerError("worker callback must return an object")
-            envelope = RustRuntimeWorker._result_envelope(work, effect)
+            traced_effect = _with_worker_execution_trace(effect, work, self.worker_id)
+            envelope = RustRuntimeWorker._result_envelope(work, traced_effect)
             self.journal.complete(message_id=message_id, result=envelope)
         else:
             handoff = envelope.get("handoff")

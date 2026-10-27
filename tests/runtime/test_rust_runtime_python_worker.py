@@ -1042,6 +1042,8 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
         return _effect()
 
     journal = tmp_path / "worker.sqlite"
+    original_work = _work()
+    original_work["payload"]["op_environment_id"] = "numpy-cpu-v2"
     with RustRuntimeWorker(
         base_url="http://rust",
         worker_id="worker-1",
@@ -1050,8 +1052,10 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
         client=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://rust"),
     ) as worker:
         with pytest.raises(Exception, match="response lost"):
-            worker.process(_work())
+            worker.process(original_work)
 
+    replayed_work = _work(owner="worker-2")
+    replayed_work["payload"]["op_environment_id"] = "numpy-cpu-v2"
     with RustRuntimeWorker(
         base_url="http://rust",
         worker_id="worker-2",
@@ -1059,7 +1063,7 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
         execute=execute,
         client=httpx.Client(transport=httpx.MockTransport(handler), base_url="http://rust"),
     ) as restarted:
-        assert restarted.process(_work(owner="worker-2"))["event_seq"] == 3
+        assert restarted.process(replayed_work)["event_seq"] == 3
 
     assert calls == {"callback": 1, "result": 2}
     assert accepted[0]["handoff"]["claimed_by"] == "worker-2"
@@ -1068,6 +1072,22 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
     assert accepted[0]["effect"]["state_update"] == [
         ["u", {"answer": "worker"}]
     ]
+    worker_trace = accepted[0]["effect"]["trace_events"][-1]
+    assert worker_trace == {
+        "schema_version": 1,
+        "event": "runtime.python_worker.result_prepared",
+        "executor_target": "python-worker",
+        "worker_id": "worker-1",
+        "identity_source": "worker_configuration",
+        "lease_claim_id": "worker-1",
+        "message_id": "lane-1",
+        "run_id": "run-1",
+        "step_id": "start",
+        "correlation_id": "run-1",
+        "operation": "start",
+        "op_version": "v1",
+        "required_environment_id": "numpy-cpu-v2",
+    }
 
 
 def test_step_resolver_worker_rejects_callback_inside_transaction(
@@ -1406,11 +1426,13 @@ def test_async_step_resolver_adapter_awaits_callback_and_rejects_sync_protocol()
 
 def test_async_worker_journals_awaited_callback_before_response_retry(tmp_path: Path) -> None:
     calls = {"callback": 0, "result": 0}
+    accepted: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["result"] += 1
         if calls["result"] == 1:
             raise httpx.ReadError("response lost", request=request)
+        accepted.append(json.loads(request.content))
         return httpx.Response(200, json={"event_seq": 3}, request=request)
 
     async def execute(_work: dict[str, Any]) -> dict[str, Any]:
@@ -1420,6 +1442,8 @@ def test_async_worker_journals_awaited_callback_before_response_retry(tmp_path: 
 
     async def invoke() -> None:
         journal = tmp_path / "async-worker.sqlite"
+        original_work = _work()
+        original_work["payload"]["op_environment_id"] = "numpy-cpu-v2"
         first = AsyncRustRuntimeWorker(
             base_url="http://rust",
             worker_id="worker-1",
@@ -1430,7 +1454,7 @@ def test_async_worker_journals_awaited_callback_before_response_retry(tmp_path: 
             ),
         )
         with pytest.raises(RustWorkerError, match="response lost"):
-            await first.process(_work())
+            await first.process(original_work)
         await first.aclose()
         second = AsyncRustRuntimeWorker(
             base_url="http://rust",
@@ -1441,11 +1465,17 @@ def test_async_worker_journals_awaited_callback_before_response_retry(tmp_path: 
                 transport=httpx.MockTransport(handler), base_url="http://rust"
             ),
         )
-        assert (await second.process(_work(owner="worker-2")))["event_seq"] == 3
+        replayed_work = _work(owner="worker-2")
+        replayed_work["payload"]["op_environment_id"] = "numpy-cpu-v2"
+        assert (await second.process(replayed_work))["event_seq"] == 3
         await second.aclose()
 
     asyncio.run(invoke())
     assert calls == {"callback": 1, "result": 2}
+    worker_trace = accepted[0]["effect"]["trace_events"][-1]
+    assert worker_trace["worker_id"] == "worker-1"
+    assert worker_trace["lease_claim_id"] == "worker-1"
+    assert worker_trace["required_environment_id"] == "numpy-cpu-v2"
 
 
 def test_async_worker_cancellation_leaves_ambiguous_journal_row(tmp_path: Path) -> None:
