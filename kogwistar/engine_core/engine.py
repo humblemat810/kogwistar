@@ -2292,9 +2292,11 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Chroma-style api adders
     # ----------------------------
+    @engine_context
     def add_pure_node(self, node: PureChromaNode) -> None:
         return self.write.add_pure_node(node)
 
+    @engine_context
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
         return self.write.add_pure_edge(edge)
 
@@ -2413,6 +2415,7 @@ class GraphKnowledgeEngine:
     def add_document(self, document: Document) -> None:
         return self.write.add_document(document)
 
+    @engine_context
     def add_domain(self, domain: Domain) -> None:
         return self.write.add_domain(domain)
 

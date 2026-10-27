@@ -1131,6 +1131,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             is not None
         )
 
+    @implementation_selection_bound
     def patch_base_projection_metadata(
         self, *, entity_kind: _ProjectionEntityKind, entity_id: str, metadata_patch: JsonObject
     ) -> None:
@@ -1696,6 +1697,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload=_entity_payload(edge),
         )
 
+    @implementation_selection_bound
     def add_pure_node(self, node: PureChromaNode) -> None:
         if node.id is None:
             raise ValueError("pure node id must not be None")
@@ -1746,6 +1748,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
             )
 
+    @implementation_selection_bound
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
         """Low-level edge add without endpoint fanout or duplicate checks."""
         if edge.id is None:
@@ -1808,6 +1811,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
             )
 
+    @implementation_selection_bound
     def add_document(self, document: Document) -> None:
         if document.embeddings is None:
             document.embeddings = self._e.embed.iterative_defensive_emb(
@@ -1861,6 +1865,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload=_entity_payload(document),
         )
 
+    @implementation_selection_bound
     def add_domain(self, domain: Domain) -> None:
         if domain.id is None:
             raise ValueError("domain id is required for persistence")
@@ -2301,6 +2306,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 total += 1
         return total
 
+    @implementation_selection_bound
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         if not edge_ids:
             return

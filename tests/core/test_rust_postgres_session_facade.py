@@ -15,6 +15,7 @@ from kogwistar.engine_core.rust_postgres_session import (
     RustPostgresSession,
     _RustPostgresTransactionToken,
 )
+from kogwistar.engine_core.models import Document
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
@@ -1014,41 +1015,49 @@ def test_frozen_python_meta_selection_keeps_write_and_lifecycle_on_python(
     class Backend:
         nodes = SimpleNamespace(name="gke_nodes")
         edges = SimpleNamespace(name="gke_edges")
+        document_add_calls = 0
 
         def node_update(self, **_values):
             python_calls.append("write")
 
+        def document_add(self, **_values):
+            self.document_add_calls += 1
+
     backend = Backend()
     writer = WriteSubsystem.__new__(WriteSubsystem)
-    writer._e = SimpleNamespace(
-        metadata=store, backend=backend, namespace="alpha"
-    )
     engine = SimpleNamespace(
         metadata=store,
         backend=backend,
         namespace="alpha",
+        kg_graph_type="knowledge",
+        persist_directory="unused",
         _implementation_selection_snapshot=snapshot,
+        _emit_change=lambda **_values: None,
         _backend_update_record_lifecycle=lambda **_values: python_calls.append(
             "lifecycle"
         )
         or True,
         _maybe_index_delete=lambda **_values: None,
     )
+    writer._e = engine
     lifecycle = LifecycleSubsystem(engine)
 
-    with implementation_selection_scope(snapshot):
-        writer.patch_base_projection_metadata(
-            entity_kind="node",
-            entity_id="node-1",
-            metadata_patch={"reviewed": True},
-        )
-        assert lifecycle.apply_replayed_lifecycle_patch(
-            entity_kind="node",
-            entity_id="node-1",
-            lifecycle_patch={"lifecycle_status": "tombstoned"},
-        )
+    writer.patch_base_projection_metadata(
+        entity_kind="node",
+        entity_id="node-1",
+        metadata_patch={"reviewed": True},
+    )
+    assert writer.add_document(
+        Document.from_text("direct subsystem write", id="doc-1", embeddings=[1, 0, 0])
+    ) is None
+    assert lifecycle.apply_replayed_lifecycle_patch(
+        entity_kind="node",
+        entity_id="node-1",
+        lifecycle_patch={"lifecycle_status": "tombstoned"},
+    )
 
     assert python_calls == ["write", "lifecycle"]
+    assert backend.document_add_calls == 1
     assert native_calls == []
 
 
