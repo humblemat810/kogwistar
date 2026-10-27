@@ -11,7 +11,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import IO, Any, cast
+from typing import IO, Any, Literal, cast
 
 try:
     from dotenv import load_dotenv
@@ -40,6 +40,9 @@ from kogwistar.engine_core.models import (
     Node,
 )
 from kogwistar.engine_core.search_index.models import AddIndexEntriesInput
+from kogwistar.engine_core.graph_extraction_contract import (
+    validate_graph_extraction_request,
+)
 from kogwistar.engine_core.types import PersistedDocumentGraphResult
 from kogwistar.runtime.models import (
     WorkflowEdgeMetadata,
@@ -847,6 +850,9 @@ class GraphUpsertLLMIn(BaseModel):
     - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
     """
 
+    contract_version: Literal[1] = Field(
+        1, description="Version of the graph extraction request contract"
+    )
     doc_id: str = Field(..., description="Document id to scope persistence")
     content: str | None = Field(
         None, description="If provided and doc is new, store this as document content"
@@ -884,13 +890,44 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
     """
     require_role("rw")
     eng = engine.get()
+    # Normalize through the shared Python/Rust wire contract before any writes.
+    request = validate_graph_extraction_request(inp.model_dump())
+
+    # Validate entity shapes before creating a document placeholder so malformed
+    # extraction payloads cannot leave a partial write behind.
+    try:
+        parsed = LLMGraphExtraction.FromLLMSlice(
+            {
+                "nodes": request.nodes,
+                "edges": request.edges,
+            },
+            insertion_method=request.insertion_method,
+        )
+    except (TypeError, ValueError, ValidationError):
+        try:
+            llm_like = LLMGraphExtraction.model_validate(
+                {
+                    "nodes": request.nodes,
+                    "edges": request.edges,
+                }
+            )
+
+            # Preserve provenance injection used by the existing extractor path.
+            parsed = LLMGraphExtraction.FromLLMSlice(
+                llm_like, insertion_method=request.insertion_method
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=422, detail="invalid graph extraction entities"
+            ) from exc
+
     # 1) Ensure the document row exists (idempotent) but metadata are all missing if created in this fun
-    if inp.content is not None:
+    if request.content is not None:
         eng.write.add_document(
             Document(
-                id=inp.doc_id,
-                content=inp.content,
-                type=inp.doc_type,
+                id=request.doc_id,
+                content=request.content,
+                type=request.doc_type,
                 metadata={},  # if you want
                 embeddings=None,  # REQUIRED by Pydantic because Field(...)
                 source_map=None,  # REQUIRED by Pydantic because Field(...)
@@ -900,12 +937,12 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
         )
     else:
         # create a placeholder if completely missing so refs can anchor to doc_id
-        if not eng.extract.fetch_document_text(inp.doc_id):
+        if not eng.extract.fetch_document_text(request.doc_id):
             eng.write.add_document(
                 Document(
-                    id=inp.doc_id,
-                    content=inp.content or "",
-                    type=inp.doc_type,
+                    id=request.doc_id,
+                    content=request.content or "",
+                    type=request.doc_type,
                     metadata={},  # if you want
                     embeddings=None,  # REQUIRED by Pydantic because Field(...)
                     source_map=None,  # REQUIRED by Pydantic because Field(...)
@@ -914,36 +951,12 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
                 )
             )
 
-    # 2) Validate to your LLM models (references REQUIRED by GraphEntityBase)
-    #    This matches your extractor path which later calls FromLLMSlice.
-    try:
-        parsed = LLMGraphExtraction.FromLLMSlice(
-            {
-                "nodes": inp.nodes,
-                "edges": inp.edges,
-            },
-            insertion_method=inp.insertion_method,
-        )
-    except Exception as _e:
-        llm_like = LLMGraphExtraction.model_validate(
-            {
-                "nodes": inp.nodes,
-                "edges": inp.edges,
-            }
-        )
-
-        # 3) Copy insertion_method into every ReferenceSession (backend-only field),
-        #    exactly like kg_extract does, so refs carry provenance.
-        parsed = LLMGraphExtraction.FromLLMSlice(
-            llm_like, insertion_method=inp.insertion_method
-        )
-
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
     persisted = cast(Mapping[str, object], eng.persist.persist_graph_extraction(
         document=Document(
-            id=inp.doc_id,
-            content=inp.content or eng.extract.fetch_document_text(inp.doc_id) or "",
-            type=inp.doc_type,
+            id=request.doc_id,
+            content=request.content or eng.extract.fetch_document_text(request.doc_id) or "",
+            type=request.doc_type,
             embeddings=None,
             source_map=None,
             metadata=None,
@@ -955,7 +968,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
     ))
 
     return DocumentGraphUpsertOut(
-        document_id=str(persisted.get("document_id") or inp.doc_id),
+        document_id=str(persisted.get("document_id") or request.doc_id),
         node_ids=_string_list(persisted.get("node_ids")),
         edge_ids=_string_list(persisted.get("edge_ids")),
         nodes_added=_int_value(persisted.get("nodes_added")),

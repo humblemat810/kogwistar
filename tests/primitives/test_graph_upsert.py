@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.ci_full
 
@@ -18,6 +19,91 @@ def _rw_headers(client: TestClient) -> dict[str, str]:
     )
     resp.raise_for_status()
     return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
+def test_graph_upsert_request_preserves_legacy_version_default() -> None:
+    from kogwistar.engine_core.graph_extraction_contract import (
+        validate_graph_extraction_request,
+    )
+    from kogwistar.server_mcp_with_admin import GraphUpsertLLMIn
+
+    legacy = GraphUpsertLLMIn.model_validate({"doc_id": "legacy-doc"})
+    request = validate_graph_extraction_request(legacy.model_dump())
+
+    assert request.contract_version == 1
+    assert request.doc_type == "text"
+    assert request.insertion_method == "api_upsert"
+
+    with pytest.raises(ValidationError):
+        GraphUpsertLLMIn.model_validate(
+            {"contract_version": 2, "doc_id": "unsupported-version"}
+        )
+
+
+def test_graph_upsert_validates_entity_shape_before_document_write(monkeypatch) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.documents_added: list[object] = []
+            self.write = self
+            self.extract = self
+
+        def add_document(self, document: object) -> None:
+            self.documents_added.append(document)
+
+        def fetch_document_text(self, document_id: str) -> None:
+            return None
+
+    fake_engine = FakeEngine()
+    monkeypatch.setattr(server, "require_role", lambda _role: None)
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
+
+    invalid = server.GraphUpsertLLMIn(
+        doc_id="invalid-graph", content="source", nodes=[{"id": "missing-fields"}]
+    )
+    with pytest.raises(server.HTTPException) as error:
+        server.api_graph_upsert_llm(invalid)
+
+    assert error.value.status_code == 422
+    assert fake_engine.documents_added == []
+
+
+def test_graph_upsert_legacy_request_reaches_existing_persistence_path(monkeypatch) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.documents_added: list[object] = []
+            self.write = self
+            self.extract = self
+            self.persist = self
+
+        def add_document(self, document: object) -> None:
+            self.documents_added.append(document)
+
+        def fetch_document_text(self, document_id: str) -> None:
+            return None
+
+        def persist_graph_extraction(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "document_id": "legacy-doc",
+                "node_ids": [],
+                "edge_ids": [],
+                "nodes_added": 0,
+                "edges_added": 0,
+            }
+
+    fake_engine = FakeEngine()
+    monkeypatch.setattr(server, "require_role", lambda _role: None)
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
+
+    response = server.api_graph_upsert_llm(
+        server.GraphUpsertLLMIn(doc_id="legacy-doc", content="legacy source")
+    )
+
+    assert response.document_id == "legacy-doc"
+    assert len(fake_engine.documents_added) == 1
 
 # Import your FastAPI app
 
