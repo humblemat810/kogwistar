@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,6 @@ from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.rust_worker import (
     AsyncRustRuntimeWorker,
     RustRuntimeWorker,
-    RustWorkerError,
 )
 from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
@@ -1318,50 +1318,48 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         )
         assert submitted.status_code == 202, submitted.text
 
-        class LoseOneCommittedResponse(httpx.BaseTransport):
-            def __init__(self) -> None:
-                self.inner = httpx.HTTPTransport()
-                self.lost = False
-
-            def handle_request(self, request: httpx.Request) -> httpx.Response:
-                response = self.inner.handle_request(request)
-                if request.url.path == "/internal/runtime/results" and not self.lost:
-                    response.read()
-                    response.close()
-                    self.lost = True
-                    raise httpx.ReadError(
-                        "simulated response loss after server commit", request=request
-                    )
-                return response
-
-            def close(self) -> None:
-                self.inner.close()
-
-        worker_client = httpx.Client(
-            transport=LoseOneCommittedResponse(),
-            base_url=base_url,
-            headers=headers,
-            timeout=10,
+        journal_path = tmp_path / "python-worker.sqlite"
+        callback_marker = tmp_path / "python-worker-callbacks.txt"
+        worker_probe = [
+            sys.executable,
+            "-m",
+            "tests.runtime.worker_restart_probe",
+            "--base-url",
+            base_url,
+            "--journal",
+            str(journal_path),
+            "--marker",
+            str(callback_marker),
+        ]
+        prepare = subprocess.run(
+            [*worker_probe, "--worker-id", "python-worker-a", "--mode", "prepare"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
-        with worker_client:
-            with RustRuntimeWorker.from_step_resolver(
-                base_url=base_url,
-                worker_id="python-worker",
-                journal_path=tmp_path / "python-worker.sqlite",
-                step_resolver=resolver,
-                headers=headers,
-                client=worker_client,
-            ) as worker:
-                python_before_work = worker.claim(run_id="mixed-live-run")
-                assert len(python_before_work) == 1
-                assert python_before_work[0]["step_id"] == "python-before"
-                with pytest.raises(RustWorkerError, match="after server commit"):
-                    worker.process(python_before_work[0])
-                # The first result is already durable; replay from the local
-                # journal must be idempotent and must not execute the callback.
-                first_result = worker.process(python_before_work[0])
-                assert first_result["event_seq"] > 0
+        assert prepare.returncode == 0, prepare.stderr
+        # Worker A exits with a completed local journal but an unsubmitted
+        # result. Worker B must reclaim after lease expiry and replay the result.
+        time.sleep(1.1)
+        replay = subprocess.run(
+            [*worker_probe, "--worker-id", "python-worker-b", "--mode", "replay"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert replay.returncode == 0, replay.stderr
+        assert callback_marker.read_text(encoding="utf-8").splitlines() == ["callback"]
+        callbacks.append("before")
 
+        with RustRuntimeWorker.from_step_resolver(
+            base_url=base_url,
+            worker_id="python-worker",
+            journal_path=journal_path,
+            step_resolver=resolver,
+            headers=headers,
+        ) as worker:
             native_claim = httpx.post(
                 f"{base_url}/internal/runtime/claim",
                 headers=headers,
@@ -1405,7 +1403,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 python_after_work[0]["payload"]["state"]["python_before_seen"] is True
             )
             final_result = worker.process(python_after_work[0])
-            assert final_result["event_seq"] > first_result["event_seq"]
+            assert final_result["event_seq"] > 0
 
         assert callbacks == ["before", "after"]
         status = httpx.get(
