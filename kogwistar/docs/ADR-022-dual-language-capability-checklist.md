@@ -36,7 +36,9 @@ progress counts belong here and are not repeated in those entries.
   Python returned the Rust-written edge and target alongside the original
   Python-written graph. The same test then replaces the Rust edge endpoint and
   tombstones that edge, verifying both Python and Rust neighbor reads match
-  after each operation and the derived endpoint rows are updated/removed.
+  after each operation and the derived endpoint rows are updated/removed. The
+  authenticated Rust `kg_neighbors` MCP tool at `/mcp` is also checked against
+  Python after initial write, replacement, and tombstone.
   The test also retains the earlier Python-write/Rust-read ACL and
   document-scope checks.
   Evidence: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_neighbors_match_python_over_shared_projection`

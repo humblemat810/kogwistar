@@ -824,6 +824,28 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         else:
             raise AssertionError("Rust PostgreSQL server did not become ready")
 
+        def rust_mcp_neighbors(claims: dict[str, object]) -> dict[str, object]:
+            response = httpx.post(
+                f"{base}/mcp",
+                headers={
+                    "Authorization": f"Bearer {_hs256_token(secret, claims)}"
+                },
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "graph-neighbor-parity",
+                    "method": "tools/call",
+                    "params": {
+                        "name": "kg_neighbors",
+                        "arguments": {"rid": source.id, "doc_id": doc_id},
+                    },
+                },
+                timeout=10,
+            )
+            assert response.status_code == 200, response.text
+            result = response.json().get("result")
+            assert isinstance(result, dict), response.text
+            return result
+
         response = httpx.post(
             f"{base}/internal/graph/neighbors",
             headers={
@@ -838,6 +860,9 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         assert sorted(rust_payload["edges"]) == sorted(python_result["edges"])
         assert rust_payload["nodes"] == [visible_target.id]
         assert rust_payload["edges"] == [visible_edge.id]
+        rust_mcp_initial = rust_mcp_neighbors(reader_claims)
+        assert rust_mcp_initial["nodes"] == rust_payload["nodes"]
+        assert rust_mcp_initial["edges"] == rust_payload["edges"]
 
         rust_target = build_entity_node(
             node_id=f"{id_prefix}-rust-target",
@@ -1039,6 +1064,9 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
             "nodes": {visible_target.id},
             "edges": {visible_edge.id, rust_edge.id},
         }
+        rust_mcp_after_replace = rust_mcp_neighbors(reader_claims)
+        assert set(rust_mcp_after_replace["nodes"]) == python_after_replace["nodes"]
+        assert set(rust_mcp_after_replace["edges"]) == python_after_replace["edges"]
 
         tombstone_edge = replacement_edge.model_copy(
             update={
@@ -1100,6 +1128,9 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
             "nodes": {visible_target.id},
             "edges": {visible_edge.id},
         }
+        rust_mcp_after_tombstone = rust_mcp_neighbors(reader_claims)
+        assert set(rust_mcp_after_tombstone["nodes"]) == python_after_tombstone["nodes"]
+        assert set(rust_mcp_after_tombstone["edges"]) == python_after_tombstone["edges"]
     finally:
         process.terminate()
         try:
