@@ -868,6 +868,7 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
             metadata: dict[str, object],
             entity_id: str,
             embedding: list[float] | None,
+            op: str = "ADD",
         ) -> dict[str, object]:
             payload = entity.model_dump(
                 field_mode="backend", exclude=["embedding"], dump_format="json"
@@ -881,7 +882,7 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
                 "table": table,
                 "entity_kind": entity_kind,
                 "event_id": event_id,
-                "op": "ADD",
+                "op": op,
                 "payload": payload,
                 "record": {
                     "id": entity_id,
@@ -975,6 +976,129 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         assert python_after_rust_write == {
             "nodes": {visible_target.id, rust_target.id},
             "edges": {visible_edge.id, rust_edge.id},
+        }
+
+        replacement_edge = rust_edge.model_copy(
+            update={"target_ids": [visible_target.id]}
+        )
+        replacement_doc = replacement_edge.model_dump_json(field_mode="backend")
+        replacement_metadata = engine.write.enrich_edge_meta(replacement_edge)
+        replacement_mutation = mutation(
+            entity_kind="edge",
+            table="gke_edges",
+            event_id=f"{id_prefix}-rust-edge-replace-event",
+            entity=replacement_edge,
+            document=replacement_doc,
+            metadata=replacement_metadata,
+            entity_id=replacement_edge.id,
+            embedding=replacement_edge.embedding,
+            op="REPLACE",
+        )
+        replacement_response = httpx.post(
+            f"{base}/internal/graph/mutations",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, writer_claims)}"
+            },
+            json={
+                "contract_version": 1,
+                "atomic": True,
+                "mutations": [replacement_mutation],
+            },
+            timeout=10,
+        )
+        assert replacement_response.status_code == 200, replacement_response.text
+        replacement_rows = backend.edge_endpoints_get(
+            where={"edge_id": rust_edge.id}, include=["documents"]
+        )
+        replacement_endpoint_ids = {
+            json.loads(document)["endpoint_id"]
+            for document in replacement_rows["documents"]
+        }
+        assert replacement_endpoint_ids == {source.id, visible_target.id}
+
+        reader_token = claims_ctx.set(reader_claims)
+        try:
+            python_after_replace = GraphQuery(engine).neighbors(
+                source.id, doc_id=doc_id
+            )
+        finally:
+            claims_ctx.reset(reader_token)
+        rust_after_replace_response = httpx.post(
+            f"{base}/internal/graph/neighbors",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, reader_claims)}"
+            },
+            json={"rid": source.id, "doc_id": doc_id, "truth_graph": graph_type},
+            timeout=10,
+        )
+        assert rust_after_replace_response.status_code == 200
+        rust_after_replace = rust_after_replace_response.json()
+        assert set(rust_after_replace["nodes"]) == python_after_replace["nodes"]
+        assert set(rust_after_replace["edges"]) == python_after_replace["edges"]
+        assert python_after_replace == {
+            "nodes": {visible_target.id},
+            "edges": {visible_edge.id, rust_edge.id},
+        }
+
+        tombstone_edge = replacement_edge.model_copy(
+            update={
+                "metadata": {
+                    **(replacement_edge.metadata or {}),
+                    "lifecycle_status": "tombstoned",
+                }
+            }
+        )
+        tombstone_mutation = mutation(
+            entity_kind="edge",
+            table="gke_edges",
+            event_id=f"{id_prefix}-rust-edge-tombstone-event",
+            entity=tombstone_edge,
+            document=tombstone_edge.model_dump_json(field_mode="backend"),
+            metadata=engine.write.enrich_edge_meta(tombstone_edge),
+            entity_id=tombstone_edge.id,
+            embedding=tombstone_edge.embedding,
+            op="TOMBSTONE",
+        )
+        tombstone_response = httpx.post(
+            f"{base}/internal/graph/mutations",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, writer_claims)}"
+            },
+            json={
+                "contract_version": 1,
+                "atomic": True,
+                "mutations": [tombstone_mutation],
+            },
+            timeout=10,
+        )
+        assert tombstone_response.status_code == 200, tombstone_response.text
+        tombstone_rows = backend.edge_endpoints_get(
+            where={"edge_id": rust_edge.id}, include=["documents"]
+        )
+        assert tombstone_rows["ids"] == []
+
+        reader_token = claims_ctx.set(reader_claims)
+        try:
+            python_after_tombstone = GraphQuery(engine).neighbors(
+                source.id, doc_id=doc_id
+            )
+        finally:
+            claims_ctx.reset(reader_token)
+        rust_after_tombstone_response = httpx.post(
+            f"{base}/internal/graph/neighbors",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, reader_claims)}"
+            },
+            json={"rid": source.id, "doc_id": doc_id, "truth_graph": graph_type},
+            timeout=10,
+        )
+        assert rust_after_tombstone_response.status_code == 200
+        rust_after_tombstone = rust_after_tombstone_response.json()
+        assert set(rust_after_tombstone["nodes"]) == python_after_tombstone["nodes"]
+        assert set(rust_after_tombstone["edges"]) == python_after_tombstone["edges"]
+        assert python_after_tombstone == {
+            "nodes": {visible_target.id},
+            "edges": {visible_edge.id},
         }
     finally:
         process.terminate()

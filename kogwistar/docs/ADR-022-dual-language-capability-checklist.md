@@ -34,8 +34,11 @@ progress counts belong here and are not repeated in those entries.
   containing node, edge, and their explicit ACL records was then read by
   Python's ACL-aware `get_nodes()`, `get_edges()`, and `GraphQuery.neighbors()`;
   Python returned the Rust-written edge and target alongside the original
-  Python-written graph. The test also verifies the endpoint projection rows and
-  retains the earlier Python-write/Rust-read ACL and document-scope checks.
+  Python-written graph. The same test then replaces the Rust edge endpoint and
+  tombstones that edge, verifying both Python and Rust neighbor reads match
+  after each operation and the derived endpoint rows are updated/removed.
+  The test also retains the earlier Python-write/Rust-read ACL and
+  document-scope checks.
   Evidence: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_neighbors_match_python_over_shared_projection`
   passed on Windows CPython 3.13 against the existing PostgreSQL 17/pgvector
   service; `cargo test -p kogwistar-store-postgres` passed (6 passed, 8
