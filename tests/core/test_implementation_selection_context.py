@@ -326,6 +326,43 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
+    write_entrypoints = (
+        "add_node",
+        "create_node_if_absent",
+        "add_edge",
+        "add_node_async",
+        "add_edge_async",
+        "patch_base_projection_metadata",
+        "rust_postgres_delete_existing",
+        "rust_postgres_replace_existing",
+        "add_pure_node",
+        "add_pure_edge",
+        "add_document",
+        "add_domain",
+        "index_node_docs",
+        "index_node_refs",
+        "index_edge_refs",
+        "delete_edge_ref_rows",
+        "delete_node_ref_rows",
+        "maybe_reindex_edge_refs",
+        "maybe_reindex_node_refs",
+        "prune_node_refs_for_doc",
+        "rebuild_edge_refs_for_doc",
+        "rebuild_all_edge_refs",
+        "rebuild_node_refs_for_doc",
+        "rebuild_all_node_refs",
+        "delete_edges_by_ids",
+    )
+    unbound.extend(
+        f"WriteSubsystem.{name}"
+        for name in write_entrypoints
+        if not getattr(
+            getattr(WriteSubsystem, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
     assert unbound == []
 
 

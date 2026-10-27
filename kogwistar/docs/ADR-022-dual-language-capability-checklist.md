@@ -1245,6 +1245,26 @@ and `git diff --check` passed. This closes the
 identified native-query fallback for this bounded ACL exclusion only; it does
 not close `DL-08C` or broaden its completion score.
 
+### Latest DL-15C write-side selector-boundary evidence
+
+Public write-side derived projection/reference operations now bind the owning
+engine's frozen implementation selection: node-document and node/edge-reference
+indexing, reference deletion/repair, document-scoped pruning, and reference
+rebuild operations. The reflection regression in
+`tests/core/test_implementation_selection_context.py::test_public_recovery_and_indexing_operations_bind_engine_selection`
+now includes the public write and projection-maintenance entry points, so a new
+unbound operation fails the contract test. The complete selector-context module
+passed on Windows CPython 3.13 (**46 passed**) when run with local socket access;
+the restricted run stalled in the existing asyncio loopback propagation test.
+The live Docker pgvector case
+`tests/pg_sql/test_two_stage_postgres_projection.py::test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter`
+passed (**1 passed**) against the already-running `kogwistar-find-edges-test`
+container, using its test database and temporary schema without replacing the
+container. Ruff and `git diff --check` passed. This closes only the identified
+write-side selector-binding gap; it does not complete the `DL-15C` call-site,
+retry, worker, server-route, or continuation inventory. No checklist IDs or
+denominator changed; the fixed baseline remains **99/130 PASS (76.2%)**.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

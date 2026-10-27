@@ -1899,6 +1899,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
 
     # Index/metadata helpers
+    @implementation_selection_bound
     def index_node_docs(self, node: Node) -> list[str]:
         doc_ids = extract_doc_ids_from_refs(node.mentions)
 
@@ -1932,6 +1933,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return doc_ids
 
+    @implementation_selection_bound
     def index_node_refs(
         self, node: Node | None = None, **kwargs: object
     ) -> list[str]:
@@ -1974,6 +1976,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
         return ids
 
+    @implementation_selection_bound
     def index_edge_refs(
         self, edge: Edge | None = None, **kwargs: object
     ) -> list[str]:
@@ -2106,6 +2109,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def json_or_none(self, value: object) -> str | None:
         return json_or_none(value)
 
+    @implementation_selection_bound
     def delete_edge_ref_rows(
         self, edge_id: str | None = None, **kwargs: object
     ) -> None:
@@ -2120,6 +2124,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             run_awaitable_blocking(self._e.backend.edge_refs_delete(ids=ids))
         return None
 
+    @implementation_selection_bound
     def delete_node_ref_rows(
         self, node_id: str | None = None, **kwargs: object
     ) -> None:
@@ -2134,6 +2139,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             run_awaitable_blocking(self._e.backend.node_refs_delete(ids=ids))
         return None
 
+    @implementation_selection_bound
     def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
         """Repair edge_refs when mention fingerprints or observed rows drift.
 
@@ -2167,6 +2173,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             self.index_edge_refs(edge)
 
+    @implementation_selection_bound
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
         """Repair node_refs when mention fingerprints or observed rows drift.
 
@@ -2199,6 +2206,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             self.index_node_refs(node)
 
+    @implementation_selection_bound
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
         got = run_awaitable_blocking(self._e.backend.node_get(
@@ -2246,6 +2254,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self.index_node_docs(node)
         return changed
 
+    @implementation_selection_bound
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
         eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={"doc_id": doc_id}, include=["documents"]
@@ -2263,6 +2272,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             cnt += 1
         return cnt
 
+    @implementation_selection_bound
     def rebuild_all_edge_refs(self) -> int:
         got = run_awaitable_blocking(self._e.backend.edge_get())
         total = 0
@@ -2274,6 +2284,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 total += 1
         return total
 
+    @implementation_selection_bound
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
         node_ids = []
         if hasattr(self._e, "node_docs_collection"):
@@ -2300,6 +2311,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             cnt += 1
         return cnt
 
+    @implementation_selection_bound
     def rebuild_all_node_refs(self) -> int:
         got = run_awaitable_blocking(self._e.backend.node_get())
         total = 0
