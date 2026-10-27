@@ -71,6 +71,7 @@ test = [
   "pytest>=8",
   "pytest-asyncio>=1.1.0",
   "pytest-dotenv>=0.5.2",
+  "pytest-timeout>=2.3",
   "pytest-xdist>=3.8,<4",
   "testcontainers>=4.0",
   "numpy>=1.26"

@@ -962,6 +962,7 @@ jobs:
   ci_full:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1003,3 +1004,8 @@ jobs:
           python -m pytest
           -m "ci_full and not slow and not manual and not llm_real and not requires_ollama"
           -q
+          --timeout=1200
+          --durations=0
+          --durations-min=0
+          -p tests._helpers.pytest_live_durations
+          -o faulthandler_timeout=300

@@ -55,4 +55,6 @@ def test_custom_embedder(tmp_path, backend_kind):
     emb = got["embeddings"][0]
     expected = eng._embed_one(got["documents"][0])
     assert len(emb) == len(expected)
-    assert all(abs(a - b) < 1e-9 for a, b in zip(expected, emb))
+    assert all(abs(a - b) < 1e-9 for a, b in zip(expected, emb)), (
+        f"custom embedding mismatch: expected={expected!r}, actual={emb!r}"
+    )
