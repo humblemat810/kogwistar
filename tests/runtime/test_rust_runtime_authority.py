@@ -13,14 +13,19 @@ from typing import Any
 import httpx
 import pytest
 
-from kogwistar.runtime.models import RunFailure, RunSuccess
-from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.rust_worker import AsyncRustRuntimeWorker, RustRuntimeWorker
 from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
     RustRuntimeAuthority,
     RustRuntimeAuthorityError,
+    _server_managed_inline_worker_enabled,
+    _server_advertises_inline_native_worker,
+    _python_worker_required_for_plan,
+    _runtime_plan_requires_python_worker,
+    _validate_resume_plan,
     freeze_runtime_plan,
 )
 from kogwistar.implementation_selection import capture_implementation_selection
@@ -33,6 +38,173 @@ RUST_SERVER = (
     / "debug"
     / ("kogwistar-server.exe" if os.name == "nt" else "kogwistar-server")
 )
+
+
+@pytest.mark.parametrize(
+    ("plan", "requires_python"),
+    [
+        ({"node_ops": {"a": "rust-native/increment-counter"}}, False),
+        (
+            {
+                "node_ops": {"a": "increment-counter"},
+                "node_executor_targets": {"a": "rust-native"},
+            },
+            False,
+        ),
+        (
+            {
+                "node_ops": {"a": "increment-counter", "b": "python-op"},
+                "node_executor_targets": {"a": "rust-native"},
+            },
+            True,
+        ),
+        ({"node_ops": {}}, True),
+        ({"node_ops": {"a": "increment-counter"}}, True),
+    ],
+)
+def test_native_server_worker_bypass_is_limited_to_all_native_plans(
+    plan: dict[str, Any],
+    requires_python: bool,
+) -> None:
+    assert _runtime_plan_requires_python_worker(plan) is requires_python
+
+
+@pytest.mark.parametrize(
+    ("plan", "client_opt_in", "server_capability", "poll_required"),
+    [
+        ({"node_ops": {"a": "rust-native/increment-counter"}}, True, True, False),
+        ({"node_ops": {"a": "rust-native/increment-counter"}}, True, False, True),
+        ({"node_ops": {"a": "rust-native/increment-counter"}}, False, True, True),
+        ({"node_ops": {"a": "python-op"}}, True, True, True),
+    ],
+)
+def test_python_worker_polling_requires_plan_and_server_capability_agreement(
+    plan: dict[str, Any],
+    client_opt_in: bool,
+    server_capability: bool,
+    poll_required: bool,
+) -> None:
+    assert _python_worker_required_for_plan(
+        plan,
+        inline_mode_requested=client_opt_in,
+        server_advertised_inline_worker=server_capability,
+    ) is poll_required
+
+
+@pytest.mark.parametrize(
+    ("health", "expected"),
+    [
+        ({"native_inline_worker_enabled": True}, True),
+        ({"native_inline_worker_enabled": False}, False),
+        ({}, False),
+        ({"native_inline_worker_enabled": "true"}, False),
+    ],
+)
+def test_server_inline_worker_health_capability_requires_boolean_true(
+    health: dict[str, Any],
+    expected: bool,
+) -> None:
+    assert _server_advertises_inline_native_worker(health) is expected
+
+
+def test_resume_validation_returns_the_single_validated_plan(monkeypatch) -> None:
+    plan = {
+        "runtime_routes": [],
+        "node_ops": {"node": "op"},
+        "node_versions": {"node": "v1"},
+        "node_environment_ids": {},
+    }
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.freeze_runtime_plan",
+        lambda *_args: plan,
+    )
+    contract = {
+        "runtime_routes": [],
+        "node_ops": {"node": "op"},
+        "node_versions": {"node": "v1"},
+        "node_environment_ids": {},
+        "node_executor_targets": {},
+    }
+
+    result = _validate_resume_plan(SimpleNamespace(), "wf", contract)
+
+    assert result is plan
+
+
+def test_server_managed_worker_client_mode_is_opt_in_and_matches_server_flag(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KOGWISTAR_RUNTIME_NATIVE_INLINE", raising=False)
+    assert _server_managed_inline_worker_enabled(None) is False
+    monkeypatch.setenv("KOGWISTAR_RUNTIME_NATIVE_INLINE", "yes")
+    assert _server_managed_inline_worker_enabled(None) is True
+    assert _server_managed_inline_worker_enabled(False) is False
+    monkeypatch.setenv("KOGWISTAR_RUNTIME_NATIVE_INLINE", "sometimes")
+    with pytest.raises(RustRuntimeAuthorityError, match="must be a boolean"):
+        _server_managed_inline_worker_enabled(None)
+
+
+@pytest.mark.asyncio
+async def test_async_authority_can_wait_without_polling_python_worker(
+    tmp_path: Path,
+) -> None:
+    requests: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/api/workflow/runs/run-native":
+            return httpx.Response(
+                200,
+                json={"run_id": "run-native", "status": "succeeded", "error": None},
+                request=request,
+            )
+        if request.url.path.endswith("/checkpoints"):
+            return httpx.Response(
+                200,
+                json={"checkpoints": []},
+                request=request,
+            )
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    client = httpx.AsyncClient(
+        base_url="http://rust",
+        transport=httpx.MockTransport(handler),
+    )
+    runtime = SimpleNamespace(
+        step_resolver=AsyncMappingStepResolver(),
+        predicate_registry={},
+        max_workers=1,
+        cancel_requested=None,
+    )
+    authority = AsyncRustRuntimeAuthority(
+        runtime=runtime,
+        base_url="http://rust",
+        cache_dir=tmp_path,
+        client=client,
+        server_managed_native_worker=True,
+    )
+
+    async def unexpected_poll(**_kwargs: Any) -> int:
+        raise AssertionError("server-managed native execution must not poll Python")
+
+    authority.worker.poll_once = unexpected_poll
+    try:
+        result = await authority._pump_existing_run(
+            run_id="run-native",
+            durable_initial={"seed": 1},
+            dependencies={},
+            python_worker_required=False,
+        )
+    finally:
+        await authority.aclose()
+        await client.aclose()
+
+    assert result.status == "succeeded"
+    assert result.final_state == {"seed": 1}
+    assert requests == [
+        "/api/workflow/runs/run-native",
+        "/api/workflow/runs/run-native/checkpoints",
+    ]
 
 
 def test_public_sync_runtime_dispatches_to_configured_rust_authority(
@@ -186,12 +358,8 @@ def test_rust_authority_scopes_live_python_dependencies_by_run() -> None:
     authority._register_dependencies("run-a", {"service": first_service})
     authority._register_dependencies("run-b", {"service": second_service})
 
-    assert authority._dependencies({"run_id": "run-a"}) == {
-        "service": first_service
-    }
-    assert authority._dependencies({"run_id": "run-b"}) == {
-        "service": second_service
-    }
+    assert authority._dependencies({"run_id": "run-a"}) == {"service": first_service}
+    assert authority._dependencies({"run_id": "run-b"}) == {"service": second_service}
     with pytest.raises(RustRuntimeAuthorityError, match="already registered"):
         authority._register_dependencies("run-a", {})
     with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
@@ -209,7 +377,9 @@ def test_rust_authority_scopes_live_python_dependencies_by_run() -> None:
         status="suspended",
     )
     assert authority._release_if_terminal("run-suspended", suspended) is suspended
-    assert authority._dependencies({"run_id": "run-suspended"})["service"] is first_service
+    assert (
+        authority._dependencies({"run_id": "run-suspended"})["service"] is first_service
+    )
 
     terminal = RunResult(
         run_id="run-suspended",
@@ -220,6 +390,88 @@ def test_rust_authority_scopes_live_python_dependencies_by_run() -> None:
     authority._release_if_terminal("run-suspended", terminal)
     with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
         authority._dependencies({"run_id": "run-suspended"})
+
+
+def test_run_dependencies_survive_authority_recreation_on_same_runtime() -> None:
+    runtime = SimpleNamespace()
+    first = object.__new__(RustRuntimeAuthority)
+    first._init_dependency_registry(runtime)
+    services = {"service": object()}
+    first._register_dependencies("run-suspended", services)
+
+    resumed_facade = object.__new__(RustRuntimeAuthority)
+    resumed_facade._init_dependency_registry(runtime)
+    assert resumed_facade._dependencies({"run_id": "run-suspended"}) is services
+
+    isolated_facade = object.__new__(RustRuntimeAuthority)
+    isolated_facade._init_dependency_registry(SimpleNamespace())
+    with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
+        isolated_facade._dependencies({"run_id": "run-suspended"})
+
+    resumed_facade._release_dependencies("run-suspended")
+    with pytest.raises(RustRuntimeAuthorityError, match="no live Python dependencies"):
+        first._dependencies({"run_id": "run-suspended"})
+
+
+def test_concurrent_authority_creation_shares_one_runtime_dependency_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    import kogwistar.runtime.rust_runtime_authority as rust_authority
+
+    original_init = rust_authority._RunDependencyStore.__init__
+    init_lock = threading.Lock()
+    first_init_entered = threading.Event()
+    second_init_entered = threading.Event()
+    release_first_init = threading.Event()
+    init_count = 0
+
+    def delayed_init(store: Any) -> None:
+        nonlocal init_count
+        with init_lock:
+            init_count += 1
+            current_init = init_count
+        if current_init == 1:
+            first_init_entered.set()
+            assert release_first_init.wait(timeout=5)
+        else:
+            second_init_entered.set()
+        original_init(store)
+
+    monkeypatch.setattr(rust_authority._RunDependencyStore, "__init__", delayed_init)
+    runtime = SimpleNamespace()
+
+    def create_facade() -> RustRuntimeAuthority:
+        facade = object.__new__(RustRuntimeAuthority)
+        facade._init_dependency_registry(runtime)
+        return facade
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(create_facade)
+            assert first_init_entered.wait(timeout=5)
+            second_started = threading.Event()
+
+            def create_second_facade() -> RustRuntimeAuthority:
+                second_started.set()
+                return create_facade()
+
+            second = pool.submit(create_second_facade)
+            assert second_started.wait(timeout=5)
+            assert not second_init_entered.wait(timeout=0.1)
+            release_first_init.set()
+            first_facade = first.result(timeout=5)
+            second_facade = second.result(timeout=5)
+    finally:
+        release_first_init.set()
+
+    assert init_count == 1
+    assert first_facade._dependencies_by_run is second_facade._dependencies_by_run
+    dependencies = {"opaque": object()}
+    first_facade._register_dependencies("run-1", dependencies)
+    assert second_facade._run_dependencies("run-1") is dependencies
 
 
 def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
@@ -358,7 +610,11 @@ def test_authority_pumps_only_target_run_and_restores_process_local_deps(
                 json={
                     "run_id": "run-1",
                     "checkpoints": [
-                        {"step_seq": 0, "event_seq": 2, "state": {"seed": 1, "answer": 42}}
+                        {
+                            "step_seq": 0,
+                            "event_seq": 2,
+                            "state": {"seed": 1, "answer": 42},
+                        }
                     ],
                 },
                 request=request,
@@ -395,38 +651,95 @@ def test_authority_pumps_only_target_run_and_restores_process_local_deps(
 
 
 @pytest.mark.integration
-def test_public_authority_runs_through_real_rust_sqlite_server(
+@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+def test_sync_runtime_client_resume_uses_real_rust_authority(
     monkeypatch,
     tmp_path,
+    backend: str,
 ) -> None:
     if not RUST_SERVER.exists():
         pytest.skip("build kogwistar-server before live authority test")
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for Rust/PostgreSQL test")
+    pg_schema = f"kw_sync_resume_{os.urandom(8).hex()}" if backend == "pg" else None
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
-    node = SimpleNamespace(
-        id="entry",
-        label="Entry",
-        op="start",
-        fanout=False,
-        metadata={"wf_start": True, "wf_op": "start"},
-    )
+
+    def node(node_id: str, op: str, **metadata: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=node_id,
+            label=node_id,
+            op=op,
+            fanout=False,
+            metadata={"wf_version": "v1", **metadata},
+            safe_get_id=lambda: node_id,
+        )
+
+    start = node("start", "start", wf_start=True)
+    gate = node("gate", "gate")
+    end = node("end", "end", wf_terminal=True)
+
+    def edge(edge_id: str, target_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=edge_id,
+            label=edge_id,
+            target_ids=[target_id],
+            predicate=None,
+            multiplicity="one",
+            is_default=True,
+            priority=100,
+            safe_get_id=lambda: edge_id,
+        )
+
+    nodes = {item.id: item for item in (start, gate, end)}
+    adjacency = {
+        "start": [edge("start-gate", "gate")],
+        "gate": [edge("gate-end", "end")],
+        "end": [],
+    }
     monkeypatch.setattr(
         "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
-        lambda **_kwargs: (node, {"entry": node}, {"entry": []}),
+        lambda **_kwargs: (start, nodes, adjacency),
     )
     monkeypatch.setattr(
         "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
-        lambda **_kwargs: {"entry": 0},
+        lambda **_kwargs: {node_id: 0 for node_id in nodes},
     )
     resolver = MappingStepResolver()
+    visited: list[str] = []
+    dependencies = {"opaque_service": object()}
 
     @resolver.register("start")
-    def start(ctx):
-        assert ctx.state_view["seed"] == 1
+    def start_step(ctx):
+        visited.append("start")
+        assert ctx.state_view["_deps"] is dependencies
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("gate")
+    def gate_step(_ctx):
+        visited.append("gate")
+        return RunSuspended(
+            conversation_node_id=None,
+            resume_payload={"prompt": "approve?"},
+        )
+
+    @resolver.register("end")
+    def end_step(ctx):
+        visited.append("end")
+        assert ctx.state_view["approved"] is True
+        assert ctx.state_view["_deps"] is dependencies
         return RunSuccess(
             conversation_node_id=None,
-            state_update=[("u", {"answer": 42})],
+            state_update=[("u", {"resumed_end": True})],
         )
 
     runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
@@ -438,19 +751,23 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
     runtime.predicate_registry = {}
     runtime.max_workers = 1
     runtime.cancel_requested = None
-    sqlite_path = tmp_path / "authority.sqlite3"
     env = os.environ.copy()
     for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
         env.pop(name, None)
     env.update(
         {
-            "KOGWISTAR_BACKEND": "sqlite",
-            "KOGWISTAR_META_SQLITE_PATH": str(sqlite_path),
+            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        env["KOGWISTAR_PG_DSN"] = pg_dsn
+        env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    else:
+        env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "authority.sqlite3")
     process = subprocess.Popen(
         [str(RUST_SERVER)],
         cwd=ROOT,
@@ -471,7 +788,7 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
             except httpx.HTTPError:
                 time.sleep(0.05)
         else:
-            raise AssertionError("Rust SQLite server did not become ready")
+            raise AssertionError(f"Rust {backend} server did not become ready")
         monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
         monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_URL", base_url)
         monkeypatch.setenv(
@@ -479,24 +796,42 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
             str(tmp_path / "journal"),
         )
         result = runtime.run(
-            workflow_id="wf-live",
-            conversation_id="conv-live",
-            turn_node_id="turn-live",
-            initial_state={"seed": 1},
-            run_id="run-live",
+            workflow_id="wf-sync-resume-live",
+            conversation_id="conv-sync-resume-live",
+            turn_node_id="turn-sync-resume-live",
+            initial_state={"seed": 1, "_deps": dependencies},
+            run_id="run-sync-resume-live",
             cache_dir=tmp_path,
         )
-        assert result.status == "succeeded"
-        assert result.final_state["seed"] == 1
-        assert result.final_state["answer"] == 42
-        assert result.final_state["_rt_join"] == {
-            "pending": [],
-            "suspended": [],
-            "join_node_ids": [],
-            "join_outstanding": [],
-            "join_waiters": {},
-        }
-        status = httpx.get(f"{base_url}/api/workflow/runs/run-live", timeout=10)
+        assert result.status == "suspended"
+        checkpoint = httpx.get(
+            f"{base_url}/api/workflow/runs/run-sync-resume-live/checkpoints",
+            timeout=10,
+        )
+        checkpoint.raise_for_status()
+        latest_state = checkpoint.json()["checkpoints"][-1]["state"]
+        token_id = latest_state["_rt_join"]["suspended"][0][2]
+        resumed = runtime.resume_run(
+            run_id="run-sync-resume-live",
+            suspended_node_id="gate",
+            suspended_token_id=token_id,
+            client_result=RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"approved": True})],
+            ),
+            workflow_id="wf-sync-resume-live",
+            conversation_id="conv-sync-resume-live",
+            turn_node_id="turn-sync-resume-live",
+            cache_dir=tmp_path,
+        )
+        assert resumed.status == "succeeded"
+        assert resumed.final_state["approved"] is True
+        assert resumed.final_state["resumed_end"] is True
+        assert resumed.final_state["_deps"] is dependencies
+        assert visited == ["start", "gate", "end"]
+        status = httpx.get(
+            f"{base_url}/api/workflow/runs/run-sync-resume-live", timeout=10
+        )
         assert status.status_code == 200
         assert status.json()["status"] == "succeeded"
     finally:
@@ -506,6 +841,358 @@ def test_public_authority_runs_through_real_rust_sqlite_server(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+        if pg_schema is not None and pg_dsn is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(
+                        sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+                    )
+            finally:
+                cleanup_engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+def test_python_facade_leaves_all_native_work_to_inline_rust_server(
+    monkeypatch,
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    """The facade must not poll the Python worker for a fully native plan."""
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live native-server test")
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
+    monkeypatch.setenv("KOGWISTAR_RUNTIME_NATIVE_INLINE", "true")
+    suffix = os.urandom(8).hex()
+    run_id = f"native-facade-{suffix}"
+    pg_schema = f"kw_native_facade_{suffix}" if backend == "pg" else None
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+
+    def node(node_id: str, *, terminal: bool = False) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=node_id,
+            label=node_id,
+            op="rust-native/increment-counter",
+            fanout=False,
+            metadata={
+                "wf_version": "v1",
+                "wf_executor_target": "rust-native",
+                **({"wf_terminal": True} if terminal else {}),
+            },
+            safe_get_id=lambda: node_id,
+        )
+
+    first = node("first")
+    second = node("second", terminal=True)
+    nodes = {item.id: item for item in (first, second)}
+    route = SimpleNamespace(
+        id="first-second",
+        label="first-second",
+        target_ids=["second"],
+        predicate=None,
+        multiplicity="one",
+        is_default=True,
+        priority=100,
+        safe_get_id=lambda: "first-second",
+    )
+    adjacency = {"first": [route], "second": []}
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (first, nodes, adjacency),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {node_id: 0 for node_id in nodes},
+    )
+
+    runtime = SimpleNamespace(
+        workflow_engine=object(),
+        step_resolver=MappingStepResolver(),
+        predicate_registry={},
+        max_workers=1,
+        cancel_requested=None,
+    )
+    server_env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        server_env.pop(name, None)
+    server_env.update(
+        {
+            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+            "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
+        }
+    )
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        server_env["KOGWISTAR_PG_DSN"] = pg_dsn
+        server_env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    else:
+        server_env["KOGWISTAR_META_SQLITE_PATH"] = str(
+            tmp_path / "facade-native.sqlite3"
+        )
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=server_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("inline Rust server did not become ready")
+
+        requests: list[tuple[str, str]] = []
+        client = httpx.Client(
+            base_url=base_url,
+            headers={"x-kogwistar-roles": "reader"},
+            event_hooks={
+                "request": [lambda request: requests.append((request.method, request.url.path))]
+            },
+            timeout=10,
+        )
+        health = client.get("/health")
+        assert health.status_code == 200, health.text
+        assert health.json()["native_inline_worker_enabled"] is True
+        authority = RustRuntimeAuthority(
+            runtime=runtime,
+            base_url=base_url,
+            cache_dir=tmp_path,
+            client=client,
+        )
+        try:
+            result = authority.run(
+                workflow_id="rust-native-facade-workflow",
+                conversation_id="rust-native-facade-conversation",
+                turn_node_id=None,
+                initial_state={"counter": 0},
+                run_id=run_id,
+            )
+        finally:
+            authority.close()
+            client.close()
+
+        assert result.status == "succeeded"
+        assert result.final_state["counter"] == 2
+        assert ("POST", "/api/workflow/runs") in requests
+        assert any(path == f"/api/workflow/runs/{run_id}" for _, path in requests)
+        assert not any(path == "/internal/runtime/claim" for _, path in requests)
+        assert not any(path == "/internal/runtime/native/execute" for _, path in requests)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        if pg_schema is not None and pg_dsn is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(
+                        sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+                    )
+            finally:
+                cleanup_engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+def test_async_python_facade_uses_server_inline_native_worker(
+    monkeypatch,
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    """Async authority also skips Python claims only after server attestation."""
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live native-server test")
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
+    monkeypatch.setenv("KOGWISTAR_RUNTIME_NATIVE_INLINE", "true")
+    suffix = os.urandom(8).hex()
+    run_id = f"async-native-facade-{suffix}"
+    pg_schema = f"kw_async_native_facade_{suffix}" if backend == "pg" else None
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+
+    def node(node_id: str, *, start: bool = False, terminal: bool = False):
+        return SimpleNamespace(
+            id=node_id,
+            label=node_id,
+            op="rust-native/increment-counter",
+            fanout=False,
+            metadata={
+                "wf_version": "v1",
+                "wf_executor_target": "rust-native",
+                **({"wf_start": True} if start else {}),
+                **({"wf_terminal": True} if terminal else {}),
+            },
+            safe_get_id=lambda: node_id,
+        )
+
+    first = node("first", start=True)
+    second = node("second", terminal=True)
+    nodes = {item.id: item for item in (first, second)}
+    route = SimpleNamespace(
+        id="first-second",
+        label="first-second",
+        target_ids=["second"],
+        predicate=None,
+        multiplicity="one",
+        is_default=True,
+        priority=100,
+        safe_get_id=lambda: "first-second",
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (first, nodes, {"first": [route], "second": []}),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {node_id: 0 for node_id in nodes},
+    )
+    runtime = SimpleNamespace(
+        workflow_engine=object(),
+        step_resolver=AsyncMappingStepResolver(),
+        predicate_registry={},
+        max_workers=1,
+        cancel_requested=None,
+    )
+    server_env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        server_env.pop(name, None)
+    server_env.update(
+        {
+            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
+            "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
+        }
+    )
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        server_env["KOGWISTAR_PG_DSN"] = pg_dsn
+        server_env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    else:
+        server_env["KOGWISTAR_META_SQLITE_PATH"] = str(
+            tmp_path / "async-facade-native.sqlite3"
+        )
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=server_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError(f"async inline Rust {backend} server did not become ready")
+
+        requests: list[tuple[str, str]] = []
+
+        async def record_request(request: httpx.Request) -> None:
+            requests.append((request.method, request.url.path))
+
+        async def invoke() -> RunResult:
+            client = httpx.AsyncClient(
+                base_url=base_url,
+                event_hooks={"request": [record_request]},
+                timeout=10,
+            )
+            authority = AsyncRustRuntimeAuthority(
+                runtime=runtime,
+                base_url=base_url,
+                cache_dir=tmp_path,
+                client=client,
+            )
+            try:
+                health = await client.get("/health")
+                assert health.status_code == 200, health.text
+                assert health.json()["native_inline_worker_enabled"] is True
+                return await authority.run(
+                    workflow_id="async-rust-native-facade-workflow",
+                    conversation_id="async-rust-native-facade-conversation",
+                    turn_node_id=None,
+                    initial_state={"counter": 0},
+                    run_id=run_id,
+                )
+            finally:
+                await authority.aclose()
+                await client.aclose()
+
+        result = asyncio.run(invoke())
+        assert result.status == "succeeded"
+        assert result.final_state["counter"] == 2
+        assert ("POST", "/api/workflow/runs") in requests
+        assert not any(path == "/internal/runtime/claim" for _, path in requests)
+        assert not any(path == "/internal/runtime/native/execute" for _, path in requests)
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        if pg_schema is not None and pg_dsn is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(
+                        sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+                    )
+            finally:
+                cleanup_engine.dispose()
 
 
 @pytest.mark.integration
@@ -661,7 +1348,9 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
             assert len(python_after_work) == 1
             assert python_after_work[0]["step_id"] == "python-after"
             assert python_after_work[0]["payload"]["state"]["counter"] == 5
-            assert python_after_work[0]["payload"]["state"]["python_before_seen"] is True
+            assert (
+                python_after_work[0]["payload"]["state"]["python_before_seen"] is True
+            )
             final_result = worker.process(python_after_work[0])
             assert final_result["event_seq"] > first_result["event_seq"]
 
@@ -773,9 +1462,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server
                     assert len(native_work) == 1
                     native_item = native_work[0]
                     assert native_item["step_id"] == "native-middle"
-                    assert native_item["payload"]["state"][
-                        "async_python_before_seen"
-                    ] is True
+                    assert (
+                        native_item["payload"]["state"]["async_python_before_seen"]
+                        is True
+                    )
                     native_response = await client.post(
                         "/internal/runtime/native/execute",
                         json={
@@ -946,6 +1636,219 @@ def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
             process.wait(timeout=10)
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+def test_async_runtime_client_resume_uses_real_rust_authority(
+    monkeypatch,
+    tmp_path,
+    backend: str,
+) -> None:
+    """Exercise async callbacks and client resume through Rust HTTP/storage."""
+    from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live authority test")
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for Rust/PostgreSQL test")
+    pg_schema = f"kw_resume_{os.urandom(8).hex()}" if backend == "pg" else None
+    workflow_id = "wf-async-resume-live"
+
+    def node(node_id: str, op: str, **metadata: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=node_id,
+            label=node_id,
+            op=op,
+            fanout=False,
+            metadata={"wf_version": "v1", **metadata},
+            safe_get_id=lambda: node_id,
+        )
+
+    start = node("start", "start", wf_start=True)
+    gate = node("gate", "gate")
+    end = node("end", "end", wf_terminal=True)
+
+    def edge(edge_id: str, target_id: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=edge_id,
+            label=edge_id,
+            target_ids=[target_id],
+            predicate=None,
+            multiplicity="one",
+            is_default=True,
+            priority=100,
+            safe_get_id=lambda: edge_id,
+        )
+
+    nodes = {item.id: item for item in (start, gate, end)}
+    adjacency = {
+        "start": [edge("start-gate", "gate")],
+        "gate": [edge("gate-end", "end")],
+        "end": [],
+    }
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (start, nodes, adjacency),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {node_id: 0 for node_id in nodes},
+    )
+
+    resolver = AsyncMappingStepResolver()
+    visited: list[str] = []
+    dependencies = {"opaque_service": object()}
+
+    @resolver.register("start")
+    async def start_step(ctx):
+        visited.append("start")
+        assert ctx.state_view["_deps"] is dependencies
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("gate")
+    async def gate_step(_ctx):
+        visited.append("gate")
+        return RunSuspended(
+            conversation_node_id=None,
+            resume_payload={"prompt": "approve?"},
+        )
+
+    @resolver.register("end")
+    async def end_step(ctx):
+        visited.append("end")
+        assert ctx.state_view["approved"] is True
+        assert ctx.state_view["_deps"] is dependencies
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"resumed_end": True})],
+        )
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
+        }
+    )
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        env["KOGWISTAR_PG_DSN"] = pg_dsn
+        env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    else:
+        env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "async-resume.sqlite3")
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError(f"Rust {backend} server did not become ready")
+
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_URL", base_url)
+        monkeypatch.setenv(
+            "KOGWISTAR_RUST_RUNTIME_JOURNAL_DIR", str(tmp_path / "journal")
+        )
+        runtime = AsyncWorkflowRuntime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=resolver,
+            predicate_registry={},
+            max_workers=1,
+            trace=False,
+        )
+
+        async def execute() -> tuple[RunResult, RunResult]:
+            suspended = await runtime.run(
+                workflow_id=workflow_id,
+                conversation_id="conv-async-resume-live",
+                turn_node_id="turn-async-resume-live",
+                initial_state={"seed": 1, "_deps": dependencies},
+                run_id="run-async-resume-live",
+                cache_dir=str(tmp_path),
+            )
+            checkpoint = httpx.get(
+                f"{base_url}/api/workflow/runs/run-async-resume-live/checkpoints",
+                timeout=10,
+            )
+            checkpoint.raise_for_status()
+            latest_state = checkpoint.json()["checkpoints"][-1]["state"]
+            token_id = latest_state["_rt_join"]["suspended"][0][2]
+            resumed = await runtime.resume_run(
+                run_id="run-async-resume-live",
+                suspended_node_id="gate",
+                suspended_token_id=token_id,
+                client_result=RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"approved": True})],
+                ),
+                workflow_id=workflow_id,
+                conversation_id="conv-async-resume-live",
+                turn_node_id="turn-async-resume-live",
+                cache_dir=str(tmp_path),
+            )
+            return suspended, resumed
+
+        suspended, resumed = asyncio.run(execute())
+        assert suspended.status == "suspended"
+        assert resumed.status == "succeeded"
+        assert resumed.final_state["approved"] is True
+        assert resumed.final_state["resumed_end"] is True
+        assert resumed.final_state["_deps"] is dependencies
+        assert visited == ["start", "gate", "end"]
+        status = httpx.get(
+            f"{base_url}/api/workflow/runs/run-async-resume-live", timeout=10
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "succeeded"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        if pg_schema is not None and pg_dsn is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(
+                        sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+                    )
+            finally:
+                cleanup_engine.dispose()
+
+
 def test_submit_retries_once_after_lost_response_with_same_identity(
     monkeypatch,
     tmp_path,
@@ -979,9 +1882,7 @@ def test_submit_retries_once_after_lost_response_with_same_identity(
         client=client,
     )
     with client:
-        response = authority._submit_run(
-            {"run_id": "run-1", "workflow_id": "wf-1"}
-        )
+        response = authority._submit_run({"run_id": "run-1", "workflow_id": "wf-1"})
 
     assert response["idempotent"] is True
     assert attempts == [attempts[0], attempts[0]]
@@ -1008,7 +1909,10 @@ def test_authority_propagates_cancellation_without_running_other_work(
                 },
                 request=request,
             )
-        if request.method == "POST" and request.url.path == "/api/workflow/runs/run-1/cancel":
+        if (
+            request.method == "POST"
+            and request.url.path == "/api/workflow/runs/run-1/cancel"
+        ):
             state["cancelled"] = True
             return httpx.Response(200, json={"cancel_requested": True}, request=request)
         if request.method == "POST" and request.url.path == "/internal/runtime/claim":
@@ -1103,9 +2007,7 @@ def test_new_authority_instance_continues_existing_run_after_scheduler_restart(
             return httpx.Response(200, json={"work": work}, request=request)
         if request.method == "POST" and request.url.path == "/internal/runtime/results":
             assert isinstance(body, dict)
-            assert body["effect"]["state_update"] == [
-                ["u", {"after_restart": True}]
-            ]
+            assert body["effect"]["state_update"] == [["u", {"after_restart": True}]]
             state["done"] = True
             return httpx.Response(200, json={"event_seq": 4}, request=request)
         if (
@@ -1561,6 +2463,15 @@ def test_resume_effect_uses_existing_update_and_route_semantics(
         cache_dir=tmp_path,
         client=client,
     )
+    validated_plan = {
+        "runtime_routes": [
+            {"source_node_id": "gate", "target_node_id": "done", "join_mask": 0}
+        ]
+    }
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.freeze_runtime_plan",
+        lambda *_args: pytest.fail("resume effect refroze an already validated plan"),
+    )
     try:
         success = authority._client_result_effect(
             workflow_id="wf-1",
@@ -1571,6 +2482,7 @@ def test_resume_effect_uses_existing_update_and_route_semantics(
                 _route_next=["go"],
             ),
             state={"items": []},
+            runtime_plan=validated_plan,
         )
         failure = authority._client_result_effect(
             workflow_id="wf-1",
@@ -1581,6 +2493,7 @@ def test_resume_effect_uses_existing_update_and_route_semantics(
                 errors=["denied"],
             ),
             state={"items": []},
+            runtime_plan=validated_plan,
         )
     finally:
         client.close()
@@ -1704,3 +2617,272 @@ def test_resume_rejects_current_graph_drift_before_state_change(
         client.close()
 
     assert requests == [("GET", "/api/workflow/runs/run-1/resume-contract")]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+@pytest.mark.parametrize("execution_mode", ["external-worker", "inline-server"])
+def test_rust_native_workflow_runs_through_real_server_without_python_worker(
+    tmp_path: Path,
+    backend: str,
+    execution_mode: str,
+    record_property,
+) -> None:
+    """Exercise an all-native workflow over the packaged Rust server HTTP API."""
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live native-server test")
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
+
+    suffix = os.urandom(8).hex()
+    run_id = f"native-http-{suffix}"
+    pg_schema = f"kw_native_http_{suffix}" if backend == "pg" else None
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+            "KOGWISTAR_RUNTIME_NATIVE_INLINE": str(execution_mode == "inline-server").lower(),
+        }
+    )
+    if backend == "pg":
+        assert pg_dsn is not None and pg_schema is not None
+        env["KOGWISTAR_PG_DSN"] = pg_dsn
+        env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    else:
+        env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "native-http.sqlite3")
+
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    headers = {"x-kogwistar-roles": "reader"}
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError(f"Rust {backend} server did not become ready")
+
+        run_started_at = time.perf_counter()
+        submitted = httpx.post(
+            f"{base_url}/api/workflow/runs",
+            headers=headers,
+            json={
+                "run_id": run_id,
+                "workflow_id": "rust-native-http-workflow",
+                "conversation_id": "rust-native-http-conversation",
+                "initial_state": {"counter": 0},
+                "runtime_kind": "sync",
+                "start_node_id": "first",
+                "node_ops": {
+                    "first": "rust-native/increment-counter",
+                    "second": "rust-native/increment-counter",
+                },
+                "node_executor_targets": {
+                    "first": "rust-native",
+                    "second": "rust-native",
+                },
+                "runtime_routes": [
+                    {
+                        "source_node_id": "first",
+                        "target_node_id": "second",
+                        "join_mask": 0,
+                    }
+                ],
+            },
+            timeout=10,
+        )
+        assert submitted.status_code == 202, submitted.text
+
+        if execution_mode == "external-worker":
+            executed_steps: list[str] = []
+            for expected_step in ("first", "second"):
+                claimed = httpx.post(
+                    f"{base_url}/internal/runtime/claim",
+                    headers=headers,
+                    json={
+                        "claimed_by": "rust-native-worker",
+                        "limit": 1,
+                        "lease_seconds": 60,
+                        "recipient_ids": ["rust-native-worker"],
+                        "run_id": run_id,
+                    },
+                    timeout=10,
+                )
+                assert claimed.status_code == 200, claimed.text
+                work_items = claimed.json()["work"]
+                assert len(work_items) == 1
+                work = work_items[0]
+                assert work["step_id"] == expected_step
+                payload = work["payload"]
+                assert payload["executor_target"] == "rust-native"
+                assert payload["op"] == "rust-native/increment-counter"
+                executed = httpx.post(
+                    f"{base_url}/internal/runtime/native/execute",
+                    headers=headers,
+                    json={
+                        "handoff": {
+                            key: work[key]
+                            for key in (
+                                "message_id",
+                                "claimed_by",
+                                "run_id",
+                                "step_id",
+                                "correlation_id",
+                            )
+                        },
+                        "payload": payload,
+                    },
+                    timeout=10,
+                )
+                assert executed.status_code == 200, executed.text
+                executed_steps.append(work["step_id"])
+            assert executed_steps == ["first", "second"]
+            execution_completed_at = time.perf_counter()
+        else:
+            for _ in range(200):
+                status = httpx.get(
+                    f"{base_url}/api/workflow/runs/{run_id}",
+                    headers=headers,
+                    timeout=10,
+                )
+                assert status.status_code == 200, status.text
+                if status.json()["status"] == "succeeded":
+                    break
+                time.sleep(0.05)
+            else:
+                raise AssertionError("inline Rust server did not finish the native run")
+            execution_completed_at = time.perf_counter()
+            python_run_id = f"python-http-{suffix}"
+            python_submitted = httpx.post(
+                f"{base_url}/api/workflow/runs",
+                headers=headers,
+                json={
+                    "run_id": python_run_id,
+                    "workflow_id": "python-worker-compatibility",
+                    "conversation_id": "python-worker-compatibility",
+                    "initial_state": {},
+                    "runtime_kind": "sync",
+                    "start_node_id": "python-step",
+                    "node_ops": {"python-step": "custom-operation"},
+                    "node_executor_targets": {"python-step": "python-worker"},
+                    "runtime_routes": [],
+                },
+                timeout=10,
+            )
+            assert python_submitted.status_code == 202, python_submitted.text
+            python_claim = httpx.post(
+                f"{base_url}/internal/runtime/claim",
+                headers=headers,
+                json={
+                    "claimed_by": "python-worker-test",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["python-worker"],
+                    "run_id": python_run_id,
+                },
+                timeout=10,
+            )
+            assert python_claim.status_code == 200, python_claim.text
+            python_work = python_claim.json()["work"]
+            assert len(python_work) == 1
+            assert python_work[0]["step_id"] == "python-step"
+            assert python_work[0]["payload"]["executor_target"] == "python-worker"
+        record_property("execution_mode", f"{execution_mode}:{backend}")
+        record_property(
+            "submit_to_native_completion_ms",
+            round((execution_completed_at - run_started_at) * 1000, 3),
+        )
+        status = httpx.get(
+            f"{base_url}/api/workflow/runs/{run_id}", headers=headers, timeout=10
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "succeeded"
+        checkpoints = httpx.get(
+            f"{base_url}/api/workflow/runs/{run_id}/checkpoints",
+            headers=headers,
+            timeout=10,
+        )
+        assert checkpoints.status_code == 200, checkpoints.text
+        assert checkpoints.json()["checkpoints"][-1]["state"]["counter"] == 2
+        steps_response = httpx.get(
+            f"{base_url}/api/workflow/runs/{run_id}/steps",
+            headers=headers,
+            timeout=10,
+        )
+        assert steps_response.status_code == 200, steps_response.text
+        steps = steps_response.json()["steps"]
+        assert [step["workflow_node_id"] for step in steps] == ["first", "second"]
+        mcp_events = httpx.post(
+            f"{base_url}/mcp/workflow",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": "native-run-events",
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow.run_events",
+                    "arguments": {"run_id": run_id, "after_seq": 0, "limit": 100},
+                },
+            },
+            timeout=10,
+        )
+        assert mcp_events.status_code == 200, mcp_events.text
+        event_list = mcp_events.json()["result"]["events"]
+        assert any(event["event_type"] == "run.created" for event in event_list)
+        native_traces = [
+            event["payload"]["trace"]
+            for event in event_list
+            if event["event_type"] == "workflow.trace.v1"
+            and "runtime.native.step.completed" in json.dumps(event["payload"])
+        ]
+        assert len(native_traces) == 2
+        for trace in native_traces:
+            assert trace["implementation_authority"] == "rust-native"
+            assert trace["seam_crossings"] == []
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+        if pg_schema is not None and pg_dsn is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(
+                        sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE')
+                    )
+            finally:
+                cleanup_engine.dispose()

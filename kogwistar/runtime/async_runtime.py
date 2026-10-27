@@ -19,6 +19,7 @@ from typing import (
 )
 
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar.id_provider import stable_id
 from kogwistar.implementation_selection import (
     ImplementationSelectionSnapshot,
     implementation_selection_bound,
@@ -32,11 +33,13 @@ from .base_runtime import (
     apply_state_update_inplace,
     validate_initial_state,
 )
+from .checkpoint_state import decode_checkpoint_state
 from .contract import CancellationChecker, Predicate
 from .design import validate_workflow_design
 from .executor import TerminalStatus, WorkflowExecutor
 from .models import (
     RunFailure,
+    RunSuspended,
     RunSuccess,
     StepRunResult,
     WorkflowEdge,
@@ -63,8 +66,13 @@ from .runtime import (
 from .runtime import (
     WorkflowRuntime as ThreadedWorkflowRuntime,
 )
+from .run_ownership import RunOwnership
 from .telemetry import EventEmitter, EventSink, TraceContext
-from .step_context import LaneMessageEventSinkLike, LaneMessageSenderLike
+from .step_context import (
+    LaneMessageEventSinkLike,
+    LaneMessageSenderLike,
+    RouteDecision,
+)
 from .join_topology import _iter_bits
 
 # Compatibility anchor for tests and internal helper wiring.
@@ -107,7 +115,10 @@ def _as_sync_step_fn(fn: AsyncCompatibleStepFn) -> SyncStepFn:
     def _wrapped(ctx: StepContext) -> StepRunResult:
         out = fn(ctx)
         if inspect.isawaitable(out):
-            async def _await_result(awaitable: Awaitable[StepRunResult]) -> StepRunResult:
+
+            async def _await_result(
+                awaitable: Awaitable[StepRunResult],
+            ) -> StepRunResult:
                 return await awaitable
 
             return asyncio.run(_await_result(out))
@@ -179,7 +190,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         self.lane_message_event_sink = lane_message_event_sink
         self.experimental_native_scheduler = bool(experimental_native_scheduler)
         if not self.experimental_native_scheduler:
-            raise ValueError("AsyncWorkflowRuntime only supports the native async scheduler")
+            raise ValueError(
+                "AsyncWorkflowRuntime only supports the native async scheduler"
+            )
         self._resolver_adapter = _SyncResolverAdapter(step_resolver)
 
         self._sync_runtime = WorkflowRuntime(
@@ -229,8 +242,12 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         _run_metadata: Mapping[str, JsonValue] | None = None,
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
+        _run_owner_id: str | None = None,
     ) -> RunResult:
-        if _authority_context is not None and "effective_capabilities" in _authority_context:
+        if (
+            _authority_context is not None
+            and "effective_capabilities" in _authority_context
+        ):
             initial_state["effective_capabilities"] = list(
                 _authority_context.get("effective_capabilities", ())
             )
@@ -242,7 +259,13 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         if rust_runtime_authority_selected():
             if _resume_step_seq is not None or _resume_last_exec_node is not None:
                 raise NotImplementedError(
-                    "AsyncWorkflowRuntime does not support resume-marker delegation"
+                    "Rust async authority does not support ordinary checkpoint "
+                    "continuation; use the versioned Rust resume contract"
+                )
+            if _run_owner_id is not None:
+                raise NotImplementedError(
+                    "Rust async authority owns its run lease; Python owner IDs "
+                    "cannot cross the authority boundary"
                 )
             return await run_with_rust_authority_async(
                 self,
@@ -252,10 +275,6 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 initial_state=initial_state,
                 run_id=run_id or f"run|{uuid.uuid4()}",
                 cache_dir=cache_dir,
-            )
-        if _resume_step_seq is not None or _resume_last_exec_node is not None:
-            raise NotImplementedError(
-                "AsyncWorkflowRuntime does not support resume-marker delegation"
             )
         return await self._run_native_async(
             workflow_id=workflow_id,
@@ -267,6 +286,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             run_metadata=_run_metadata,
             trace_context=_trace_context,
             authority_context=_authority_context,
+            resume_step_seq=_resume_step_seq,
+            resume_last_exec_node=_resume_last_exec_node,
+            run_owner_id=_run_owner_id,
         )
 
     def _resolve_async_step_fn(self, op: str, version: str = "v1") -> AsyncStepFn:
@@ -353,7 +375,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         inherited_cancel = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
 
         def _child_cancel_requested(child_id: str) -> bool:
-            parent_cancelled = bool(inherited_cancel and inherited_cancel(parent_run_id))
+            parent_cancelled = bool(
+                inherited_cancel and inherited_cancel(parent_run_id)
+            )
             child_cancelled = bool(inherited_cancel and inherited_cancel(child_id))
             return parent_cancelled or child_cancelled
 
@@ -363,14 +387,20 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             load_terminal_result = getattr(
                 self._sync_runtime, "_terminal_run_result", None
             )
-            terminal_result = (
-                load_terminal_result(
-                    conversation_id=plan["conversation_id"],
-                    run_id=plan["child_run_id"],
+            terminal_result: RunResult | None = None
+            if callable(load_terminal_result):
+                terminal_result = cast(
+                    RunResult | None,
+                    load_terminal_result(
+                        conversation_id=plan["conversation_id"],
+                        run_id=plan["child_run_id"],
+                    ),
                 )
-                if callable(load_terminal_result)
-                else None
-            )
+            # A failed child with a durable checkpoint is retryable just like
+            # the synchronous invocation path. Successful and cancelled runs
+            # remain terminal and idempotent.
+            if terminal_result is not None and terminal_result.status == "failure":
+                terminal_result = None
             persist_lineage = getattr(
                 self._sync_runtime, "_persist_workflow_invocation_lineage", None
             )
@@ -560,6 +590,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         run_metadata: Mapping[str, Any] | None = None,
         trace_context: TraceContext | None = None,
         authority_context: Mapping[str, Any] | None = None,
+        resume_step_seq: int | None = None,
+        resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        run_owner_id: str | None = None,
     ) -> RunResult:
         # Keep nested runs aligned with the synchronous runtime without adding
         # an internal capability field to the top-level result state.
@@ -568,9 +601,15 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             if authority_context is not None
             else {"effective_capabilities": ()}
         )
+        if resume_step_seq is not None and resume_step_seq < 0:
+            raise ValueError("resume_step_seq must be non-negative")
         state: WorkflowState = dict(initial_state)
+        requested_run_id = run_id
         run_id = str(run_id or f"run|{uuid.uuid4()}")
-        if authority_context is not None and "effective_capabilities" in authority_context:
+        if (
+            authority_context is not None
+            and "effective_capabilities" in authority_context
+        ):
             state["effective_capabilities"] = list(
                 authority_context.get("effective_capabilities", ())
             )
@@ -587,6 +626,39 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         )
         validate_initial_state(state)
         mq: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=10000)
+
+        ownership: RunOwnership | None = None
+        load_terminal_result = getattr(self._sync_runtime, "_terminal_run_result", None)
+        claim_run = getattr(self._sync_runtime, "_claim_workflow_run", None)
+        if (
+            requested_run_id is not None
+            and callable(load_terminal_result)
+            and callable(claim_run)
+        ):
+            terminal_result = cast(
+                RunResult | None,
+                await asyncio.to_thread(
+                    load_terminal_result,
+                    conversation_id=str(conversation_id),
+                    run_id=run_id,
+                ),
+            )
+            if terminal_result is not None and not (
+                resume_step_seq is not None
+                and terminal_result.status in {"failure", "suspended"}
+            ):
+                return cast(RunResult, terminal_result)
+            ownership = cast(
+                RunOwnership | None,
+                await asyncio.to_thread(
+                    claim_run,
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=run_id,
+                    owner_id=run_owner_id,
+                    allow_resume_takeover=resume_step_seq is not None,
+                ),
+            )
 
         start, nodes, adj = validate_workflow_design(
             workflow_engine=self._workflow_engine,
@@ -638,7 +710,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             )
         )
         wf_run_root_node: Any | None = None
-        persist_workflow_run = getattr(self._sync_runtime, "_persist_workflow_run", None)
+        persist_workflow_run = getattr(
+            self._sync_runtime, "_persist_workflow_run", None
+        )
         if callable(persist_workflow_run):
             try:
                 wf_run_root_node = persist_workflow_run(
@@ -653,12 +727,15 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             except Exception:
                 wf_run_root_node = None
         trace_emitter = getattr(self._sync_runtime, "emitter", None)
-        emit_event = getattr(trace_emitter, "emit", None) if trace_emitter is not None else None
+        emit_event = (
+            getattr(trace_emitter, "emit", None) if trace_emitter is not None else None
+        )
         if callable(emit_event):
             try:
                 emit_event(
                     type="workflow_run_started",
-                    ctx=run_trace_context or TraceContext(
+                    ctx=run_trace_context
+                    or TraceContext(
                         run_id=str(run_id),
                         token_id=str(run_id),
                         step_seq=0,
@@ -724,7 +801,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             bi = join_pos.get(str(join_id))
             return (1 << bi) if bi is not None else 0
 
-        def _rt_join_restore() -> list[JoinToken] | None:
+        def _rt_join_restore() -> RuntimeJoinSnapshot | None:
             payload = restore_runtime_join_snapshot(
                 state,
                 join_node_ids,
@@ -733,21 +810,41 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             )
             if payload is None:
                 return None
-            for i in range(min(len(join_outstanding), len(payload["join_outstanding"]))):
+            for i in range(
+                min(len(join_outstanding), len(payload["join_outstanding"]))
+            ):
                 join_outstanding[i] = payload["join_outstanding"][i]
             for join_id in join_node_ids:
                 join_waiters[join_id] = payload["join_waiters"][join_id]
-            return payload["pending"]
+            return payload
 
         sem = asyncio.Semaphore(max(1, int(self.max_workers)))
-        restored_pending = _rt_join_restore()
-        if restored_pending:
+        suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
+        restored_join = _rt_join_restore()
+        if resume_step_seq is not None and not (
+            restored_join and restored_join["pending"]
+        ):
+            raise ValueError(
+                f"Cannot resume async workflow run {run_id}: checkpoint has no pending work"
+            )
+        if restored_join:
             pending: list[tuple[int, int, str, str, str | None]] = [
                 (index, int(mask), str(node_id), str(token_id), parent_token_id)
                 for index, (node_id, mask, token_id, parent_token_id) in enumerate(
-                    restored_pending
+                    restored_join["pending"]
                 )
             ]
+            suspended_tokens = {
+                str(token_id): (
+                    str(node_id),
+                    int(mask),
+                    str(token_id),
+                    parent_token_id,
+                )
+                for node_id, mask, token_id, parent_token_id in restored_join[
+                    "suspended"
+                ]
+            }
         else:
             start_mask = int(may_reach_join.get(str(start.id), 0))
             _inc(start_mask)
@@ -762,20 +859,19 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             ]
         inflight: set[asyncio.Task] = set()
         inflight_records: dict[asyncio.Task, tuple[int, int, str, str, str | None]] = {}
-        suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
-        seq = 0
+        seq = int(resume_step_seq or 0)
         dispatch_seq = 0
         status: TerminalStatus = "succeeded"
-        run_suspended = False
+        run_suspended = bool(suspended_tokens)
         failure_errors: list[str] = []
         last_processed_node_id: str | None = None
-        accepted_step_seq = -1
-        last_exec_node: Any | None = wf_run_root_node
+        accepted_step_seq = seq - 1
+        last_exec_node: Any | None = resume_last_exec_node or wf_run_root_node
         cancel_requested = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
         ready_completed: list[
             tuple[int, int, int, str, str, str | None, StepRunResult, float]
         ] = []
-        next_apply_step_seq = 0
+        next_apply_step_seq = seq
 
         def _cancel_requested() -> bool:
             return bool(cancel_requested and cancel_requested(str(run_id)))
@@ -811,8 +907,12 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 ),
                 state=state,
                 message_queue=mq,
-                lane_message_sender=getattr(self._sync_runtime, "lane_message_sender", None),
-                lane_message_event_sink=getattr(self._sync_runtime, "lane_message_event_sink", None),
+                lane_message_sender=getattr(
+                    self._sync_runtime, "lane_message_sender", None
+                ),
+                lane_message_event_sink=getattr(
+                    self._sync_runtime, "lane_message_event_sink", None
+                ),
                 events=trace_emitter,
                 cache_dir=cache_dir,
                 authority_context=nested_authority_context,
@@ -824,8 +924,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             maybe_step_uow = getattr(self._sync_runtime, "_maybe_step_uow", None)
             try:
                 use_step_uow = bool(
-                    callable(should_step_uow)
-                    and should_step_uow(str(node.op), state)
+                    callable(should_step_uow) and should_step_uow(str(node.op), state)
                 )
             except Exception:
                 use_step_uow = False
@@ -890,7 +989,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 float(time.perf_counter()),
             )
 
-        def _apply_run_result(target_state: WorkflowState, result: StepRunResult) -> None:
+        def _apply_run_result(
+            target_state: WorkflowState, result: StepRunResult
+        ) -> None:
             apply_state_update_inplace(
                 target_state,
                 list(result.state_update or []),
@@ -907,7 +1008,11 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                         (
                             int(mask),
                             str(token_id),
-                            (str(parent_token_id) if parent_token_id is not None else None),
+                            (
+                                str(parent_token_id)
+                                if parent_token_id is not None
+                                else None
+                            ),
                         )
                         for mask, token_id, parent_token_id in join_waiters.get(jid, [])
                     ]
@@ -920,7 +1025,10 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                         str(token_id),
                         (str(parent_token_id) if parent_token_id is not None else None),
                     )
-                    for launch_seq, mask, nid, token_id, parent_token_id in list(pending) + list(inflight_records.values())
+                    for launch_seq, mask, nid, token_id, parent_token_id in list(
+                        pending
+                    )
+                    + list(inflight_records.values())
                 ],
                 "suspended": [
                     (
@@ -949,7 +1057,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         def _maybe_persist_checkpoint(
             *, step_seq: int, state: WorkflowState, last_exec_node: object | None
         ) -> None:
-            interval = max(1, int(getattr(self._sync_runtime, "checkpoint_every_n_steps", 1)))
+            interval = max(
+                1, int(getattr(self._sync_runtime, "checkpoint_every_n_steps", 1))
+            )
             if (int(step_seq) % interval) != 0:
                 return
             _persist_checkpoint_compat(
@@ -959,6 +1069,17 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 step_seq=int(step_seq),
                 state=state,
                 last_exec_node=last_exec_node,
+            )
+
+        async def _renew_run_ownership() -> None:
+            nonlocal ownership
+            if ownership is None:
+                return
+            ownership = await asyncio.to_thread(
+                self._sync_runtime._renew_workflow_run,
+                conversation_id=str(conversation_id),
+                run_id=str(run_id),
+                ownership=ownership,
             )
 
         async def _cancel_and_drain_inflight(tasks: set[asyncio.Task]) -> None:
@@ -971,20 +1092,32 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             inflight_records.clear()
 
         async def _apply_completed_result(
-            item: tuple[int, int, int, str, str, str | None, StepRunResult, float]
+            item: tuple[int, int, int, str, str, str | None, StepRunResult, float],
         ) -> None:
             nonlocal status, failure_errors, last_processed_node_id
             nonlocal accepted_step_seq, last_exec_node, run_suspended, dispatch_seq
 
-            _launch_seq, _step_seq, mask, node_id, token_id, parent_token_id, out, _completed_at = item
+            (
+                _launch_seq,
+                _step_seq,
+                mask,
+                node_id,
+                token_id,
+                parent_token_id,
+                out,
+                _completed_at,
+            ) = item
             if not node_id:
                 return
+            await _renew_run_ownership()
             accepted_step_seq = max(accepted_step_seq, int(_step_seq))
             last_processed_node_id = str(node_id)
             step_exec_node: Any | None = last_exec_node
             child_failed = False
 
-            invocations = out.workflow_invocations if isinstance(out, RunSuccess) else []
+            invocations = (
+                out.workflow_invocations if isinstance(out, RunSuccess) else []
+            )
             for invocation in invocations:
                 child_result = await self._run_workflow_invocation_async(
                     invocation=invocation,
@@ -1106,7 +1239,12 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 wait_reason = out.wait_reason
                 if wait_reason:
                     state["wait_reason"] = str(wait_reason)
-                suspended_tokens[str(token_id)] = (str(node_id), int(mask), str(token_id), parent_token_id)
+                suspended_tokens[str(token_id)] = (
+                    str(node_id),
+                    int(mask),
+                    str(token_id),
+                    parent_token_id,
+                )
                 _persist_rt_join_snapshot()
                 _maybe_persist_checkpoint(
                     step_seq=int(_step_seq),
@@ -1157,19 +1295,19 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             ]
             runtime_mode = runtime_implementation_mode()
             successor_payload = {
-                        "token_id": str(token_id),
-                        "parent_token_id": parent_token_id,
-                        "step_seq": int(_step_seq),
-                        "current_join_mask": int(mask),
-                        "join_outstanding": list(join_outstanding),
-                        "successors": [
-                            {
-                                "node_id": dst,
-                                "join_mask": int(may_reach_join.get(dst, 0)),
-                            }
-                            for dst in valid_destinations
-                        ],
+                "token_id": str(token_id),
+                "parent_token_id": parent_token_id,
+                "step_seq": int(_step_seq),
+                "current_join_mask": int(mask),
+                "join_outstanding": list(join_outstanding),
+                "successors": [
+                    {
+                        "node_id": dst,
+                        "join_mask": int(may_reach_join.get(dst, 0)),
                     }
+                    for dst in valid_destinations
+                ],
+            }
             native_plan = None
             native_tokens = []
             if runtime_mode == "shadow":
@@ -1179,7 +1317,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     successor_mask = int(successor["join_mask"])
                     if index == 0:
                         for bit in _iter_bits(int(mask) & ~successor_mask):
-                            oracle_outstanding[bit] = max(0, oracle_outstanding[bit] - 1)
+                            oracle_outstanding[bit] = max(
+                                0, oracle_outstanding[bit] - 1
+                            )
                         for bit in _iter_bits(successor_mask & ~int(mask)):
                             oracle_outstanding[bit] += 1
                         oracle_token = str(token_id)
@@ -1204,9 +1344,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                         JsonObject,
                         {
                             "tokens": cast(JsonValue, oracle_tokens),
-                            "join_outstanding": cast(
-                                JsonValue, oracle_outstanding
-                            ),
+                            "join_outstanding": cast(JsonValue, oracle_outstanding),
                         },
                     ),
                 )
@@ -1266,26 +1404,28 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     if runtime_mode == "rust" and join_idx is not None:
                         from kogwistar._rust_bridge import runtime_apply_join_arrival
 
-                        native_join = join_arrival_result(runtime_apply_join_arrival(
-                            payload={
-                                "join_index": int(join_idx),
-                                "join_outstanding": list(join_outstanding),
-                                "waiters": [
-                                    {
-                                        "join_mask": int(waiter_mask),
-                                        "token_id": str(waiter_token),
-                                        "parent_token_id": waiter_parent,
-                                    }
-                                    for waiter_mask, waiter_token, waiter_parent in waiters
-                                ],
-                                "arrival": {
-                                    "join_mask": int(next_mask),
-                                    "token_id": str(next_token),
-                                    "parent_token_id": next_parent,
-                                },
-                                "merge": True,
-                            }
-                        ))
+                        native_join = join_arrival_result(
+                            runtime_apply_join_arrival(
+                                payload={
+                                    "join_index": int(join_idx),
+                                    "join_outstanding": list(join_outstanding),
+                                    "waiters": [
+                                        {
+                                            "join_mask": int(waiter_mask),
+                                            "token_id": str(waiter_token),
+                                            "parent_token_id": waiter_parent,
+                                        }
+                                        for waiter_mask, waiter_token, waiter_parent in waiters
+                                    ],
+                                    "arrival": {
+                                        "join_mask": int(next_mask),
+                                        "token_id": str(next_token),
+                                        "parent_token_id": next_parent,
+                                    },
+                                    "merge": True,
+                                }
+                            )
+                        )
                         join_outstanding[:] = native_join["join_outstanding"]
                         waiters[:] = [
                             (
@@ -1365,7 +1505,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             if not inflight:
                 break
 
-            done, inflight = await asyncio.wait(inflight, return_when=asyncio.FIRST_COMPLETED)
+            done, inflight = await asyncio.wait(
+                inflight, return_when=asyncio.FIRST_COMPLETED
+            )
 
             if _cancel_requested():
                 status = "cancelled"
@@ -1442,7 +1584,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         if status != "succeeded":
             await _cancel_and_drain_inflight(inflight)
             if status == "cancelled":
-                persist_cancelled = getattr(self._sync_runtime, "_persist_cancelled_terminal", None)
+                persist_cancelled = getattr(
+                    self._sync_runtime, "_persist_cancelled_terminal", None
+                )
                 if callable(persist_cancelled):
                     try:
                         persist_cancelled(
@@ -1461,7 +1605,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     except Exception:
                         pass
             elif status == "failure":
-                persist_failed = getattr(self._sync_runtime, "_persist_failed_terminal", None)
+                persist_failed = getattr(
+                    self._sync_runtime, "_persist_failed_terminal", None
+                )
                 if callable(persist_failed):
                     try:
                         persist_failed(
@@ -1475,7 +1621,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     except Exception:
                         pass
             elif status == "suspended":
-                persist_suspended = getattr(self._sync_runtime, "_persist_suspended_terminal", None)
+                persist_suspended = getattr(
+                    self._sync_runtime, "_persist_suspended_terminal", None
+                )
                 if callable(persist_suspended):
                     try:
                         persist_suspended(
@@ -1488,7 +1636,9 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     except Exception:
                         pass
         else:
-            persist_completed = getattr(self._sync_runtime, "_persist_completed_terminal", None)
+            persist_completed = getattr(
+                self._sync_runtime, "_persist_completed_terminal", None
+            )
             if callable(persist_completed):
                 try:
                     persist_completed(
@@ -1502,6 +1652,25 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     pass
         if status != "cancelled":
             _persist_rt_join_snapshot()
+
+        if ownership is not None and status in {"failure", "suspended"}:
+            has_checkpoint = status == "suspended"
+            if status == "failure":
+                has_checkpoint = (
+                    await asyncio.to_thread(
+                        self._sync_runtime._latest_checkpoint_for_run,
+                        conversation_id=str(conversation_id),
+                        run_id=str(run_id),
+                    )
+                    is not None
+                )
+            if has_checkpoint:
+                await asyncio.to_thread(
+                    self._sync_runtime._release_workflow_run_for_resume,
+                    conversation_id=str(conversation_id),
+                    run_id=str(run_id),
+                    ownership=ownership,
+                )
 
         return RunResult(
             run_id=run_id,
@@ -1527,6 +1696,8 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             "AsyncWorkflowRuntime.run_sync() is removed; use async run()"
         )
 
+    @implementation_selection_bound
+    @sqlite_execution_bound("workflow_engine", "conversation_engine")
     async def resume_run(
         self,
         *,
@@ -1539,6 +1710,422 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         turn_node_id: str,
         cache_dir: str | None = None,
     ) -> RunResult:
-        raise NotImplementedError(
-            "AsyncWorkflowRuntime.resume_run() is removed; use native async scheduling only"
+        """Apply an external result to one suspended token and continue natively."""
+        from .rust_runtime_authority import (
+            AsyncRustRuntimeAuthority,
+            RustRuntimeAuthorityError,
+            rust_runtime_authority_selected,
+            rust_runtime_authority_url,
+        )
+
+        authority_url = rust_runtime_authority_url()
+        if rust_runtime_authority_selected():
+            if authority_url is None:
+                raise RustRuntimeAuthorityError(
+                    "Rust runtime authority was selected without a configured URL"
+                )
+            authority = AsyncRustRuntimeAuthority(
+                runtime=self,
+                base_url=authority_url,
+                cache_dir=cache_dir,
+            )
+            try:
+                return await authority.resume(
+                    run_id=str(run_id),
+                    suspended_node_id=str(suspended_node_id),
+                    suspended_token_id=str(suspended_token_id),
+                    client_result=client_result,
+                    workflow_id=str(workflow_id),
+                    conversation_id=str(conversation_id),
+                    turn_node_id=str(turn_node_id),
+                )
+            finally:
+                await authority.aclose()
+
+        checkpoint = await asyncio.to_thread(
+            self._sync_runtime._latest_checkpoint_for_run,
+            conversation_id=str(conversation_id),
+            run_id=str(run_id),
+        )
+        if checkpoint is None:
+            raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
+        checkpoint_metadata = dict(getattr(checkpoint, "metadata", {}) or {})
+        stored_workflow_id = str(checkpoint_metadata.get("workflow_id") or workflow_id)
+        if stored_workflow_id != str(workflow_id):
+            raise ValueError(
+                f"Checkpoint workflow mismatch for {run_id}: "
+                f"stored={stored_workflow_id!r} requested={workflow_id!r}"
+            )
+        state = decode_checkpoint_state(
+            checkpoint_metadata.get("state_json"), run_id=str(run_id)
+        )
+        step_seq = checkpoint_metadata.get("step_seq", 0)
+        if isinstance(step_seq, bool) or not isinstance(step_seq, (int, str)):
+            raise ValueError(f"Checkpoint step sequence for {run_id} is invalid")
+        try:
+            step_seq_current = int(step_seq) + 1
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"Checkpoint step sequence for {run_id} is invalid"
+            ) from exc
+        if step_seq_current < 1:
+            raise ValueError(f"Checkpoint step sequence for {run_id} is invalid")
+
+        trace_context: TraceContext | None = None
+        persisted_trace_id = checkpoint_metadata.get("trace_id")
+        persisted_span_id = checkpoint_metadata.get("run_execution_span_id")
+        if persisted_trace_id and persisted_span_id:
+            candidate = TraceContext(
+                run_id=str(run_id),
+                token_id=str(suspended_token_id),
+                step_seq=step_seq_current,
+                node_id=str(suspended_node_id),
+                trace_id=str(persisted_trace_id),
+                span_id=str(persisted_span_id),
+            )
+            if candidate.has_valid_w3c_ids:
+                trace_context = candidate
+
+        def _resume_event_context() -> TraceContext:
+            if trace_context is not None:
+                return trace_context.child_span(
+                    token_id=token_id,
+                    step_seq=step_seq_current,
+                    node_id=node_id,
+                )
+            return TraceContext(
+                run_id=str(run_id),
+                token_id=token_id,
+                step_seq=step_seq_current,
+                node_id=node_id,
+                conversation_id=str(conversation_id),
+                turn_node_id=str(turn_node_id),
+            )
+
+        apply_state_update_inplace(
+            state,
+            list(client_result.state_update or []),
+            client_result.update,
+            state_schema=getattr(self._resolver_adapter, "_state_schema", None),
+        )
+        _start, nodes, adjacency = validate_workflow_design(
+            workflow_engine=self._workflow_engine,
+            workflow_id=str(workflow_id),
+            predicate_registry=self._predicate_registry,
+            resolver=self._raw_step_resolver,
+        )
+        node_id = str(suspended_node_id)
+        token_id = str(suspended_token_id)
+        node = nodes.get(node_id)
+        if node is None:
+            raise ValueError(
+                f"Suspended workflow node {node_id!r} is not in workflow {workflow_id!r}"
+            )
+
+        join_node_ids = sorted(
+            str(candidate_id)
+            for candidate_id, candidate in nodes.items()
+            if bool(candidate.metadata.get("wf_join", False)) or candidate.op == "join"
+        )
+        may_reach_join = (
+            _compute_may_reach_join_bitsets(
+                node_ids=[str(candidate_id) for candidate_id in nodes],
+                adj=adjacency,
+                join_ids=join_node_ids,
+            )
+            if join_node_ids
+            else {str(candidate_id): 0 for candidate_id in nodes}
+        )
+        snapshot = restore_runtime_join_snapshot(
+            state,
+            join_node_ids,
+            allow_legacy_lengths=True,
+            allow_single_mask_waiters=True,
+        )
+        if snapshot is None:
+            raise ValueError(
+                f"Cannot resume run {run_id}: checkpoint has no suspended-token frontier"
+            )
+
+        pending: list[JoinToken] = list(snapshot["pending"])
+        suspended: list[JoinToken] = list(snapshot["suspended"])
+        remaining_pending: list[JoinToken] = []
+        remaining_suspended: list[JoinToken] = []
+        matched: list[JoinToken] = []
+        for item in pending:
+            (
+                matched
+                if item[0] == node_id and item[2] == token_id
+                else remaining_pending
+            ).append(item)
+        for item in suspended:
+            (
+                matched
+                if item[0] == node_id and item[2] == token_id
+                else remaining_suspended
+            ).append(item)
+        if len(matched) != 1:
+            raise ValueError(
+                f"Expected one suspended token {token_id!r} at node {node_id!r}; "
+                f"found {len(matched)}"
+            )
+        _, mask_to_distribute, _, parent_token_id = matched[0]
+
+        ownership = await asyncio.to_thread(
+            self._sync_runtime._claim_workflow_run,
+            conversation_id=str(conversation_id),
+            workflow_id=str(workflow_id),
+            run_id=str(run_id),
+            allow_resume_takeover=True,
+        )
+
+        next_nodes: list[str] = []
+        route_decision = RouteDecision(evaluated=[], selected=[])
+        if client_result.status != "suspended":
+            next_nodes, route_decision = self._sync_runtime._route_next(
+                list(adjacency.get(node_id, [])),
+                state,
+                client_result,
+                bool(node.fanout),
+                nodes,
+            )
+        try:
+            self._sync_runtime.emitter.emit(
+                type="routing_decision",
+                ctx=_resume_event_context(),
+                payload={
+                    "evaluated": list(route_decision.evaluated),
+                    "selected": list(route_decision.selected),
+                    "next_nodes": list(next_nodes),
+                },
+            )
+        except Exception:
+            pass
+
+        join_outstanding = list(snapshot["join_outstanding"])
+
+        def _change_join_count(mask: int, delta: int) -> None:
+            for bit in _iter_bits(int(mask)):
+                if bit < len(join_outstanding):
+                    join_outstanding[bit] = max(0, join_outstanding[bit] + delta)
+
+        resumed_pending = list(remaining_pending)
+        resumed_suspended = list(remaining_suspended)
+        if client_result.status == "suspended":
+            resumed_suspended.append(
+                (node_id, int(mask_to_distribute), token_id, parent_token_id)
+            )
+        elif next_nodes:
+            for index, next_node_id in enumerate(next_nodes):
+                next_mask = int(may_reach_join.get(str(next_node_id), 0))
+                if index == 0:
+                    leaving = int(mask_to_distribute) & ~next_mask
+                    gained = next_mask & ~int(mask_to_distribute)
+                    if leaving:
+                        _change_join_count(leaving, -1)
+                    if gained:
+                        _change_join_count(gained, 1)
+                    next_token_id = token_id
+                    next_parent = parent_token_id
+                else:
+                    next_token_id = stable_id(
+                        "token_id",
+                        f"{token_id}/{step_seq_current}:{index}:{next_node_id}",
+                    ).hex
+                    next_parent = token_id
+                    _change_join_count(next_mask, 1)
+                resumed_pending.append(
+                    (str(next_node_id), next_mask, next_token_id, next_parent)
+                )
+        else:
+            _change_join_count(int(mask_to_distribute), -1)
+
+        snapshot["pending"] = resumed_pending
+        snapshot["suspended"] = resumed_suspended
+        snapshot["join_outstanding"] = join_outstanding
+        state["_rt_join"] = snapshot
+
+        read_nodes = getattr(self._conversation_engine.read, "get_nodes", None)
+        previous_nodes: list[WorkflowStepExecNode | WorkflowRunNode] = []
+        if callable(read_nodes):
+            previous_nodes = cast(
+                list[WorkflowStepExecNode | WorkflowRunNode],
+                await asyncio.to_thread(
+                    read_nodes,
+                    ids=[f"wf_step|{run_id}|{step_seq_current - 1}"],
+                    limit=1,
+                ),
+            )
+        if not previous_nodes and callable(read_nodes):
+            previous_nodes = cast(
+                list[WorkflowStepExecNode | WorkflowRunNode],
+                await asyncio.to_thread(read_nodes, ids=[f"wf_run|{run_id}"], limit=1),
+            )
+        previous_exec_node = previous_nodes[0] if previous_nodes else None
+        persist_step_exec = getattr(self._sync_runtime, "_persist_step_exec", None)
+        if not callable(persist_step_exec):
+            raise RuntimeError(
+                "Async resume requires durable workflow-step persistence"
+            )
+        resumed_exec_node = cast(
+            WorkflowStepExecNode,
+            await asyncio.to_thread(
+                persist_step_exec,
+                conversation_id=str(conversation_id),
+                workflow_id=str(workflow_id),
+                run_id=str(run_id),
+                step_seq=step_seq_current,
+                workflow_node_id=node_id,
+                op="client_sandbox_resume",
+                status=(
+                    "suspended"
+                    if client_result.status == "suspended"
+                    else "failure"
+                    if client_result.status == "failure"
+                    else "ok"
+                ),
+                duration_ms=0,
+                result=client_result,
+                state=state,
+                token_id=token_id,
+                parent_token_id=parent_token_id,
+                join_mask=int(mask_to_distribute),
+                last_exec_node=previous_exec_node,
+            ),
+        )
+        checkpoint_every = max(
+            1, int(getattr(self._sync_runtime, "checkpoint_every_n_steps", 1))
+        )
+        if step_seq_current % checkpoint_every == 0:
+            persist_checkpoint = getattr(
+                self._sync_runtime, "_persist_checkpoint", None
+            )
+            if callable(persist_checkpoint):
+                await asyncio.to_thread(
+                    persist_checkpoint,
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    step_seq=step_seq_current,
+                    state=state,
+                    last_exec_node=resumed_exec_node,
+                    trace_context=trace_context,
+                )
+
+        if client_result.status == "suspended":
+            try:
+                self._sync_runtime.emitter.emit(
+                    type="workflow_step_suspended",
+                    ctx=_resume_event_context(),
+                    payload=(
+                        client_result.resume_payload
+                        if isinstance(client_result, RunSuspended)
+                        else {}
+                    ),
+                )
+            except Exception:
+                pass
+            if ownership is not None:
+                await asyncio.to_thread(
+                    self._sync_runtime._release_workflow_run_for_resume,
+                    conversation_id=str(conversation_id),
+                    run_id=str(run_id),
+                    ownership=ownership,
+                )
+            return RunResult(
+                final_state=state,
+                run_id=str(run_id),
+                mq=queue.Queue(),
+                status="suspended",
+            )
+
+        if resumed_pending:
+            return await self.run(
+                workflow_id=str(workflow_id),
+                conversation_id=str(conversation_id),
+                turn_node_id=str(turn_node_id),
+                initial_state=state,
+                run_id=str(run_id),
+                cache_dir=cache_dir,
+                _resume_step_seq=step_seq_current + 1,
+                _resume_last_exec_node=resumed_exec_node,
+                _trace_context=trace_context,
+                _run_owner_id=(ownership.owner_id if ownership is not None else None),
+            )
+
+        if resumed_suspended:
+            if ownership is not None:
+                await asyncio.to_thread(
+                    self._sync_runtime._release_workflow_run_for_resume,
+                    conversation_id=str(conversation_id),
+                    run_id=str(run_id),
+                    ownership=ownership,
+                )
+            return RunResult(
+                final_state=state,
+                run_id=str(run_id),
+                mq=queue.Queue(),
+                status="suspended",
+            )
+
+        if client_result.status == "failure":
+            persist_failed = getattr(
+                self._sync_runtime, "_persist_failed_terminal", None
+            )
+            if callable(persist_failed):
+                await asyncio.to_thread(
+                    persist_failed,
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    accepted_step_seq=step_seq_current,
+                    errors=list(client_result.errors),
+                    last_processed_node_id=node_id,
+                )
+            try:
+                self._sync_runtime.emitter.emit(
+                    type="workflow_run_failed",
+                    ctx=_resume_event_context(),
+                    payload={
+                        "workflow_id": str(workflow_id),
+                        "errors": [
+                            str(error)[-4_000:] for error in client_result.errors
+                        ],
+                    },
+                )
+            except Exception:
+                pass
+            return RunResult(
+                final_state=state,
+                run_id=str(run_id),
+                mq=queue.Queue(),
+                status="failure",
+                errors=[str(error) for error in client_result.errors],
+            )
+
+        persist_completed = getattr(
+            self._sync_runtime, "_persist_completed_terminal", None
+        )
+        if callable(persist_completed):
+            await asyncio.to_thread(
+                persist_completed,
+                conversation_id=str(conversation_id),
+                workflow_id=str(workflow_id),
+                run_id=str(run_id),
+                accepted_step_seq=step_seq_current,
+                last_processed_node_id=node_id,
+            )
+        try:
+            self._sync_runtime.emitter.emit(
+                type="workflow_run_completed",
+                ctx=_resume_event_context(),
+                payload={"workflow_id": str(workflow_id)},
+            )
+        except Exception:
+            pass
+        return RunResult(
+            final_state=state,
+            run_id=str(run_id),
+            mq=queue.Queue(),
+            status="succeeded",
         )

@@ -3320,7 +3320,7 @@ fn claim_projected_lane_messages_for_run(
     Ok(out)
 }
 fn ack_projected_lane_message(conn: &Connection, id: &str, owner: &str) -> SqliteStoreResult<()> {
-    conn.execute("UPDATE projected_lane_messages SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=?1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=?2)",params![id,owner])?;
+    conn.execute("UPDATE projected_lane_messages SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=?1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=?2 AND lease_until>=?3))",params![id,owner,unix_epoch_seconds()])?;
     Ok(())
 }
 fn requeue_projected_lane_message(
@@ -3330,7 +3330,8 @@ fn requeue_projected_lane_message(
     error: Option<String>,
     delay: i64,
 ) -> SqliteStoreResult<()> {
-    conn.execute("UPDATE projected_lane_messages SET status='pending',claimed_by=NULL,lease_until=NULL,retry_count=retry_count+1,available_at=?1,error_json=COALESCE(?2,error_json) WHERE message_id=?3 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=?4)",params![unix_epoch_seconds()+delay.max(0),error,id,owner])?;
+    let now = unix_epoch_seconds();
+    conn.execute("UPDATE projected_lane_messages SET status='pending',claimed_by=NULL,lease_until=NULL,retry_count=retry_count+1,available_at=?1,error_json=COALESCE(?2,error_json) WHERE message_id=?3 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=?4 AND lease_until>=?5))",params![now+delay.max(0),error,id,owner,now])?;
     Ok(())
 }
 fn dead_letter_projected_lane_message(
@@ -3339,7 +3340,7 @@ fn dead_letter_projected_lane_message(
     owner: &str,
     error: Option<String>,
 ) -> SqliteStoreResult<()> {
-    conn.execute("UPDATE projected_lane_messages SET status='dead-letter',claimed_by=NULL,lease_until=NULL,error_json=COALESCE(?1,error_json) WHERE message_id=?2 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=?3)",params![error,id,owner])?;
+    conn.execute("UPDATE projected_lane_messages SET status='dead-letter',claimed_by=NULL,lease_until=NULL,error_json=COALESCE(?1,error_json) WHERE message_id=?2 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=?3 AND lease_until>=?4))",params![error,id,owner,unix_epoch_seconds()])?;
     Ok(())
 }
 fn repair_orphaned_claimed_lane_messages(
@@ -5813,6 +5814,59 @@ mod tests {
                     .status,
                 "pending"
             );
+        }
+        drop(store);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn expired_lane_claim_cannot_be_finalized_before_reclaim() {
+        let (store, path) = store("expired-lane-claim");
+        for (message_id, operation) in [
+            ("expired-ack", "ack"),
+            ("expired-requeue", "requeue"),
+            ("expired-dead-letter", "dead-letter"),
+        ] {
+            let mut row = runtime_worker_lane("run-target", message_id);
+            row.available_at = 0;
+            store.project_lane_message(row).unwrap();
+            let claimed = store
+                .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                    namespace: "runtime".to_owned(),
+                    inbox_id: "python-workers".to_owned(),
+                    claimed_by: "attempt-1".to_owned(),
+                    message_ids: Some(vec![message_id.to_owned()]),
+                    run_id: Some("run-target".to_owned()),
+                    msg_type: Some("workflow.worker.request.v1".to_owned()),
+                    recipient_id: Some("python-worker".to_owned()),
+                    limit: 1,
+                    lease_seconds: -1,
+                })
+                .unwrap();
+            assert_eq!(claimed.len(), 1);
+            assert!(
+                claimed[0].lease_until.as_ref().unwrap().as_i64().unwrap() < unix_epoch_seconds()
+            );
+
+            match operation {
+                "ack" => store
+                    .ack_projected_lane_message(message_id, "attempt-1")
+                    .unwrap(),
+                "requeue" => store
+                    .requeue_projected_lane_message(message_id, "attempt-1", None, 0)
+                    .unwrap(),
+                "dead-letter" => store
+                    .dead_letter_projected_lane_message(message_id, "attempt-1", None)
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            let row = store
+                .get_projected_lane_message(message_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.status, "claimed", "{operation}");
+            assert_eq!(row.claimed_by.as_deref(), Some("attempt-1"), "{operation}");
+            assert_eq!(row.retry_count, 0, "{operation}");
         }
         drop(store);
         fs::remove_file(path).unwrap();

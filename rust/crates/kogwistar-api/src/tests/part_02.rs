@@ -43,7 +43,7 @@
                 json!({
                     "claimed_by": "rust-native-worker",
                     "limit": 1,
-                    "lease_seconds": 60,
+                    "lease_seconds": 1,
                     "recipient_ids": ["rust-native-worker"]
                 }),
             ))
@@ -56,7 +56,26 @@
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
         );
 
-        let execute = service
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let reclaimed = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/claim",
+                json!({
+                    "claimed_by": "rust-native-worker",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["rust-native-worker"]
+                }),
+            ))
+            .await;
+        assert_eq!(reclaimed.status, StatusCode::OK.as_u16());
+        let reclaimed_work = serde_json::from_slice::<Value>(&reclaimed.body).unwrap()["work"][0]
+            .clone();
+        assert_eq!(reclaimed_work["message_id"], work["message_id"]);
+        assert_ne!(reclaimed_work["claimed_by"], work["claimed_by"]);
+
+        let stale_execute = service
             .execute(request(
                 "POST",
                 "/internal/runtime/native/execute",
@@ -69,6 +88,24 @@
                         "correlation_id": work["correlation_id"]
                     },
                     "payload": work["payload"]
+                }),
+            ))
+            .await;
+        assert_eq!(stale_execute.status, StatusCode::CONFLICT);
+
+        let execute = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/native/execute",
+                json!({
+                    "handoff": {
+                        "message_id": reclaimed_work["message_id"],
+                        "claimed_by": reclaimed_work["claimed_by"],
+                        "run_id": reclaimed_work["run_id"],
+                        "step_id": reclaimed_work["step_id"],
+                        "correlation_id": reclaimed_work["correlation_id"]
+                    },
+                    "payload": reclaimed_work["payload"]
                 }),
             ))
             .await;

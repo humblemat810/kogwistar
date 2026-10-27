@@ -43,6 +43,34 @@ impl PostgresRunApplicationService {
 }
 
 impl ApplicationService for PostgresRunApplicationService {
+    fn execute_inline_native_work_once(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            let input = RuntimeClaimRequest {
+                claimed_by: "rust-native-worker".to_owned(),
+                limit: 1,
+                lease_seconds: 60,
+                run_id: None,
+                recipient_ids: vec!["rust-native-worker".to_owned()],
+            };
+            let recipients = effective_runtime_claim_recipients(&input.recipient_ids)?;
+            let mut claimed = self.claim_runtime_work_items(input, recipients).await?;
+            let Some(work) = claimed.pop() else {
+                return Ok(false);
+            };
+            let result = native_result_for_claimed_work(work, &self.native_operations)?;
+            let applied = self.apply_runtime_result_input(result).await;
+            if !(200..300).contains(&applied.status) {
+                return Err(format!(
+                    "native runtime result application returned HTTP {}",
+                    applied.status
+                ));
+            }
+            Ok(true)
+        })
+    }
+
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {
         self.store.graph_authority_capability()
     }
@@ -73,6 +101,34 @@ impl ApplicationService for PostgresRunApplicationService {
 }
 
 impl ApplicationService for SqliteRunApplicationService {
+    fn execute_inline_native_work_once(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            let input = RuntimeClaimRequest {
+                claimed_by: "rust-native-worker".to_owned(),
+                limit: 1,
+                lease_seconds: 60,
+                run_id: None,
+                recipient_ids: vec!["rust-native-worker".to_owned()],
+            };
+            let recipients = effective_runtime_claim_recipients(&input.recipient_ids)?;
+            let mut claimed = self.claim_runtime_work_items(input, recipients)?;
+            let Some(work) = claimed.pop() else {
+                return Ok(false);
+            };
+            let result = native_result_for_claimed_work(work, &self.native_operations)?;
+            let applied = self.apply_runtime_result_input(result);
+            if !(200..300).contains(&applied.status) {
+                return Err(format!(
+                    "native runtime result application returned HTTP {}",
+                    applied.status
+                ));
+            }
+            Ok(true)
+        })
+    }
+
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         surface != "root" && name != "workflow.tool_audit" && rust_mcp_tool_supported(surface, name)
     }

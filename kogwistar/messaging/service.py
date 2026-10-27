@@ -78,6 +78,19 @@ def _now_epoch() -> int:
     return int(time.time())
 
 
+def new_claim_attempt_owner(worker_id: str) -> str:
+    """Return an opaque lease owner unique to one worker claim attempt.
+
+    Keep the stable worker identity as a readable prefix, but never reuse it
+    alone as the lease token: an expired worker must not acknowledge a newer
+    claim made by another attempt with the same identity.
+    """
+    normalized = str(worker_id).strip()
+    if not normalized:
+        raise ValueError("worker_id must not be empty")
+    return f"{normalized}#{uuid.uuid4()}"
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -621,6 +634,13 @@ class LaneMessagingService:
         msg_type: str | None = None,
         recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
+        """Claim messages using the caller-supplied attempt owner.
+
+        Callers that hold a stable worker identity should prefer
+        `claim_pending_attempt`, which creates a fresh fencing token for each
+        attempt. Reusing a stable identity here cannot distinguish an expired
+        attempt from a later reclaim by the same worker.
+        """
         claim = self._meta_store().claim_projected_lane_messages
         claims = claims_ctx.get() or {}
         namespace = str(
@@ -659,6 +679,31 @@ class LaneMessagingService:
         if recipient_id is not None:
             claim_kwargs["recipient_id"] = recipient_id
         return claim(**claim_kwargs)
+
+    @implementation_selection_bound
+    def claim_pending_attempt(
+        self,
+        *,
+        inbox_id: str,
+        worker_id: str,
+        limit: int,
+        lease_seconds: int,
+        message_ids: list[str] | tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        msg_type: str | None = None,
+        recipient_id: str | None = None,
+    ) -> list[ProjectedLaneMessageRow]:
+        """Claim messages with a fresh owner token derived from worker identity."""
+        return self.claim_pending(
+            inbox_id=inbox_id,
+            claimed_by=new_claim_attempt_owner(worker_id),
+            limit=limit,
+            lease_seconds=lease_seconds,
+            message_ids=message_ids,
+            run_id=run_id,
+            msg_type=msg_type,
+            recipient_id=recipient_id,
+        )
 
     @implementation_selection_bound
     def ack(self, *, message_id: str, claimed_by: str) -> None:

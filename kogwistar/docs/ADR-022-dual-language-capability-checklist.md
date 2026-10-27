@@ -30,11 +30,28 @@ snapshot's denominator.
   passed **10 tests, 0 failed, 0 skipped** on Windows CPython 3.13, covering
   durable transition retry/rollback, mixed Python/Rust restart and projection
   sequence, worker handoff/reopen, and worker reclaim/fault rollback. This
-  confirms those existing persistence contracts only. It does **not** cover
-  ordinary failed-run continuation from a checkpoint: Rust terminal runs
-  remain immutable, and the Python async latest-checkpoint helper passes
-  resume markers that `AsyncWorkflowRuntime.run()` rejects. Track this gap
-  within existing `DL-15C`; no checklist item or denominator changed.
+  confirms those existing persistence contracts only. Native Python async
+  execution now accepts ordinary latest-checkpoint continuation by restoring
+  the durable pending frontier and next step sequence, and preserves suspended
+  tokens when restoring a suspended-only join snapshot rather than reporting it
+  as completed. Focused regressions prove it does not rerun the workflow start
+  node and retains the suspended frontier. Evidence:
+  `tests/runtime/test_async_runtime_contract.py::test_async_runtime_checkpoint_resume_runs_pending_frontier`
+  and `::test_async_runtime_checkpoint_restore_preserves_suspended_frontier`
+  plus `tests/runtime/test_async_runtime_mapping_docstrings.py` (**33 passed**).
+  The parity comparison ignores `node_refs_fp` for execution nodes because it
+  hashes the trace excerpt containing variable measured duration; other
+  persisted node fields and all execution edges remain compared. The new
+  `test_async_runtime_checkpoint_resume_roundtrip_postgres` passed against the
+  existing PostgreSQL 17 container using temporary workflow/conversation
+  schemas; it verifies checkpoint write/read, step-7 continuation, no replay of
+  the start node, final state, and persisted execution metadata. The broader
+  async runtime and checkpoint suite now passes **58 tests, 0 skipped** with
+  live PostgreSQL enabled against the existing PostgreSQL 17 container. Rust-
+  authoritative async continuation remains explicitly unsupported pending its
+  versioned resume contract. Track
+  remaining selector and failure/retry inventory within existing `DL-15C`; no
+  checklist item or denominator changed.
 - 2026-10-27 bounded cross-language graph-traversal ACL check: Python
   `GraphQuery` now classifies a requested node/edge through the ACL-aware read
   facade and filters structural endpoint rows through ACL-visible edges before
@@ -295,8 +312,20 @@ snapshot's denominator.
   trace propagation across this common async worker boundary. The local PyPy
   3.11 environment could not run the test because it lacks pytest and pydantic;
   this is missing test tooling, not a PyPy pass. Manually spawned threads and
-  subprocess worker transfer remain unverified. No checklist ID or status
-  count changed.
+  subprocess worker transfer remain unverified. Nested bridge captures now
+  attribute each crossing to both the innermost scope and all enclosing
+  measurements, and restore the parent scope after an inner exception. This
+  avoids undercounting in composed benchmark scopes without changing dispatch.
+  Evidence: `tests/core/test_rust_bridge_trace.py::test_nested_bridge_traces_aggregate_calls_and_restore_after_exception`
+  and the full bridge-trace module (**8 passed**, including the compiled native
+  graph-slice parity test), Ruff, and `git diff --check` on Windows CPython
+  3.13. The nested-scope and async-task-isolation tests also passed on Windows
+  CPython 3.12 and 3.14. Their unprivileged attempts stalled at Windows
+  event-loop setup; reruns with the authorized local execution permissions
+  passed, so those stalls are environmental rather than counted as product
+  failures. This improves one measurement contract but leaves production-wide
+  attribution and representative regression thresholds open. No checklist ID
+  or status count changed.
 - `DL-04` is closed: ADR-015's historical Python-removal passages now defer to
   ADR-022's supported dual-language policy. The Rust release gate reads the
   support matrix and blocks promotion if either policy flag is removed, any
@@ -949,7 +978,7 @@ snapshot's denominator.
 | --- | --- | --- |
 | DL-12 | IN PROGRESS | The focused Python-only graph path now runs both with every implementation selector explicitly set to `python` and with selectors absent (legacy default), while the native extension loader is forced unavailable: `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust` passes both cases, persists two nodes and an edge, reads them back, and performs neighbor traversal without loading Rust. `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_legacy_python_default_completes_without_native_loader` and `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_legacy_python_default_completes_without_native_loader` run real sync and async Python workflow steps with completion and trace behavior under the legacy default; both pass in the supported elevated Windows context with the native loader unavailable. This proves graph and sync/async-runtime slices, backward-compatible defaults, and no-native-fallback invariants only. Server ingress, indexing, and complete advertised workload coverage remain open. |
 | DL-12A | PASS (Python server handler default) | The production `/health` handler is exercised with implementation selectors absent and the native extension loader forced unavailable; it returns the normal Python response contract without crossing the Rust seam. Evidence: `tests/server/test_rust_api_health.py::test_python_health_handler_keeps_legacy_default_without_native_extension` passes on Windows CPython 3.13. This is handler-level evidence rather than a full server lifespan/loopback test; authenticated REST/MCP routes and server-process coverage remain open under DL-12/DL-17. |
-| DL-13 | IN PROGRESS | Declare and test the complete Rust-only request path for each advertised native workload. The Rust-native registry supports deterministic `noop`, `emit-result`, and the tested stateful `increment-counter` slice; native effects use the shared `RecordedWorkerSuccessEffect` reducer, frozen routing, durable events, and bounded traces. Existing evidence includes the three-mode SQLite trace and real loopback Python/Rust handoff tests recorded above and in `docs/benchmarks/mixed_rewrite_benchmark.md`; those establish bounded parity/performance evidence, not complete production coverage. New per-node selection is represented by optional `wf_executor_target` workflow metadata and frozen as a sparse `node_executor_targets` map. Rust API admission validates the map, selects workers for start and continuation lanes, and carries the choice in the durable execution payload; legacy `rust-native/<operation>` remains inferred when the field is absent, while ordinary absent-target nodes remain Python workers. Python plan freezing and Rust dispatch now share `contracts/golden/runtime-executor-routing-v1.json`, covering explicit Python/Rust targets, the legacy native prefix, and the default Python route; Python rejection tests cover incompatible/unknown targets and empty native names. This is a routing contract, not production operation coverage. Rust-owned operations are no longer required to appear in the Python resolver; Python-owned operations still are. Evidence: Python `tests/runtime/test_workflow_version_admission.py` (**31 passed**, CPython 3.13), including the shared routing fixture and invalid-target cases; Rust `tests::native_executor_routing_matches_shared_python_contract_fixture` (**1 passed**); existing complete focused Python modules `tests/runtime/test_workflow_version_admission.py` plus `tests/runtime/test_rust_runtime_authority.py` passed **47 tests** on Windows CPython 3.13 with loopback access enabled; this includes sync-v1 and async-v2 end-to-end mixed Python/Rust/Python execution with plain Rust operation names and explicit per-node targets. `cargo test -p kogwistar-runtime --lib` passed **25** tests, including target persistence into continuation payloads; `cargo test -p kogwistar-api --lib` passed **77/77**, covering malformed native names, legacy prefix routing, explicit target routing, authoritative graph snapshots, and existing API behavior. The rebuilt `kogwistar-server` mixed-worker SQLite loopback integration passed in both sync-v1 and async-v2 modes. Initial restricted loopback attempts failed with WinError 10013; rerunning with permission passed, confirming an environment restriction rather than a product failure. Remaining: broaden production operation registry coverage, live PostgreSQL HTTP verification, and `runtime_cutover_ready`/`server_cutover_ready` proof. Backward compatibility invariant: absent target metadata and absent target maps preserve existing Python routing; the legacy prefix continues to select Rust. |
+| DL-13 | IN PROGRESS | Declare and test the complete Rust-only request path for each advertised native workload. The Rust-native registry supports deterministic `noop`, `emit-result`, and the tested stateful `increment-counter` slice; native effects use the shared `RecordedWorkerSuccessEffect` reducer, frozen routing, durable events, and bounded traces. Existing evidence includes the three-mode SQLite trace and real loopback Python/Rust handoff tests recorded above and in `docs/benchmarks/mixed_rewrite_benchmark.md`; those establish bounded parity/performance evidence, not complete production coverage. New per-node selection is represented by optional `wf_executor_target` workflow metadata and frozen as a sparse `node_executor_targets` map. Rust API admission validates the map, selects workers for start and continuation lanes, and carries the choice in the durable execution payload; legacy `rust-native/<operation>` remains inferred when the field is absent, while ordinary absent-target nodes remain Python workers. Python plan freezing and Rust dispatch now share `contracts/golden/runtime-executor-routing-v1.json`, covering explicit Python/Rust targets, the legacy native prefix, and the default Python route; Python rejection tests cover incompatible/unknown targets and empty native names. This is a routing contract, not production operation coverage. Rust-owned operations are no longer required to appear in the Python resolver; Python-owned operations still are. Evidence: Python `tests/runtime/test_workflow_version_admission.py` (**31 passed**, CPython 3.13), including the shared routing fixture and invalid-target cases; Rust `tests::native_executor_routing_matches_shared_python_contract_fixture` (**1 passed**); existing complete focused Python modules `tests/runtime/test_workflow_version_admission.py` plus `tests/runtime/test_rust_runtime_authority.py` passed **47 tests** on Windows CPython 3.13 with loopback access enabled; this includes sync-v1 and async-v2 end-to-end mixed Python/Rust/Python execution with plain Rust operation names and explicit per-node targets. `cargo test -p kogwistar-runtime --lib` passed **25** tests, including target persistence into continuation payloads; `cargo test -p kogwistar-api --lib` passed **77/77**, covering malformed native names, legacy prefix routing, explicit target routing, authoritative graph snapshots, and existing API behavior. The rebuilt `kogwistar-server` mixed-worker SQLite loopback integration passed in both sync-v1 and async-v2 modes. Initial restricted loopback attempts failed with WinError 10013; rerunning with permission passed, confirming an environment restriction rather than a product failure. A new live HTTP test now verifies a two-step all-Rust `increment-counter` run through the built server on SQLite and PostgreSQL 17, including terminal status and persisted final state; its MCP `workflow.run_events` call returns the two durable native traces with `rust-native` authority and zero seam crossings (**2 passed**; full authority module **30 passed**). The MCP event-poll path is an internal application effect rather than a public REST route; the canonical generated path is pinned by a dedicated adapter contract and verified through live SQLite/PostgreSQL MCP calls. Remaining: broaden real-server operation/backend coverage and establish `runtime_cutover_ready`/`server_cutover_ready`. Backward compatibility invariant: absent target metadata and absent target maps preserve existing Python routing; the legacy prefix continues to select Rust. |
 | DL-13A | PASS (Rust graph MCP/router admission slice) | Isolated-target Windows Rust API tests `graph_neighbor_request_is_typed_and_closed_to_unknown_fields`, `graph_neighbor_route_authorizes_before_storage_access`, `router_exposes_graph_neighbor_effect_route`, and `internal_graph_mutation_contract_requires_atomic_versioned_batches` passed (4 total). They prove the Rust HTTP/MCP route is present, typed, capability-gated before storage, and requires the versioned atomic mutation contract. This is route/admission evidence only; live backend persistence is covered separately by DL-16I and the complete Rust-only workload remains open. |
 | DL-13B | PASS (Rust-native stateful HTTP execution slice) | The SQLite native runtime route now submits `rust-native/increment-counter` through HTTP, claims it as the Rust worker, applies its overwrite delta through the shared transactional reducer, routes to the next native step, and persists a transition containing `counter=2` before terminal completion. Evidence: the isolated Windows Cargo target API native-runtime filter (`3 passed`), covering SQLite and PostgreSQL reducer routing plus explicit operation-prefix admission, and the shared Python/Rust golden in DL-05K. This proves one stateful native operation end to end; it is not complete production operation-registry coverage. |
 | DL-13C | PASS (three-mode same-trace MCP benchmark; bounded) | Windows CPython 3.13 ran the same 8-item/24-operation SQLite graph trace through Python in-process, Python service + Rust SQLite authority, and Rust-native HTTP, with one warm-up and two fresh-database samples per mode. All returned digest `46450db6dfea66390d75cf18e98cf1a0e8f4f0ffb2358a9a2e899b0bca3fa9e8`; native attestation reported 0 FFI calls and 24 HTTP requests/tool dispatches per sample. Median throughput: 39.31, 48.75, and 58.20 ops/s respectively; startup: 79.30, 81.03, and 534.12 ms. Evidence: complete JSON report under ignored `.tmp/dual-language-three-mode-recheck-20261026/` and the corresponding section in `docs/benchmarks/mixed_rewrite_benchmark.md`. This demonstrates parity and a bounded steady-state Rust-native advantage for this workload only; it does not prove production MCP semantics, other backends, container resource parity, or general full-stack cutover readiness. |
@@ -1081,11 +1110,11 @@ snapshot's denominator.
 ### Latest DL-16A Evidence Update
 Rust persistent Node/Edge and PureChromaNode/Edge validation now enforces Python's `properties` contract: a top-level mapping whose values are scalars, scalar lists, or scalar maps. The shared invalid fixture covers non-mapping values and nested collections for persistent entities, plus nested collections for both PureChroma entity kinds. Evidence: `cargo test -p kogwistar-contracts --lib` (74 passed), `cargo fmt --all -- --check`, Ruff for `tests/core/test_rust_contract_differential.py`, `git diff --check`, and the rebuilt native-extension differential invalid-payload test (1 passed).
 
-The raw JSON validation seam uses `RawValue` where needed to preserve exact integer tokens without mutating or reserializing the caller's payload. An additive `RawGraphModelEnvelopeV1`, PyO3 `round_trip_raw_graph_model_envelope`, and Python `_rust_bridge.round_trip_raw_graph_model_envelope()` preserve the raw payload through Rust parse/serialize and validate it through the same family contract. `PythonIntegerV1` and `graph_model_level_from_root` expose hierarchy values as exact decimal strings, following Python's top-level precedence, metadata fallback, and explicit-null behavior. The additive `PersistentGraphEntityV2` decoder pairs the exact hierarchy integer with a typed persistent entity and untouched raw payload; its legacy V1 entity view retains representable `Option<i64>` values and uses null only for an out-of-range level. PyO3 and `_rust_bridge.decode_persistent_graph_model_v2()` expose this as an additive `schema_version: 2` result while preserving the V1 payload shape. The shared `serde_json` configuration now enables `arbitrary_precision`, so V1 mutation `Value` payloads and projection metadata retain large integer tokens rather than rounding them; typed graph validation converts out-of-range integer tokens to decimal strings only in its temporary validation view, leaving the original payload untouched. The raw graph-family fallback now handles out-of-range integers symmetrically on both sides of the signed `i64` range; Python/Rust differential coverage includes positive and negative `2**64` and `2**200`, both as top-level values and metadata fallback. Evidence: all 80 `kogwistar-contracts` library tests passed, including raw graph decoding and large workflow-priority parity; mutation DTO tests preserve a `2**200` token; the SQLite close/reopen typed-replay invariant passes; and `kogwistar-store-postgres::tests::arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available` passed against disposable pgvector/PostgreSQL 16, proving the exact token survives JSONB projection and authoritative event storage across store reopen. Workspace check, formatting, and the rebuilt-extension Python/Rust differential for `2**64` and `2**200` passed. The legacy typed V1 entity still represents `level_from_root` as `Option<i64>` and therefore cannot expose arbitrary Python integers through that field; callers needing exact hierarchy levels must use V2. DL-16A remains partial.
+The raw JSON validation seam uses `RawValue` where needed to preserve exact integer tokens without mutating or reserializing the caller's payload. An additive `RawGraphModelEnvelopeV1`, PyO3 `round_trip_raw_graph_model_envelope`, and Python `_rust_bridge.round_trip_raw_graph_model_envelope()` preserve the raw payload through Rust parse/serialize and validate it through the same family contract. `PythonIntegerV1` and `graph_model_level_from_root` expose hierarchy values as exact decimal strings, following Python's top-level precedence, metadata fallback, and explicit-null behavior. The additive `PersistentGraphEntityV2` decoder pairs the exact hierarchy integer with a typed persistent entity and untouched raw payload; its legacy V1 entity view retains representable `Option<i64>` values and uses null only for an out-of-range level. PyO3 and `_rust_bridge.decode_persistent_graph_model_v2()` expose this as an additive `schema_version: 2` result while preserving the V1 payload shape. The shared `serde_json` configuration now enables `arbitrary_precision`, so V1 mutation `Value` payloads and projection metadata retain large integer tokens rather than rounding them; typed graph validation converts out-of-range integer tokens to decimal strings only in its temporary validation view, leaving the original payload untouched. The raw graph-family fallback now handles out-of-range integers symmetrically on both sides of the signed `i64` range; Python/Rust differential coverage includes positive and negative `2**64` and `2**200`, both as top-level values and metadata fallback. Evidence: all 80 `kogwistar-contracts` library tests passed, including raw graph decoding and large workflow-priority parity; mutation DTO tests preserve a `2**200` token; the SQLite close/reopen typed-replay invariant passes; and `kogwistar-store-postgres::tests::arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available` passed against disposable pgvector/PostgreSQL 16, proving the exact token survives JSONB projection and authoritative event storage across store reopen. Workspace check, formatting, and the rebuilt-extension Python/Rust differential for `2**64` and `2**200` passed. The legacy typed V1 entity still represents `level_from_root` as `Option<i64>` and therefore cannot expose arbitrary Python integers through that field; callers needing exact hierarchy levels use the additive V2 contract. This intentional V1 bound preserves compatibility. The model-contract and family-differential scope of DL-16A is PASS; migration of every runtime consumer is tracked separately and is not implied by this item.
 
-The Python-to-Rust persistence seams now also have explicit bridge-level integer evidence. PostgreSQL graph mutation, projection-write, and projection-read/filter operations use lossless integer-token serialization while non-graph operations retain the bounded strict-JSON contract; the live Python facade → Rust mutation → PostgreSQL JSONB/event → Python Pydantic/backend read round trip and Rust projection-record and cosine-vector queries → Python bridge results pass for positive and negative `2**200`. SQLite's existing opaque `payload_json` event ABI is verified bidirectionally for the same values (Python append → Rust replay and Rust append → Python replay). Evidence: `tests/core/test_rust_bridge_trace.py::test_postgres_graph_mutation_bridge_preserves_unbounded_integers`, `tests/core/test_rust_store_graph_mutation_differential.py::test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python` (both parameter cases passed against the existing local pgvector test database), and `tests/core/test_rust_store_sqlite_differential.py::test_python_and_rust_sqlite_event_handoff_preserves_arbitrary_precision_json`; Ruff and `git diff --check` passed. This closes the bridge serialization gap for these tested graph/event paths only; DL-16A remains partial and legacy V1 typed decoding remains bounded.
+The Python-to-Rust persistence seams now also have explicit bridge-level integer evidence. PostgreSQL graph mutation, projection-write, and projection-read/filter operations use lossless integer-token serialization while non-graph operations retain the bounded strict-JSON contract; the live Python facade → Rust mutation → PostgreSQL JSONB/event → Python Pydantic/backend read round trip and Rust projection-record and cosine-vector queries → Python bridge results pass for positive and negative `2**200`. SQLite's existing opaque `payload_json` event ABI is verified bidirectionally for the same values (Python append → Rust replay and Rust append → Python replay). Evidence: `tests/core/test_rust_bridge_trace.py::test_postgres_graph_mutation_bridge_preserves_unbounded_integers`, `tests/core/test_rust_store_graph_mutation_differential.py::test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python` (both parameter cases passed against the existing local pgvector test database), and `tests/core/test_rust_store_sqlite_differential.py::test_python_and_rust_sqlite_event_handoff_preserves_arbitrary_precision_json`; Ruff and `git diff --check` passed. This closes the bridge serialization gap for these tested graph/event paths only. Legacy V1 typed decoding remains bounded; the additive V2 contract is the lossless path. This is not whole-stack interchangeability evidence and does not change the scoped PASS status of DL-16A.
 
-The additive `PersistentGraphEntityV2` now participates in the shared Rust graph interface rather than forcing callers to unwrap it before using common capabilities. It implements `GraphEntity`, `HasMetadata`, `HasLifecycle`, and legacy bounded `HasLevel`, and the additive `HasExactLevel` exposes its lossless Python integer; `as_node()`/`as_edge()` preserve the edge-only incidence API without pretending a node variant is an edge. Existing V1 types and wire payloads are unchanged. Evidence: `graph_model::tests::persistent_v2_keeps_shared_entity_capabilities_and_exact_hierarchy_level` checks both Node and Edge with a 200-bit level, lifecycle metadata, V1-compatible `None` for unrepresentable `i64`, and exact-level access; `cargo test -p kogwistar-contracts --lib` (**81 passed**), `cargo check --workspace`, and `cargo fmt --all -- --check` passed. Persistent storage/runtime consumers of the additive V2 view remain unimplemented, so DL-16A remains partial.
+The additive `PersistentGraphEntityV2` now participates in the shared Rust graph interface rather than forcing callers to unwrap it before using common capabilities. It implements `GraphEntity`, `HasMetadata`, `HasLifecycle`, and legacy bounded `HasLevel`, and the additive `HasExactLevel` exposes its lossless Python integer; `as_node()`/`as_edge()` preserve the edge-only incidence API without pretending a node variant is an edge. Existing V1 types and wire payloads are unchanged. Evidence: `graph_model::tests::persistent_v2_keeps_shared_entity_capabilities_and_exact_hierarchy_level` checks both Node and Edge with a 200-bit level, lifecycle metadata, V1-compatible `None` for unrepresentable `i64`, and exact-level access; `cargo test -p kogwistar-contracts --lib` (**81 passed**), `cargo check --workspace`, and `cargo fmt --all -- --check` passed. Production consumers are not all migrated to V2; that is separate integration work and does not invalidate DL-16A's model-contract PASS.
 
 ### Latest DL-07I Evidence Update
 
@@ -1188,8 +1217,16 @@ positive and negative `2**64` and `2**200` values, metadata fallback, and
 explicit top-level null precedence. Evidence: the complete
 `tests/core/test_rust_contract_differential.py` module (**107 passed**),
 `cargo test -p kogwistar-contracts --lib` (**81 passed**), Rust formatting,
-Ruff, and `git diff --check`. This remains a focused graph-model seam, not
-whole-stack interchangeability evidence; DL-16A remains partial.
+Ruff, and `git diff --check`. This is focused graph-model seam evidence, not
+whole-stack interchangeability evidence; it supports the scoped DL-16A PASS
+and does not claim that all runtime consumers use V2. A fresh Windows CPython
+3.13 live PostgreSQL rerun used the test fixture's `GKE_PG_DSN` setting and
+passed both positive and negative 200-bit values in
+`test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python`
+(**2 passed**); the corresponding SQLite event replay parity test also passed
+(**1 passed**). The initial PostgreSQL skip was due to setting the Rust
+store's `KOGWISTAR_TEST_PG_DSN` variable instead of the Python fixture's
+`GKE_PG_DSN`, not a product failure.
 
 ### Latest DL-08C live PostgreSQL MCP traversal evidence
 
@@ -1346,6 +1383,341 @@ identity cases passed again (**10 passed**). Pyright on `rust_worker.py` and
 passed. This proves selector consistency for the hybrid Python callback lane,
 not operation registry parity or a seam-free Rust-native workload. The fixed
 baseline remains **99/130 PASS (76.2%)**; DL-15C remains in progress.
+
+Native async client-suspended runs now have a `resume_run()` path: it restores
+the latest durable checkpoint, validates and consumes exactly one matching
+suspended token, applies the client result, records the resume step, routes the
+continuation, and preserves execution-node causality. Re-suspending the same
+token and a subsequent successful resume are covered, and a duplicate resume
+is rejected before another step is persisted. The native async scheduler now
+also uses the shared durable run-ownership contract when its persistence facade
+supports it: it claims before execution, renews after accepted steps, releases
+resumable suspended/checkpointed-failure runs, and preserves a caller's owner
+identity when client resume hands control back to the scheduler. The regression
+`tests/runtime/test_async_runtime_contract.py::test_async_runtime_fences_concurrent_duplicate_run_ids`
+proves two independent async runtime instances cannot both enter the handler
+for one live run ID. Ownership remains optional for minimal/test runtime
+adapters without the contract methods; the production runtime uses the shared
+CAS-backed ownership projection. A live integration test then exposed that the
+async facade handed the resumed `async-v2` worker item to the synchronous
+Python worker, which correctly rejected it. Rust-selected async resume now
+uses `AsyncRustRuntimeAuthority` and its async worker; sync and async
+authorities share the same frozen-plan and client-result validation helpers.
+Evidence: `test_async_runtime_client_resume_uses_real_rust_authority` and
+`test_sync_runtime_client_resume_uses_real_rust_authority` in
+`tests/runtime/test_rust_runtime_authority.py` exercise suspend, resume,
+continuation, and succeeded status through the actual Rust HTTP server on both
+SQLite and PostgreSQL. Each PostgreSQL parameter configures the Rust server's
+`PostgresRunApplicationService` against a unique schema in the existing
+pgvector service, then verifies persisted continuation before dropping that
+schema. The async PostgreSQL case also verifies the persisted causal edge.
+Run-scoped Python dependencies now live in a store owned by the runtime, rather
+than in an individual short-lived Rust authority facade. The invariant is
+`(runtime instance, run_id) -> exact process-local dependency mapping`: a
+resumed facade for the same runtime reuses those objects, while a different
+runtime cannot observe them. The new unit regression covers reuse, isolation,
+and terminal release. Concurrent authority-facade initialization is serialized
+so two facades cannot install competing stores on the same runtime; a forced
+constructor race proves both facades share the same dependency mapping. The
+Rust HTTP suspend/resume integrations pass an opaque dependency through both
+sync and async callbacks and assert object identity after resumption. This supports
+resumption while the owning Python runtime remains alive; arbitrary Python
+objects are intentionally not serialized and cannot be restored after that
+process/runtime is lost. The focused resume,
+rejection, and sync/async parity set passed against the existing PostgreSQL 17
+container (**9 passed, 0 skipped**); after adding sync and PostgreSQL coverage,
+the full Rust runtime-authority module passed (**28 passed**) with the live Rust
+HTTP/pgvector service enabled. The focused concurrency/recreation regressions
+also passed (**2 passed**). Ruff, `git diff --check`, and production Pyright
+passed (0 diagnostics). This verifies the tested sync and async Rust-service
+suspend/resume paths on both SQLite and PostgreSQL, but not all runtime
+operations or Rust-native-only callback execution. This strengthens existing
+runtime continuation/ownership coverage; it does not close all of `DL-15C`,
+establish seam-free native Rust resume, or change the fixed baseline of
+**99/130 PASS (76.2%)**.
+
+Additional direct-server `DL-13` evidence: `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker`
+starts the built `kogwistar-server` binary and submits a two-step workflow with
+both nodes explicitly targeted to `rust-native`. The test itself only claims
+Rust-native work and calls `/internal/runtime/native/execute`; it never creates
+a Python worker or posts Python callback results. Both steps commit, the run
+reaches `succeeded`, the final persisted checkpoint is `counter=2`, and the
+server exposes both completed workflow steps. The same test calls MCP
+`workflow.run_events` and verifies both persisted native traces attest
+`rust-native` authority with zero seam crossings. A dedicated adapter contract
+pins the generated internal method and path; polling is an application effect
+used by MCP, not a separate public HTTP route. The test passed against SQLite
+and PostgreSQL 17 using a disposable schema (**2 passed**); the complete
+`tests/runtime/test_rust_runtime_authority.py` module passed with PostgreSQL
+enabled (**30 passed**). This closes the specific live PostgreSQL HTTP evidence
+gap for this small native workload, not production operation breadth, complete
+Rust server cutover readiness, or seam-free native resume. The fixed baseline
+remains **99/130 PASS (76.2%)**.
+
+Correction to the older DL-13 row wording: a direct REST GET to
+`/api/workflow/runs/{run_id}/events/poll` returning 404 is expected because
+polling is an internal effect route used by the MCP adapter, not a separately
+registered public HTTP route. REST clients use the registered run-events
+stream. The MCP operation was verified through the live SQLite and PostgreSQL
+server; its generated internal method/path is now pinned by
+`tests::mcp_run_events_builds_the_canonical_application_effect_route`. The
+earlier claim that a live route mismatch had been fixed was inaccurate; this
+slice normalizes the adapter path and strengthens end-to-end verification.
+
+### Inline Rust-native server execution evidence (DL-13 remains in progress)
+
+The packaged server now has an opt-in `KOGWISTAR_RUNTIME_NATIVE_INLINE=true`
+mode. Its in-process scheduler claims only the durable `rust-native-worker`
+recipient and invokes the same application-service native execution and
+recorded-result reducer directly, without sending per-step claim/execute HTTP
+requests. The default remains off, preserving existing worker deployments;
+Python-targeted jobs stay on their existing recipient and wire contract.
+Evidence: `test_rust_native_workflow_runs_through_real_server_without_python_worker`
+passed all four combinations of external-worker/inline-server and SQLite/live
+PostgreSQL 17 (**4 passed, 0 failed**); in both inline cases only the test
+client's submit/status/checkpoint/steps/MCP requests appear, while the two
+server-executed steps persist the same terminal state and native trace
+attestations. The Rust SQLite reducer route test passed (**1 passed**), the
+`kogwistar-server` binary built, Ruff passed, and `git diff --check` passed.
+This removes the internal HTTP seam for the tested built-in Rust-native
+workflow, not for Python callbacks, provider calls, arbitrary user operations,
+or every request path. In both inline backend cases, a separately submitted
+`python-worker`-targeted operation remained claimable by the Python worker while
+the inline scheduler was active. Three fresh process-level samples per backend
+and mode recorded submit-to-native-completion latency in ignored temporary
+JUnit reports; three repetitions of the four-case test yielded **12 passed**.
+Median latency was **4,099 ms external-worker vs. 1,707 ms inline-server on
+SQLite (2.40x)** and **4,455 ms vs. 1,893 ms on PostgreSQL (2.35x)**. Each
+sample was a two-step increment workflow; the external mode used explicit
+local HTTP claim/execute calls, while inline mode used server polling and
+public status reads. These small Windows local-server timings show the benefit
+of removing per-step loopback HTTP in this specific path, not a general
+throughput guarantee. The default-off setting and bounded retry delay require
+deployment-level verification before recommending enablement; the complete
+Rust API unit suite was not verified in this run because unrelated
+network/loopback-sensitive tests failed or stalled. The remaining in-process
+The initial inline implementation still crossed the application effect JSON
+boundary. The follow-up below removes that seam for inline claim/execute/apply;
+the public HTTP and external-worker JSON contracts remain unchanged.
+
+Follow-up typed-path slice: the inline scheduler now calls a typed
+`ApplicationService::execute_inline_native_work_once` operation. SQLite and
+PostgreSQL HTTP claim handlers and the inline worker share the same backend
+claim transaction helpers; native operation dispatch and result reduction use
+typed values in-process. The external worker's versioned JSON/HTTP contract is
+unchanged. Verification: Windows CPython 3.13 repeated the four-case real
+server matrix three times (**12 passed**) against SQLite and live Docker
+PostgreSQL 17/pgvector. Each run persisted the same two-step result and trace;
+the inline server continued to leave Python-targeted work claimable. Fresh
+process submit-to-completion samples (ms), external then inline:
+SQLite **4219.352 / 1605.205**, **4253.879 / 1626.270**, **4360.016 / 1745.687**;
+PostgreSQL **4290.236 / 1889.257**, **4386.089 / 1594.836**, **4704.291 / 1949.946**.
+Medians were **4253.879 / 1626.270 ms** for SQLite (2.62x) and
+**4386.089 / 1889.257 ms** for PostgreSQL (2.32x). The workload remains a tiny
+two-step graph, and includes process startup, API submission, and completion
+polling; it is not representative of general throughput. `cargo check -p
+kogwistar-api`, `tests::sqlite_native_runtime_route_uses_shared_result_reducer`
+(1 passed with loopback permission),
+`tests::inline_runtime_iteration_uses_typed_hook_not_generic_effect_path`
+(1 passed), and the focused live matrix passed. The latter test locks the
+framework invariant that inline execution uses the typed hook and never falls
+back to generic serialized `ApiEffectRequest` execution. After adding this
+guard, the rebuilt `kogwistar-server` passed the live matrix again (**4
+passed** across external/inline and SQLite/PostgreSQL). This removes the internal
+JSON request/response serialization seam for inline claim/execute/apply, but
+not persistence serialization, public API transport, Python callbacks, or
+other service operations. Against the earlier inline-JSON samples (SQLite
+median **1707 ms**, PostgreSQL **1893 ms**), the typed-path samples overlap
+their observed ranges; this run does **not** demonstrate a measurable
+end-to-end speedup from removing that serialization. The architectural seam
+is gone for this path, while process startup, status polling, and backend work
+remain in the measured interval. DL-13 remains in progress and the fixed
+checklist baseline remains **99/130 PASS (76.2%)**.
+
+Follow-up client-polling slice: when `KOGWISTAR_RUNTIME_NATIVE_INLINE=true` is
+configured on the Python facade, an all-Rust-native frozen workflow no longer
+polls the Python worker claim endpoint while waiting; it only checks run status
+and checkpoints. This remains opt-in. Hybrid, Python-targeted, malformed, and
+empty plans retain worker polling, and the default remains off for
+backward-compatible external-worker deployments. Evidence:
+`tests/runtime/test_rust_runtime_authority.py` focused classifier/config/async
+and capability-agreement tests (**15 passed**). The live sync
+`test_python_facade_leaves_all_native_work_to_inline_rust_server` and async
+`test_async_python_facade_uses_server_inline_native_worker` integrations each
+passed on SQLite and Docker PostgreSQL 17/pgvector (**4 passed total**, with an
+isolated store/schema per run). The live request traces confirm both facades
+submit and observe completed runs without calling
+`/internal/runtime/claim` or `/internal/runtime/native/execute`; the durable
+final state is `counter=2`. Async authority's no-poll wait path is covered with
+a deterministic HTTP fixture and a live async server run. This avoids needless
+Python-worker HTTP polling for the covered all-native configuration; it does
+not remove public status/checkpoint requests. Before suppressing polls, the
+client now requires `/health` to explicitly advertise
+`native_inline_worker_enabled: true`; older servers and mismatched
+configurations retain polling. The live integration verifies this handshake
+on SQLite and PostgreSQL; Rust API health tests passed (**3 passed**). This
+attests the server's configured mode at the health check, not continued
+scheduler liveness after startup. DL-13 remains in progress; checklist
+denominator and fixed baseline remain unchanged at **99/130 PASS (76.2%)**.
+
+Inline-worker crash recovery follow-up: the server now supervises its opt-in
+native worker task. An unexpected task return or panic is logged, followed by a
+bounded one-second backoff and restart; ordinary application errors retain their
+existing one-second retry behavior. Server shutdown signals and joins the
+supervisor, which aborts and joins its child worker rather than detaching it.
+The panic-once regression proves the worker is invoked again after an injected
+panic and that the supervisor exits cleanly on shutdown. Evidence:
+`tests::inline_runtime_supervisor_restarts_worker_after_panic` and
+`tests::inline_runtime_iteration_uses_typed_hook_not_generic_effect_path`
+(**2 passed**); the rebuilt server's live external/inline SQLite/PostgreSQL
+workflow matrix passed (**4 passed**) against the Docker PostgreSQL 17/pgvector
+service. `cargo fmt --all -- --check` passed. This closes the narrow task-panic
+restart case, not database outage recovery, process-level supervision, or
+worker liveness attestation; DL-13 remains in progress and the fixed baseline
+is unchanged at **99/130 PASS (76.2%)**. The complete API library suite passed
+(**80 passed, 9 PostgreSQL-gated tests ignored**) with local socket access; the
+separately selected live server matrix above exercised PostgreSQL. Strict
+package Clippy remains blocked by the existing `clippy::const_is_empty` lint
+at `rust/crates/kogwistar-api/src/cutover.rs:20`; with only that lint allowed,
+`cargo clippy -p kogwistar-api --all-targets --locked -- -D warnings -A
+clippy::const_is_empty` passed. No other lint was suppressed.
+
+Lease-recovery boundary recheck (2026-10-27): the SQLite runtime route
+regression `tests::sqlite_run_service_handles_get_events_and_cancel` passed,
+including reclaim after expiry and rejection of the former owner's stale result.
+The live PostgreSQL store regression
+`tests::recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available`
+also passed against the running Docker PostgreSQL 17/pgvector service; it
+reclaims an expired claim and rejects the stale owner's result before allowing
+the new owner to commit. These tests verify the shared queue fencing behavior,
+not a panic injected inside the inline native operation after it has claimed
+work. Inline claims currently use a 60-second lease, so such a panic can delay
+retry until expiry; do not describe this as immediate panic recovery. No
+checklist ID or denominator changed.
+
+Runtime claim-generation fence recheck (2026-10-27): SQLite and PostgreSQL
+HTTP claim services now append a fresh UUID to the requested worker label and
+return that attempt-specific owner in each work item. A same-label reclaim
+therefore cannot make the earlier claimant's result current again. Evidence:
+`tests::sqlite_run_service_handles_get_events_and_cancel` (same-label reclaim,
+distinct owner, stale result rejected; **1 passed**),
+`tests::sqlite_native_runtime_route_uses_shared_result_reducer` (**1 passed**),
+and `tests::postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available`
+against the approved local pgvector container (same-label expiry/reclaim,
+distinct owner, stale native execution rejected; **1 passed**). This fences
+runtime API claims without changing the request/response DTO fields; workers
+must continue echoing the `claimed_by` value returned with work. Direct
+store-level claims remain governed by their caller-supplied owner token, so
+direct callers must supply a fresh token for each claim attempt rather than a
+stable worker label; changing that lower-level API would require an additive
+claim-generation field to preserve existing DTO behavior. No checklist ID,
+status, or denominator changed. Python-consumer compatibility was also verified
+by
+`tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_sqlite_server`
+(**1 passed**), covering both sync and async Python workers across the mixed
+Python/Rust HTTP workflow. The Python streaming-agent event journal now also
+creates a fresh attempt token and carries the exact returned owner through
+acknowledge/requeue/dead-letter. Its live SQLite regression proves that an old
+claim cannot acknowledge a same-worker reclaim; `tests/agent/test_agent_event_journal.py`
+passed (**6 passed**) and Ruff passed. Generic callers of `claim_pending` still
+own token freshness; this focused fix protects the event-journal consumer
+without silently changing the public lane-messaging contract. Agent control
+points now use the same per-attempt owner tokens, checkpoint the actual owner,
+and reject stale acknowledgements while allowing an expired claim from the
+same worker label to be reclaimed. `tests/agent/test_agent_goal_c.py` passed
+(**27 passed**) and the targeted Ruff check passed. No checklist ID, status,
+or denominator changed. A second invariant gap was closed at the store
+boundary: once a lane lease expires, its owner can no longer acknowledge,
+requeue, or dead-letter the message even if no replacement claimant has arrived
+yet. Unclaimed administrative transitions remain compatible. This predicate
+is implemented in the Python in-memory/SQLite/PostgreSQL stores and Rust
+in-memory/SQLite/PostgreSQL stores. Evidence: Python lane-message metastore
+contract suite (**13 passed**); Rust/Python SQLite and live PostgreSQL
+differential suite (**6 passed**, using the rebuilt extension and existing
+pgvector test container); Rust SQLite and in-memory focused unit tests (**1
+passed each**); PostgreSQL Rust crate test compilation and `cargo fmt --all
+-- --check` passed. The combined Python contract/differential run passed
+**19 tests**, and Ruff passed for the touched Python files. No checklist ID,
+status, or denominator changed.
+
+Lane-message backend parity follow-up (2026-10-27): the Python SQLite and
+PostgreSQL metadata stores now implement the same dead-letter operation already
+available in the in-memory and Rust stores. Claimed messages require the current
+unexpired owner; stale/expired owners and terminal messages cannot overwrite
+the dead-letter reason, while unclaimed administrative dead-lettering remains
+supported. Evidence: `tests/core/test_lane_message_meta_store_contract.py`
+(**16 passed**) covers successful terminalization and expired-lease fencing in
+Python in-memory and SQLite stores; the live
+`tests/core/test_rust_store_lane_messages_differential.py::test_postgres_lane_python_rust_and_concurrency`
+(**1 passed**) covers successful Python PostgreSQL dead-lettering and expired
+Python/Rust owners against the pgvector test container. Ruff and
+`git diff --check` passed. No checklist ID, status, or denominator changed.
+
+Live backend recheck (2026-10-27): reran
+`tests/core/test_rust_store_lane_messages_differential.py` against the already
+running PostgreSQL 17/pgvector container on port 55433, explicitly supplying
+its local DSN so the test did not depend on starting another container. Result:
+**7 passed, 0 skipped** on Windows CPython 3.13. New regressions verify that
+successful Python and Rust dead-letter writes in SQLite and PostgreSQL are
+visible through the other implementation, and stale repeated attempts cannot
+overwrite the durable terminal reason. The SQLite atomic-batch abort regression
+includes an entity event, lane-message projection, index-job intent, and claim
+operation; both Rust and Python readers verify that the aborted event, lane
+message, and index job are absent. The suite also covers lease expiry and
+concurrent claims. A separate Linux Docker run of
+`cargo test --locked -q -p kogwistar-store-sqlite` passed **30 tests, 1
+intentionally ignored**; the current Windows run of
+`cargo test --locked -p kogwistar-store-memory --lib` passed **19 tests**.
+These are fresh bounded verification results, not closure of the broader
+cross-platform transaction and CI gates. No checklist ID, status, or
+denominator changed.
+
+### DL-14A Resume-plan snapshot reuse
+
+Sync and async resume now freeze and validate the current workflow plan once,
+then reuse that exact plan for inline-worker selection and resume-successor
+construction. This removes two redundant full plan-freeze passes and prevents
+those decisions from silently using separate graph snapshots. The route
+evaluator still validates the workflow design for predicate evaluation; this
+change does not weaken that check. Evidence: plan-identity and no-refreeze
+regressions plus resume-effect and drift rejection tests (**4 passed**); live
+Rust-server sync and async resume integrations on SQLite and Docker PostgreSQL
+17/pgvector (**4 passed**). Fresh Windows CPython 3.13 revalidation on
+2026-10-27 reran the plan-reuse regression, both sync/async live resume tests
+against SQLite and PostgreSQL, and the PostgreSQL async checkpoint-resume
+roundtrip: **6 passed, 0 skipped**. This confirms the prior evidence against
+the current worktree and live container. Ruff and `git diff --check` passed.
+This is bounded resume-path evidence, not a broad latency claim or completion
+of `DL-14A`.
+Checklist IDs and denominator are unchanged; baseline remains **99/130 PASS
+(76.2%)**.
+
+Worker claim-attempt API follow-up (2026-10-27): added the backwards-compatible
+`LaneMessagingService.claim_pending_attempt(worker_id=...)` helper, which
+generates a fresh owner token per lease attempt, and migrated the provider-event
+journal and control-point consumers to it. The legacy
+`claim_pending(claimed_by=...)` API remains available. Evidence:
+`tests/core/test_lane_messaging.py`, `tests/agent/test_agent_event_journal.py`,
+and `tests/agent/test_agent_goal_c.py` (**53 passed**) verify fresh reclaim
+tokens, stale-owner rejection, current-owner acknowledgement, and consumer
+integration; the existing-container PostgreSQL 17/pgvector test
+`tests/core/test_rust_store_lane_messages_differential.py::test_postgres_lane_python_rust_and_concurrency`
+(**1 passed**) rechecked the backend's concurrent claim and Python/Rust
+visibility contract. Ruff and `git diff --check` passed. No checklist ID,
+status, or denominator changed; this bounded change does not close the broader
+cross-language lease-fencing checklist item.
+
+Cross-backend metadata/runtime verification (2026-10-27): Chroma stores nested
+JSON metadata through a version-tagged scalar representation and restores its
+original mapping/list shape on synchronous and asynchronous reads. This fixes
+the observed failure when workflow implementation-selection metadata reached
+Chroma's scalar-only metadata API. The focused Chroma round-trip and projection
+tests passed (**33 passed**); the affected runtime/backend suite passed
+(**112 passed, 11 skipped**) on Windows CPython 3.13. The Rust workspace
+library suite passed; PostgreSQL tests requiring an explicit DSN and the
+manual scale probe remained intentionally ignored. Ruff and `git diff --check`
+passed. This backend compatibility fix does not change checklist IDs, status,
+or denominator; baseline remains **99/130 PASS (76.2%)**.
 
 ## Completion rule
 

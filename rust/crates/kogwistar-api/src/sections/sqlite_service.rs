@@ -884,7 +884,24 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let outcome = self.store.immediate_transaction(|uow| {
+        match self.claim_runtime_work_items(input, recipient_ids) {
+            Ok(work) => json_effect(StatusCode::OK, json!({"work": work})),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_RUNTIME_CLAIM_CONFLICT",
+                error,
+            ),
+        }
+    }
+
+    fn claim_runtime_work_items(
+        &self,
+        input: RuntimeClaimRequest,
+        recipient_ids: Vec<String>,
+    ) -> Result<Vec<RuntimeClaimedWork>, String> {
+        let claim_owner = format!("{}#{}", input.claimed_by, uuid::Uuid::new_v4());
+        self.store
+            .immediate_transaction(|uow| {
             let mut claimed = Vec::new();
             for recipient_id in &recipient_ids {
                 let remaining = input.limit.saturating_sub(claimed.len());
@@ -895,7 +912,7 @@ impl SqliteRunApplicationService {
                     LaneMessageClaimFilter {
                         namespace: "workflow".to_owned(),
                         inbox_id: "workflow-runtime".to_owned(),
-                        claimed_by: input.claimed_by.clone(),
+                        claimed_by: claim_owner.clone(),
                         message_ids: None,
                         run_id: input.run_id.clone(),
                         msg_type: None,
@@ -944,22 +961,15 @@ impl SqliteRunApplicationService {
                 )?;
                 values.push(runtime_claimed_work(
                     lane,
-                    &input.claimed_by,
+                    &claim_owner,
                     run_id,
                     claimed_payload,
                     expected_event_seq,
                 ));
             }
-            Ok(values)
-        });
-        match outcome {
-            Ok(work) => json_effect(StatusCode::OK, json!({"work": work})),
-            Err(error) => effect_error(
-                StatusCode::CONFLICT,
-                "KOGWISTAR_RUNTIME_CLAIM_CONFLICT",
-                error.to_string(),
-            ),
-        }
+                Ok(values)
+            })
+            .map_err(|error| error.to_string())
     }
 
     fn apply_runtime_result(&self, request: &ApiEffectRequest) -> ApiEffectResponse {

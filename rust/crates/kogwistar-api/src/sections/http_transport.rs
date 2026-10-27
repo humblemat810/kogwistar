@@ -1,6 +1,18 @@
 async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
     let mut value = health_response(&state.api.health);
     if let Some(object) = value.as_object_mut() {
+        let inline_native_worker_enabled = std::env::var("KOGWISTAR_RUNTIME_NATIVE_INLINE")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            });
+        object.insert(
+            "native_inline_worker_enabled".to_owned(),
+            json!(inline_native_worker_enabled),
+        );
         let mut implementation = state.api.implementation.clone();
         implementation.implemented_route_operations =
             state.application.implemented_http_operations();
@@ -212,7 +224,7 @@ async fn mcp_handler(
                     contract_version: 1,
                     method: "GET".to_owned(),
                     path_and_query: format!(
-                        "/api/workflow/runs/{run_id}/events/poll?after_seq={after_seq}&limit={limit}"
+                        "/api/runs/{run_id}/events/poll?after_seq={after_seq}&limit={limit}"
                     ),
                     body: Vec::new(),
                     principal: principal.clone(),

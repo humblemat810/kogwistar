@@ -322,14 +322,48 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
             _ => Arc::new(UnavailableApplicationService),
         }
     };
-    axum::serve(listener, router_with_application(state, application))
+    let inline_native_runtime = match std::env::var("KOGWISTAR_RUNTIME_NATIVE_INLINE") {
+        Ok(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" | "" => false,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "KOGWISTAR_RUNTIME_NATIVE_INLINE must be a boolean",
+                )
+                .into());
+            }
+        },
+        Err(std::env::VarError::NotPresent) => false,
+        Err(error) => return Err(error.into()),
+    };
+    let native_worker = if inline_native_runtime {
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        let application = Arc::clone(&application);
+        Some((
+            shutdown,
+            tokio::spawn(supervise_inline_native_worker(
+                application,
+                shutdown_rx,
+            )),
+        ))
+    } else {
+        None
+    };
+    let server_result = axum::serve(listener, router_with_application(state, application))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
-        .await?;
+        .await;
+    if let Some((shutdown, native_worker)) = native_worker {
+        let _ = shutdown.send(());
+        let _ = native_worker.await;
+    }
+    server_result?;
     Ok(())
 }
 
+/// Versioned request passed from an HTTP or MCP adapter to application logic.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ApiEffectRequest {
     pub contract_version: u32,
@@ -347,6 +381,14 @@ pub struct ApiEffectResponse {
 }
 
 pub trait ApplicationService: Send + Sync + 'static {
+    /// Execute one Rust-targeted message through typed backend operations.
+    /// Services without an inline runtime leave work for the external worker.
+    fn execute_inline_native_work_once(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(false) })
+    }
+
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {
         GraphAuthorityCapability::Unsupported
     }
@@ -383,6 +425,83 @@ pub trait ApplicationService: Send + Sync + 'static {
         &self,
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>>;
+
+}
+
+async fn run_one_inline_native_worker_iteration(
+    application: &dyn ApplicationService,
+) -> Result<bool, String> {
+    application.execute_inline_native_work_once().await
+}
+
+async fn run_inline_native_worker(application: Arc<dyn ApplicationService>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+    loop {
+        interval.tick().await;
+        loop {
+            match run_one_inline_native_worker_iteration(application.as_ref()).await {
+                Ok(false) => break,
+                Ok(true) => continue,
+                Err(error) => {
+                    eprintln!("inline Rust runtime worker failed: {error}");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn supervise_inline_native_worker(
+    application: Arc<dyn ApplicationService>,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    loop {
+        let worker_application = Arc::clone(&application);
+        let mut worker = tokio::spawn(run_inline_native_worker(worker_application));
+        tokio::select! {
+            result = &mut worker => {
+                match result {
+                    Ok(()) => eprintln!("inline Rust runtime worker exited unexpectedly"),
+                    Err(error) => eprintln!("inline Rust runtime worker task failed: {error}"),
+                }
+            }
+            _ = &mut shutdown => {
+                worker.abort();
+                let _ = worker.await;
+                return;
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            _ = &mut shutdown => return,
+        }
+    }
+}
+
+fn native_result_for_claimed_work(
+    work: RuntimeClaimedWork,
+    registry: &kogwistar_runtime::NativeOperationRegistry,
+) -> Result<RuntimeWorkerResultRequest, String> {
+    let handoff = RecordedWorkerHandoff {
+        message_id: work.message_id,
+        claimed_by: work.claimed_by,
+        run_id: work.run_id,
+        step_id: work
+            .step_id
+            .ok_or_else(|| "claimed native work is missing step_id".to_owned())?,
+        correlation_id: work
+            .correlation_id
+            .ok_or_else(|| "claimed native work is missing correlation_id".to_owned())?,
+    };
+    let native_request = native_step_request_from_payload(&handoff, work.payload)?;
+    let effect = kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
+        .map_err(|error| format!("native execution rejected: {error}"))?;
+    Ok(RuntimeWorkerResultRequest {
+        handoff,
+        transition: None,
+        effect: Some(effect),
+    })
 }
 
 #[derive(Default)]
@@ -971,7 +1090,9 @@ fn native_step_request_from_payload(
     handoff: &RecordedWorkerHandoff,
     payload: Value,
 ) -> Result<kogwistar_runtime::RuntimeNativeStepRequest, String> {
-    if handoff.claimed_by != "rust-native-worker" {
+    if handoff.claimed_by != "rust-native-worker"
+        && !handoff.claimed_by.starts_with("rust-native-worker#")
+    {
         return Err("native execution requires the rust-native worker claim".to_owned());
     }
     if payload["kind"] == "workflow.run.execute" {

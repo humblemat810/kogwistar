@@ -1389,9 +1389,12 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 """
                 UPDATE projected_lane_messages
                 SET status = 'completed', claimed_by = NULL, lease_until = NULL
-                WHERE message_id = ? AND (claimed_by IS NULL OR claimed_by = ?)
+                WHERE message_id = ? AND (
+                    claimed_by IS NULL OR
+                    (status = 'claimed' AND claimed_by = ? AND lease_until >= ?)
+                )
                 """,
-                (str(message_id), str(claimed_by)),
+                (str(message_id), str(claimed_by), self._now_epoch()),
             )
 
     def requeue_projected_lane_message(
@@ -1413,14 +1416,42 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     retry_count = retry_count + 1,
                     available_at = ?,
                     error_json = COALESCE(?, error_json)
-                WHERE message_id = ? AND (claimed_by IS NULL OR claimed_by = ?)
+                WHERE message_id = ? AND (
+                    claimed_by IS NULL OR
+                    (status = 'claimed' AND claimed_by = ? AND lease_until >= ?)
+                )
                 """,
                 (
                     int(now + max(0, int(delay_seconds))),
                     error_json,
                     str(message_id),
                     str(claimed_by),
+                    int(now),
                 ),
+            )
+
+    def dead_letter_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+    ) -> None:
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE projected_lane_messages
+                SET status = 'dead-letter', claimed_by = NULL, lease_until = NULL,
+                    error_json = COALESCE(?, error_json)
+                WHERE message_id = ?
+                  AND status NOT IN ('completed', 'failed', 'cancelled', 'dead-letter')
+                  AND (
+                    claimed_by IS NULL OR
+                    (status = 'claimed' AND claimed_by = ? AND lease_until >= ?)
+                  )
+                """,
+                (error_json, str(message_id), str(claimed_by), int(now)),
             )
 
     def clear_projected_lane_messages(self, namespace: str) -> int:

@@ -806,13 +806,7 @@ impl PostgresStore {
         metadata_not_equals: BTreeMap<String, Value>,
     ) -> PostgresStoreResult<Vec<VectorMatch>> {
         let client = self.client().await?;
-        graph_projection_vector_query(
-            &**client,
-            &self.tables,
-            query,
-            &metadata_not_equals,
-        )
-        .await
+        graph_projection_vector_query(&**client, &self.tables, query, &metadata_not_equals).await
     }
 
     /// Execute multiple same-scope nearest-neighbor searches in one database
@@ -834,13 +828,8 @@ impl PostgresStore {
             return Ok(Vec::new());
         }
         let client = self.client().await?;
-        graph_projection_vector_query_batch(
-            &**client,
-            &self.tables,
-            queries,
-            &metadata_not_equals,
-        )
-        .await
+        graph_projection_vector_query_batch(&**client, &self.tables, queries, &metadata_not_equals)
+            .await
     }
 
     pub async fn append_raw_entity_event(
@@ -1804,13 +1793,8 @@ impl PostgresUnitOfWork<'_> {
         &self,
         query: GraphProjectionVectorQuery,
     ) -> PostgresStoreResult<Vec<VectorMatch>> {
-        graph_projection_vector_query(
-            &self.transaction,
-            &self.tables,
-            query,
-            &BTreeMap::new(),
-        )
-        .await
+        graph_projection_vector_query(&self.transaction, &self.tables, query, &BTreeMap::new())
+            .await
     }
 
     pub async fn project_lane_message(
@@ -6431,7 +6415,7 @@ async fn ack_projected_lane_message<C>(
 where
     C: GenericClient + Sync,
 {
-    c.execute(&format!("UPDATE {} SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=$1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=$2)",t.projected_lane_messages),&[&id,&owner]).await.map_err(backend)?;
+    c.execute(&format!("UPDATE {} SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=$1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=$2 AND lease_until>=NOW()))",t.projected_lane_messages),&[&id,&owner]).await.map_err(backend)?;
     Ok(())
 }
 async fn requeue_projected_lane_message<C>(
@@ -6446,7 +6430,7 @@ where
     C: GenericClient + Sync,
 {
     let delay = delay.max(0).to_string();
-    c.execute(&format!("UPDATE {} SET status='pending',claimed_by=NULL,lease_until=NULL,retry_count=retry_count+1,available_at=EXTRACT(EPOCH FROM(NOW()+($1::TEXT||' seconds')::interval))::BIGINT,error_json=COALESCE($2,error_json) WHERE message_id=$3 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=$4)",t.projected_lane_messages),&[&delay,&error,&id,&owner]).await.map_err(backend)?;
+    c.execute(&format!("UPDATE {} SET status='pending',claimed_by=NULL,lease_until=NULL,retry_count=retry_count+1,available_at=EXTRACT(EPOCH FROM(NOW()+($1::TEXT||' seconds')::interval))::BIGINT,error_json=COALESCE($2,error_json) WHERE message_id=$3 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=$4 AND lease_until>=NOW()))",t.projected_lane_messages),&[&delay,&error,&id,&owner]).await.map_err(backend)?;
     Ok(())
 }
 async fn dead_letter_projected_lane_message<C>(
@@ -6459,7 +6443,7 @@ async fn dead_letter_projected_lane_message<C>(
 where
     C: GenericClient + Sync,
 {
-    c.execute(&format!("UPDATE {} SET status='dead-letter',claimed_by=NULL,lease_until=NULL,error_json=COALESCE($1,error_json) WHERE message_id=$2 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR claimed_by=$3)",t.projected_lane_messages),&[&error,&id,&owner]).await.map_err(backend)?;
+    c.execute(&format!("UPDATE {} SET status='dead-letter',claimed_by=NULL,lease_until=NULL,error_json=COALESCE($1,error_json) WHERE message_id=$2 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=$3 AND lease_until>=NOW()))",t.projected_lane_messages),&[&error,&id,&owner]).await.map_err(backend)?;
     Ok(())
 }
 async fn repair_orphaned_claimed_lane_messages<C>(

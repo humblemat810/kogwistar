@@ -155,26 +155,29 @@ class RustBridgeTrace:
             }
 
 
-_active_bridge_trace: ContextVar[RustBridgeTrace | None] = ContextVar(
-    "kogwistar_rust_bridge_trace", default=None
+_active_bridge_traces: ContextVar[tuple[RustBridgeTrace, ...]] = ContextVar(
+    "kogwistar_rust_bridge_traces", default=()
 )
 
 
 @contextmanager
 def capture_rust_bridge_calls() -> Iterator[RustBridgeTrace]:
-    """Measure a Python bridge scope without changing dispatch or durable effects."""
+    """Measure a bridge scope and include its calls in enclosing captures."""
     trace = RustBridgeTrace()
-    token = _active_bridge_trace.set(trace)
+    active = _active_bridge_traces.get()
+    token = _active_bridge_traces.set((*active, trace))
     try:
         yield trace
     finally:
-        _active_bridge_trace.reset(token)
+        _active_bridge_traces.reset(token)
 
 
 class _TracingRustExtension:
-    def __init__(self, extension: RustExtensionLike, trace: RustBridgeTrace) -> None:
+    def __init__(
+        self, extension: RustExtensionLike, traces: tuple[RustBridgeTrace, ...]
+    ) -> None:
         self._extension = extension
-        self._trace = trace
+        self._traces = traces
 
     def __getattr__(self, name: str) -> Any:
         member = getattr(self._extension, name)
@@ -182,9 +185,11 @@ class _TracingRustExtension:
             return member
 
         def traced(*args: Any, **kwargs: Any) -> Any:
-            self._trace.record_call(name, args, kwargs)
+            for trace in self._traces:
+                trace.record_call(name, args, kwargs)
             result = member(*args, **kwargs)
-            self._trace.record_result(result)
+            for trace in self._traces:
+                trace.record_result(result)
             return result
 
         return traced
@@ -662,10 +667,10 @@ def _load_extension() -> RustExtensionLike:
             "Rust contract mode requires the kogwistar._rust extension. "
             "Install the 'rust' extra and run 'maturin develop'."
         ) from exc
-    trace = _active_bridge_trace.get()
-    if trace is None:
+    traces = _active_bridge_traces.get()
+    if not traces:
         return extension
-    return cast(RustExtensionLike, _TracingRustExtension(extension, trace))
+    return cast(RustExtensionLike, _TracingRustExtension(extension, traces))
 
 
 def _select(

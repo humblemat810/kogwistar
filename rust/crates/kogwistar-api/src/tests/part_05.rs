@@ -1,4 +1,192 @@
     #[tokio::test]
+    async fn inline_runtime_iteration_uses_typed_hook_not_generic_effect_path() {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        struct TypedOnlyService {
+            typed_calls: Arc<AtomicUsize>,
+            generic_effect_calls: Arc<AtomicUsize>,
+        }
+
+        impl ApplicationService for TypedOnlyService {
+            fn execute_inline_native_work_once(
+                &self,
+            ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+                let typed_calls = Arc::clone(&self.typed_calls);
+                Box::pin(async move {
+                    typed_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(true)
+                })
+            }
+
+            fn execute(
+                &self,
+                _request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let generic_effect_calls = Arc::clone(&self.generic_effect_calls);
+                Box::pin(async move {
+                    generic_effect_calls.fetch_add(1, Ordering::SeqCst);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: b"{}".to_vec(),
+                    }
+                })
+            }
+        }
+
+        let service = TypedOnlyService {
+            typed_calls: Arc::new(AtomicUsize::new(0)),
+            generic_effect_calls: Arc::new(AtomicUsize::new(0)),
+        };
+
+        assert!(run_one_inline_native_worker_iteration(&service)
+            .await
+            .unwrap());
+        assert_eq!(service.typed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(service.generic_effect_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn inline_runtime_supervisor_restarts_worker_after_panic() {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        struct PanicOnceService(Arc<AtomicUsize>);
+
+        impl ApplicationService for PanicOnceService {
+            fn execute_inline_native_work_once(
+                &self,
+            ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+                let calls = Arc::clone(&self.0);
+                Box::pin(async move {
+                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        panic!("injected native worker panic");
+                    }
+                    Ok(false)
+                })
+            }
+
+            fn execute(
+                &self,
+                _request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                Box::pin(async {
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: b"{}".to_vec(),
+                    }
+                })
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor = tokio::spawn(supervise_inline_native_worker(
+            Arc::new(PanicOnceService(Arc::clone(&calls))),
+            shutdown_rx,
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while calls.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("supervisor should restart the worker after panic");
+
+        shutdown.send(()).expect("supervisor should still be running");
+        tokio::time::timeout(Duration::from_secs(2), supervisor)
+            .await
+            .expect("supervisor should stop on shutdown")
+            .expect("supervisor task should complete");
+        let calls_after_shutdown = calls.load(Ordering::SeqCst);
+        assert!(calls_after_shutdown >= 2);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(calls.load(Ordering::SeqCst), calls_after_shutdown);
+    }
+
+    #[tokio::test]
+    async fn mcp_run_events_builds_the_canonical_application_effect_route() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        #[derive(Clone)]
+        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
+
+        impl ApplicationService for RequestRecorder {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "workflow" && name == "workflow.run_events"
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let seen = Arc::clone(&self.0);
+                Box::pin(async move {
+                    let result = json!({
+                        "method": request.method.clone(),
+                        "path_and_query": request.path_and_query.clone(),
+                    });
+                    *seen.lock().unwrap() = Some(request);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: serde_json::to_vec(&result).unwrap(),
+                    }
+                })
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(RequestRecorder(Arc::clone(&seen))),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow.run_events","arguments":{"run_id":"run-1","after_seq":7,"limit":25}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"]["method"], "GET");
+        assert_eq!(
+            value["result"]["path_and_query"],
+            "/api/runs/run-1/events/poll?after_seq=7&limit=25"
+        );
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
+        assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn sqlite_run_service_handles_get_events_and_cancel() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
@@ -833,7 +1021,7 @@
         assert_eq!(lane_after_forgery.status, "claimed");
         assert_eq!(
             lane_after_forgery.claimed_by.as_deref(),
-            Some("python-worker-3")
+            first_work["claimed_by"].as_str()
         );
 
         let mut invalid_transition_payload = first_result_payload.clone();
@@ -861,7 +1049,7 @@
         assert_eq!(lane_after_invalid.status, "claimed");
         assert_eq!(
             lane_after_invalid.claimed_by.as_deref(),
-            Some("python-worker-3")
+            first_work["claimed_by"].as_str()
         );
         assert!(
             store
@@ -887,7 +1075,7 @@
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
-                        r#"{"claimed_by":"python-worker-reclaimed","limit":10,"lease_seconds":60}"#,
+                        r#"{"claimed_by":"python-worker-3","limit":10,"lease_seconds":60}"#,
                     ))
                     .unwrap(),
             )
@@ -904,7 +1092,11 @@
         let reclaimed_value = serde_json::from_slice::<Value>(&reclaimed_body).unwrap();
         let reclaimed_work = &reclaimed_value["work"][0];
         assert_eq!(reclaimed_work["message_id"], first_work["message_id"]);
-        assert_eq!(reclaimed_work["claimed_by"], "python-worker-reclaimed");
+        assert!(reclaimed_work["claimed_by"]
+            .as_str()
+            .unwrap()
+            .starts_with("python-worker-3#"));
+        assert_ne!(reclaimed_work["claimed_by"], first_work["claimed_by"]);
         let stale_owner = app
             .clone()
             .oneshot(

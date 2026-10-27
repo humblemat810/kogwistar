@@ -69,11 +69,11 @@ class LaneMessageJournalService(Protocol):
         idempotency_key: str | None = None,
     ) -> LaneMessageSendResult: ...
 
-    def claim_pending(
+    def claim_pending_attempt(
         self,
         *,
         inbox_id: str,
-        claimed_by: str,
+        worker_id: str,
         limit: int,
         lease_seconds: int,
         run_id: str | None = None,
@@ -248,9 +248,9 @@ class LaneProviderEventJournal:
         return claim.durable_event
 
     def claim_one(self, *, run_id: str) -> ClaimedProviderEvent | None:
-        claimed = self._messaging.claim_pending(
+        claimed = self._messaging.claim_pending_attempt(
             inbox_id=self.inbox_id,
-            claimed_by=self.claimed_by,
+            worker_id=self.claimed_by,
             limit=1,
             lease_seconds=self.lease_seconds,
             run_id=run_id,
@@ -260,10 +260,12 @@ class LaneProviderEventJournal:
         if not claimed:
             return None
         row = claimed[0]
+        if not row.claimed_by or row.claimed_by == self.claimed_by:
+            raise RuntimeError("event claim did not preserve its attempt owner")
         durable = self._decode(row)
         return ClaimedProviderEvent(
             message_id=row.message_id,
-            claimed_by=self.claimed_by,
+            claimed_by=row.claimed_by,
             durable_event=durable,
         )
 

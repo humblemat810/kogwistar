@@ -161,17 +161,6 @@ def register_control_point(
             if str(getattr(row, "msg_type", "")) in spec.accepted_message_types
             and str(getattr(row, "status", "")) not in _TERMINAL_MESSAGE_STATUSES
         ]
-        if spec.policy == "queue" and accepted:
-            first = accepted[0]
-            if str(getattr(first, "status", "")) == "claimed" and str(
-                getattr(first, "claimed_by", "") or ""
-            ) != claimed_by:
-                accepted = []
-            else:
-                accepted = [first]
-        elif accepted:
-            accepted = [accepted[0]]
-
         high_water = _state_int(state, spec.high_water_key)
         candidate = accepted[0] if accepted else None
         if candidate is None:
@@ -190,9 +179,9 @@ def register_control_point(
             )
 
         message_id = str(getattr(candidate, "message_id", ""))
-        claimed = messaging.claim_pending(
+        claimed = messaging.claim_pending_attempt(
             inbox_id=inbox_id,
-            claimed_by=claimed_by,
+            worker_id=claimed_by,
             limit=1,
             lease_seconds=spec.lease_seconds,
             message_ids=[message_id],
@@ -212,12 +201,14 @@ def register_control_point(
                 state_update=[_overwrite(empty_update)]
             )
         row = claimed[0]
+        if not row.claimed_by or row.claimed_by == claimed_by:
+            return _failure("control claim did not preserve its attempt owner")
         seq = int(getattr(row, "seq", 0) or 0)
         duplicate = seq <= high_water
         next_high_water = max(high_water, seq)
         claim_record = {
             "message_id": str(row.message_id),
-            "claimed_by": claimed_by,
+            "claimed_by": row.claimed_by,
             "seq": seq,
             # Message ID is the immutable conversation-graph input anchor;
             # retain delivery coordinates beside it for replay/audit.

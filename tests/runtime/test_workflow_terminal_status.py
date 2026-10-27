@@ -14,34 +14,35 @@ from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
 pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa E402
-from kogwistar.engine_core.postgres_backend import PgVectorBackend # noqa E402
-from kogwistar.engine_core.models import ( # noqa E402
-    Grounding, # noqa E402
-    MentionVerification, # noqa E402
-    Span, # noqa E402
-) # noqa E402
-from kogwistar.runtime.models import ( # noqa E402
-    RunFailure, # noqa E402
-    RunSuccess, # noqa E402
-    WorkflowCompletedNode, # noqa E402
-    WorkflowFailedNode, # noqa E402
-    WorkflowEdge, # noqa E402
-    WorkflowNode, # noqa E402
-) # noqa E402
-from kogwistar.runtime.runtime import WorkflowRuntime # noqa E402
-from kogwistar.runtime.projections import ( # noqa E402
-    workflow_checkpoint_latest_projection_namespace, # noqa E402
-    workflow_run_status_projection_namespace, # noqa E402
-) # noqa E402
-from tests._helpers.engine_factories import FakeEmbeddingFunction # noqa E402
-from tests._helpers.fake_backend import build_fake_backend # noqa E402
-from tests.conftest import _is_missing_pgvector_extension # noqa E402
-from tests.core._async_chroma_real import ( # noqa E402
-    make_real_async_chroma_backend, # noqa E402
-    real_chroma_server, # noqa E402
-) # noqa E402
-from kogwistar.engine_core.async_compat import run_awaitable_blocking # noqa E402
+from kogwistar.engine_core.engine import GraphKnowledgeEngine  # noqa E402
+from kogwistar.engine_core.postgres_backend import PgVectorBackend  # noqa E402
+from kogwistar.engine_core.models import (  # noqa E402
+    Grounding,  # noqa E402
+    MentionVerification,  # noqa E402
+    Span,  # noqa E402
+)  # noqa E402
+from kogwistar.runtime.models import (  # noqa E402
+    RunFailure,  # noqa E402
+    RunSuccess,  # noqa E402
+    WorkflowCompletedNode,  # noqa E402
+    WorkflowFailedNode,  # noqa E402
+    WorkflowEdge,  # noqa E402
+    WorkflowNode,  # noqa E402
+)  # noqa E402
+from kogwistar.runtime.runtime import WorkflowRuntime  # noqa E402
+from kogwistar.runtime.projections import (  # noqa E402
+    workflow_checkpoint_latest_projection_namespace,  # noqa E402
+    workflow_run_status_projection_namespace,  # noqa E402
+)  # noqa E402
+from tests._helpers.engine_factories import FakeEmbeddingFunction  # noqa E402
+from tests._helpers.fake_backend import build_fake_backend  # noqa E402
+from tests.conftest import _is_missing_pgvector_extension  # noqa E402
+from tests.core._async_chroma_real import (  # noqa E402
+    make_real_async_chroma_backend,  # noqa E402
+    real_chroma_server,  # noqa E402
+)  # noqa E402
+from kogwistar.engine_core.async_compat import run_awaitable_blocking  # noqa E402
+
 
 def _span() -> Span:
     return Span(
@@ -169,6 +170,7 @@ async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
         def __getattr__(self, name: str):
             attr = getattr(self._backend, name)
             if callable(attr):
+
                 def _call(*args, **kwargs):
                     return run_awaitable_blocking(attr(*args, **kwargs))
 
@@ -341,7 +343,9 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
             result.run_id,
         )
         assert checkpoint_projection is not None
-        assert checkpoint_projection["payload"]["node_id"] == f"wf_ckpt|{result.run_id}|1"
+        assert (
+            checkpoint_projection["payload"]["node_id"] == f"wf_ckpt|{result.run_id}|1"
+        )
         run_status_projection = conversation_engine.meta_sqlite.get_named_projection(
             workflow_run_status_projection_namespace(conversation_id),
             result.run_id,
@@ -354,6 +358,7 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
 
 
 def test_runtime_resume_from_latest_checkpoint_reuses_state_and_sequence(monkeypatch):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_checkpoint_resume_runs_pending_frontier`."""
     runtime = WorkflowRuntime.__new__(WorkflowRuntime)
     checkpoint = type(
         "Checkpoint",
@@ -481,7 +486,9 @@ def test_runtime_persists_failed_terminal_for_leaf_node(backend_kind):
         assert result.status == "failure"
         assert result.errors == ["boom"]
         failed_event = next(
-            event for event in emitted_events if event.get("type") == "workflow_run_failed"
+            event
+            for event in emitted_events
+            if event.get("type") == "workflow_run_failed"
         )
         assert json.loads(str(failed_event["payload_json"]))["errors"] == ["boom"]
         failed = conversation_engine.get_nodes(

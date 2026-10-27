@@ -185,7 +185,12 @@ class LaneMessageMetaStoreMixin:
             return
         if row.status in {"completed", "failed", "cancelled", "dead-letter"}:
             return
-        if row.claimed_by is not None and row.claimed_by != str(claimed_by):
+        if row.claimed_by is not None and (
+            row.status != "claimed"
+            or row.claimed_by != str(claimed_by)
+            or row.lease_until is None
+            or int(row.lease_until) < self._lane_message_now_epoch()
+        ):
             return
         self._lane_message_update_row(
             row=replace(
@@ -209,7 +214,12 @@ class LaneMessageMetaStoreMixin:
             return
         if row.status in {"completed", "failed", "cancelled", "dead-letter"}:
             return
-        if row.claimed_by is not None and row.claimed_by != str(claimed_by):
+        if row.claimed_by is not None and (
+            row.status != "claimed"
+            or row.claimed_by != str(claimed_by)
+            or row.lease_until is None
+            or int(row.lease_until) < self._lane_message_now_epoch()
+        ):
             return
         self._lane_message_update_row(
             row=replace(
@@ -231,7 +241,17 @@ class LaneMessageMetaStoreMixin:
         error_json: str | None = None,
     ) -> None:
         row = self._lane_message_get_row(message_id=str(message_id))
-        if row is None or (row.claimed_by is not None and row.claimed_by != str(claimed_by)):
+        if row is None or row.status in {"completed", "failed", "cancelled", "dead-letter"}:
+            return
+        if (
+            row.claimed_by is not None
+            and (
+                row.status != "claimed"
+                or row.claimed_by != str(claimed_by)
+                or row.lease_until is None
+                or int(row.lease_until) < self._lane_message_now_epoch()
+            )
+        ):
             return
         self._lane_message_update_row(
             row=replace(

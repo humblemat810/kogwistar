@@ -386,7 +386,14 @@ impl LaneMessageWriteStore for InMemoryStore {
                 row.status.as_str(),
                 "completed" | "failed" | "cancelled" | "dead-letter"
             )
-            && row.claimed_by.as_deref().is_none_or(|v| v == claimed_by)
+            && row.claimed_by.as_deref().is_none_or(|v| {
+                row.status == "claimed"
+                    && v == claimed_by
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|until| timestamp_i64(until) >= now_seconds())
+            })
         {
             row.status = "completed".to_owned();
             row.claimed_by = None;
@@ -412,7 +419,14 @@ impl LaneMessageWriteStore for InMemoryStore {
                 row.status.as_str(),
                 "completed" | "failed" | "cancelled" | "dead-letter"
             )
-            && row.claimed_by.as_deref().is_none_or(|v| v == claimed_by)
+            && row.claimed_by.as_deref().is_none_or(|v| {
+                row.status == "claimed"
+                    && v == claimed_by
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|until| timestamp_i64(until) >= now)
+            })
         {
             row.status = "pending".to_owned();
             row.claimed_by = None;
@@ -441,7 +455,14 @@ impl LaneMessageWriteStore for InMemoryStore {
                 row.status.as_str(),
                 "completed" | "failed" | "cancelled" | "dead-letter"
             )
-            && row.claimed_by.as_deref().is_none_or(|v| v == claimed_by)
+            && row.claimed_by.as_deref().is_none_or(|v| {
+                row.status == "claimed"
+                    && v == claimed_by
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|until| timestamp_i64(until) >= now_seconds())
+            })
         {
             row.status = "dead-letter".to_owned();
             row.claimed_by = None;
@@ -1774,8 +1795,8 @@ mod tests {
     use super::*;
     use kogwistar_store::{
         GraphAuthorityCapability, GraphMutation, GraphMutationStore, GraphProjectionRead,
-        GraphProjectionVectorQuery, GraphRecord, GraphScope, ProjectionWriteStore,
-        ServerRunReadStore, ServerRunWriteStore, ShadowInspectable,
+        GraphProjectionVectorQuery, GraphRecord, GraphScope, NewProjectedLaneMessage,
+        ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore, ShadowInspectable,
     };
     use serde_json::{Value, json};
     use std::future::Future;
@@ -1846,6 +1867,71 @@ mod tests {
             })
         );
         assert!(block_on(store.mark_index_job_done("done", None)).unwrap());
+    }
+
+    #[test]
+    fn expired_lane_claim_cannot_be_finalized_before_reclaim() {
+        let store = InMemoryStore::new();
+        for (message_id, operation) in [
+            ("expired-ack", "ack"),
+            ("expired-requeue", "requeue"),
+            ("expired-dead-letter", "dead-letter"),
+        ] {
+            block_on(store.project_lane_message(NewProjectedLaneMessage {
+                message_id: message_id.to_owned(),
+                namespace: "runtime".to_owned(),
+                purpose: "user_visible".to_owned(),
+                inbox_id: "python-workers".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                recipient_id: "python-worker".to_owned(),
+                sender_id: "agent".to_owned(),
+                msg_type: "workflow.worker.request.v1".to_owned(),
+                status: "pending".to_owned(),
+                created_at: 1,
+                available_at: 0,
+                run_id: Some("run-target".to_owned()),
+                step_id: Some("step".to_owned()),
+                correlation_id: Some("correlation".to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: None,
+            }))
+            .unwrap();
+            let claimed = block_on(store.claim_projected_lane_messages_filtered(
+                LaneMessageClaimFilter {
+                    namespace: "runtime".to_owned(),
+                    inbox_id: "python-workers".to_owned(),
+                    claimed_by: "attempt-1".to_owned(),
+                    message_ids: Some(vec![message_id.to_owned()]),
+                    run_id: Some("run-target".to_owned()),
+                    msg_type: Some("workflow.worker.request.v1".to_owned()),
+                    recipient_id: Some("python-worker".to_owned()),
+                    limit: 1,
+                    lease_seconds: -5,
+                },
+            ))
+            .unwrap();
+            assert_eq!(claimed.len(), 1);
+            assert!(timestamp_i64(claimed[0].lease_until.as_ref().unwrap()) < now_seconds());
+
+            match operation {
+                "ack" => block_on(store.ack_projected_lane_message(message_id, "attempt-1")),
+                "requeue" => {
+                    block_on(store.requeue_projected_lane_message(message_id, "attempt-1", None, 0))
+                }
+                "dead-letter" => block_on(store.dead_letter_projected_lane_message(
+                    message_id,
+                    "attempt-1",
+                    None,
+                )),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            let state = store.state.read().unwrap();
+            let row = &state.lane_messages[message_id];
+            assert_eq!(row.status, "claimed", "{operation}");
+            assert_eq!(row.claimed_by.as_deref(), Some("attempt-1"), "{operation}");
+            assert_eq!(row.retry_count, 0, "{operation}");
+        }
     }
 
     fn event(event_id: &str, entity_id: &str) -> NewEntityEvent {

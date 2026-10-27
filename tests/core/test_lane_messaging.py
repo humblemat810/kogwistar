@@ -745,6 +745,50 @@ def test_find_idempotent_lane_message_filters_in_backend(monkeypatch):
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
+def test_claim_pending_attempt_uses_fresh_fencing_token_for_reclaim():
+    engine, test_db_dir = _make_engine()
+    service = LaneMessagingService(engine)
+
+    try:
+        sent = service.send_message(
+            conversation_id="conv-claim-attempt",
+            inbox_id="inbox:worker:claim-attempt",
+            sender_id="lane:foreground",
+            recipient_id="lane:worker:claim-attempt",
+            msg_type="request.claim-attempt",
+            payload={"task": "reclaim"},
+        )
+        first = service.claim_pending_attempt(
+            inbox_id="inbox:worker:claim-attempt",
+            worker_id="worker-claim-attempt",
+            limit=1,
+            lease_seconds=-1,
+        )[0]
+        second = service.claim_pending_attempt(
+            inbox_id="inbox:worker:claim-attempt",
+            worker_id="worker-claim-attempt",
+            limit=1,
+            lease_seconds=30,
+        )[0]
+
+        assert first.claimed_by is not None and second.claimed_by is not None
+        assert first.claimed_by.startswith("worker-claim-attempt#")
+        assert second.claimed_by.startswith("worker-claim-attempt#")
+        assert second.claimed_by != first.claimed_by
+
+        service.ack(message_id=sent.message_id, claimed_by=first.claimed_by)
+        still_claimed = service.list_projected(
+            inbox_id="inbox:worker:claim-attempt"
+        )[0]
+        assert still_claimed.status == "claimed"
+        assert still_claimed.claimed_by == second.claimed_by
+
+        service.ack(message_id=sent.message_id, claimed_by=second.claimed_by)
+        assert service.list_projected(inbox_id="inbox:worker:claim-attempt")[0].status == "completed"
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
 def test_lane_message_sample_integration_pins_stable_contract():
     engine, test_db_dir = _make_engine()
     namespace = "ws:demo:conv:bg"

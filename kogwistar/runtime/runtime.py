@@ -118,6 +118,7 @@ Json = JsonValue
 State = dict[str, Json]
 # Result = Json
 
+
 def sink_observes_otel(sink: object) -> bool:
     """Detect an explicitly supplied OTel sink without importing OTel."""
 
@@ -126,6 +127,8 @@ def sink_observes_otel(sink: object) -> bool:
     if type(sink).__module__ == "kogwistar.runtime.telemetry_otel":
         return True
     return any(sink_observes_otel(item) for item in getattr(sink, "_sinks", ()))
+
+
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -203,7 +206,8 @@ class WorkflowRuntime(
         self.lane_message_event_sink = lane_message_event_sink
         if fast_trace_persistence is None:
             self.fast_trace_persistence = (
-                str(getattr(conversation_engine, "backend_kind", "")).lower() == "memory"
+                str(getattr(conversation_engine, "backend_kind", "")).lower()
+                == "memory"
             )
         else:
             self.fast_trace_persistence = bool(fast_trace_persistence)
@@ -351,9 +355,7 @@ class WorkflowRuntime(
             return True
         return True
 
-    def _persist_workflow_design_artifact(
-        self, design: WorkflowDesignArtifact
-    ) -> None:
+    def _persist_workflow_design_artifact(self, design: WorkflowDesignArtifact) -> None:
         """Persist a workflow design artifact into the workflow engine."""
         super()._persist_workflow_design_artifact(design)
 
@@ -394,7 +396,6 @@ class WorkflowRuntime(
             state_schema=getattr(self.step_resolver, "_state_schema", None),
         )
 
-
     @implementation_selection_bound
     @sqlite_execution_bound("workflow_engine", "conversation_engine")
     def run(
@@ -412,6 +413,7 @@ class WorkflowRuntime(
         _trace_context: TraceContext | None = None,
         _authority_context: Mapping[str, Any] | None = None,
         _parent_lease_renew: Callable[[], None] | None = None,
+        _run_owner_id: str | None = None,
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -423,7 +425,10 @@ class WorkflowRuntime(
             conversation_id=conversation_id, workflow_run_id=f"{workflow_id}--{run_id}"
         ):
             self.workflow_id = str(workflow_id)
-            if _authority_context is not None and "effective_capabilities" in _authority_context:
+            if (
+                _authority_context is not None
+                and "effective_capabilities" in _authority_context
+            ):
                 initial_state["effective_capabilities"] = list(
                     _authority_context.get("effective_capabilities", ())
                 )
@@ -465,7 +470,9 @@ class WorkflowRuntime(
                     self,
                     workflow_id=str(workflow_id),
                     conversation_id=str(conversation_id),
-                    turn_node_id=(str(turn_node_id) if turn_node_id is not None else None),
+                    turn_node_id=(
+                        str(turn_node_id) if turn_node_id is not None else None
+                    ),
                     initial_state=initial_state,
                     run_id=str(run_id),
                     cache_dir=cache_dir,
@@ -477,13 +484,15 @@ class WorkflowRuntime(
                     conversation_id=str(conversation_id), run_id=str(run_id)
                 )
                 if existing_terminal is not None and not (
-                    _resume_step_seq is not None and existing_terminal.status == "failure"
+                    _resume_step_seq is not None
+                    and existing_terminal.status == "failure"
                 ):
                     return existing_terminal
                 ownership = self._claim_workflow_run(
                     conversation_id=str(conversation_id),
                     workflow_id=str(workflow_id),
                     run_id=str(run_id),
+                    owner_id=_run_owner_id,
                     allow_resume_takeover=_resume_step_seq is not None,
                 )
             self.state_lock[str(run_id)] = Lock()
@@ -533,7 +542,9 @@ class WorkflowRuntime(
                 and str(_trace_context.run_id) == str(run_id)
                 and (
                     _trace_context.has_valid_w3c_ids
-                    or not (self._otel_sink is not None or sink_observes_otel(self.sink))
+                    or not (
+                        self._otel_sink is not None or sink_observes_otel(self.sink)
+                    )
                 )
                 else (
                     _trace_context.child_run(
@@ -545,7 +556,9 @@ class WorkflowRuntime(
                     if _trace_context is not None
                     and (
                         _trace_context.has_valid_w3c_ids
-                        or not (self._otel_sink is not None or sink_observes_otel(self.sink))
+                        or not (
+                            self._otel_sink is not None or sink_observes_otel(self.sink)
+                        )
                     )
                     else (
                         TraceContext.new_root(
@@ -582,9 +595,7 @@ class WorkflowRuntime(
             ) -> TraceContext:
                 """Keep lifecycle events in this run's trace across all choke points."""
                 effective_run_id = str(run_id or self_run_id)
-                effective_conversation_id = str(
-                    conversation_id or self_conversation_id
-                )
+                effective_conversation_id = str(conversation_id or self_conversation_id)
                 effective_turn_node_id = str(turn_node_id or self_turn_node_id)
                 base = run_trace_context or TraceContext(
                     run_id=effective_run_id,
@@ -843,7 +854,9 @@ class WorkflowRuntime(
                         # self._update_workflow_run_status(conversation_id, run_id, "cancelled")
                         try:
                             tc_done = _lifecycle_trace_context(
-                                token_id=str(run_id), step_seq=int(step_seq), node_id="run"
+                                token_id=str(run_id),
+                                step_seq=int(step_seq),
+                                node_id="run",
                             )
                             self.emitter.emit(
                                 type="workflow_run_cancelled",
@@ -869,7 +882,9 @@ class WorkflowRuntime(
                         _persist_rt_join_runtime()
                         try:
                             tc_done = _lifecycle_trace_context(
-                                token_id=str(run_id), step_seq=int(step_seq), node_id="run"
+                                token_id=str(run_id),
+                                step_seq=int(step_seq),
+                                node_id="run",
                             )
                             self.emitter.emit(
                                 type="workflow_run_suspended",
@@ -930,14 +945,18 @@ class WorkflowRuntime(
                                 )
                             try:
                                 tc_done = _lifecycle_trace_context(
-                                    token_id=str(run_id), step_seq=int(step_seq), node_id="run"
+                                    token_id=str(run_id),
+                                    step_seq=int(step_seq),
+                                    node_id="run",
                                 )
                                 self.emitter.emit(
                                     type="workflow_run_failed",
                                     ctx=tc_done,
                                     payload={
                                         "workflow_id": str(workflow_id),
-                                        "errors": [error[-4_000:] for error in run_errors],
+                                        "errors": [
+                                            error[-4_000:] for error in run_errors
+                                        ],
                                     },
                                 )
                             except Exception:
@@ -957,7 +976,9 @@ class WorkflowRuntime(
                             # trace: workflow run suspended
                             try:
                                 tc_done = _lifecycle_trace_context(
-                                    token_id=str(run_id), step_seq=int(step_seq), node_id="run"
+                                    token_id=str(run_id),
+                                    step_seq=int(step_seq),
+                                    node_id="run",
                                 )
                                 self.emitter.emit(
                                     type="workflow_run_suspended",
@@ -996,7 +1017,9 @@ class WorkflowRuntime(
                             # trace: workflow run completed
                             try:
                                 tc_done = _lifecycle_trace_context(
-                                    token_id=str(run_id), step_seq=int(step_seq), node_id="run"
+                                    token_id=str(run_id),
+                                    step_seq=int(step_seq),
+                                    node_id="run",
                                 )
                                 self.emitter.emit(
                                     type="workflow_run_completed",
@@ -1039,9 +1062,7 @@ class WorkflowRuntime(
                         mask = int(item["join_mask"])
                         token_id = str(item["token_id"])
                         parent_token_id = item.get("parent_token_id")
-                        pending_tokens.discard(
-                            (nid, mask, token_id, parent_token_id)
-                        )
+                        pending_tokens.discard((nid, mask, token_id, parent_token_id))
                         _persist_rt_join_runtime()
 
                         # If this is a join/barrier node, it doesn't execute immediately.
@@ -1057,30 +1078,38 @@ class WorkflowRuntime(
 
                             runtime_mode = runtime_implementation_mode()
                             native_join = None
-                            if runtime_mode in {"shadow", "rust"} and join_idx is not None:
-                                native_join = join_arrival_result(runtime_apply_join_arrival(
-                                    payload={
-                                        "join_index": int(join_idx),
-                                        "join_outstanding": list(_join_outstanding),
-                                        "waiters": [
-                                            {
-                                                "join_mask": int(waiter_mask),
-                                                "token_id": str(waiter_token),
-                                                "parent_token_id": waiter_parent,
-                                            }
-                                            for waiter_mask, waiter_token, waiter_parent in _join_waiters.get(nid, [])
-                                        ],
-                                        "arrival": {
-                                            "join_mask": int(mask),
-                                            "token_id": str(token_id),
-                                            "parent_token_id": parent_token_id,
-                                        },
-                                        "merge": bool(_join_is_merge[nid]),
-                                    }
-                                ))
+                            if (
+                                runtime_mode in {"shadow", "rust"}
+                                and join_idx is not None
+                            ):
+                                native_join = join_arrival_result(
+                                    runtime_apply_join_arrival(
+                                        payload={
+                                            "join_index": int(join_idx),
+                                            "join_outstanding": list(_join_outstanding),
+                                            "waiters": [
+                                                {
+                                                    "join_mask": int(waiter_mask),
+                                                    "token_id": str(waiter_token),
+                                                    "parent_token_id": waiter_parent,
+                                                }
+                                                for waiter_mask, waiter_token, waiter_parent in _join_waiters.get(
+                                                    nid, []
+                                                )
+                                            ],
+                                            "arrival": {
+                                                "join_mask": int(mask),
+                                                "token_id": str(token_id),
+                                                "parent_token_id": parent_token_id,
+                                            },
+                                            "merge": bool(_join_is_merge[nid]),
+                                        }
+                                    )
+                                )
                             if runtime_mode == "rust" and native_join is not None:
                                 _join_outstanding[:] = [
-                                    int(value) for value in native_join["join_outstanding"]
+                                    int(value)
+                                    for value in native_join["join_outstanding"]
                                 ]
                                 _join_waiters[nid] = [
                                     (
@@ -1121,7 +1150,9 @@ class WorkflowRuntime(
                                                 "token_id": str(waiter_token),
                                                 "parent_token_id": waiter_parent,
                                             }
-                                            for waiter_mask, waiter_token, waiter_parent in _join_waiters[nid]
+                                            for waiter_mask, waiter_token, waiter_parent in _join_waiters[
+                                                nid
+                                            ]
                                         ],
                                         "released": (
                                             {
@@ -1132,7 +1163,9 @@ class WorkflowRuntime(
                                             if released is not None
                                             else None
                                         ),
-                                        "collapsed_work_items": int(collapsed_work_items),
+                                        "collapsed_work_items": int(
+                                            collapsed_work_items
+                                        ),
                                         "outstanding": int(outstanding),
                                     }
                                     if native_join != python_join:
@@ -1242,13 +1275,15 @@ class WorkflowRuntime(
                     if done_q.empty():
                         with work_cond:
                             work_cond.wait_for(
-                                lambda: cancel_pending
-                                or (not done_q.empty())
-                                or _work_snapshot() == 0
-                                or (
-                                    run_suspended
-                                    and not inflight
-                                    and scheduled_q.empty()
+                                lambda: (
+                                    cancel_pending
+                                    or (not done_q.empty())
+                                    or _work_snapshot() == 0
+                                    or (
+                                        run_suspended
+                                        and not inflight
+                                        and scheduled_q.empty()
+                                    )
                                 ),
                                 timeout=0.05,
                             )
@@ -1265,9 +1300,7 @@ class WorkflowRuntime(
                         mask,
                     ) = done_task
                     if status == "failure" and isinstance(run_result, RunFailure):
-                        run_errors.extend(
-                            str(error) for error in run_result.errors
-                        )
+                        run_errors.extend(str(error) for error in run_result.errors)
                     graveyard.put_nowait(done_task)
                     run_state_lock: Lock = self.state_lock[str(run_id)]
                     with self._maybe_step_uow():
@@ -1283,10 +1316,16 @@ class WorkflowRuntime(
                         step_attribution = BudgetAttribution(
                             workspace_id=str(state.get("workspace_id") or "") or None,
                             source_document_id=str(
-                                state.get("source_document_id") or state.get("document_id") or ""
+                                state.get("source_document_id")
+                                or state.get("document_id")
+                                or ""
                             )
                             or None,
-                            operation_id=str(stable_id("kogwistar.runtime.operation", run_id, node_id)),
+                            operation_id=str(
+                                stable_id(
+                                    "kogwistar.runtime.operation", run_id, node_id
+                                )
+                            ),
                             operation_kind=f"workflow_step:{node_id}",
                         )
                         try:
@@ -1309,7 +1348,9 @@ class WorkflowRuntime(
                             # retain the exhausted marker so the runtime parks
                             # the continuation instead of silently continuing.
                             if budget_ledger.time_budget_ms:
-                                budget_ledger.state["time_used_ms"] = budget_ledger.time_budget_ms
+                                budget_ledger.state["time_used_ms"] = (
+                                    budget_ledger.time_budget_ms
+                                )
                         try:
                             result_payload = dict(
                                 run_result.model_dump(exclude_none=True)
@@ -1351,7 +1392,9 @@ class WorkflowRuntime(
                                         budget_state["budget_wait_until_ms"] = int(
                                             ready_ms
                                         )
-                                        budget_state["budget_wait_reason"] = "rate_window"
+                                        budget_state["budget_wait_reason"] = (
+                                            "rate_window"
+                                        )
                                 state["wait_reason"] = "rate_window"
                                 status = "suspended"
                                 run_suspended = True
@@ -1612,24 +1655,26 @@ class WorkflowRuntime(
 
                     runtime_mode = runtime_implementation_mode()
                     successor_payload = {
-                                "token_id": str(token_id),
-                                "parent_token_id": parent_token_id,
-                                "step_seq": int(step_seq_current),
-                                "current_join_mask": int(mask),
-                                "join_outstanding": list(_join_outstanding),
-                                "successors": [
-                                    {
-                                        "node_id": str(nxt),
-                                        "join_mask": int(_may_reach_join.get(str(nxt), 0)),
-                                    }
-                                    for nxt in next_nodes
-                                ],
+                        "token_id": str(token_id),
+                        "parent_token_id": parent_token_id,
+                        "step_seq": int(step_seq_current),
+                        "current_join_mask": int(mask),
+                        "join_outstanding": list(_join_outstanding),
+                        "successors": [
+                            {
+                                "node_id": str(nxt),
+                                "join_mask": int(_may_reach_join.get(str(nxt), 0)),
                             }
+                            for nxt in next_nodes
+                        ],
+                    }
                     native_plan = None
                     if runtime_mode == "shadow":
                         oracle_outstanding = list(_join_outstanding)
                         oracle_tokens = []
-                        for index, successor in enumerate(successor_payload["successors"]):
+                        for index, successor in enumerate(
+                            successor_payload["successors"]
+                        ):
                             successor_mask = int(successor["join_mask"])
                             if index == 0:
                                 for bit in _iter_bits(int(mask) & ~successor_mask):
@@ -1660,15 +1705,15 @@ class WorkflowRuntime(
                                 JsonObject,
                                 {
                                     "tokens": cast(Json, oracle_tokens),
-                                    "join_outstanding": cast(
-                                        Json, oracle_outstanding
-                                    ),
+                                    "join_outstanding": cast(Json, oracle_outstanding),
                                 },
                             ),
                         )
                     elif runtime_mode == "rust":
                         native_plan = runtime_plan_successors(payload=successor_payload)
-                        native_tokens, native_join_outstanding = successor_plan(native_plan)
+                        native_tokens, native_join_outstanding = successor_plan(
+                            native_plan
+                        )
                         _join_outstanding[:] = native_join_outstanding
                         for planned in native_tokens:
                             nxt = str(planned["node_id"])
@@ -1724,7 +1769,9 @@ class WorkflowRuntime(
 
                     # Python fallback continuation/fan-out planner.
                     first = True
-                    for i_fanout, nxt in enumerate(next_nodes if native_plan is None else []):
+                    for i_fanout, nxt in enumerate(
+                        next_nodes if native_plan is None else []
+                    ):
                         nxt = str(nxt)
                         nxt_mask = int(_may_reach_join.get(nxt, 0))
 

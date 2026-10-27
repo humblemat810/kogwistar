@@ -3550,9 +3550,9 @@ async fn postgres_store_operation_json(
         PostgresStoreOperation::CloseStore
         | PostgresStoreOperation::BeginTransaction
         | PostgresStoreOperation::CommitTransaction
-        | PostgresStoreOperation::RollbackTransaction => Err(
-            postgres_session_error("PostgreSQL transaction control cannot be nested as an operation"),
-        ),
+        | PostgresStoreOperation::RollbackTransaction => Err(postgres_session_error(
+            "PostgreSQL transaction control cannot be nested as an operation",
+        )),
         PostgresStoreOperation::EnsureSchema => {
             store.ensure_schema().await?;
             Ok(json!({"initialized": true}))
@@ -3632,7 +3632,7 @@ async fn postgres_store_operation_json(
                     &namespace,
                     postgres_new_raw_event(event_id, entity_kind, entity_id, op, payload_json),
                 )
-            .await?,
+                .await?,
         )),
         PostgresStoreOperation::GraphMutation {
             namespace,
@@ -3658,9 +3658,7 @@ async fn postgres_store_operation_json(
                 embedding_dim,
             };
             let applied = match model_envelope {
-                Some(envelope) => store
-                    .apply_typed_graph_mutation(mutation, envelope)
-                    .await?,
+                Some(envelope) => store.apply_typed_graph_mutation(mutation, envelope).await?,
                 None => store.apply_graph_mutation(mutation).await?,
             };
             Ok(graph_mutation_json(applied))
@@ -3705,16 +3703,14 @@ async fn postgres_store_operation_json(
             payload,
         } => Ok(optional_graph_mutation_json(
             store
-                .apply_graph_delete_mutation(
-                    kogwistar_store_postgres::GraphDeleteMutation {
-                        scope: graph_scope(namespace, workspace_id, graph_space),
-                        table,
-                        entity_kind,
-                        event_id,
-                        entity_id,
-                        payload,
-                    },
-                )
+                .apply_graph_delete_mutation(kogwistar_store_postgres::GraphDeleteMutation {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    table,
+                    entity_kind,
+                    event_id,
+                    entity_id,
+                    payload,
+                })
                 .await?,
         )),
         PostgresStoreOperation::UpsertGraphProjection {
@@ -3778,12 +3774,17 @@ async fn postgres_store_operation_json(
             let records = match after_id {
                 Some(after_id) => {
                     store
-                        .graph_projection_page(GraphProjectionPageRead { read, after_id: Some(after_id) })
+                        .graph_projection_page(GraphProjectionPageRead {
+                            read,
+                            after_id: Some(after_id),
+                        })
                         .await?
                 }
                 None => store.graph_projection_records(read).await?,
             };
-            Ok(Value::Array(records.into_iter().map(graph_record_json).collect()))
+            Ok(Value::Array(
+                records.into_iter().map(graph_record_json).collect(),
+            ))
         }
         PostgresStoreOperation::GraphProjectionVectorQuery {
             namespace,
@@ -3798,16 +3799,16 @@ async fn postgres_store_operation_json(
             embedding_dim,
         } => {
             let query = kogwistar_store::GraphProjectionVectorQuery {
-                    scope: graph_scope(namespace, workspace_id, graph_space),
-                    table,
-                    query: VectorQuery {
-                        embedding,
-                        limit,
-                        metadata: metadata_filter(metadata),
-                        metric: metric.into(),
-                    },
-                    embedding_dim,
-                };
+                scope: graph_scope(namespace, workspace_id, graph_space),
+                table,
+                query: VectorQuery {
+                    embedding,
+                    limit,
+                    metadata: metadata_filter(metadata),
+                    metric: metric.into(),
+                },
+                embedding_dim,
+            };
             let matches = if metadata_not_equals.is_empty() {
                 store.graph_projection_vector_query(query).await?
             } else {
@@ -4034,7 +4035,9 @@ async fn postgres_store_operation_json(
                     ),
                 })
                 .collect();
-            Ok(json!(store.compare_and_swap_named_projections(updates).await?))
+            Ok(json!(
+                store.compare_and_swap_named_projections(updates).await?
+            ))
         }
         PostgresStoreOperation::ClearNamedProjection { namespace, key } => {
             store.clear_named_projection(&namespace, &key).await?;
@@ -4219,11 +4222,7 @@ async fn postgres_store_operation_json(
             abort_after_writes,
         } => serde_json::to_value(
             store
-                .apply_claimed_recorded_runtime_transition(
-                    handoff,
-                    *transition,
-                    abort_after_writes,
-                )
+                .apply_claimed_recorded_runtime_transition(handoff, *transition, abort_after_writes)
                 .await?,
         )
         .map_err(|error| PostgresStoreError::TransactionAborted(error.to_string())),
@@ -4285,19 +4284,16 @@ async fn postgres_store_operation_json(
             claim_token,
             result_json,
             result_sha256,
-        } => Ok(accepted_index_job_result_json(store.accept_index_job_result(
-            &job_id,
-            &claim_token,
-            &result_json,
-            &result_sha256,
-        ).await?)),
-        PostgresStoreOperation::GetIndexJobResult { job_id } => Ok(
+        } => Ok(accepted_index_job_result_json(
             store
-                .index_job_result(&job_id)
-                .await?
-                .map(accepted_index_job_result_json)
-                .unwrap_or(Value::Null),
-        ),
+                .accept_index_job_result(&job_id, &claim_token, &result_json, &result_sha256)
+                .await?,
+        )),
+        PostgresStoreOperation::GetIndexJobResult { job_id } => Ok(store
+            .index_job_result(&job_id)
+            .await?
+            .map(accepted_index_job_result_json)
+            .unwrap_or(Value::Null)),
         PostgresStoreOperation::MarkIndexJobFailed {
             job_id,
             error,

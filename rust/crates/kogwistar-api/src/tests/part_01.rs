@@ -2007,7 +2007,10 @@
             work["payload"]["executor_target"],
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
         );
-        assert_eq!(work["claimed_by"], "rust-native-worker");
+        assert!(work["claimed_by"]
+            .as_str()
+            .unwrap()
+            .starts_with("rust-native-worker#"));
 
         let mut malformed_version_payload = work["payload"].clone();
         malformed_version_payload["op_version"] = json!(2);

@@ -1398,7 +1398,11 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     UPDATE {table}
                     SET status = 'completed', claimed_by = NULL, lease_until = NULL
                     WHERE message_id = :message_id
-                      AND (claimed_by IS NULL OR claimed_by = :claimed_by)
+                      AND (
+                        claimed_by IS NULL OR
+                        (status = 'claimed' AND claimed_by = :claimed_by
+                         AND lease_until >= NOW())
+                      )
                     """
                 ),
                 {"message_id": str(message_id), "claimed_by": str(claimed_by)},
@@ -1425,13 +1429,48 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         available_at = EXTRACT(EPOCH FROM (NOW() + (:delay_seconds || ' seconds')::interval))::BIGINT,
                         error_json = COALESCE(:error_json, error_json)
                     WHERE message_id = :message_id
-                      AND (claimed_by IS NULL OR claimed_by = :claimed_by)
+                      AND (
+                        claimed_by IS NULL OR
+                        (status = 'claimed' AND claimed_by = :claimed_by
+                         AND lease_until >= NOW())
+                      )
                     """
                 ),
                 {
                     "message_id": str(message_id),
                     "claimed_by": str(claimed_by),
                     "delay_seconds": int(delay_seconds),
+                    "error_json": error_json,
+                },
+            )
+
+    def dead_letter_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+    ) -> None:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'dead-letter', claimed_by = NULL, lease_until = NULL,
+                        error_json = COALESCE(:error_json, error_json)
+                    WHERE message_id = :message_id
+                      AND status NOT IN ('completed', 'failed', 'cancelled', 'dead-letter')
+                      AND (
+                        claimed_by IS NULL OR
+                        (status = 'claimed' AND claimed_by = :claimed_by
+                         AND lease_until >= NOW())
+                      )
+                    """
+                ),
+                {
+                    "message_id": str(message_id),
+                    "claimed_by": str(claimed_by),
                     "error_json": error_json,
                 },
             )

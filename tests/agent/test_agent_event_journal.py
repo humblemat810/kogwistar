@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from dataclasses import replace
 
 import pytest
 
@@ -14,7 +16,7 @@ from kogwistar.agent.streaming import (
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.messaging.models import LaneMessageSendResult, ProjectedLaneMessageRow
-from kogwistar.messaging.service import LaneMessagingService
+from kogwistar.messaging.service import LaneMessagingService, new_claim_attempt_owner
 from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
@@ -57,7 +59,15 @@ class FakeMessaging:
 
     def claim_pending(self, **kwargs: object) -> list[ProjectedLaneMessageRow]:
         self.calls.append(("claim", kwargs))
-        return [self.row] if self.row else []
+        if self.row is None:
+            return []
+        return [replace(self.row, claimed_by=str(kwargs["claimed_by"]))]
+
+    def claim_pending_attempt(self, *, worker_id: str, **kwargs: object) -> list[ProjectedLaneMessageRow]:
+        return self.claim_pending(
+            **kwargs,
+            claimed_by=new_claim_attempt_owner(worker_id),
+        )
 
     def ack(self, **kwargs: object) -> None:
         self.calls.append(("ack", kwargs))
@@ -109,6 +119,62 @@ def test_event_journal_persists_semantic_event_then_acknowledges_after_handler()
     assert isinstance(payload, dict)
     assert payload["purpose"] == "agent_event"
     assert payload["idempotency_key"] == result.event_id
+    claim_kwargs = messaging.calls[1][1]
+    ack_kwargs = messaging.calls[2][1]
+    assert isinstance(claim_kwargs, dict) and isinstance(ack_kwargs, dict)
+    assert str(claim_kwargs["claimed_by"]).startswith("event-worker#")
+    assert ack_kwargs["claimed_by"] == claim_kwargs["claimed_by"]
+
+
+def test_stale_event_journal_claim_cannot_ack_same_worker_reclaim(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "conversation"),
+        kg_graph_type="conversation",
+        embedding_function=ConstantEmbeddingFunction(dim=4),
+        backend_factory=build_fake_backend,
+    )
+    claims_token = claims_ctx.set({"ns": "conversation", "security_scope": "private"})
+    try:
+        with scoped_namespace(engine, "conversation"):
+            journal = LaneProviderEventJournal(
+                LaneMessagingService(engine),
+                claimed_by="event-worker",
+                lease_seconds=1,
+            )
+            published = journal.publish(
+                ProviderResponseStarted(response_id="resp-claim", provider_sequence=11),
+                trace=_trace(),
+                conversation_id="conversation-claim",
+                sender_id="agent-1",
+                security_scope="private",
+            )
+            old_claim = journal.claim_one(run_id="run-1")
+            assert old_claim is not None
+            assert old_claim.message_id == published.message_id
+
+            time.sleep(2.1)
+            new_claim = journal.claim_one(run_id="run-1")
+            assert new_claim is not None
+            assert new_claim.message_id == old_claim.message_id
+            assert new_claim.claimed_by.startswith("event-worker#")
+            assert new_claim.claimed_by != old_claim.claimed_by
+
+            journal.acknowledge(old_claim)
+            current = engine.meta_sqlite._lane_message_get_row(
+                message_id=published.message_id
+            )
+            assert current is not None
+            assert current.status == "claimed"
+            assert current.claimed_by == new_claim.claimed_by
+
+            journal.acknowledge(new_claim)
+            completed = engine.meta_sqlite._lane_message_get_row(
+                message_id=published.message_id
+            )
+            assert completed is not None
+            assert completed.status == "completed"
+    finally:
+        claims_ctx.reset(claims_token)
 
 
 def test_event_journal_identity_is_stable_across_workflow_replay() -> None:

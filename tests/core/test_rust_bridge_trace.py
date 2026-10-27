@@ -47,7 +47,7 @@ def test_bridge_trace_counts_keyword_payload_and_transaction_metadata() -> None:
         separators=(",", ":"),
     )
     trace = RustBridgeTrace()
-    extension = _TracingRustExtension(KeywordExtension(), trace)
+    extension = _TracingRustExtension(KeywordExtension(), (trace,))
 
     assert extension.store_postgres_json(payload=request) == "null"
     metrics = trace.snapshot()
@@ -78,6 +78,27 @@ def test_bridge_trace_counts_per_item_and_batched_native_calls(
     assert batched.snapshot()["calls_by_method"] == {"project_graph_model_slices": 1}
     assert individual.snapshot()["input_bytes"] > 0
     assert batched.snapshot()["output_bytes"] > 0
+
+
+def test_nested_bridge_traces_aggregate_calls_and_restore_after_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extension = _ExtensionStub()
+    monkeypatch.setattr("kogwistar._rust_bridge.import_module", lambda _name: extension)
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    with capture_rust_bridge_calls() as outer:
+        api_health(payload={"scope": "outer-before"}, python_value={})
+        with pytest.raises(RuntimeError, match="inner scope ended"):
+            with capture_rust_bridge_calls() as inner:
+                api_health(payload={"scope": "inner"}, python_value={})
+                raise RuntimeError("inner scope ended")
+        api_health(payload={"scope": "outer-after"}, python_value={})
+
+    assert outer.snapshot()["ffi_calls"] == 3
+    assert outer.snapshot()["calls_by_method"] == {"api_health": 3}
+    assert inner.snapshot()["ffi_calls"] == 1
+    assert inner.snapshot()["calls_by_method"] == {"api_health": 1}
 
 
 def test_bridge_trace_preserves_python_mode_and_transaction_metadata(
