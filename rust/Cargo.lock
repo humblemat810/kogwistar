@@ -836,10 +836,14 @@ dependencies = [
  "kogwistar-store-chroma",
  "kogwistar-store-memory",
  "kogwistar-store-postgres",
+ "reqwest",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror",
  "tokio",
  "tokio-postgres",
+ "url",
 ]
 
 [[package]]

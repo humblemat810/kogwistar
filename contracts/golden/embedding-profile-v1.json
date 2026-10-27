@@ -1,0 +1,7 @@
+{
+  "provider": "ollama",
+  "model": "all-minilm:l6-v2",
+  "dimension": 384,
+  "similarity_metric": "cosine",
+  "endpoint_fingerprint": null
+}

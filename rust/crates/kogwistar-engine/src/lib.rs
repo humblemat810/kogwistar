@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub mod embedding;
 pub mod index_worker;
 pub mod projection_worker;
 

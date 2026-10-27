@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -58,6 +59,22 @@ def _profile(model: str = "model", dimension: int = 2) -> EmbeddingProfile:
         dimension=dimension,
         endpoint_fingerprint=endpoint_fingerprint("https://user:secret@example.test/embed?token=hidden"),
     )
+
+
+def test_rust_embedding_profile_fixture_matches_python_profile() -> None:
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "embedding-profile-v1.json"
+    )
+    fixture_value = json.loads(fixture.read_text(encoding="utf-8"))
+    profile = EmbeddingProfile.from_mapping(fixture_value)
+    assert profile.as_dict() == fixture_value
+    assert profile.provider == "ollama"
+    assert profile.model == "all-minilm:l6-v2"
+    assert profile.dimension == 384
+    assert profile.similarity_metric == "cosine"
 
 
 @pytest.mark.parametrize("kind", ["memory", "sqlite"])

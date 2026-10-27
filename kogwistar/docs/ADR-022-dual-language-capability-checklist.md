@@ -28,6 +28,19 @@ progress counts belong here and are not repeated in those entries.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 Rust embedding-provider foundation: `kogwistar-engine` now has a
+  typed async `EmbeddingProvider` surface and an Ollama implementation matching
+  Python's single-text `/api/embeddings` calls, L2 normalization, and shared
+  `EmbeddingProfile` projection. Endpoint fingerprints match Python for
+  credential/query removal, empty paths, and explicitly supplied default
+  ports; configured endpoints are rejected when they conflict with a profile
+  fingerprint. The shared fixture is consumed by both languages. Evidence:
+  `cargo test -p kogwistar-engine --lib` (**22 passed**) and the Python profile
+  plus normalization modules (**15 passed**) on Windows CPython 3.13; Rust
+  formatting passed. This is provider/profile evidence under DL-05 only; Rust
+  public graph upsert is not yet wired to it, and OpenAI/Azure/Google provider
+  parity remains unimplemented. DL-05 remains IN PROGRESS; no checklist IDs,
+  statuses, or denominators changed.
 - 2026-10-27 transactional rollback coverage for derived edge endpoints: the
   live PostgreSQL failure-injection test now submits a node and edge mutation
   in one batch, then forces index-intent insertion to fail. It verifies the

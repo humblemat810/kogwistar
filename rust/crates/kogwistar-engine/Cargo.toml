@@ -9,8 +9,12 @@ license.workspace = true
 hex.workspace = true
 kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-store = { path = "../kogwistar-store" }
-serde_json.workspace = true
+reqwest.workspace = true
+serde.workspace = true
 sha2.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 kogwistar-store-chroma = { path = "../kogwistar-store-chroma" }
