@@ -261,6 +261,57 @@ fn environment(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
 
+fn embedding_provider_from_settings(
+    provider: Option<&str>,
+    model: Option<&str>,
+    dimension: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<Option<Arc<dyn EmbeddingProvider>>, String> {
+    let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !provider.eq_ignore_ascii_case("ollama") {
+        return Err("KOGWISTAR_EMBEDDING_PROVIDER supports only 'ollama'".to_owned());
+    }
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "KOGWISTAR_EMBEDDING_MODEL is required when embedding is enabled".to_owned())?;
+    let dimension = dimension
+        .ok_or_else(|| "KOGWISTAR_EMBEDDING_DIMENSION is required when embedding is enabled".to_owned())?
+        .parse::<usize>()
+        .map_err(|_| "KOGWISTAR_EMBEDDING_DIMENSION must be a positive integer".to_owned())?;
+    if dimension == 0 {
+        return Err("KOGWISTAR_EMBEDDING_DIMENSION must be a positive integer".to_owned());
+    }
+    let endpoint = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:11434");
+    let profile = kogwistar_engine::embedding::EmbeddingProfile {
+        provider: provider.to_ascii_lowercase(),
+        model: model.to_owned(),
+        dimension,
+        similarity_metric: "cosine".to_owned(),
+        endpoint_fingerprint: None,
+        max_sequence_length: None,
+        crop_token_budget: None,
+        tokenizer_fingerprint: None,
+        crop_policy: None,
+        embedding_kind: Some("single_vector".to_owned()),
+        model_revision: None,
+        preprocessing_fingerprint: None,
+        max_image_patches: None,
+    };
+    let provider = kogwistar_engine::embedding::OllamaEmbeddingProvider::new(
+        profile,
+        endpoint,
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Some(Arc::new(provider)))
+}
+
 /// Run the packaged Rust server using the same environment contract as the
 /// standalone binary.  PyO3 calls this function so native wheels need not ship
 /// a second platform-specific executable beside the extension module.
@@ -301,11 +352,21 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     let application: Arc<dyn ApplicationService> = if backend == "pg" {
         match std::env::var("KOGWISTAR_PG_DSN") {
             Ok(dsn) if !dsn.trim().is_empty() => {
-                let service = PostgresRunApplicationService::from_dsn(
+                let mut service = PostgresRunApplicationService::from_dsn(
                     &dsn,
                     &environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar"),
                 )
                 .map_err(std::io::Error::other)?;
+                let embedding_provider = embedding_provider_from_settings(
+                    std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
+                    std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+                    std::env::var("KOGWISTAR_EMBEDDING_DIMENSION").ok().as_deref(),
+                    std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT").ok().as_deref(),
+                )
+                .map_err(std::io::Error::other)?;
+                if let Some(provider) = embedding_provider {
+                    service = service.with_embedding_provider(provider);
+                }
                 service
                     .ensure_schema()
                     .await

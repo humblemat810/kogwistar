@@ -37,13 +37,20 @@ progress counts belong here and are not repeated in those entries.
   caller-supplied vectors, excludes ACL system nodes, and leaves batches with
   durable index jobs on the asynchronous Stage-1 path. Provider/profile/vector
   validation failures return before storage; transaction ownership remains in
-  the selected Rust store. Endpoint fingerprints match Python for
+  the selected Rust store. The packaged Rust PostgreSQL server can opt in via
+  `KOGWISTAR_EMBEDDING_PROVIDER=ollama`, `KOGWISTAR_EMBEDDING_MODEL`, and
+  `KOGWISTAR_EMBEDDING_DIMENSION`; `KOGWISTAR_EMBEDDING_ENDPOINT` defaults to
+  local Ollama, and unsupported or incomplete explicit settings fail startup.
+  This setting affects only the Rust PostgreSQL internal graph-mutation route;
+  it does not activate Python embedding paths or pending public routes.
+  Endpoint fingerprints match Python for
   credential/query removal, empty paths, and explicitly supplied default
   ports; configured endpoints are rejected when they conflict with a profile
   fingerprint. The shared profile fixture is consumed by both languages.
   Evidence: `cargo test -p kogwistar-engine --lib` (**22 passed**), the Python
   profile plus normalization modules (**15 passed**) on Windows CPython 3.13,
-  and `cargo test -p kogwistar-api --lib` (**84 passed, 10 ignored**); the live
+  `cargo test -p kogwistar-api --lib` (**85 passed, 10 ignored**), and
+  `tests::rust_server_embedding_configuration_is_opt_in_and_fails_closed`; the live
   `tests::postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available`
   passed against local pgvector and verifies persisted generated vectors,
   preserved staged jobs, and no write after provider failure. Rust formatting

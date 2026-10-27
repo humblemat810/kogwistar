@@ -1227,3 +1227,40 @@
         assert_eq!(batch.mutations[0].record.embedding, None);
         assert!(calls.lock().unwrap().is_empty());
     }
+
+    #[test]
+    fn rust_server_embedding_configuration_is_opt_in_and_fails_closed() {
+        assert!(embedding_provider_from_settings(None, None, None, None)
+            .unwrap()
+            .is_none());
+        assert!(embedding_provider_from_settings(Some("  "), None, None, None)
+            .unwrap()
+            .is_none());
+        assert!(embedding_provider_from_settings(Some("openai"), Some("m"), Some("3"), None)
+            .is_err());
+        assert!(embedding_provider_from_settings(Some("ollama"), None, Some("3"), None)
+            .is_err());
+        assert!(embedding_provider_from_settings(Some("ollama"), Some("m"), Some("0"), None)
+            .is_err());
+        assert!(embedding_provider_from_settings(Some("ollama"), Some("m"), Some("x"), None)
+            .is_err());
+
+        let provider = embedding_provider_from_settings(
+            Some("Ollama"),
+            Some("nomic-embed-text"),
+            Some("768"),
+            Some("http://ollama:11434"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(provider.profile().provider, "ollama");
+        assert_eq!(provider.profile().model, "nomic-embed-text");
+        assert_eq!(provider.profile().dimension, 768);
+        assert!(embedding_provider_from_settings(
+            Some("ollama"),
+            Some("nomic-embed-text"),
+            Some("768"),
+            Some("not-a-url"),
+        )
+        .is_err());
+    }
