@@ -1295,13 +1295,34 @@
                 "trace_events": [{
                     "schema_version": 1,
                     "event": "runtime.python_worker.result_prepared",
-                    "worker_id": "worker-a",
+                    "executor_target": "python-worker",
+                    "worker_id": "effect-worker",
                     "identity_source": "worker_configuration",
-                    "lease_claim_id": "worker-a#lease"
+                    "lease_claim_id": effect_work["claimed_by"]
                 }],
                 "successors": [{"node_id": "forged", "join_mask": 0}],
             }
         });
+        let mut mismatched_trace = effect_payload.clone();
+        mismatched_trace["effect"]["trace_events"][0]["lease_claim_id"] =
+            json!("other-worker#other-lease");
+        let mismatched_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/results")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(serde_json::to_vec(&mismatched_trace).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            mismatched_response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
         store
             .append_server_run_event(&effect_run_id, "test.competing", "{}".to_owned())
             .unwrap();
@@ -1350,10 +1371,10 @@
             .unwrap();
         let persisted_worker_trace: Value =
             serde_json::from_str(&persisted_worker_trace.payload_json).unwrap();
-        assert_eq!(persisted_worker_trace["trace"]["worker_id"], "worker-a");
+        assert_eq!(persisted_worker_trace["trace"]["worker_id"], "effect-worker");
         assert_eq!(
             persisted_worker_trace["trace"]["lease_claim_id"],
-            "worker-a#lease"
+            effect_work["claimed_by"]
         );
         let effect_state = store
             .read_recorded_runtime_state(&effect_run_id, "workflow-effect", "conversation-effect")

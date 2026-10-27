@@ -587,6 +587,16 @@ impl PostgresRunApplicationService {
                 "exactly one of transition or effect is required",
             );
         }
+        if let Some(effect) = input.effect.as_ref()
+            && let Err(message) =
+                validate_python_worker_trace_binding(&effect.trace_events, &input.handoff.claimed_by)
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_WORKER_TRACE",
+                message,
+            );
+        }
         let outcome = self
             .store
             .transaction(|uow| {
