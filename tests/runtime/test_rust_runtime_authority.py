@@ -62,6 +62,12 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
         read=SimpleNamespace(get_nodes=lambda **_kwargs: []),
     )
 
+    def unexpected_python_admission(**_kwargs: Any) -> None:
+        pytest.fail("Rust-selected runs must not use Python run admission")
+
+    runtime._terminal_run_result = unexpected_python_admission
+    runtime._claim_workflow_run = unexpected_python_admission
+
     result = runtime.run(
         workflow_id="wf-1",
         conversation_id="conv-1",

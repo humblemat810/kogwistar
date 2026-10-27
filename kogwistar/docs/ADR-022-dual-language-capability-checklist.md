@@ -1307,6 +1307,18 @@ were already bound; this is evidence for those specific paths, not proof of the
 entire server/worker retry inventory. The fixed DL-15C baseline remains
 **99/130 PASS (76.2%)**.
 
+Rust-selected synchronous runtime submission now delegates before the Python
+terminal-run lookup and Python ownership lease claim. The Rust runtime API
+performs its own durable, idempotent admission; avoiding the Python pre-claim
+prevents a split admission path and a Python lease that Rust never renews or
+releases. `tests/runtime/test_rust_runtime_authority.py::test_public_sync_runtime_dispatches_to_configured_rust_authority`
+now fails if either Python admission hook is called and passed. That regression
+plus `tests/runtime/test_run_ownership.py` passed (**6 passed**), preserving
+the Python lease-fencing contract. A broader suspend/resume matrix passed its
+`fake` case but did not complete at its `chroma` parametrization in this local
+Windows run; it is not counted as a pass. The fixed baseline remains
+**99/130 PASS (76.2%)**, and DL-15C remains in progress.
+
 ## Completion rule
 
 The dual-language architecture is implemented for a capability only when its

@@ -450,21 +450,6 @@ class WorkflowRuntime(
 
             requested_run_id = run_id
             run_id = run_id or f"run|{uuid.uuid4()}"
-            ownership: RunOwnership | None = None
-            if requested_run_id is not None:
-                existing_terminal = self._terminal_run_result(
-                    conversation_id=str(conversation_id), run_id=str(run_id)
-                )
-                if existing_terminal is not None and not (
-                    _resume_step_seq is not None and existing_terminal.status == "failure"
-                ):
-                    return existing_terminal
-                ownership = self._claim_workflow_run(
-                    conversation_id=str(conversation_id),
-                    workflow_id=str(workflow_id),
-                    run_id=str(run_id),
-                    allow_resume_takeover=_resume_step_seq is not None,
-                )
             from .rust_runtime_authority import (
                 run_with_rust_authority,
                 rust_runtime_authority_selected,
@@ -484,6 +469,22 @@ class WorkflowRuntime(
                     initial_state=initial_state,
                     run_id=str(run_id),
                     cache_dir=cache_dir,
+                )
+
+            ownership: RunOwnership | None = None
+            if requested_run_id is not None:
+                existing_terminal = self._terminal_run_result(
+                    conversation_id=str(conversation_id), run_id=str(run_id)
+                )
+                if existing_terminal is not None and not (
+                    _resume_step_seq is not None and existing_terminal.status == "failure"
+                ):
+                    return existing_terminal
+                ownership = self._claim_workflow_run(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    allow_resume_takeover=_resume_step_seq is not None,
                 )
             self.state_lock[str(run_id)] = Lock()
 
