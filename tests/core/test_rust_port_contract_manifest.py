@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -361,6 +362,72 @@ def test_dual_language_checklist_ids_are_unique() -> None:
     assert rows
     assert all(gates), "every checklist row must use a recognized status"
     assert len(ids) == len(set(ids)), "dual-language checklist IDs must be unique"
+
+
+def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> None:
+    checklist_path = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
+    )
+    checklist = checklist_path.read_text(encoding="utf-8")
+    scope = checklist.split("## Scope accounting", 1)[1].split("## Latest", 1)[0]
+    row_pattern = re.compile(
+        r"^\| (DL-[A-Z0-9-]+) \| (PASS|IN PROGRESS|NOT STARTED|FAIL|BLOCKED)"
+        r"(?:\s*\([^|]*\))? \|",
+        re.MULTILINE,
+    )
+    current = dict(row_pattern.findall(checklist))
+    assert len(current) == len(row_pattern.findall(checklist))
+
+    inventory = re.search(
+        r"current inventory has \*\*(\d+) items\*\* "
+        r"\((\d+) PASS, (\d+) IN PROGRESS\)",
+        scope,
+    )
+    assert inventory is not None
+    assert tuple(map(int, inventory.groups())) == (
+        len(current),
+        sum(status == "PASS" for status in current.values()),
+        sum(status == "IN PROGRESS" for status in current.values()),
+    )
+
+    baseline = subprocess.run(
+        [
+            "git",
+            "show",
+            "6130d04:kogwistar/docs/ADR-022-dual-language-capability-checklist.md",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        encoding="utf-8",
+    )
+    if baseline.returncode != 0:
+        # Hosted CI uses a shallow checkout; current-row accounting still runs.
+        return
+
+    baseline_rows = dict(row_pattern.findall(baseline.stdout))
+    assert len(baseline_rows) == 130
+    assert set(baseline_rows) <= set(current)
+    assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
+    baseline_total = re.search(r"\*\*(\d+)/(\d+) are now PASS\*\*", scope)
+    assert baseline_total is not None
+    assert tuple(map(int, baseline_total.groups())) == (
+        sum(current[item_id] == "PASS" for item_id in baseline_rows),
+        len(baseline_rows),
+    )
+    added = re.search(
+        r"The (\d+) IDs added since the baseline contain "
+        r"\*\*(\d+) PASS and (\d+) IN PROGRESS\*\*",
+        scope,
+    )
+    assert added is not None
+    added_rows = {item_id: status for item_id, status in current.items() if item_id not in baseline_rows}
+    assert tuple(map(int, added.groups())) == (
+        len(added_rows),
+        sum(status == "PASS" for status in added_rows.values()),
+        sum(status == "IN PROGRESS" for status in added_rows.values()),
+    )
 
 
 def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:

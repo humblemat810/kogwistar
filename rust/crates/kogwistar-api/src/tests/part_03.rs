@@ -858,14 +858,21 @@
         .await;
         assert_eq!(graph_space_mismatch.status(), StatusCode::FORBIDDEN);
 
-        let http_response = send_mutation(
-            make_app(),
-            make_token(&["write_graph"], "alpha"),
-            body.clone(),
-        )
-        .await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = make_app();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let http_response = reqwest::Client::new()
+            .post(format!("http://{address}/internal/graph/mutations"))
+            .bearer_auth(make_token(&["write_graph"], "alpha"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
         let http_status = http_response.status();
-        let response_body = to_bytes(http_response.into_body(), 65_536).await.unwrap();
+        let response_body = http_response.bytes().await.unwrap();
+        server.abort();
+        let _ = server.await;
         assert_eq!(
             http_status,
             StatusCode::OK,
