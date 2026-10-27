@@ -24,6 +24,17 @@ snapshot's denominator.
 
 ## Latest verification update (2026-10-27)
 
+- 2026-10-27 live PostgreSQL recorded-runtime recovery recheck: the existing
+  pgvector/PostgreSQL 17 container on `127.0.0.1:55433` was used directly rather
+  than starting a new test container. `tests/runtime/test_rust_runtime_postgres.py`
+  passed **10 tests, 0 failed, 0 skipped** on Windows CPython 3.13, covering
+  durable transition retry/rollback, mixed Python/Rust restart and projection
+  sequence, worker handoff/reopen, and worker reclaim/fault rollback. This
+  confirms those existing persistence contracts only. It does **not** cover
+  ordinary failed-run continuation from a checkpoint: Rust terminal runs
+  remain immutable, and the Python async latest-checkpoint helper passes
+  resume markers that `AsyncWorkflowRuntime.run()` rejects. Track this gap
+  within existing `DL-15C`; no checklist item or denominator changed.
 - 2026-10-27 bounded cross-language graph-traversal ACL check: Python
   `GraphQuery` now classifies a requested node/edge through the ACL-aware read
   facade and filters structural endpoint rows through ACL-visible edges before
