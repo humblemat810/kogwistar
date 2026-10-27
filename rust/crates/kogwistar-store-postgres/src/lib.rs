@@ -3783,14 +3783,28 @@ where
         tables,
         &mutation.scope.namespace,
         NewRawEntityEvent {
-            event_id: mutation.event_id,
-            entity_kind: mutation.entity_kind,
+            event_id: mutation.event_id.clone(),
+            entity_kind: mutation.entity_kind.clone(),
             entity_id: mutation.record.id.clone(),
-            op: mutation.op,
+            op: mutation.op.clone(),
             payload_json,
         },
     )
     .await?;
+    if !appended.inserted {
+        let existing_payload: Value = serde_json::from_str(&appended.event.payload_json)
+            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+        if appended.event.entity_kind != mutation.entity_kind
+            || appended.event.entity_id != mutation.record.id
+            || appended.event.op != mutation.op
+            || existing_payload != mutation.payload
+        {
+            return Err(PostgresStoreError::Backend(format!(
+                "graph mutation event id {:?} was reused with different input",
+                mutation.event_id
+            )));
+        }
+    }
     let event = raw_to_entity_event(appended.event)?;
     if !appended.inserted {
         return Ok(AppliedGraphMutation {
@@ -6853,6 +6867,108 @@ mod tests {
             std::process::id(),
             NEXT_SCHEMA.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn graph_mutation_retry_requires_identical_effect_when_dsn_available()
+    -> PostgresStoreResult<()> {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = test_schema("graph_mutation_retry");
+        let store = PostgresStore::from_dsn(&dsn, &schema)?;
+        store.ensure_schema().await?;
+        store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await?;
+
+        let namespace = format!("graph-mutation-retry-{}", std::process::id());
+        let mutation = kogwistar_store::GraphMutation {
+            scope: kogwistar_store::GraphScope {
+                namespace: namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "stable-node-write".to_owned(),
+            op: "ADD".to_owned(),
+            payload: serde_json::json!({"id": "retry-node", "text": "original"}),
+            record: kogwistar_store::GraphRecord {
+                id: "retry-node".to_owned(),
+                document: Some("original".to_owned()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        };
+
+        let batch = |mutation| kogwistar_store::GraphMutationBatch {
+            mutations: vec![mutation],
+            index_jobs: vec![kogwistar_store::NewIndexJob {
+                job_id: "stable-node-index".to_owned(),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: "retry-node".to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+        let first = store
+            .apply_graph_mutations_with_index_jobs_atomic(batch(mutation.clone()))
+            .await?;
+        let retry = store
+            .apply_graph_mutations_with_index_jobs_atomic(batch(mutation.clone()))
+            .await?;
+        assert!(first[0].inserted && first[0].mutated);
+        assert!(!retry[0].inserted && !retry[0].mutated);
+        assert_eq!(retry[0].event.seq, first[0].event.seq);
+
+        let mut conflicting = mutation;
+        conflicting.payload["text"] = serde_json::json!("different");
+        assert!(matches!(
+            store
+                .apply_graph_mutations_with_index_jobs_atomic(batch(conflicting))
+                .await,
+            Err(PostgresStoreError::Backend(message))
+                if message.contains("reused with different input")
+        ));
+
+        let events = store.replay_raw_events(&namespace, 0, 10).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, "stable-node-write");
+        let jobs = store
+            .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+            .await?;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_id, "stable-node-index");
+        let rows = store
+            .graph_projection_records(GraphProjectionRead {
+                scope: kogwistar_store::GraphScope {
+                    namespace: namespace.clone(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["retry-node".to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].document.as_deref(), Some("original"));
+
+        let cleanup = store.client().await?;
+        cleanup
+            .batch_execute(&format!(
+                "DROP SCHEMA {} CASCADE",
+                Tables::new(&schema)?.quoted_schema
+            ))
+            .await
+            .map_err(backend)?;
+        Ok(())
     }
 
     #[test]

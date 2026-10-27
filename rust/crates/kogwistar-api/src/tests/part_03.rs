@@ -871,8 +871,6 @@
             .unwrap();
         let http_status = http_response.status();
         let response_body = http_response.bytes().await.unwrap();
-        server.abort();
-        let _ = server.await;
         assert_eq!(
             http_status,
             StatusCode::OK,
@@ -886,6 +884,54 @@
         assert_eq!(result["seam_attestation_version"], 1);
         assert_eq!(result["seam_crossings"], json!([]));
         assert_eq!(result["results"][0]["mutated"], true);
+
+        let replay_response = reqwest::Client::new()
+            .post(format!("http://{address}/internal/graph/mutations"))
+            .bearer_auth(make_token(&["write_graph"], "alpha"))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(replay_response.status(), StatusCode::OK);
+        let replay: Value = replay_response.json().await.unwrap();
+        assert!(
+            replay["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| {
+                    item["inserted"].as_bool() == Some(false)
+                        && item["mutated"].as_bool() == Some(false)
+                })
+        );
+
+        let mut conflicting_retry = body.clone();
+        conflicting_retry["mutations"][0]["payload"]["retry_conflict"] = json!(true);
+        let conflicting_response = reqwest::Client::new()
+            .post(format!("http://{address}/internal/graph/mutations"))
+            .bearer_auth(make_token(&["write_graph"], "alpha"))
+            .json(&conflicting_retry)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(conflicting_response.status(), StatusCode::CONFLICT);
+        server.abort();
+        let _ = server.await;
+
+        let events = service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 6);
+        let jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_id, "graph-route-index-1");
+
         let records = service
             .store
             .graph_projection_records(kogwistar_store::GraphProjectionRead {
