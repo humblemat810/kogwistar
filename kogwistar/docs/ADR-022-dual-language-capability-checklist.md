@@ -544,6 +544,21 @@ snapshot's denominator.
   plus agent-event suites passed (**25 passed**) on Windows CPython 3.13. The
   marker preserves sync/async wrappers via `functools.wraps`; the remaining
   cross-stack selector inventory is still open under `DL-15C`.
+- Extended the public-boundary reflection invariant to `RecoverySubsystem` and
+  `IndexingSubsystem`, and bound recovery inspection, canonical source/revision
+  lookup, compound index-job enqueue/repair, and sync/async index-worker factory
+  creation to the owning engine's captured selector. Selector-drift regressions
+  prove compound node enqueue and recovery queue inspection retain the original
+  Python selection when the process setting changes mid-operation. Evidence:
+  `tests/core/test_implementation_selection_context.py` plus
+  `tests/core/test_indexing_canonical_source_payload.py` and
+  `tests/core/test_recovery_subsystem.py` (**51 passed**) on Windows CPython
+  3.13 with local socket access enabled. A restricted run stalled in an
+  existing asyncio Proactor self-pipe test; the elevated local-socket rerun
+  passed. The broader recovery-repair demo is not included in this result; its
+  separate run currently fails because its test principal omits the required
+  `read_security_scope` capability. This is bounded selector-boundary evidence,
+  not completion of the full cross-stack inventory.
 - Async Python index-worker batch cancellation now matches the Rust future's
   cancellation behavior: `CancelledError` propagates without a queue mutation.
   The Rust engine test cancels after a live store claim, verifies the job remains

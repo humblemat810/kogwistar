@@ -134,6 +134,7 @@ class IndexingSubsystem:
         if callable(hook):
             hook(str(label), time.perf_counter() - float(started_s))
 
+    @implementation_selection_bound
     def canonical_source_payload(self, *, entity_kind: str, entity_id: str) -> str:
         """Return a stable current-state identity for derived projection jobs.
 
@@ -181,6 +182,7 @@ class IndexingSubsystem:
             separators=(",", ":"),
         )
 
+    @implementation_selection_bound
     def canonical_entity_revision(
         self, *, entity_kind: str, entity_id: str, namespace: str | None = None
     ) -> CanonicalEntityRevision | None:
@@ -208,6 +210,7 @@ class IndexingSubsystem:
             entity_id=entity_id,
         )
 
+    @implementation_selection_bound
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
         """Return a stable identity derived from canonical entity events."""
         revision = self.canonical_entity_revision(
@@ -241,6 +244,7 @@ class IndexingSubsystem:
             separators=(",", ":"),
         )
 
+    @implementation_selection_bound
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         payload_json = self.canonical_source_payload(
             entity_kind="node", entity_id=node_id
@@ -264,6 +268,7 @@ class IndexingSubsystem:
                 payload_json=payload_json,
             )
 
+    @implementation_selection_bound
     def enqueue_index_jobs_for_edge(self, edge_id: str, *, op: str) -> None:
         payload_json = self.canonical_source_payload(
             entity_kind="edge", entity_id=edge_id
@@ -287,6 +292,7 @@ class IndexingSubsystem:
                 payload_json=payload_json,
             )
 
+    @implementation_selection_bound
     def repair_missing_two_stage_embedding_jobs(
         self, *, max_entities: int = 100, namespace: str | None = None
     ) -> int:
@@ -545,6 +551,7 @@ class IndexingSubsystem:
 
         return applied
 
+    @implementation_selection_bound
     def make_index_job_worker(
         self,
         *,
@@ -566,6 +573,7 @@ class IndexingSubsystem:
             namespace=namespace,
         )
 
+    @implementation_selection_bound
     def make_async_index_job_worker(
         self,
         *,

@@ -258,6 +258,72 @@ def test_every_public_lane_messaging_operation_binds_its_engine_selection() -> N
     assert unbound == []
 
 
+def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None:
+    from kogwistar.engine_core.recovery import RecoverySubsystem
+    from kogwistar.messaging.service import LaneMessagingService
+
+    unbound: list[str] = []
+    for subsystem in (RecoverySubsystem, IndexingSubsystem, LaneMessagingService):
+        unbound.extend(
+            f"{subsystem.__name__}.{name}"
+            for name, member in inspect.getmembers(subsystem, callable)
+            if not name.startswith("_")
+            and not getattr(member, "__implementation_selection_bound__", False)
+        )
+
+    assert unbound == []
+
+
+def test_indexing_compound_enqueue_keeps_one_selector_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+
+    class Metadata:
+        def enqueue_index_job(self, **_values: object) -> str:
+            observed.append(runtime_implementation_mode())
+            return f"job-{len(observed)}"
+
+    engine = SimpleNamespace(
+        _phase1_enable_index_jobs=True,
+        namespace="default",
+        metadata=Metadata(),
+        persistence_mode="single_stage",
+    )
+    subsystem = IndexingSubsystem(engine=engine)
+
+    def source_payload(**_values: object) -> str:
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+        return "{}"
+
+    monkeypatch.setattr(subsystem, "canonical_source_payload", source_payload)
+    subsystem.enqueue_index_jobs_for_node("node-1", op="UPSERT")
+
+    assert observed == ["python", "python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_recovery_inspection_keeps_one_selector_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.engine_core.recovery import RecoverySubsystem
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    observed: list[str] = []
+
+    class Metadata:
+        def list_index_jobs(self, **_values: object) -> list[object]:
+            monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+            observed.append(runtime_implementation_mode())
+            return []
+
+    recovery = RecoverySubsystem(SimpleNamespace(metadata=Metadata()))
+    assert recovery.inspect_queues(["alpha"]) == []
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "rust"
+
+
 def test_bound_runtime_uses_its_construction_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

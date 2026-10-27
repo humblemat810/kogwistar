@@ -224,6 +224,7 @@ class RecoverySubsystem:
         findings.extend(resume_findings)
         return self._replace(report, actions=tuple(actions), findings=tuple(findings))
 
+    @implementation_selection_bound
     def inspect(
         self,
         *,
@@ -252,6 +253,7 @@ class RecoverySubsystem:
             results.append(repair(namespace=namespace))
         return results
 
+    @implementation_selection_bound
     def inspect_queues(self, namespaces: list[str]) -> list[QueueRecoveryState]:
         list_jobs = self.engine.metadata.list_index_jobs
         if not callable(list_jobs):
@@ -282,6 +284,7 @@ class RecoverySubsystem:
                 )
         return states
 
+    @implementation_selection_bound
     def inspect_lane_rows(self, namespaces: list[str]) -> list[LaneRecoveryState]:
         list_rows = self.engine.metadata.list_projected_lane_messages
 
@@ -316,6 +319,7 @@ class RecoverySubsystem:
                 )
         return states
 
+    @implementation_selection_bound
     def inspect_checkpoints(
         self,
         *,
@@ -360,6 +364,7 @@ class RecoverySubsystem:
             )
         ]
 
+    @implementation_selection_bound
     def inspect_run_history(
         self, *, namespace: str, workspace_id: str
     ) -> list[RunRecoveryState]:
