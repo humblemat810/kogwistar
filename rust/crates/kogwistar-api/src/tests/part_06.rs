@@ -603,6 +603,94 @@
                 .any(|event| event.event_id == "inline-event-inline-cross-scope"));
         }
 
+        for (run_id, binding_update) in [
+            (
+                "inline-binding-missing",
+                "payload_json = (payload_json::jsonb - 'runtime_owner_binding')::text",
+            ),
+            (
+                "inline-binding-mismatched",
+                "payload_json = jsonb_set(payload_json::jsonb, '{runtime_owner_binding,user_id}', '\"mallory\"'::jsonb)::text",
+            ),
+        ] {
+            assert_eq!(
+                service.execute(submit(run_id)).await.status,
+                StatusCode::ACCEPTED.as_u16()
+            );
+            let (tamper, connection) =
+                tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+            let task = tokio::spawn(connection);
+            let updated = tamper
+                .execute(
+                    &format!(
+                        "UPDATE \"{schema}\".server_run_events SET {binding_update} WHERE run_id = $1 AND event_type = 'run.created'"
+                    ),
+                    &[&run_id],
+                )
+                .await
+                .unwrap();
+            assert_eq!(updated, 1, "expected to tamper with the admission event");
+            drop(tamper);
+            task.await.unwrap().unwrap();
+
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            assert!(service.execute_inline_native_work_once().await.unwrap());
+            assert_eq!(
+                service
+                    .store
+                    .get_server_run(run_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "failed",
+                "an absent or untrusted owner binding must durably fail the run"
+            );
+            let lane = service
+                .store
+                .list_projected_lane_messages(LaneMessageFilter {
+                    correlation_id: Some(run_id.to_owned()),
+                    limit: 10,
+                    ..LaneMessageFilter::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(lane.len(), 1);
+            assert_eq!(lane[0].status, "completed");
+            let events = service
+                .store
+                .replay_raw_events("alpha", 0, 100)
+                .await
+                .unwrap();
+            assert!(!events.iter().any(|event| {
+                event.event_id == format!("inline-event-{run_id}")
+            }));
+            let rows = service
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec![format!("inline-node-{run_id}")]),
+                    metadata: MetadataFilter::default(),
+                    limit: 10,
+                })
+                .await
+                .unwrap();
+            assert!(rows.is_empty());
+            let jobs = service
+                .store
+                .list_index_jobs(Some("alpha"), None, None, None, None, 10)
+                .await
+                .unwrap();
+            assert!(!jobs
+                .iter()
+                .any(|job| job.job_id == format!("inline-job-{run_id}")));
+        }
+
         assert_eq!(
             service.execute(submit("inline-revoked")).await.status,
             StatusCode::ACCEPTED.as_u16()

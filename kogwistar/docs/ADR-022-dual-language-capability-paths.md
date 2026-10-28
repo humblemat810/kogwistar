@@ -204,10 +204,12 @@ non-empty index intent and verifies its pending job alongside the graph event,
 projection, succeeded run, and completed lane. The live inline-worker test also
 submits an out-of-scope graph batch with an index intent; it verifies a durable
 failed run and completed lane with no graph event, projection, or index job in
-either namespace. Complete the existing `DL-10` acceptance criteria by
-covering inline durable-run-owner/binding mismatch and missing/untrusted
-bindings, injected transaction failure, duplicate result, and restart/retry
-atomicity.
+either namespace. The same live inline-worker test now tampers with the durable
+`run.created` event by removing the owner binding or changing its user ID; in
+both cases the run is durably failed, the lane is completed, and no graph event,
+projection, or index job is written. Complete the existing `DL-10` acceptance
+criteria by covering injected transaction failure, duplicate result, and
+restart/retry atomicity.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
