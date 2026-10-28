@@ -6,9 +6,9 @@
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_engine::EntityProjection;
 use kogwistar_runtime::{
-    PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeError,
-    RecordedRuntimeState, RecordedRuntimeTransition, RecordedTransitionResult,
-    RecordedWorkerHandoff, RecordedWorkerSuccessEffect, RuntimeFrontier, RuntimeStepExecutePayload,
+    PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState,
+    RecordedRuntimeTransition, RecordedTransitionResult, RecordedWorkerHandoff,
+    RecordedWorkerSuccessEffect, RuntimeFrontier, RuntimeStepExecutePayload,
     RuntimeStepExecuteRequest, RuntimeWorkerEffectStatus, frontier_after_worker_resume,
     frontier_after_worker_success, frontier_after_worker_suspend, reduce_recorded_transition,
     transition_digest, worker_effect_digest,
@@ -36,7 +36,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 use uuid::Uuid;
 
 const BUSY_TIMEOUT_MS: u64 = 30_000;
@@ -45,94 +44,6 @@ const BUSY_TIMEOUT_MS: u64 = 30_000;
 // another connection has an active data transaction.
 const STORE_SCHEMA_VERSION: i64 = 1;
 static NEXT_CLAIM_TOKEN: AtomicU64 = AtomicU64::new(0);
-
-/// Errors for direct SQLite APIs. Trait methods retain `kogwistar-store`'s
-/// existing `StoreError` contract for its validation and cursor errors.
-#[derive(Debug, Error)]
-pub enum SqliteStoreError {
-    #[error("SQLite operation failed: {0}")]
-    Sql(#[from] rusqlite::Error),
-    #[error("filesystem operation failed: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("SQLite database authority is held by another process for {path}: {message}")]
-    AuthorityConflict { path: String, message: String },
-    #[error("namespace must not be empty")]
-    EmptyNamespace,
-    #[error(
-        "event_id {event_id:?} already belongs to namespace {existing_namespace:?}, not {requested_namespace:?}"
-    )]
-    EventIdNamespaceCollision {
-        event_id: String,
-        existing_namespace: String,
-        requested_namespace: String,
-    },
-    #[error("event payload is not valid JSON: {0}")]
-    InvalidPayload(#[from] serde_json::Error),
-    #[error("sequence value must not be negative: {value}")]
-    NegativeSequenceValue { value: i64 },
-    #[error("transaction aborted: {0}")]
-    TransactionAborted(String),
-    #[error("SQLite cached session belongs to another execution context")]
-    ContextMismatch,
-    #[error("invalid recorded runtime transition: {0}")]
-    RecordedRuntime(#[from] RecordedRuntimeError),
-    #[error("recorded runtime transition conflict: {0}")]
-    RecordedRuntimeConflict(String),
-    #[error(transparent)]
-    Store(#[from] StoreError),
-}
-
-/// One compare-and-swap mutation for an atomic named-projection batch.
-pub struct NamedProjectionCas {
-    pub namespace: String,
-    pub key: String,
-    pub expected_last_authoritative_seq: Option<i64>,
-    pub expected_last_materialized_seq: Option<i64>,
-    pub projection: NamedProjectionWrite,
-}
-
-pub type SqliteStoreResult<T> = Result<T, SqliteStoreError>;
-
-/// Event row with the raw SQLite JSON text retained byte-for-byte as stored.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawEntityEvent {
-    pub namespace: String,
-    pub seq: i64,
-    pub event_id: String,
-    pub entity_kind: String,
-    pub entity_id: String,
-    pub op: String,
-    pub payload_json: String,
-    pub created_at: i64,
-}
-
-/// New event for callers that must retain Python's original `payload_json` text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NewRawEntityEvent {
-    pub event_id: String,
-    pub entity_kind: String,
-    pub entity_id: String,
-    pub op: String,
-    pub payload_json: String,
-}
-
-/// An event imported from a portable archive with authoritative identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestoredRawEntityEvent {
-    pub seq: i64,
-    pub event_id: String,
-    pub entity_kind: String,
-    pub entity_id: String,
-    pub op: String,
-    pub payload_json: String,
-    pub created_at: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AppendedRawEvent {
-    pub event: RawEntityEvent,
-    pub inserted: bool,
-}
 
 /// Cloneable durable store handle. Clones share one serialized SQLite
 /// connection; SQLite is a single-writer store and repeated open/WAL teardown
@@ -185,7 +96,13 @@ mod row_mapping;
 mod schema;
 mod store;
 mod trait_impls;
+mod types;
 mod workflow_runtime;
+
+pub use types::{
+    AppendedRawEvent, NamedProjectionCas, NewRawEntityEvent, RawEntityEvent,
+    RestoredRawEntityEvent, SqliteStoreError, SqliteStoreResult,
+};
 
 use authority::{ProcessAuthorityLock, database_initialization_lock, is_private_memory_database};
 #[cfg(test)]
