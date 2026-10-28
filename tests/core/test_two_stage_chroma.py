@@ -512,6 +512,73 @@ def test_chroma_stale_job_replay_restores_and_requeues_current_revision(
     ] == "fp-2"
 
 
+@pytest.mark.ci
+@two_stage_case("stale_revision")
+def test_chroma_late_promotion_write_restages_and_requeues_new_revision(
+    tmp_path, monkeypatch
+):
+    """A newer canonical write between validation and Chroma upsert converges."""
+    from kogwistar.engine_core.canonical_events import canonical_revision_job_payload
+
+    engine, adapter = _engine(tmp_path)
+
+    def canonical_payload(*, entity_kind: str, entity_id: str) -> str:
+        revision = engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        return canonical_revision_job_payload(revision)
+
+    monkeypatch.setattr(engine.indexing, "canonical_revision_payload", canonical_payload)
+    old_node = build_entity_node(node_id="n1", doc_id="old")
+    new_node = build_entity_node(node_id="n1", doc_id="new")
+    adapter.add_node(old_node)
+    old_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="n1"
+    )
+    original_upsert = engine.backend.node_upsert
+    interleaved = False
+
+    def commit_new_revision_then_write_stale(**kwargs):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            engine.indexing.fingerprint = "fp-2"
+            adapter.add_node(new_node)
+        original_upsert(**kwargs)
+
+    monkeypatch.setattr(engine.backend, "node_upsert", commit_new_revision_then_write_stale)
+    adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="n1",
+        op="UPSERT",
+        payload_json=old_payload,
+    )
+
+    stage1 = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert stage1 is not None
+    current_fingerprint = canonical_payload(entity_kind="node", entity_id="n1")
+    assert stage1["payload"]["source_fingerprint"] == json.loads(
+        current_fingerprint
+    )["source_fingerprint"]
+    assert "new" in stage1["payload"]["document"]
+    assert engine.backend.rows["n1"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == json.loads(old_payload)["source_fingerprint"]
+    assert engine.indexing.jobs[-1]["op"] == "UPSERT"
+    assert engine.indexing.jobs[-1]["payload_json"] == current_fingerprint
+
+    adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="n1",
+        op="UPSERT",
+        payload_json=engine.indexing.jobs[-1]["payload_json"],
+    )
+    assert engine.backend.rows["n1"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == json.loads(current_fingerprint)["source_fingerprint"]
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
+
+
 @pytest.mark.parametrize("kind", ["node", "edge"])
 @pytest.mark.ci
 def test_chroma_late_delete_after_resurrection_restages_current_revision(
