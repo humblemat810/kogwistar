@@ -418,6 +418,7 @@ def test_chroma_arrangement_rejects_stale_delete_for_newer_active_revision(tmp_p
 
 
 @pytest.mark.parametrize("kind", ["node", "edge"])
+@pytest.mark.ci
 def test_chroma_late_delete_after_resurrection_restages_current_revision(
     tmp_path, kind
 ):
@@ -485,6 +486,7 @@ def test_chroma_late_delete_after_resurrection_restages_current_revision(
 
 
 @pytest.mark.asyncio
+@pytest.mark.ci
 async def test_async_chroma_late_delete_after_resurrection_restages_current_revision(
     tmp_path,
 ):
