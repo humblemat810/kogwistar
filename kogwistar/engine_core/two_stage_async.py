@@ -660,6 +660,30 @@ class AsyncChromaTwoStageProjectionAdapter:
         )
         return True
 
+    async def _restore_current_stage1(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Make stale async job replay schedule the current canonical projection."""
+        current = await self._current(entity_kind, entity_id)
+        if current is None or current.state != "active":
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return False
+        if not await self.restore_stage1_from_canonical_event(
+            entity_kind=entity_kind, entity_id=entity_id
+        ):
+            latest = await self._current(entity_kind, entity_id)
+            if latest is not None and latest.state == "active":
+                raise RuntimeError(
+                    "current async Chroma revision changed during Stage-1 recovery"
+                )
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return False
+        return True
+
     async def remove_stage2_or_invalidate(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
         await self.engine.backend.async_call(entity_kind, "delete", ids=[entity_id])
         if entity_kind == "edge":
@@ -731,6 +755,9 @@ class AsyncChromaTwoStageProjectionAdapter:
                 and current.state == "active"
                 and expected != await self._fingerprint(entity_kind, entity_id)
             ):
+                await self._restore_current_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
                 return
             await self._delete_projection_and_restore_if_active(
                 entity_kind=entity_kind, entity_id=entity_id
@@ -743,6 +770,9 @@ class AsyncChromaTwoStageProjectionAdapter:
             return
         current_fingerprint = await self._fingerprint(entity_kind, entity_id)
         if expected and expected != current_fingerprint:
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         row = _optional_row_mapping(
             await self._meta(
@@ -751,7 +781,10 @@ class AsyncChromaTwoStageProjectionAdapter:
             )
         )
         if not row:
-            raise RuntimeError("current Chroma Stage-1 projection is missing")
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
         staged = _row_mapping(row.get("payload"))
         staged_seq = _sequence_number(row.get("last_authoritative_seq"))
         staged_fingerprint = str(staged.get("source_fingerprint") or "")
@@ -760,12 +793,18 @@ class AsyncChromaTwoStageProjectionAdapter:
         if (expected and staged_fingerprint != expected) or (
             staged_fingerprint != current_fingerprint
         ):
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         embedding = (await _embed(self.engine._ef, [str(staged.get("document") or "")]))[0]
         current = await self._current(entity_kind, entity_id)
         if current is None or current.state != "active":
             return
         if staged_fingerprint != await self._fingerprint(entity_kind, entity_id):
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         collection_key = entity_kind
         await self.engine.backend.async_call(
@@ -834,6 +873,9 @@ class AsyncChromaTwoStageProjectionAdapter:
                     outcomes[job_id] = None
                     continue
                 if expected and expected != await self._fingerprint(kind, entity_id):
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
                 row = _optional_row_mapping(
@@ -843,7 +885,11 @@ class AsyncChromaTwoStageProjectionAdapter:
                     )
                 )
                 if not row:
-                    raise RuntimeError("current Chroma Stage-1 projection is missing")
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
                 staged = _row_mapping(row.get("payload"))
                 staged_fingerprint = str(staged.get("source_fingerprint") or "")
                 if not staged_fingerprint:
@@ -851,6 +897,9 @@ class AsyncChromaTwoStageProjectionAdapter:
                 if (expected and staged_fingerprint != expected) or (
                     staged_fingerprint != await self._fingerprint(kind, entity_id)
                 ):
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
                 prepared.append(
@@ -888,6 +937,9 @@ class AsyncChromaTwoStageProjectionAdapter:
                     continue
                 staged_fingerprint = str(staged.get("source_fingerprint") or "")
                 if staged_fingerprint != await self._fingerprint(kind, entity_id):
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
                 await self.engine.backend.async_call(

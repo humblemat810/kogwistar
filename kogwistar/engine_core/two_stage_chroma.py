@@ -201,6 +201,23 @@ class SQLiteChromaTwoStageProjectionAdapter:
             ),
         )
 
+    def _restore_current_stage1(self, *, entity_kind: str, entity_id: str) -> bool:
+        """Make stale-job replay schedule the current canonical projection."""
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None or revision.state != "active":
+            self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return False
+        if not self.restore_stage1_from_canonical_event(
+            entity_kind=entity_kind, entity_id=entity_id
+        ):
+            raise RuntimeError("current Chroma revision changed during Stage-1 recovery")
+        self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
+        return True
+
     enqueue_embedding_job = _enqueue
 
     def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
@@ -351,6 +368,9 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     entity_kind=entity_kind, entity_id=entity_id
                 )
             ):
+                self._restore_current_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
                 return
             self._delete_projection_and_restore_if_active(
                 entity_kind=entity_kind, entity_id=entity_id
@@ -364,12 +384,18 @@ class SQLiteChromaTwoStageProjectionAdapter:
         if expected and expected != self._current_fingerprint(
             entity_kind=entity_kind, entity_id=entity_id
         ):
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         row = self._meta().get_stage1_node_projection(
             self._namespace(), self._stage1_key(entity_kind, entity_id)
         )
         if not row:
-            raise RuntimeError("current Stage-1 projection is missing")
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
         staged = _mapping(row.get("payload"))
         staged_seq = _sequence_number(row.get("last_authoritative_seq"))
         staged_fingerprint = str(staged.get("source_fingerprint") or "")
@@ -380,6 +406,9 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 entity_kind=entity_kind, entity_id=entity_id
             )
         ):
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         document = str(staged.get("document") or "")
         embedding = self.engine.embed.iterative_defensive_emb(document)
@@ -414,12 +443,10 @@ class SQLiteChromaTwoStageProjectionAdapter:
         if self._current_fingerprint(
             entity_kind=entity_kind, entity_id=entity_id
         ) != str(staged.get("source_fingerprint") or ""):
-            if self.restore_stage1_from_canonical_event(
+            self._restore_current_stage1(
                 entity_kind=entity_kind, entity_id=entity_id
-            ):
-                self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
-                return
-            raise RuntimeError("Chroma promotion became stale and could not restore Stage-1")
+            )
+            return
         self.remove_stage1(
             entity_kind=entity_kind,
             entity_id=entity_id,
@@ -467,13 +494,20 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 if expected and expected != self._current_fingerprint(
                     entity_kind=entity_kind, entity_id=entity_id
                 ):
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
                 row = self._meta().get_stage1_node_projection(
                     self._namespace(), self._stage1_key(entity_kind, entity_id)
                 )
                 if not row:
-                    raise RuntimeError("current Stage-1 projection is missing")
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
                 staged = _mapping(row.get("payload"))
                 staged_fingerprint = str(staged.get("source_fingerprint") or "")
                 if not staged_fingerprint:
@@ -483,6 +517,9 @@ class SQLiteChromaTwoStageProjectionAdapter:
                         entity_kind=entity_kind, entity_id=entity_id
                     )
                 ):
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
                 staged["_stage1_authoritative_seq"] = int(

@@ -429,6 +429,107 @@ async def test_async_chroma_late_stale_write_restages_current_revision(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("batched", [False, True])
+async def test_async_chroma_stale_job_replay_restores_and_requeues_current_revision(
+    tmp_path, batched
+):
+    backend = _async_chroma_backend()
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=lambda _engine: backend,
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    worker = AsyncIndexJobWorker(engine=engine, batch_size=8, max_jobs_per_tick=8)
+    adapter = engine.async_two_stage_projection_adapter
+    try:
+        old = build_entity_node(node_id="async-replay", doc_id="old", embedding=None)
+        await engine.async_add_node(old)
+        stale_payload = engine.indexing.canonical_revision_payload(
+            entity_kind="node", entity_id="async-replay"
+        )
+        assert (await worker.tick()).done == 1
+
+        current = build_entity_node(
+            node_id="async-replay", doc_id="current", embedding=None
+        )
+        await engine.async_add_node(current)
+        current_payload = engine.indexing.canonical_revision_payload(
+            entity_kind="node", entity_id="async-replay"
+        )
+        assert (await worker.tick()).done == 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "node:async-replay"
+        ) is None
+
+        old_document = old.model_dump_json(
+            field_mode="backend", exclude=["embedding"]
+        )
+        old_fingerprint = json.loads(stale_payload)["source_fingerprint"]
+        await backend.async_call(
+            "node",
+            "upsert",
+            ids=["async-replay"],
+            documents=[old_document],
+            metadatas=[
+                {
+                    "node_id": "async-replay",
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": old_fingerprint,
+                }
+            ],
+            embeddings=[[0.1, 0.2]],
+        )
+
+        if batched:
+            outcomes = await adapter.apply_embedding_jobs_batch(
+                [
+                    SimpleNamespace(
+                        job_id="stale-async-replay",
+                        entity_kind="node",
+                        entity_id="async-replay",
+                        op="UPSERT",
+                        payload_json=stale_payload,
+                    )
+                ]
+            )
+            assert outcomes == {"stale-async-replay": None}
+        else:
+            await adapter.apply_embedding_job(
+                entity_kind="node",
+                entity_id="async-replay",
+                op="UPSERT",
+                payload_json=stale_payload,
+            )
+
+        stage1 = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "node:async-replay"
+        )
+        assert stage1 is not None
+        assert stage1["payload"]["source_fingerprint"] == json.loads(
+            current_payload
+        )["source_fingerprint"]
+        pending = engine.meta_sqlite.list_index_jobs(
+            namespace=engine.namespace,
+            entity_kind="node",
+            entity_id="async-replay",
+            status="PENDING",
+        )
+        assert any(job.payload_json == current_payload for job in pending)
+
+        assert (await worker.tick()).done == 1
+        result = await backend.async_node_get(
+            ids=["async-replay"], include=["documents", "metadatas", "embeddings"]
+        )
+        assert json.loads(result["documents"][0])["doc_id"] == "current"
+        assert result["metadatas"][0]["_kogwistar_source_fingerprint"] == json.loads(
+            current_payload
+        )["source_fingerprint"]
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
 @two_stage_case("stale_revision")
 @two_stage_case("delete_race")
 @two_stage_case("recovery_reconciliation")

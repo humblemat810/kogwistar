@@ -118,6 +118,7 @@ class _Indexing:
     def __init__(self) -> None:
         self.fingerprint = "fp-1"
         self.state = "active"
+        self.payload: dict[str, object] = {}
         self.jobs: list[dict] = []
 
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
@@ -139,8 +140,11 @@ class _Indexing:
 
     def canonical_entity_revision(self, *, entity_kind: str, entity_id: str):
         return SimpleNamespace(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
             revision=1 if self.fingerprint == "fp-1" else 2,
             state=self.state,
+            payload=self.payload,
         )
 
     def enqueue_index_job(self, **kwargs) -> None:
@@ -151,6 +155,29 @@ def _engine(tmp_path: Path):
     meta = EngineSQLite(tmp_path, filename="meta.sqlite")
     meta.ensure_initialized()
     backend = _Backend()
+
+    def node_doc_and_meta(node):
+        engine.indexing.payload = node.model_dump(
+            dump_format="json", field_mode="backend", exclude=["embedding"]
+        )
+        return (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {
+                "node_id": node.safe_get_id(),
+                "kind": "entity",
+                "_class_name": type(node).__name__,
+            },
+        )
+
+    def enrich_edge_meta(edge):
+        engine.indexing.payload = edge.model_dump(
+            dump_format="json", field_mode="backend", exclude=["embedding"]
+        )
+        return {
+            "edge_id": edge.safe_get_id(),
+            "_class_name": type(edge).__name__,
+        }
+
     engine = SimpleNamespace(
         namespace="tenant-a",
         kg_graph_type="knowledge",
@@ -160,18 +187,8 @@ def _engine(tmp_path: Path):
         indexing=_Indexing(),
         _phase1_enable_index_jobs=True,
         write=SimpleNamespace(
-            node_doc_and_meta=lambda node: (
-                node.model_dump_json(field_mode="backend", exclude=["embedding"]),
-                {
-                    "node_id": node.safe_get_id(),
-                    "kind": "entity",
-                    "_class_name": type(node).__name__,
-                },
-            ),
-            enrich_edge_meta=lambda edge: {
-                "edge_id": edge.safe_get_id(),
-                "_class_name": type(edge).__name__,
-            },
+            node_doc_and_meta=node_doc_and_meta,
+            enrich_edge_meta=enrich_edge_meta,
         ),
         embed=SimpleNamespace(
             iterative_defensive_emb=lambda document: [float(len(document)), 1.0]
@@ -415,6 +432,84 @@ def test_chroma_arrangement_rejects_stale_delete_for_newer_active_revision(tmp_p
     )
 
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("op", ["UPSERT", "DELETE"])
+@two_stage_case("stale_revision")
+def test_chroma_stale_job_replay_restores_and_requeues_current_revision(
+    tmp_path, monkeypatch, batched, op
+):
+    engine, adapter = _engine(tmp_path)
+    current_node = build_entity_node(node_id="n1", doc_id="current")
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="old"))
+    stale_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="n1"
+    )
+
+    engine.indexing.fingerprint = "fp-2"
+    engine.meta_sqlite.clear_stage1_node_projection("tenant-a", "n1")
+    stale_metadata = {
+        "node_id": "n1",
+        "_kogwistar_stage2_ready": True,
+        "_kogwistar_source_fingerprint": "fp-1",
+    }
+    engine.backend.node_upsert(
+        ids=["n1"],
+        documents=[build_entity_node(node_id="n1", doc_id="old").model_dump_json(
+            field_mode="backend", exclude=["embedding"]
+        )],
+        metadatas=[stale_metadata],
+        embeddings=[[1.0, 1.0]],
+    )
+
+    def restore_current(*, entity_kind: str, entity_id: str) -> bool:
+        assert (entity_kind, entity_id) == ("node", "n1")
+        engine.meta_sqlite.replace_stage1_node_projection(
+            "tenant-a",
+            "n1",
+            {
+                "id": "n1",
+                "entity_kind": "node",
+                "document": current_node.model_dump_json(
+                    field_mode="backend", exclude=["embedding"]
+                ),
+                "metadata": {"node_id": "n1"},
+                "source_fingerprint": "fp-2",
+            },
+            last_authoritative_seq=2,
+            last_materialized_seq=2,
+            projection_schema_version=1,
+            materialization_status="pending",
+        )
+        return True
+
+    monkeypatch.setattr(adapter, "restore_stage1_from_canonical_event", restore_current)
+    stale_job = SimpleNamespace(
+        job_id="stale-job",
+        entity_kind="node",
+        entity_id="n1",
+        op=op,
+        payload_json=stale_payload,
+    )
+    if batched:
+        assert adapter.apply_embedding_jobs_batch([stale_job]) == {"stale-job": None}
+    else:
+        adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="n1",
+            op=op,
+            payload_json=stale_payload,
+        )
+
+    stage1 = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert stage1 is not None
+    assert stage1["payload"]["source_fingerprint"] == "fp-2"
+    assert engine.indexing.jobs[-1]["op"] == "UPSERT"
+    assert json.loads(engine.indexing.jobs[-1]["payload_json"])[
+        "source_fingerprint"
+    ] == "fp-2"
 
 
 @pytest.mark.parametrize("kind", ["node", "edge"])
