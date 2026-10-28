@@ -609,3 +609,132 @@ async fn postgres_queue_projects_to_chroma_without_cross_store_transaction() {
         .await
         .expect("drop isolated queue schema");
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN and an explicit integration-test run"]
+async fn postgres_rust_worker_applies_python_wire_action_to_chroma() {
+    let dsn = env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("set KOGWISTAR_TEST_PG_DSN when running this ignored integration test");
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let schema = format!("kg_py_action_{}_{}", std::process::id(), nonce);
+    let queue = PostgresStore::from_dsn(&dsn, &schema).expect("construct isolated queue store");
+    queue.ensure_schema().await.expect("create queue schema");
+    let job_id = format!("python-action-{nonce}");
+    let namespace = "workspace-python";
+    queue
+        .enqueue_index_job(NewIndexJob {
+            job_id: job_id.clone(),
+            namespace: namespace.to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .await
+        .expect("enqueue PostgreSQL projection job");
+
+    let claim = queue
+        .claim_index_jobs(1, 30, Some(namespace))
+        .await
+        .expect("claim PostgreSQL projection job")
+        .remove(0);
+    let mut action: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-projection-action-v1.json"
+    )))
+    .expect("shared Python projection action fixture is valid");
+    action["job_id"] = json!(job_id);
+    action["namespace"] = json!(namespace);
+    let action_json = action.to_string();
+    let digest = hex::encode(Sha256::digest(action_json.as_bytes()));
+    let claim_token = claim.claim_token.as_deref().expect("claim token");
+    let accepted = queue
+        .accept_index_job_result(&claim.job_id, claim_token, &action_json, &digest)
+        .await
+        .expect("admit shared Python-compatible projection action");
+    assert_eq!(accepted.status, "accepted");
+    queue
+        .bump_retry_and_requeue(
+            &claim.job_id,
+            "simulate worker loss after Python result admission",
+            0,
+            Some(claim_token),
+        )
+        .await
+        .expect("release expired worker claim while preserving accepted action");
+
+    let (endpoint, server) = fake_chroma().await;
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: "test-postgres-python-action-nodes".to_owned(),
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: "test-postgres-python-action-edges".to_owned(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect fake Chroma");
+
+    let summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some(namespace),
+            move |_input| async { panic!("accepted Python action must not call provider") },
+        )
+        .await
+        .expect("apply shared Python-compatible action with Rust worker");
+
+    assert_eq!(summary.claimed, 1);
+    assert_eq!(summary.reused, 1);
+    let done = queue
+        .index_jobs(
+            Some(namespace),
+            Some("DONE"),
+            Some("node"),
+            Some("node-1"),
+            Some("node_embedding"),
+            10,
+        )
+        .await
+        .expect("read completed PostgreSQL queue item");
+    assert_eq!(done.len(), 1);
+    assert_eq!(
+        done[0].accepted_result_json.as_deref(),
+        Some(action_json.as_str())
+    );
+
+    let requests = server.await.expect("fake Chroma server");
+    let upsert = requests
+        .iter()
+        .find(|(line, _)| line.contains("/upsert HTTP"))
+        .expect("Rust worker applies accepted Python action to Chroma");
+    assert_eq!(upsert.1["ids"], json!(["node-1"]));
+    assert_eq!(upsert.1["documents"], json!(["current node"]));
+    assert_eq!(upsert.1["embeddings"], json!([[0.25, 0.75]]));
+    assert_eq!(upsert.1["metadatas"][0]["_kogwistar_namespace"], namespace);
+
+    drop(graph);
+    drop(queue);
+    let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .expect("connect to remove isolated schema");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .await
+        .expect("drop isolated queue schema");
+}
