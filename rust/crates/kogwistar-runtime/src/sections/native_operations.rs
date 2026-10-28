@@ -181,12 +181,27 @@ type NativeOperationHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<Native
     + Send
     + Sync;
 
+type NativeGraphOperationHandler = dyn Fn(
+        &RuntimeNativeStepRequest,
+    ) -> Result<
+        (NativeOperationOutput, kogwistar_contracts::GraphMutationBatchV1),
+        RuntimeNativeExecutionError,
+    >
+    + Send
+    + Sync;
+
+#[derive(Clone)]
+enum RegisteredNativeOperation {
+    State(Arc<NativeOperationHandler>),
+    Graph(Arc<NativeGraphOperationHandler>),
+}
+
 /// Versioned registry for trusted Rust operation implementations. Registration
 /// is explicit application composition; it is not a plugin loader or a way for
 /// workflow input to install executable code.
 #[derive(Clone)]
 pub struct NativeOperationRegistry {
-    handlers: BTreeMap<String, BTreeMap<String, Arc<NativeOperationHandler>>>,
+    handlers: BTreeMap<String, BTreeMap<String, RegisteredNativeOperation>>,
 }
 
 impl Default for NativeOperationRegistry {
@@ -215,7 +230,10 @@ impl NativeOperationRegistry {
         self.handlers
             .entry(operation.to_owned())
             .or_default()
-            .insert("v1".to_owned(), Arc::new(handler));
+            .insert(
+                "v1".to_owned(),
+                RegisteredNativeOperation::State(Arc::new(handler)),
+            );
     }
 
     /// Add a trusted, application-owned synchronous handler. Handlers must be
@@ -235,8 +253,44 @@ impl NativeOperationRegistry {
             + Sync
             + 'static,
     {
-        let operation = operation.into();
-        let version = version.into();
+        self.register_handler(
+            operation.into(),
+            version.into(),
+            RegisteredNativeOperation::State(Arc::new(handler)),
+        )
+    }
+
+    /// Register a trusted pure handler that proposes a graph batch. The host
+    /// must authorize and commit the returned batch with the worker effect.
+    pub fn register_graph<F>(
+        &mut self,
+        operation: impl Into<String>,
+        version: impl Into<String>,
+        handler: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+            ) -> Result<
+                (NativeOperationOutput, kogwistar_contracts::GraphMutationBatchV1),
+                RuntimeNativeExecutionError,
+            > + Send
+            + Sync
+            + 'static,
+    {
+        self.register_handler(
+            operation.into(),
+            version.into(),
+            RegisteredNativeOperation::Graph(Arc::new(handler)),
+        )
+    }
+
+    fn register_handler(
+        &mut self,
+        operation: String,
+        version: String,
+        handler: RegisteredNativeOperation,
+    ) -> Result<(), NativeOperationRegistrationError> {
         if operation.is_empty()
             || operation.trim() != operation
             || operation.starts_with(RUST_NATIVE_OPERATION_PREFIX)
@@ -251,11 +305,11 @@ impl NativeOperationRegistry {
         if versions.contains_key(&version) {
             return Err(NativeOperationRegistrationError::Duplicate { operation, version });
         }
-        versions.insert(version, Arc::new(handler));
+        versions.insert(version, handler);
         Ok(())
     }
 
-    fn handler(&self, operation: &str, version: &str) -> Option<&Arc<NativeOperationHandler>> {
+    fn handler(&self, operation: &str, version: &str) -> Option<&RegisteredNativeOperation> {
         self.handlers.get(operation)?.get(version)
     }
 
@@ -371,7 +425,19 @@ pub fn execute_native_step_with_registry(
             RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
         });
     };
-    let output = handler(request)?;
+    let (output, graph_mutation_batch) = match handler {
+        RegisteredNativeOperation::State(handler) => (handler(request)?, None),
+        RegisteredNativeOperation::Graph(handler) => {
+            let (output, batch) = handler(request)?;
+            batch
+                .validate()
+                .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
+                    operation: request.operation.clone(),
+                    reason: format!("invalid graph mutation batch: {error}"),
+                })?;
+            (output, Some(batch))
+        }
+    };
     validate_native_output_state(request, &output)?;
     let successors =
         authoritative_runtime_successors(&request.runtime_routes, &request.node_id, &[])?;
@@ -411,7 +477,7 @@ pub fn execute_native_step_with_registry(
             attach_rust_native_executor_attestation(&mut trace);
             trace
         }],
-        graph_mutation_batch: None,
+        graph_mutation_batch,
     })
 }
 

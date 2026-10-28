@@ -203,6 +203,118 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
+    async fn postgres_authenticated_native_graph_operation_commits_and_replays() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
+        let schema = format!("rust_native_graph_{}", uuid::Uuid::new_v4().simple());
+        let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
+        registry.register_graph("app/graph", "v1", |request| {
+            let batch = serde_json::from_value(json!({
+                "contract_version": 1,
+                "atomic": true,
+                "mutations": [{
+                    "scope": {"namespace": "alpha"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": format!("graph-event-{}", request.run_id),
+                    "op": "ADD",
+                    "payload": {"id": "native-node"},
+                    "record": {"id": "native-node", "document": "native graph"},
+                    "embedding_dim": 0
+                }],
+                "index_jobs": [{
+                    "job_id": format!("graph-job-{}", request.run_id),
+                    "namespace": "alpha",
+                    "entity_kind": "node",
+                    "entity_id": "native-node",
+                    "index_kind": "node_embedding",
+                    "op": "UPSERT"
+                }]
+            })).unwrap();
+            Ok((kogwistar_runtime::NativeOperationOutput {
+                state_update: Vec::new(),
+                result: Some(json!({"native_graph": true})),
+            }, batch))
+        }).unwrap();
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap().with_native_operations(registry);
+        service.ensure_schema().await.unwrap();
+        service.store.create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default()).await.unwrap();
+
+        let secret = "native-graph-test-secret";
+        let token = |subject: &str, namespace: &str, caps: &[&str]| encode(
+            &Header::new(Algorithm::HS256),
+            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": "workflow",
+                "storage_ns": namespace, "capabilities": caps, "exp": 4102444800_u64}),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        ).unwrap();
+        let owner = token("alice", "alpha", &["workflow.run.write", "write_graph"]);
+        let other = token("bob", "alpha", &["workflow.run.write", "write_graph"]);
+        let wrong_scope = token("alice", "beta", &["workflow.run.write", "write_graph"]);
+        let no_write = token("alice", "alpha", &["workflow.run.write"]);
+        let app = router_with_application(ApiState {
+            health: snapshot(), required_roles: vec!["reader".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig { mode: "jwt".to_owned(), algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()), ..AuthConfig::default() },
+        }, Arc::new(service.clone()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+        let base = format!("http://{address}");
+        let submit = client.post(format!("{base}/api/workflow/runs")).bearer_auth(&owner)
+            .json(&json!({"run_id":"native-graph-run", "workflow_id":"wf", "conversation_id":"conv",
+                "start_node_id":"entry", "node_ops":{"entry":"rust-native/app/graph"}}))
+            .send().await.unwrap();
+        assert_eq!(submit.status(), StatusCode::ACCEPTED);
+        let claim = client.post(format!("{base}/internal/runtime/claim")).bearer_auth(&owner)
+            .json(&json!({"claimed_by":"rust-native-worker", "limit":1, "lease_seconds":60,
+                "recipient_ids":["rust-native-worker"]})).send().await.unwrap();
+        assert_eq!(claim.status(), StatusCode::OK);
+        let work = claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let execution = json!({"handoff": {"message_id":work["message_id"], "claimed_by":work["claimed_by"],
+            "run_id":work["run_id"], "step_id":work["step_id"], "correlation_id":work["correlation_id"]},
+            "payload":work["payload"]});
+        for denied in [&other, &wrong_scope, &no_write] {
+            let response = client.post(format!("{base}/internal/runtime/native/execute"))
+                .bearer_auth(denied).json(&execution).send().await.unwrap();
+            let status = response.status();
+            let body = response.text().await.unwrap();
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        }
+        assert!(service.store.replay_raw_events("alpha", 0, 100).await.unwrap().is_empty());
+        assert!(service.store.list_index_jobs(Some("alpha"), None, None, None, None, 100).await.unwrap().is_empty());
+        for _ in 0..2 {
+            let response = client.post(format!("{base}/internal/runtime/native/execute"))
+                .bearer_auth(&owner).json(&execution).send().await.unwrap();
+            let status = response.status();
+            let body = response.text().await.unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        let records = service.store.graph_projection_records(GraphProjectionRead {
+            scope: GraphScope { namespace:"alpha".to_owned(), workspace_id:None, graph_space:None },
+            table:"gke_nodes".to_owned(), ids:Some(vec!["native-node".to_owned()]),
+            metadata:MetadataFilter::default(), limit:10,
+        }).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].document.as_deref(), Some("native graph"));
+        assert_eq!(service.store.list_index_jobs(Some("alpha"), None, None, None, None, 100).await.unwrap().len(), 1);
+        let graph_events = service.store.replay_raw_events("alpha", 0, 100).await.unwrap();
+        assert_eq!(graph_events.len(), 1);
+        assert_eq!(graph_events[0].event_id, "graph-event-native-graph-run");
+        let lane = service.store.get_projected_lane_message(work["message_id"].as_str().unwrap()).await.unwrap().unwrap();
+        assert_eq!(lane.status, "completed");
+        assert_eq!(service.store.get_server_run("native-graph-run").await.unwrap().unwrap().status, "succeeded");
+        server.abort();
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let task = tokio::spawn(connection);
+        cleanup.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
+        drop(cleanup);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn postgres_worker_graph_effect_requires_write_graph_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgresql://worker:secret@127.0.0.1:1/unreachable",

@@ -300,6 +300,34 @@
     }
 
     #[test]
+    fn native_graph_registry_validates_batches_and_preserves_effect_contract() {
+        let mut registry = NativeOperationRegistry::default();
+        registry.register_graph("graph", "v1", |_| {
+            let batch = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"), "/../../../contracts/golden/graph-mutation-batch-v1.json"
+            ))).unwrap();
+            Ok((NativeOperationOutput { state_update: Vec::new(), result: None }, batch))
+        }).unwrap();
+        assert!(registry.register("graph", "v1", |_| unreachable!()).is_err());
+        registry.register_graph("invalid-graph", "v1", |_| {
+            let batch = serde_json::from_value(json!({"contract_version":1,"atomic":true,"mutations":[]})).unwrap();
+            Ok((NativeOperationOutput { state_update: Vec::new(), result: None }, batch))
+        }).unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "graph".to_owned(), op_version: "v1".to_owned(),
+            run_id: "run".to_owned(), workflow_id: "wf".to_owned(), node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(), turn_node_id: None, token_id: "token".to_owned(),
+            parent_token_id: None, step_seq: 1, state: Map::new(), runtime_routes: Vec::new(),
+        };
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        assert_eq!(effect.graph_mutation_batch.unwrap().mutations[0].event_id, "event-1");
+        let invalid = RuntimeNativeStepRequest { operation: "invalid-graph".to_owned(), ..request };
+        assert!(matches!(execute_native_step_with_registry(&invalid, &registry),
+            Err(RuntimeNativeExecutionError::OperationFailed { .. })));
+    }
+
+    #[test]
     fn native_registry_runs_versioned_application_operation_and_preserves_builtins() {
         let mut registry = NativeOperationRegistry::default();
         let append_fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
