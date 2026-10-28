@@ -232,11 +232,15 @@ experiments. Existing evidence covers
 lease fencing, stale Python Chroma/PostgreSQL deletes, Rust-native PostgreSQL
 stale upsert/delete protection, and accepted-result recovery after projection
 failure. The checklist still leaves transaction/recovery parity across runtime
-and backend combinations open. Separately, the generic external projection
-worker does not fence distinct revisions across concurrent Chroma writers; a
-pre-write freshness check alone cannot prevent a newer revision racing after
-the check. Keep multiwriter Chroma projection unsupported until ordering is
-backend-enforced and tested. Use `DL-07I`'s existing acceptance criteria and
+and backend combinations open. Chroma follows ADR-018's `eventual_reconcile`
+contract: stale in-flight writes are not transactionally fenced, so do not
+claim PostgreSQL-style ordering or cross-store atomicity. A stale projection
+must not be served as current, and reconciliation must be able to restore the
+canonical revision after writes quiesce. This is not a requirement to add
+backend-enforced multiwriter ordering. The separate ADR-015 restriction on
+Python and Rust concurrently opening the same single-writer Chroma store
+applies during shadow/canary migration; it does not redefine Chroma's general
+consistency contract. Use `DL-07I`'s existing acceptance criteria and
 evidence; do not add checklist rows for already-verified cases.
 Then advance an existing user-facing gate such as `DL-16BQ` only along a real
 ingress-to-durable-result path; preserve explicit unsupported results where
@@ -329,12 +333,15 @@ worker, with PostgreSQL as both queue and graph store. Rust server selection
 also supports SQLite metadata with Chroma graph reads, but does not wire this
 worker to a Chroma projection destination. Its generic contract does not fence
 an older in-flight projection against a newer
-write from another worker for the same entity. Do not run multiple concurrent
-projectors for overlapping entity scopes or advertise this as production-safe
-multiwriter Chroma projection until a backend-enforced revision/fencing
-capability is added and tested. Replaying the same accepted action is
-idempotent, but idempotency alone does not establish ordering between distinct
-revisions.
+write from another worker for the same entity. This is an explicit limitation,
+not a requirement to reproduce PostgreSQL transactions in Chroma: overlapping
+writers may temporarily leave a stale physical projection, and only the
+canonical revision may be served. The eventual-repair contract requires
+reconciliation to restore the canonical projection after writes quiesce; it
+does not promise ordering or atomicity while distinct revisions race. During
+Python/Rust shadow or canary migration, retain ADR-015's single-writer
+operational restriction. Replaying the same accepted action is idempotent, but
+idempotency alone does not establish ordering between distinct revisions.
 
 | Backend | Current boundary | Required handoff |
 | --- | --- | --- |
