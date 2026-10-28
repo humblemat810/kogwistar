@@ -165,10 +165,19 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
     ]
     node = next(entity for kind, entity in entities if kind == "node")
     edges = [entity for kind, entity in entities if kind != "node"]
+    expected_documents: dict[str, str] = {}
     for fixture_kind, entity in entities:
         entity_kind = "node" if fixture_kind == "node" else "edge"
         table = "gke_nodes" if entity_kind == "node" else "gke_edges"
         payload = entity.model_dump(field_mode="backend", dump_format="json")
+        excluded_fields = (
+            ["embedding", "metadata"] if entity_kind == "node" else ["embedding"]
+        )
+        document = entity.model_dump_json(
+            field_mode="backend",
+            exclude=excluded_fields,
+        )
+        expected_documents[entity.id] = document
         fixture_payload = next(
             case["payload"]
             for case in PYTHON_GRAPH_MODEL_FIXTURE["cases"]
@@ -179,7 +188,7 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
             event_id=f"{fixture_kind}-model-payload",
             op="ADD",
             id=entity.id,
-            document=entity.summary,
+            document=document,
             metadata=entity.metadata,
             embedding=list(entity.embedding or []),
         )
@@ -200,10 +209,10 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
 
     assert backend.node_get(
         ids=[node.id], include=["documents", "metadatas"]
-    )["documents"] == [node.summary]
+    )["documents"] == [expected_documents[node.id]]
     assert backend.edge_get(
         ids=[edge.id for edge in edges], include=["documents", "metadatas"]
-    )["documents"] == [edge.summary for edge in edges]
+    )["documents"] == [expected_documents[edge.id] for edge in edges]
 
 
 @pytest.mark.parametrize("level", [1 << 200, -(1 << 200)])
