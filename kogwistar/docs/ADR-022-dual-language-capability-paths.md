@@ -123,6 +123,64 @@ baseline is fixed at commit `6130d04`: calculate baseline completion by
 matching IDs against that commit, and report later-added scope separately.
 Never infer baseline membership from an ID suffix or a recent evidence note.
 
+### Execution guidance for future turns
+
+The active goal may be paused. A documentation or review request does not
+resume it or authorize unrelated implementation. Before editing, check the
+goal, branch, worktree, current checklist, and relevant code. Preserve unrelated
+changes. Select one existing open gate and state the exact behavior that will
+be complete at the end of the slice. Use existing contracts and tests first;
+avoid new abstractions, side quests, and checklist IDs unless an actual gap
+requires a separately approved scope decision.
+
+For the next runtime slice, use `DL-10` and finish one PostgreSQL native-worker
+graph-write path from admitted run through durable graph event, projection,
+index intent, runtime result, and acknowledgement. Commit `6450701` binds
+ordinary authenticated run submission to the request principal and checks the
+durable owner and request capability/scope before graph effects. It is not an
+end-to-end autonomous worker implementation: the inline worker currently calls
+`apply_runtime_result_input` without a principal, and service-triggered runs
+can obtain `user_id` from a payload or target configuration. Do not treat that
+field as proof of an authenticated owner. Design a trustworthy owner binding
+for every admitted run origin and resolve the owner's current authority for the
+background worker; never take authority from worker results or persisted JWT
+claims alone. The existing capability state is process-local, while scope is
+derived from request claims; the commit-time check is not atomic with an
+independent policy revocation. Keep unsupported paths fail-closed until their
+authority and revocation semantics are established.
+
+Prove this slice with a real PostgreSQL/pgvector run, including an allowed
+owner write, denied other owner, missing or untrusted owner, revoked capability,
+cross-scope mutation, rollback, duplicate result, and restart/retry. Check the
+actual inline-worker route and durable effects, not just helpers or status
+codes. Verify legacy non-graph runs and the Python worker contract as well.
+Explicitly report any unimplemented owner resolver or policy race. Do not mark
+`DL-10` complete until its full existing acceptance criteria are met.
+
+Next, use `DL-07I` to complete one indexing lifecycle on a named backend.
+The generic external projection worker reuses accepted actions, but its current
+write path does not establish source currentness or fence distinct revisions.
+Reproduce stale upsert/delete and concurrent-worker cases before changing it;
+prove a backend-enforced ordering or a correctly scoped alternative, retry and
+recovery, and parity with the Python path. A pre-write freshness check by
+itself cannot prevent a newer revision racing after the check. Do not advertise
+multiwriter Chroma projection until the relevant guarantees are demonstrated.
+Then advance an existing user-facing gate such as `DL-16BQ` only along a real
+ingress-to-durable-result path; preserve explicit unsupported results where
+the selected backend lacks authority.
+
+At each slice, run the focused Rust tests and matching Python contract/parity
+tests, plus live backend tests when the behavior depends on transactions or
+concurrency. Include negative and positive cases, run the necessary interpreter
+and CI matrix before claiming broad compatibility, and distinguish a skipped
+test from a passing test. Reuse the workspace Cargo target directory unless an
+isolation need is documented. Check test process exit and actual results; a
+build or zero selected tests is not a pass. Update the existing checklist row
+with current evidence and remaining blockers, keeping its denominator stable;
+Git holds chronological details. Commit each tested slice with a substantive
+message. If pushing is requested, watch the resulting GitHub CI runs and report
+their actual outcomes.
+
 ## Transaction seam
 
 Interchangeability applies at a **unit-of-work boundary**. It does not imply
