@@ -1258,7 +1258,9 @@ def test_real_chroma_legacy_stage2_backfill_updates_metadata_only(tmp_path):
         after = engine.backend.node_get(
             ids=["legacy-node"], include=["documents", "metadatas", "embeddings"]
         )
-        assert after["metadatas"][0]["_kogwistar_source_revision"] > 0
+        assert after["metadatas"][0]["_kogwistar_source_revision"] == current[
+            "canonical_revision"
+        ]
         assert after["documents"] == before["documents"]
         assert list(map(float, after["embeddings"][0])) == list(
             map(float, before["embeddings"][0])
