@@ -30,6 +30,9 @@ uuid.workspace = true
 [build-dependencies]
 serde_json.workspace = true
 
+[dev-dependencies]
+rusqlite.workspace = true
+
 [[bin]]
 name = "kogwistar-server"
 path = "src/bin/kogwistar-server.rs"

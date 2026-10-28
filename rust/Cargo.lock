@@ -804,6 +804,7 @@ dependencies = [
  "kogwistar-store-sqlite",
  "percent-encoding",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",

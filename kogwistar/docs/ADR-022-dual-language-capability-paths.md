@@ -195,13 +195,16 @@ failure/recovery cases. The PostgreSQL service-trigger test also executes the
 service's Rust-native graph operation end to end. It verifies the actor-matched
 durable binding, graph event and projection persistence, successful run
 completion, completed lane acknowledgement, and rejection of a mismatched
-configured owner before lane creation. Complete the existing `DL-10` acceptance
-criteria by covering inline durable-run-owner/binding mismatch and
-missing/untrusted bindings, service-triggered effects under current auth
-status/role/namespace changes, cross-scope writes, transaction failure,
-duplicate result, and restart/retry. Verify graph event, projection, index
-intent, runtime result, and acknowledgement together for effect batches that
-include index intents.
+configured owner before lane creation. It now also admits a second service run,
+deactivates the owner in the separate SQLite auth database before native effect
+execution, and verifies that no graph event or projection is written, the run
+is durably failed, and the lane is acknowledged. Complete the existing `DL-10`
+acceptance criteria by covering inline durable-run-owner/binding mismatch and
+missing/untrusted bindings, service-triggered effects after current role or
+namespace changes (the deactivation-before-effect case is now covered),
+cross-scope writes, transaction failure, duplicate result, and restart/retry.
+Verify graph event, projection, non-empty index intent, runtime result, and
+acknowledgement together for effect batches that include index intents.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
