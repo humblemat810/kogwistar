@@ -57,6 +57,23 @@ from tests._helpers.embeddings import ConstantEmbeddingFunction
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_implementation_selector_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep selector tests independent of CI's Python-authority overrides."""
+    for name in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_selector_values_are_frozen_and_nested_scope_does_not_recapture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1032,6 +1049,7 @@ def test_python_sqlite_and_memory_transactions_reject_rust_selection(
                     pytest.fail("Python metadata transaction started under Rust selection")
 
 
+@pytest.mark.requires_rust
 def test_engine_rejects_python_metadata_under_rust_transaction_selection(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
