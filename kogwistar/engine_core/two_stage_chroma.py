@@ -699,7 +699,11 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 or revision <= 0
             ):
                 continue
-            if stored_revision == revision:
+            if (
+                isinstance(stored_revision, int)
+                and not isinstance(stored_revision, bool)
+                and stored_revision == revision
+            ):
                 continue
             metadata["_kogwistar_source_revision"] = revision
             updates.append((entity_id, metadata))

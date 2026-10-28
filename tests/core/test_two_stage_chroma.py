@@ -287,6 +287,16 @@ def test_chroma_backfills_only_legacy_stage2_rows_matching_active_source(tmp_pat
                 },
                 "embedding": [0.5, 0.6],
             },
+            "boolean-revision": {
+                "id": "boolean-revision",
+                "document": "same current document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "fp-1",
+                    "_kogwistar_source_revision": True,
+                },
+                "embedding": [0.7, 0.8],
+            },
         }
     )
     original_vector = list(engine.backend.rows["current"]["embedding"])
@@ -308,6 +318,12 @@ def test_chroma_backfills_only_legacy_stage2_rows_matching_active_source(tmp_pat
         entity_kind="node", limit=1, offset=2
     ) == (1, 1)
     assert engine.backend.rows["outdated-revision"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == 1
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=3
+    ) == (1, 1)
+    assert engine.backend.rows["boolean-revision"]["metadata"][
         "_kogwistar_source_revision"
     ] == 1
     assert adapter.backfill_stage2_source_revisions(

@@ -378,7 +378,7 @@ async def test_async_chroma_backfills_only_legacy_stage2_rows_matching_active_so
                 "_kogwistar_source_fingerprint": stored_fingerprint,
             }
             if node.id == nodes[0].id:
-                metadata["_kogwistar_source_revision"] = 999
+                metadata["_kogwistar_source_revision"] = True
             await backend.async_call(
                 "node",
                 "upsert",
