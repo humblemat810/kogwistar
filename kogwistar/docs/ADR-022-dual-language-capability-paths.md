@@ -201,10 +201,13 @@ auth database before native effect execution, and verifies for each case that
 no graph event, projection, or index job is written, the run is durably failed,
 and the lane is acknowledged. The successful service batch carries a
 non-empty index intent and verifies its pending job alongside the graph event,
-projection, succeeded run, and completed lane. Complete the existing `DL-10`
-acceptance criteria by covering inline durable-run-owner/binding mismatch and
-missing/untrusted bindings, cross-scope writes, injected transaction failure,
-duplicate result, and restart/retry atomicity.
+projection, succeeded run, and completed lane. The live inline-worker test also
+submits an out-of-scope graph batch with an index intent; it verifies a durable
+failed run and completed lane with no graph event, projection, or index job in
+either namespace. Complete the existing `DL-10` acceptance criteria by
+covering inline durable-run-owner/binding mismatch and missing/untrusted
+bindings, injected transaction failure, duplicate result, and restart/retry
+atomicity.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its

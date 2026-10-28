@@ -1,3 +1,23 @@
+fn fail_inline_graph_effect(
+    effect: &mut kogwistar_runtime::RecordedWorkerSuccessEffect,
+    code: &str,
+    message: &str,
+) {
+    effect.graph_mutation_batch = None;
+    effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
+    effect.state_update.clear();
+    effect.update = None;
+    effect.state_schema.clear();
+    effect.successors.clear();
+    effect.route_next.clear();
+    effect.result = Some(serde_json::json!({"code": code}));
+    effect.errors = vec![message.to_owned()];
+    effect.wait_reason = None;
+    effect.resume_payload = None;
+    effect.usage = None;
+    effect.trace_events.clear();
+}
+
 impl PostgresRunApplicationService {
     async fn execute_native_runtime_step(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let input: RuntimeNativeExecuteRequest = match serde_json::from_slice(&request.body) {
@@ -62,7 +82,7 @@ impl ApplicationService for PostgresRunApplicationService {
             };
             let mut result = native_result_for_claimed_work(work, &self.native_operations)?;
             let run_id = result.handoff.run_id.clone();
-            let inline_principal = if result
+            let mut inline_principal = if result
                 .effect
                 .as_ref()
                 .and_then(|effect| effect.graph_mutation_batch.as_ref())
@@ -75,29 +95,50 @@ impl ApplicationService for PostgresRunApplicationService {
                             .effect
                             .as_mut()
                             .expect("graph batch is present in this branch");
-                        effect.graph_mutation_batch = None;
-                        effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
-                        effect.state_update.clear();
-                        effect.update = None;
-                        effect.state_schema.clear();
-                        effect.successors.clear();
-                        effect.route_next.clear();
-                        effect.result = Some(serde_json::json!({
-                            "code": "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED"
-                        }));
-                        effect.errors = vec![
-                            "inline graph effects failed current owner authorization".to_owned(),
-                        ];
-                        effect.wait_reason = None;
-                        effect.resume_payload = None;
-                        effect.usage = None;
-                        effect.trace_events.clear();
+                        fail_inline_graph_effect(
+                            effect,
+                            "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED",
+                            "inline graph effects failed current owner authorization",
+                        );
                         None
                     }
                 }
             } else {
                 None
             };
+            let scope_denied = inline_principal
+                .as_ref()
+                .zip(
+                    result
+                        .effect
+                        .as_ref()
+                        .and_then(|effect| effect.graph_mutation_batch.as_ref()),
+                )
+                .is_some_and(|(principal, batch)| {
+                    let security_scope = security_scope_value(principal);
+                    batch.mutations.iter().any(|mutation| {
+                        !graph_mutation_scope_allowed(
+                            &GraphScope {
+                                namespace: mutation.scope.namespace.clone(),
+                                workspace_id: mutation.scope.workspace_id.clone(),
+                                graph_space: mutation.scope.graph_space.clone(),
+                            },
+                            &security_scope,
+                        )
+                    })
+                });
+            if scope_denied {
+                let effect = result
+                    .effect
+                    .as_mut()
+                    .expect("graph batch is present in this branch");
+                fail_inline_graph_effect(
+                    effect,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "inline graph effect scope is outside the authenticated run owner scope",
+                );
+                inline_principal = None;
+            }
             let applied = self
                 .apply_runtime_result_input(result, None, inline_principal)
                 .await;

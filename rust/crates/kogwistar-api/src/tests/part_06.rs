@@ -439,11 +439,16 @@
         registry
             .register_graph("app/inline-graph", "v1", |request| {
                 let entity_id = format!("inline-node-{}", request.run_id);
+                let namespace = if request.run_id == "inline-cross-scope" {
+                    "beta"
+                } else {
+                    "alpha"
+                };
                 let batch = serde_json::from_value(json!({
                     "contract_version": 1,
                     "atomic": true,
                     "mutations": [{
-                        "scope": {"namespace": "alpha"},
+                        "scope": {"namespace": namespace},
                         "table": "gke_nodes",
                         "entity_kind": "node",
                         "event_id": format!("inline-event-{}", request.run_id),
@@ -452,7 +457,14 @@
                         "record": {"id": entity_id, "document": "inline native graph"},
                         "embedding_dim": 0
                     }],
-                    "index_jobs": []
+                    "index_jobs": [{
+                        "job_id": format!("inline-job-{}", request.run_id),
+                        "namespace": namespace,
+                        "entity_kind": "node",
+                        "entity_id": entity_id,
+                        "index_kind": "node_embedding",
+                        "op": "UPSERT"
+                    }]
                 }))
                 .unwrap();
                 Ok((
@@ -506,6 +518,7 @@
             service.execute(submit("inline-authorized")).await.status,
             StatusCode::ACCEPTED.as_u16()
         );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         assert!(service.execute_inline_native_work_once().await.unwrap());
         let authorized = service
             .store
@@ -525,9 +538,76 @@
         assert_eq!(authorized.len(), 1);
 
         assert_eq!(
+            service.execute(submit("inline-cross-scope")).await.status,
+            StatusCode::ACCEPTED.as_u16()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        assert_eq!(
+            service
+                .store
+                .get_server_run("inline-cross-scope")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed",
+            "cross-scope native graph mutation must fail the run"
+        );
+        let cross_scope_lane = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some("inline-cross-scope".to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(cross_scope_lane.len(), 1);
+        assert_eq!(cross_scope_lane[0].status, "completed");
+        for namespace in ["alpha", "beta"] {
+            let rows = service
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: GraphScope {
+                        namespace: namespace.to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec!["inline-node-inline-cross-scope".to_owned()]),
+                    metadata: MetadataFilter::default(),
+                    limit: 10,
+                })
+                .await
+                .unwrap();
+            assert!(rows.is_empty(), "cross-scope write leaked into {namespace}");
+            let jobs = service
+                .store
+                .list_index_jobs(Some(namespace), None, None, None, None, 10)
+                .await
+                .unwrap();
+            assert!(!jobs
+                .iter()
+                .any(|job| job.job_id == "inline-job-inline-cross-scope"));
+        }
+        for namespace in ["alpha", "beta"] {
+            let events = service
+                .store
+                .replay_raw_events(namespace, 0, 100)
+                .await
+                .unwrap()
+                ;
+            assert!(!events
+                .iter()
+                .any(|event| event.event_id == "inline-event-inline-cross-scope"));
+        }
+
+        assert_eq!(
             service.execute(submit("inline-revoked")).await.status,
             StatusCode::ACCEPTED.as_u16()
         );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         service
             .capabilities
             .lock()
