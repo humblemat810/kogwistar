@@ -7,7 +7,11 @@ from typing import cast
 import pytest
 from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
-from kogwistar._rust_bridge import project_graph_model_slice, project_graph_model_slices
+from kogwistar._rust_bridge import (
+    RustParityError,
+    project_graph_model_slice,
+    project_graph_model_slices,
+)
 from kogwistar._rust_bridge import graph_model_capability_profiles
 from kogwistar.acl import models as acl_models
 from kogwistar.conversation import models as conversation_models
@@ -783,6 +787,67 @@ def test_unmapped_pure_graph_subtype_fails_before_persistence(
 
     with pytest.raises(GraphModelAdapterError, match="unsupported graph model class"):
         getattr(writer, method_name)(entity)
+
+
+@pytest.mark.requires_rust
+@pytest.mark.parametrize("model_class", ["PureChromaNode", "PureChromaEdge"])
+@pytest.mark.parametrize("contract_mode", ["shadow", "rust"])
+def test_rust_family_rejection_precedes_embedding_and_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+    model_class: str,
+    contract_mode: str,
+) -> None:
+    """The selected native contract validator must reject before write effects."""
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.subsystems.write import WriteSubsystem
+
+    pytest.importorskip("kogwistar._rust")
+    is_edge = model_class.endswith("Edge")
+    payload: dict[str, object] = {
+        "id": f"invalid:{model_class}",
+        "label": " ",
+        "type": "relationship" if is_edge else "entity",
+        "summary": "a valid summary",
+    }
+    if is_edge:
+        payload.update(
+            {
+                "relation": "related_to",
+                "source_ids": ["source"],
+                "target_ids": ["target"],
+                "source_edge_ids": None,
+                "target_edge_ids": None,
+            }
+        )
+    entity = getattr(engine_models, model_class).model_validate(payload)
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", contract_mode)
+    backend = SimpleNamespace(
+        node_add=lambda **_kwargs: pytest.fail("invalid node reached persistence"),
+        edge_add=lambda **_kwargs: pytest.fail("invalid edge reached persistence"),
+    )
+    engine = SimpleNamespace(
+        meta_sqlite=object(),
+        namespace="test",
+        kg_graph_type="knowledge",
+        backend=backend,
+        adjudicate=SimpleNamespace(
+            split_endpoints=lambda source_ids, target_ids: (
+                source_ids,
+                [],
+                target_ids,
+                [],
+            )
+        ),
+        persist=SimpleNamespace(assert_endpoints_exist=lambda _edge: None),
+        pre_add_pure_edge_hooks=[],
+    )
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    writer._e = cast(GraphKnowledgeEngine, engine)
+    with pytest.raises(RustParityError, match="Rust graph-model contract validation failed"):
+        getattr(writer, "add_pure_edge" if is_edge else "add_pure_node")(entity)
 
 
 def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:
