@@ -1,6 +1,13 @@
 const EMBEDDING_PROFILE_NAMESPACE: &str = "__kogwistar_embedding_profiles_v1__";
 const EMBEDDING_PROFILE_SCHEMA_VERSION: i64 = 1;
 
+#[derive(Clone, Copy)]
+enum RuntimeGraphCommitDenial {
+    Owner,
+    Capability,
+    Scope,
+}
+
 fn rust_pgvector_embedding_scope(
     config: &tokio_postgres::Config,
     schema: &str,
@@ -339,6 +346,21 @@ impl PostgresRunApplicationService {
                 "workflow_id and conversation_id are required",
             );
         }
+        let authenticated_owner = authenticated_run_owner_id(&request.principal);
+        if input
+            .user_id
+            .as_deref()
+            .is_some_and(|requested| {
+                authenticated_owner.is_none_or(|owner| owner != requested.trim())
+            })
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "run user_id must match the authenticated principal",
+            );
+        }
+        let run_user_id = authenticated_owner.map(str::to_owned);
         let run_id = input
             .run_id
             .as_deref()
@@ -536,7 +558,7 @@ impl PostgresRunApplicationService {
                 "workflow_id": workflow_id,
                 "conversation_id": conversation_id,
                 "turn_node_id": turn_node_id,
-                "user_id": input.user_id,
+                "user_id": run_user_id,
                 "initial_state": initial_state,
                 "priority_class": priority_class,
                 "token_budget": input.token_budget,
@@ -615,7 +637,7 @@ impl PostgresRunApplicationService {
                         run_id: run_id.clone(),
                         conversation_id: conversation_id.clone(),
                         workflow_id: workflow_id.clone(),
-                        user_id: input.user_id.clone(),
+                        user_id: run_user_id.clone(),
                         user_turn_node_id: turn_node_id.clone(),
                         status: "queued".to_owned(),
                     })
@@ -642,7 +664,7 @@ impl PostgresRunApplicationService {
                         "workflow_id": workflow_id,
                         "conversation_id": conversation_id,
                         "turn_node_id": turn_node_id,
-                        "user_id": input.user_id,
+                        "user_id": run_user_id,
                         "initial_state": initial_state,
                         "priority_class": queued_priority_class,
                         "token_budget": input.token_budget,
@@ -920,6 +942,13 @@ impl PostgresRunApplicationService {
                     "Worker graph effects require write_graph capability",
                 );
             }
+            let Some(run_owner_id) = authenticated_run_owner_id(&request.principal) else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "Worker graph effects require an authenticated run owner",
+                );
+            };
             if let Err(error) = batch.validate() {
                 return effect_error(
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -966,15 +995,43 @@ impl PostgresRunApplicationService {
                     );
                 }
             };
-            Some((mutations, index_jobs))
+            Some((
+                mutations,
+                index_jobs,
+                run_owner_id.to_owned(),
+                request.principal.clone(),
+            ))
         } else {
             None
         };
+        let commit_capabilities = self.capabilities.clone();
         let outcome = self
             .store
             .transaction(|uow| {
                 Box::pin(async move {
-                    if let Some((mutations, index_jobs)) = graph_effects {
+                    if let Some((mutations, _, run_owner_id, principal)) = graph_effects.as_ref() {
+                        if !capability_allowed_for_principal(
+                            principal,
+                            &commit_capabilities,
+                            "write_graph.commit",
+                            &["write_graph"],
+                        ) {
+                            return Ok(Err(RuntimeGraphCommitDenial::Capability));
+                        }
+                        let commit_scope = security_scope_value(principal);
+                        if mutations.iter().any(|mutation| {
+                            !graph_mutation_scope_allowed(&mutation.scope, &commit_scope)
+                        }) {
+                            return Ok(Err(RuntimeGraphCommitDenial::Scope));
+                        }
+                        let run = uow.get_server_run(&input.handoff.run_id).await?;
+                        if !run.is_some_and(|run| {
+                            run.user_id.as_deref() == Some(run_owner_id.as_str())
+                        }) {
+                            return Ok(Err(RuntimeGraphCommitDenial::Owner));
+                        }
+                    }
+                    if let Some((mutations, index_jobs, _, _)) = graph_effects {
                         for mutation in mutations {
                             uow.apply_graph_mutation(mutation).await?;
                         }
@@ -1149,12 +1206,27 @@ impl PostgresRunApplicationService {
                             .await?;
                         }
                     }
-                    Ok(result)
+                    Ok(Ok(result))
                 })
             })
             .await;
         match outcome {
-            Ok(result) => json_effect(
+            Ok(Err(RuntimeGraphCommitDenial::Owner)) => effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "Authenticated principal does not own the durable run",
+            ),
+            Ok(Err(RuntimeGraphCommitDenial::Capability)) => effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "write_graph capability was revoked before graph commit",
+            ),
+            Ok(Err(RuntimeGraphCommitDenial::Scope)) => effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Worker graph effect scope is outside the principal storage scope at commit",
+            ),
+            Ok(Ok(result)) => json_effect(
                 StatusCode::OK,
                 serde_json::to_value(result).expect("recorded runtime result serializes"),
             ),

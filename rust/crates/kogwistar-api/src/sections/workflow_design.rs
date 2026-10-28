@@ -647,10 +647,19 @@ fn capability_allowed(
     action: &str,
     required: &[&str],
 ) -> bool {
+    capability_allowed_for_principal(&request.principal, shared, action, required)
+}
+
+fn capability_allowed_for_principal(
+    principal: &Value,
+    shared: &SharedCapabilityState,
+    action: &str,
+    required: &[&str],
+) -> bool {
     let mut state = shared
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    audit_capability(&request.principal, &mut state, action, required)
+    audit_capability(principal, &mut state, action, required)
 }
 
 fn graph_mutation_scope_allowed(scope: &GraphScope, security_scope: &Value) -> bool {

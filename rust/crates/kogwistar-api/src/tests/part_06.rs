@@ -1,3 +1,207 @@
+    #[test]
+    fn authenticated_run_owner_uses_stable_user_id_and_rejects_anonymous() {
+        assert_eq!(
+            authenticated_run_owner_id(&json!({"user_id":"User-42", "sub":"alice@example.test"})),
+            Some("User-42")
+        );
+        assert_eq!(
+            authenticated_run_owner_id(&json!({"sub":"alice@example.test"})),
+            Some("alice@example.test")
+        );
+        assert_eq!(authenticated_run_owner_id(&json!({"sub":"anonymous"})), None);
+        assert_eq!(authenticated_run_owner_id(&json!({"role":"rw"})), None);
+    }
+
+    #[tokio::test]
+    async fn postgres_submit_rejects_user_id_spoofing_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgresql://worker:secret@127.0.0.1:1/unreachable",
+            "worker_owner_authority",
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "workflow_id": "wf",
+                    "conversation_id": "conv",
+                    "user_id": "victim"
+                }))
+                .unwrap(),
+                principal: json!({"user_id":"attacker", "sub":"attacker", "role":"rw"}),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["code"], "KOGWISTAR_RUN_OWNER_FORBIDDEN");
+
+        let anonymous_claim = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "workflow_id": "wf",
+                    "conversation_id": "conv",
+                    "user_id": "victim"
+                }))
+                .unwrap(),
+                principal: json!({"sub":"anonymous", "role":"rw"}),
+            })
+            .await;
+        assert_eq!(anonymous_claim.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&anonymous_claim.body).unwrap()["code"],
+            "KOGWISTAR_RUN_OWNER_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn postgres_worker_graph_effect_rejects_anonymous_principal_even_with_write_capability() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgresql://worker:secret@127.0.0.1:1/unreachable",
+            "worker_anonymous_authority",
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/runtime/results".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "handoff": {
+                        "message_id": "lane-1",
+                        "claimed_by": "worker-1",
+                        "run_id": "run-1",
+                        "step_id": "step-1",
+                        "correlation_id": "run-1"
+                    },
+                    "effect": {
+                        "contract_version": 1,
+                        "effect_id": "effect-1",
+                        "graph_mutation_batch": {
+                            "contract_version": 1,
+                            "atomic": true,
+                            "mutations": [{
+                                "scope": {"namespace": "alpha"},
+                                "table": "gke_nodes",
+                                "entity_kind": "node",
+                                "event_id": "event-1",
+                                "op": "ADD",
+                                "payload": {"id": "node-1"},
+                                "record": {"id": "node-1"},
+                                "embedding_dim": 0
+                            }]
+                        }
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"anonymous",
+                    "role":"rw",
+                    "storage_ns":"alpha",
+                    "capabilities":["write_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["code"], "KOGWISTAR_RUN_OWNER_FORBIDDEN");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_worker_graph_effect_rechecks_durable_run_owner_in_transaction() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_run_owner_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: "owned-run".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                workflow_id: "workflow".to_owned(),
+                user_id: Some("run-owner".to_owned()),
+                user_turn_node_id: "turn".to_owned(),
+                status: "queued".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/runtime/results".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "handoff": {
+                        "message_id": "lane-1",
+                        "claimed_by": "worker-1",
+                        "run_id": "owned-run",
+                        "step_id": "step-1",
+                        "correlation_id": "owned-run"
+                    },
+                    "effect": {
+                        "contract_version": 1,
+                        "effect_id": "effect-1",
+                        "graph_mutation_batch": {
+                            "contract_version": 1,
+                            "atomic": true,
+                            "mutations": [{
+                                "scope": {"namespace": "alpha"},
+                                "table": "gke_nodes",
+                                "entity_kind": "node",
+                                "event_id": "owner-check-event",
+                                "op": "ADD",
+                                "payload": {"id": "owner-check-node"},
+                                "record": {"id": "owner-check-node"},
+                                "embedding_dim": 0
+                            }]
+                        }
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "user_id":"different-user",
+                    "sub":"different-user",
+                    "role":"rw",
+                    "storage_ns":"alpha",
+                    "capabilities":["write_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_RUN_OWNER_FORBIDDEN"
+        );
+        let records = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["owner-check-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(records.is_empty(), "unauthorized graph effects must not persist");
+    }
+
     #[tokio::test]
     async fn postgres_worker_graph_effect_requires_write_graph_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(

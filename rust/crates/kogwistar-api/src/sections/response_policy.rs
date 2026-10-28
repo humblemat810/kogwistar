@@ -377,6 +377,14 @@ fn principal_subject(principal: &Value) -> String {
         .to_ascii_lowercase()
 }
 
+fn authenticated_run_owner_id(principal: &Value) -> Option<&str> {
+    ["user_id", "sub", "agent_id"]
+        .into_iter()
+        .find_map(|name| principal.get(name).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("anonymous"))
+}
+
 fn graph_acl_principal_id(principal: &Value) -> String {
     ["agent_id", "actor_id", "sub", "user_id"]
         .into_iter()
