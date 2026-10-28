@@ -26,8 +26,11 @@ from kogwistar.engine_core.models import (
     PureChromaNode,
 )
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
-from kogwistar.engine_core.rust_postgres_session import RustPostgresSession
+from kogwistar.engine_core.rust_postgres_session import (
+    RustEnginePostgresMetaStore,
+    RustPostgresConnectionUnavailable,
+    RustPostgresSession,
+)
 from tests._helpers.graph_builders import (
     build_entity_node,
     build_relationship_edge,
@@ -79,6 +82,85 @@ def _append(event_id: str) -> dict[str, Any]:
         "op": "UPSERT",
         "payload_json": "{}",
     }
+
+
+def test_python_transaction_waits_for_rust_identity_lock(
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    tmp_path: Path,
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    native = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    native.ensure_initialized()
+    marker = tmp_path / "python-lock-attempted"
+    script = """
+import sys
+from pathlib import Path
+from sqlalchemy import create_engine
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+dsn, schema, marker = sys.argv[1:]
+engine = create_engine(dsn)
+store = EnginePostgresMetaStore(engine=engine, schema=schema)
+with store.transaction():
+    Path(marker).write_text("attempt", encoding="ascii")
+    store.lock_entity_identity(
+        namespace="identity-lock-test", entity_kind="node", entity_id="shared"
+    )
+engine.dispose()
+"""
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_IMPL_MODE": "python",
+            "KOGWISTAR_IMPL_META_STORE": "python",
+            "KOGWISTAR_IMPL_GRAPH_STORE": "python",
+            "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": "python",
+        }
+    )
+    worker: subprocess.Popen[str] | None = None
+
+    try:
+        with pytest.raises(
+            RustPostgresConnectionUnavailable,
+            match="active Rust PostgreSQL transaction",
+        ):
+            native.lock_entity_identity(
+                namespace="identity-lock-test",
+                entity_kind="node",
+                entity_id="shared",
+            )
+
+        with native.transaction():
+            native.lock_entity_identity(
+                namespace="identity-lock-test",
+                entity_kind="node",
+                entity_id="shared",
+            )
+            worker = subprocess.Popen(
+                [sys.executable, "-c", script, dsn, schema, str(marker)],
+                cwd=Path(__file__).resolve().parents[2],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 10
+            while not marker.exists() and worker.poll() is None:
+                assert time.monotonic() < deadline, "Python worker did not start lock attempt"
+                time.sleep(0.01)
+            assert marker.exists()
+            time.sleep(0.2)
+            assert worker.poll() is None, "Python worker bypassed the Rust-held identity lock"
+
+        stdout, stderr = worker.communicate(timeout=10)
+        assert worker.returncode == 0, stderr
+        assert stdout == ""
+    finally:
+        if worker is not None and worker.poll() is None:
+            worker.terminate()
+            worker.communicate(timeout=5)
+        native.close()
 
 
 def test_python_facade_pages_postgres_projection_through_rust_bridge(

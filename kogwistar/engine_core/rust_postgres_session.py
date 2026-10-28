@@ -426,6 +426,20 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         with self._native_session.transaction() as token:
             yield token
 
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        if not self.transaction_active:
+            raise RustPostgresConnectionUnavailable(
+                "identity locks require an active Rust PostgreSQL transaction"
+            )
+        self._call(
+            "lock_entity_identity",
+            namespace=namespace,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+        )
+
     def _require_token(self, conn: _TransactionToken) -> None:
         if not isinstance(conn, _RustPostgresTransactionToken):
             raise RustPostgresConnectionUnavailable("invalid Rust PostgreSQL transaction token")

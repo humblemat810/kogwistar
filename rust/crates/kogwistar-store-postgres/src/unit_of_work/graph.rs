@@ -1,6 +1,23 @@
 use super::*;
 
 impl PostgresUnitOfWork<'_> {
+    pub async fn lock_entity_identity(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        entity_id: &str,
+    ) -> PostgresStoreResult<()> {
+        let key = format!("{namespace}\u{1f}{entity_kind}\u{1f}{entity_id}");
+        self.transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                &[&key],
+            )
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
     pub async fn lock_runtime_queue_admission(&self) -> PostgresStoreResult<()> {
         advisory_lock(
             &self.transaction,

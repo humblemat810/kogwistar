@@ -2918,6 +2918,11 @@ enum PostgresStoreOperation {
     BeginTransaction,
     CommitTransaction,
     RollbackTransaction,
+    LockEntityIdentity {
+        namespace: String,
+        entity_kind: String,
+        entity_id: String,
+    },
     EnsureSchema,
     GraphAuthorityCapability,
     NextGlobalSeq,
@@ -3591,6 +3596,9 @@ async fn postgres_store_operation_json(
         | PostgresStoreOperation::CommitTransaction
         | PostgresStoreOperation::RollbackTransaction => Err(postgres_session_error(
             "PostgreSQL transaction control cannot be nested as an operation",
+        )),
+        PostgresStoreOperation::LockEntityIdentity { .. } => Err(postgres_session_error(
+            "entity identity locks require an active PostgreSQL transaction",
         )),
         PostgresStoreOperation::EnsureSchema => {
             store.ensure_schema().await?;
@@ -4653,6 +4661,15 @@ async fn postgres_uow_operation_json(
     operation: PostgresStoreOperation,
 ) -> Result<Value, PostgresStoreError> {
     match operation {
+        PostgresStoreOperation::LockEntityIdentity {
+            namespace,
+            entity_kind,
+            entity_id,
+        } => {
+            uow.lock_entity_identity(&namespace, &entity_kind, &entity_id)
+                .await?;
+            Ok(Value::Null)
+        }
         PostgresStoreOperation::NextGlobalSeq => Ok(json!(uow.next_global_seq().await?)),
         PostgresStoreOperation::CurrentGlobalSeq => Ok(json!(uow.current_global_seq().await?)),
         PostgresStoreOperation::NextUserSeq { user_id } => {
@@ -6154,6 +6171,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         | "graph_authority_capability"
         | "next_global_seq"
         | "current_global_seq" => &["kind"][..],
+        "lock_entity_identity" => &["kind", "namespace", "entity_kind", "entity_id"][..],
         "next_user_seq" | "current_user_seq" => &["kind", "user_id"][..],
         "set_user_seq" => &["kind", "user_id", "value"][..],
         "get_index_applied_fingerprint" => &["kind", "namespace", "coalesce_key"][..],
