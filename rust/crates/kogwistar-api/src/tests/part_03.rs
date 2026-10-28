@@ -657,6 +657,11 @@
                 fail: Some(embedding_failure.clone()),
             }));
         service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
         let embedding_storage_scope = service.embedding_storage_scope.as_ref().unwrap();
         let registered_profile = service
             .store
@@ -1474,9 +1479,10 @@
             mutation["scope"]["namespace"] = json!("alpha");
             mutation["payload"] = json!({"id": id});
             mutation["record"]["id"] = json!(id);
-            mutation["record"]["document"] = json!(
-                serde_json::to_string(&json!({"label": id})).unwrap()
-            );
+            mutation["record"]["document"] = json!(serde_json::to_string(&json!({
+                "label": id,
+                "doc_id": acl_fixture["doc_id"]
+            })).unwrap());
             mutation["record"]["metadata"] = json!({});
             mutation["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
             acl_fixture_batch["mutations"]
@@ -1501,6 +1507,7 @@
         edge_mutation["record"]["id"] = json!(edge_id);
         edge_mutation["record"]["document"] = json!(serde_json::to_string(&json!({
             "relation": edge_fixture["relation"],
+            "doc_id": acl_fixture["doc_id"],
             "source_ids": edge_fixture["source_ids"],
             "target_ids": edge_fixture["target_ids"],
             "source_edge_ids": [],
@@ -1558,39 +1565,88 @@
 
         for principal in acl_fixture["principals"].as_array().unwrap() {
             let subject = principal["id"].as_str().unwrap();
-            let response = make_app()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/mcp")
-                        .header("content-type", "application/json")
-                        .header(
-                            "authorization",
-                            format!(
-                                "Bearer {}",
-                                make_token_for(subject, &["read_graph"], "alpha")
-                            ),
-                        )
-                        .body(Body::from(format!(
-                            r#"{{"jsonrpc":"2.0","id":"acl-{subject}","method":"tools/call","params":{{"name":"kg_neighbors","arguments":{{"rid":"source-public"}}}}}}"#
-                        )))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let response_body = to_bytes(response.into_body(), 65_536).await.unwrap();
-            let response_value: Value = serde_json::from_slice(&response_body).unwrap();
-            assert_eq!(
-                response_value["result"]["nodes"],
-                principal["expected_neighbors"]["nodes"],
-                "unexpected visible nodes for {subject}"
-            );
-            assert_eq!(
-                response_value["result"]["edges"],
-                principal["expected_neighbors"]["edges"],
-                "unexpected visible edges for {subject}"
-            );
+            let requests = [
+                (
+                    "kg_neighbors",
+                    json!({"rid": "source-public", "doc_id": acl_fixture["doc_id"]}),
+                ),
+                (
+                    "kg_k_hop",
+                    json!({"start_ids": ["source-public"], "k": 2, "doc_id": acl_fixture["doc_id"]}),
+                ),
+                (
+                    "kg_shortest_path",
+                    json!({"src_id": "source-public", "dst_id": "target-private", "max_depth": 8, "doc_id": acl_fixture["doc_id"]}),
+                ),
+                (
+                    "kg_find_edges",
+                    json!({"relation": edge_fixture["relation"], "doc_id": acl_fixture["doc_id"]}),
+                ),
+            ];
+            for (tool_name, arguments) in requests {
+                let response = make_app()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/mcp")
+                            .header("content-type", "application/json")
+                            .header(
+                                "authorization",
+                                format!(
+                                    "Bearer {}",
+                                    make_token_for(subject, &["read_graph"], "alpha")
+                                ),
+                            )
+                            .body(Body::from(
+                                json!({
+                                    "jsonrpc": "2.0",
+                                    "id": format!("acl-{subject}-{tool_name}"),
+                                    "method": "tools/call",
+                                    "params": {"name": tool_name, "arguments": arguments}
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let response_body = to_bytes(response.into_body(), 65_536).await.unwrap();
+                let response_value: Value = serde_json::from_slice(&response_body).unwrap();
+                assert!(response_value.get("error").is_none(), "{response_value}");
+                let result = &response_value["result"];
+                match tool_name {
+                    "kg_neighbors" => {
+                        assert_eq!(
+                            result["nodes"], principal["expected_neighbors"]["nodes"],
+                            "unexpected visible nodes for {subject}"
+                        );
+                        assert_eq!(
+                            result["edges"], principal["expected_neighbors"]["edges"],
+                            "unexpected visible edges for {subject}"
+                        );
+                    }
+                    "kg_k_hop" => {
+                        assert_eq!(
+                            result["layers"], principal["expected_k_hop"],
+                            "unexpected k-hop layers for {subject}"
+                        );
+                    }
+                    "kg_shortest_path" => {
+                        assert_eq!(
+                            result["path"], principal["expected_shortest_path"],
+                            "unexpected path for {subject}"
+                        );
+                    }
+                    "kg_find_edges" => {
+                        assert_eq!(
+                            result["edges"], principal["expected_find_edges"],
+                            "unexpected relation matches for {subject}"
+                        );
+                    }
+                    _ => unreachable!("test request has known MCP tools"),
+                }
+            }
         }
         drop(mismatched_service);
         drop(legacy_service);

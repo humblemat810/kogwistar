@@ -337,28 +337,41 @@ async def test_mcp_neighbors_preserve_acl_visibility_and_hide_topology(
     monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
     owner = fixture["principals"][0]
     with _claims("rw", fixture["truth_graph"], sub=owner["id"]):
-        graph_query = GraphQuery(engine)
         owner_neighbors = _structured(
             await server.mcp.call_tool(
                 "kg_neighbors", {"rid": source.id, "doc_id": fixture["doc_id"]}
             )
         )
-        owner_k_hop = graph_query.k_hop(
-            [source.id], k=2, doc_id=fixture["doc_id"]
+        owner_k_hop = _structured(
+            await server.mcp.call_tool(
+                "kg_k_hop",
+                {"start_ids": [source.id], "k": 2, "doc_id": fixture["doc_id"]},
+            )
         )
-        owner_path = graph_query.shortest_path(
-            source.id, target.id, doc_id=fixture["doc_id"]
+        owner_path = _structured(
+            await server.mcp.call_tool(
+                "kg_shortest_path",
+                {
+                    "src_id": source.id,
+                    "dst_id": target.id,
+                    "max_depth": 8,
+                    "doc_id": fixture["doc_id"],
+                },
+            )
         )
-        owner_edges = graph_query.find_edges(
-            relation=edge_spec["relation"], doc_id=fixture["doc_id"]
+        owner_edges = _structured(
+            await server.mcp.call_tool(
+                "kg_find_edges",
+                {"relation": edge_spec["relation"], "doc_id": fixture["doc_id"]},
+            )
         )
     assert owner_neighbors == owner["expected_neighbors"]
     assert [
         {"nodes": sorted(layer["nodes"]), "edges": sorted(layer["edges"])}
-        for layer in owner_k_hop
+        for layer in owner_k_hop["layers"]
     ] == owner["expected_k_hop"]
-    assert owner_path == owner["expected_shortest_path"]
-    assert owner_edges == owner["expected_find_edges"]
+    assert owner_path["path"] == owner["expected_shortest_path"]
+    assert owner_edges["edges"] == owner["expected_find_edges"]
 
     reader = fixture["principals"][1]
     with _claims("ro", fixture["truth_graph"], sub=reader["id"]):
@@ -373,14 +386,28 @@ async def test_mcp_neighbors_preserve_acl_visibility_and_hide_topology(
                 "kg_neighbors", {"rid": source.id, "doc_id": fixture["doc_id"]}
             )
         )
-        reader_k_hop = graph_query.k_hop(
-            [source.id], k=2, doc_id=fixture["doc_id"]
+        reader_k_hop = _structured(
+            await server.mcp.call_tool(
+                "kg_k_hop",
+                {"start_ids": [source.id], "k": 2, "doc_id": fixture["doc_id"]},
+            )
         )
-        reader_path = graph_query.shortest_path(
-            source.id, target.id, doc_id=fixture["doc_id"]
+        reader_path = _structured(
+            await server.mcp.call_tool(
+                "kg_shortest_path",
+                {
+                    "src_id": source.id,
+                    "dst_id": target.id,
+                    "max_depth": 8,
+                    "doc_id": fixture["doc_id"],
+                },
+            )
         )
-        reader_edges = graph_query.find_edges(
-            relation=edge_spec["relation"], doc_id=fixture["doc_id"]
+        reader_edges = _structured(
+            await server.mcp.call_tool(
+                "kg_find_edges",
+                {"relation": edge_spec["relation"], "doc_id": fixture["doc_id"]},
+            )
         )
     assert reader_neighbors == reader["expected_neighbors"]
     assert async_reader_neighbors == {
@@ -389,10 +416,10 @@ async def test_mcp_neighbors_preserve_acl_visibility_and_hide_topology(
     }
     assert [
         {"nodes": sorted(layer["nodes"]), "edges": sorted(layer["edges"])}
-        for layer in reader_k_hop
+        for layer in reader_k_hop["layers"]
     ] == reader["expected_k_hop"]
-    assert reader_path == reader["expected_shortest_path"]
-    assert reader_edges == reader["expected_find_edges"]
+    assert reader_path["path"] == reader["expected_shortest_path"]
+    assert reader_edges["edges"] == reader["expected_find_edges"]
 
 
 @pytest.mark.asyncio
