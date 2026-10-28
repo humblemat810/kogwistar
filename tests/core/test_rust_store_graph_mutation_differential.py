@@ -304,6 +304,35 @@ def test_graph_mutation_scope_vector_contract_and_fault_rollback(
                 embedding=vector,
             ),
         )
+    isolated = _mutation(
+        event_id="other-namespace-scope",
+        op="ADD",
+        namespace="beta",
+        id="other-namespace",
+        document="other namespace",
+        metadata={"team": "red"},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    assert _rust(dsn, schema, isolated)["event"]["seq"] == 1
+    for event_id, node_id, workspace_id, graph_space in (
+        ("other-workspace-scope", "other-workspace", "other-ws", "facts"),
+        ("other-graph-space-scope", "other-graph-space", "ws", "other-facts"),
+    ):
+        _rust(
+            dsn,
+            schema,
+            _mutation(
+                event_id=event_id,
+                op="ADD",
+                id=node_id,
+                document=node_id,
+                metadata={"team": "red"},
+                embedding=[1.0, 0.0, 0.0],
+                workspace_id=workspace_id,
+                graph_space=graph_space,
+            ),
+        )
+
     matches = _rust(
         dsn,
         schema,
@@ -320,19 +349,19 @@ def test_graph_mutation_scope_vector_contract_and_fault_rollback(
             "limit": 10,
         },
     )
-    assert [item["record"]["id"] for item in matches] == ["a", "b"]
-
-    isolated = _mutation(
-        event_id="other-scope",
-        op="ADD",
-        namespace="beta",
-        id="other",
-        document="other",
-        metadata={"team": "red"},
-        embedding=[1.0, 0.0, 0.0],
+    python = backend.node_query(
+        query_embeddings=[[1.0, 0.0, 0.0]],
+        n_results=10,
+        where={
+            "namespace": "alpha",
+            "workspace_id": "ws",
+            "graph_space": "facts",
+            "team": "red",
+        },
+        include=["distances"],
     )
-    assert _rust(dsn, schema, isolated)["event"]["seq"] == 1
-    assert all(item["record"]["id"] != "other" for item in matches)
+    assert [item["record"]["id"] for item in matches] == python["ids"][0] == ["a", "b"]
+    assert [item["distance"] for item in matches] == pytest.approx(python["distances"][0])
 
     with pytest.raises(RustParityError) as dimension:
         _rust(
@@ -360,7 +389,7 @@ def test_graph_mutation_scope_vector_contract_and_fault_rollback(
     with pytest.raises(RustParityError) as aborted:
         _rust(dsn, schema, {"kind": "batch", "operations": [rollback], "abort": True})
     assert aborted.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
-    assert _rust(dsn, schema, {"kind": "latest_retained_event_seq", "namespace": "alpha"}) == 2
+    assert _rust(dsn, schema, {"kind": "latest_retained_event_seq", "namespace": "alpha"}) == 4
     assert backend.node_get(ids=["rolled-back"], include=["documents"])["ids"] == []
 
     with pytest.raises(RustParityError) as unknown:
