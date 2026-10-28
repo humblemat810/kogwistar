@@ -130,7 +130,14 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-        surface != "root" && name != "workflow.tool_audit" && rust_mcp_tool_supported(surface, name)
+        if surface == "root" {
+            return self.chroma_graph.is_some()
+                && matches!(
+                    name,
+                    "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
+                );
+        }
+        name != "workflow.tool_audit" && rust_mcp_tool_supported(surface, name)
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {

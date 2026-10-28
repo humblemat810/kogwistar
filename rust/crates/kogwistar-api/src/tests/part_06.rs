@@ -1210,13 +1210,17 @@
     #[tokio::test]
     async fn sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered() {
         use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{EncodingKey, Header, encode};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tower::ServiceExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..18 {
+            for _ in 0..20 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1327,6 +1331,85 @@
         assert_eq!(batched.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), ["n2"]);
         let path = std::env::temp_dir().join(format!("kogwistar-sqlite-chroma-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = SqliteRunApplicationService::open(&path).unwrap().with_chroma_graph(graph);
+        let graph_read_tools = ["kg_neighbors", "kg_find_edges", "kg_shortest_path", "kg_k_hop"];
+        assert!(graph_read_tools.iter().all(|name| service.supports_mcp_tool("root", name)));
+        assert!(!service.supports_mcp_tool("root", "kg_graph_mutate"));
+        assert!(!SqliteRunApplicationService::open(&path).unwrap().supports_mcp_tool("root", "kg_neighbors"));
+
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some("sqlite-chroma-mcp-secret".to_owned()),
+            ..AuthConfig::default()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = |capabilities: &[&str]| {
+            encode(
+                &Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+                    "graph_space":"knowledge", "capabilities":capabilities, "exp":now + 300
+                }),
+                &EncodingKey::from_secret(b"sqlite-chroma-mcp-secret"),
+            )
+            .unwrap()
+        };
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service.clone()),
+        );
+        let listing = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(listing.status(), StatusCode::OK);
+        let listing: Value = serde_json::from_slice(&to_bytes(listing.into_body(), 65_536).await.unwrap()).unwrap();
+        let advertised = listing["result"]["tools"].as_array().unwrap().iter()
+            .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
+        for name in graph_read_tools {
+            assert!(advertised.contains(&name), "missing advertised MCP tool {name}: {advertised:?}");
+        }
+        assert!(!advertised.iter().any(|name| name.contains("write") || name.contains("mutat")));
+
+        let denied = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&[])))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"denied","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"n1"}}}"#))
+                .unwrap(),
+        ).await.unwrap();
+        let denied: Value = serde_json::from_slice(&to_bytes(denied.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(denied["error"]["data"]["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
+
+        let mcp_read = app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"neighbors","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"n1"}}}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(mcp_read.status(), StatusCode::OK);
+        let mcp_read: Value = serde_json::from_slice(&to_bytes(mcp_read.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(mcp_read["result"]["nodes"], json!(["n2"]));
+        assert_eq!(mcp_read["result"]["edges"], json!(["e1"]));
+
         let request = |path: &str, body: Value, capabilities: Value| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
@@ -1445,7 +1528,7 @@
         assert_eq!(edge_vector_query["distances"], json!([[0.1]]));
 
         let observed = fake.await.unwrap();
-        assert_eq!(observed.len(), 18);
+        assert_eq!(observed.len(), 20);
         assert!(observed.iter().any(|(line, _)| line.contains("collection-nodes/get")));
         assert!(observed.iter().any(|(line, _)| line.contains("collection-edges/get")));
         assert!(observed.iter().any(|(line, payload)| {
@@ -1457,7 +1540,7 @@
                 line.contains("/get HTTP") && payload["where"].to_string().contains("workspace_id")
             })
             .collect::<Vec<_>>();
-        assert_eq!(scoped_reads.len(), 10);
+        assert_eq!(scoped_reads.len(), 12);
         assert!(
             scoped_reads.iter().all(|(_, payload)| {
                 payload["where"].to_string().contains("workspace_id")
