@@ -7,7 +7,12 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import (
+    AbstractContextManager,
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    contextmanager,
+)
 from types import TracebackType
 from typing import Protocol, cast
 
@@ -132,6 +137,18 @@ class AsyncEntityEventAppender(Protocol):
         op: str,
         payload_json: str,
     ) -> Awaitable[int]: ...
+
+
+class AsyncTransactionOwner(Protocol):
+    """Optional metadata capability for serialized async transactions."""
+
+    def async_transaction(self) -> AbstractAsyncContextManager[object]: ...
+
+
+class SyncTransactionOwner(Protocol):
+    """Metadata transaction capability used by Rust-authority sync UoWs."""
+
+    def transaction(self) -> AbstractContextManager[object]: ...
 from .utils import AliasBook
 from .utils.aliasing import AliasBookStore
 from .vector_search import VectorSearchHit
@@ -2373,7 +2390,12 @@ class GraphKnowledgeEngine:
                     raise RuntimeError(
                         "Rust transaction authority requires a native metadata transaction"
                     )
-                with transaction():
+                async_transaction = getattr(self.metadata, "async_transaction", None)
+                if callable(async_transaction):
+                    async with cast(AsyncTransactionOwner, self.metadata).async_transaction():
+                        yield None
+                    return
+                with cast(SyncTransactionOwner, self.metadata).transaction():
                     yield None
                 return
             if not callable(transaction):

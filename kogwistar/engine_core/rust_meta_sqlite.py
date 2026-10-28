@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import threading
 import uuid
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, TYPE_CHECKING, TypeVar, cast
@@ -68,6 +70,7 @@ class RustEngineSQLite:
         self._session_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
             f"kogwistar_rust_sqlite_session_depth_{id(self)}", default=0
         )
+        self._transaction_lock = threading.Lock()
 
     def _call(self, kind: str, **values: JsonValue) -> _RustResultT:  # pyright: ignore[reportInvalidTypeVarUse]
         """Call the Rust JSON boundary with an explicit caller result type.
@@ -164,6 +167,39 @@ class RustEngineSQLite:
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[_TransactionToken]:
+        if self._transaction_id.get() is not None:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+            return
+        with self._transaction_lock:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+
+    @asynccontextmanager
+    async def async_transaction(
+        self, *, immediate: bool = True
+    ) -> AsyncIterator[_TransactionToken]:
+        """Serialize async UoWs with sync callers of this Rust SQLite facade."""
+        if self._transaction_id.get() is not None:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+            return
+
+        acquire = asyncio.create_task(asyncio.to_thread(self._transaction_lock.acquire))
+        try:
+            await asyncio.shield(acquire)
+        except asyncio.CancelledError:
+            await acquire
+            self._transaction_lock.release()
+            raise
+        try:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+        finally:
+            self._transaction_lock.release()
+
+    @contextmanager
+    def _transaction_scope(self, *, immediate: bool) -> Iterator[_TransactionToken]:
         from .sqlite_context import sqlite_execution_context
 
         assert_transaction_entry_allowed()

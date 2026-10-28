@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 from kogwistar.engine_core import subsystems as engine_subsystems
@@ -792,6 +795,60 @@ def test_in_memory_two_stage_rejects_stale_delete_after_resurrection(
         assert current["ids"] == [entity_id]
         assert current["embeddings"] == [None]
     finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meta_impl", ["python", "rust"])
+async def test_async_in_memory_write_does_not_project_superseded_event(
+    tmp_path, monkeypatch, meta_impl
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", meta_impl)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    old_appended = asyncio.Event()
+    release_old = asyncio.Event()
+    append = engine._append_event_for_entity_async
+
+    async def pause_after_old_event(**kwargs: object) -> None:
+        await append(**kwargs)
+        payload = kwargs.get("payload")
+        if isinstance(payload, dict) and payload.get("summary") == "old":
+            old_appended.set()
+            await release_old.wait()
+
+    old = build_entity_node(node_id="shared", doc_id="d1", embedding=None)
+    old.summary = "old"
+    current = build_entity_node(node_id="shared", doc_id="d1", embedding=None)
+    current.summary = "current"
+
+    try:
+        if meta_impl == "python":
+            monkeypatch.setattr(
+                engine, "_append_event_for_entity_async", pause_after_old_event
+            )
+            old_write = asyncio.create_task(engine.async_add_node(old))
+            await old_appended.wait()
+            await engine.async_add_node(current)
+            release_old.set()
+            await old_write
+        else:
+            await asyncio.gather(
+                asyncio.to_thread(engine.write.add_node, old),
+                engine.async_add_node(current),
+            )
+
+        revision = engine.indexing.canonical_entity_revision(
+            entity_kind="node", entity_id="shared", namespace="default"
+        )
+        assert revision is not None and revision.state == "active"
+        row = engine.backend.node_get(ids=["shared"], include=["documents"])
+        assert json.loads(row["documents"][0])["summary"] == revision.payload["summary"]
+    finally:
+        release_old.set()
         engine.close()
 
 

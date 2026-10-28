@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -211,6 +212,40 @@ def test_rust_session_reuses_connection_across_reads_and_transaction(
         {"kind": "close"},
     ]
     assert all(call["reuse_session"] is True for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_rust_async_transaction_cancelled_waiter_does_not_leak_lock(
+    tmp_path: Path,
+) -> None:
+    store = RustEngineSQLite(tmp_path, "async-transaction-lock.sqlite")
+    store.ensure_initialized()
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def hold_transaction() -> None:
+        async with store.async_transaction():
+            holder_entered.set()
+            await release_holder.wait()
+
+    async def wait_for_transaction() -> None:
+        async with store.async_transaction():
+            raise AssertionError("cancelled waiter must not enter the transaction")
+
+    holder = asyncio.create_task(hold_transaction())
+    await holder_entered.wait()
+    waiter = asyncio.create_task(wait_for_transaction())
+    await asyncio.sleep(0.02)
+    waiter.cancel()
+    release_holder.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await holder
+
+    async with store.async_transaction():
+        assert store.transaction_active
+    assert not store.transaction_active
+    store.close()
 
 
 def test_rust_batch_facade_uses_one_native_call(

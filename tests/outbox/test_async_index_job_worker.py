@@ -513,3 +513,73 @@ async def test_async_in_memory_rejects_stale_delete_after_resurrection(
         assert current["embeddings"] == [None]
     finally:
         engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("meta_impl", ["python", "rust"])
+async def test_async_in_memory_slow_embedding_cannot_overwrite_newer_revision(
+    tmp_path, monkeypatch, batched, meta_impl
+):
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", meta_impl)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    async def slow_embedding(_texts):
+        provider_started.set()
+        await release_provider.wait()
+        return [[1.0, 0.0]]
+
+    monkeypatch.setattr(engine, "_ef", slow_embedding)
+    try:
+        await engine.async_add_node(
+            build_entity_node(node_id="raced", doc_id="d1", embedding=None)
+        )
+        job = next(
+            item
+            for item in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if item.entity_kind == "node"
+            and item.entity_id == "raced"
+            and item.op == "UPSERT"
+        )
+        adapter = engine.async_two_stage_projection_adapter
+
+        if batched:
+            work = asyncio.create_task(
+                adapter.apply_embedding_jobs_batch([job])
+            )
+        else:
+            work = asyncio.create_task(
+                adapter.apply_embedding_job(
+                    entity_kind=job.entity_kind,
+                    entity_id=job.entity_id,
+                    op=job.op,
+                    payload_json=job.payload_json,
+                )
+            )
+        await provider_started.wait()
+
+        current = build_entity_node(
+            node_id="raced", doc_id="d1", embedding=None
+        )
+        current.summary = "newer canonical revision"
+        await engine.async_add_node(current)
+        release_provider.set()
+        await work
+
+        row = engine.backend.node_get(ids=["raced"], include=["embeddings"])
+        assert row["embeddings"] == [None]
+        revision = engine.indexing.canonical_entity_revision(
+            entity_kind="node", entity_id="raced", namespace="default"
+        )
+        assert revision is not None
+        assert revision.payload["summary"] == "newer canonical revision"
+    finally:
+        release_provider.set()
+        engine.close()
