@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
 import uuid
@@ -19,6 +21,7 @@ from kogwistar.engine_core.engine_postgres_meta import (
 )
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.workers.index_job_worker import IndexJobWorker
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -272,6 +275,101 @@ def test_sqlite_rust_result_admission_is_immutable_to_python_retries(tmp_path: P
     assert retry["status"] == "existing"
     assert retry["result_json"] == '{"winner":"rust"}'
     assert retry["result_sha256"] == "rust-digest"
+
+
+def test_python_worker_replays_rust_admitted_projection_after_lease_expiry(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="rust-to-python-projection",
+        namespace="workspace",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="workspace")[0]
+
+    action = {
+        "version": 1,
+        "job_id": claim.job_id,
+        "namespace": "workspace",
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "admitted by Rust, projected by Python",
+            "metadata": {"kind": "node"},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    accepted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": claim.claim_token,
+            "result_json": action_json,
+            "result_sha256": hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    # Simulate Rust persisting the action and crashing before Chroma apply/ack.
+    with sqlite3.connect(python.db_path) as conn:
+        conn.execute(
+            "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
+            (claim.job_id,),
+        )
+
+    reopened = EngineSQLite(tmp_path)
+    reopened.ensure_initialized()
+
+    class ProjectionStore:
+        def __init__(self) -> None:
+            self.upserts: list[tuple[str, object]] = []
+
+        def upsert_graph_record(self, namespace: str, record: object) -> None:
+            self.upserts.append((namespace, record))
+
+        def delete_graph_record(self, namespace: str, entity_id: str) -> None:
+            raise AssertionError("UPSERT recovery must not delete graph records")
+
+    projection = ProjectionStore()
+    worker = IndexJobWorker(
+        engine=SimpleNamespace(
+            meta_sqlite=reopened,
+            namespace="workspace",
+            indexing=SimpleNamespace(
+                apply_index_job=lambda **_: (_ for _ in ()).throw(
+                    AssertionError("accepted action must not rerun provider/index logic")
+                )
+            ),
+            _implementation_selection_snapshot=None,
+        ),
+        namespace="workspace",
+        projection_store=projection,
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.claimed == 1
+    assert metrics.done == 1
+    assert metrics.failed == 0
+    assert len(projection.upserts) == 1
+    assert projection.upserts[0][0] == "workspace"
+    record = projection.upserts[0][1]
+    assert getattr(record, "id") == "node-1"
+    assert getattr(record, "document") == "admitted by Rust, projected by Python"
+    assert getattr(record, "embedding") == (0.25, 0.75)
+    completed = reopened.list_index_jobs(namespace="workspace")[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == action_json
 
 
 def test_sqlite_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
