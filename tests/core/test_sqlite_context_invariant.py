@@ -546,6 +546,132 @@ def test_cross_implementation_store_open_race_on_new_database_has_one_owner(
         assert "authority" in str(failure).lower() or "another implementation" in str(failure).lower()
 
 
+@pytest.mark.requires_rust
+def test_cross_process_store_open_race_on_new_database_has_one_owner(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "cross-process-first-open" / "engine.db"
+    start_path = tmp_path / "start-open-race"
+    release_path = tmp_path / "release-open-race"
+    child_code = r"""
+import json
+import sys
+import time
+from pathlib import Path
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.engine_core.sqlite_context import independent_sqlite_execution_context
+
+implementation, database_arg, ready_arg, start_arg, release_arg, status_arg = sys.argv[1:]
+database = Path(database_arg)
+ready = Path(ready_arg)
+start = Path(start_arg)
+release = Path(release_arg)
+status = Path(status_arg)
+ready.touch()
+while not start.exists():
+    time.sleep(0.005)
+connection = None
+engine = None
+try:
+    with independent_sqlite_execution_context(implementation):
+        if implementation == "python":
+            engine = EngineSQLite(database.parent)
+            engine.ensure_initialized()
+            connection = engine.connect()
+        else:
+            engine = RustEngineSQLite(database.parent)
+            engine.ensure_initialized()
+    result = {"state": "acquired"}
+except Exception as error:
+    result = {
+        "state": "conflict",
+        "type": type(error).__name__,
+        "code": getattr(error, "code", None),
+        "message": str(error),
+    }
+status.write_text(json.dumps(result), encoding="utf-8")
+if result["state"] == "acquired":
+    while not release.exists():
+        time.sleep(0.005)
+    if connection is not None:
+        connection.close()
+    if implementation == "rust":
+        with independent_sqlite_execution_context("rust"):
+            engine.close()
+"""
+    implementations = ("python", "rust")
+    processes = {
+        implementation: subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                child_code,
+                implementation,
+                str(database),
+                str(tmp_path / f"{implementation}.ready"),
+                str(start_path),
+                str(release_path),
+                str(tmp_path / f"{implementation}.status.json"),
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for implementation in implementations
+    }
+    status_paths = {
+        implementation: tmp_path / f"{implementation}.status.json"
+        for implementation in implementations
+    }
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if all((tmp_path / f"{name}.ready").exists() for name in implementations):
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("both SQLite authority processes did not reach the start barrier")
+
+        start_path.touch()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if all(path.exists() for path in status_paths.values()):
+                break
+            if any(
+                process.poll() is not None and not status_paths[name].exists()
+                for name, process in processes.items()
+            ):
+                break
+            time.sleep(0.01)
+
+        assert all(path.exists() for path in status_paths.values()), {
+            name: process.poll() for name, process in processes.items()
+        }
+        results = {
+            name: json.loads(path.read_text(encoding="utf-8"))
+            for name, path in status_paths.items()
+        }
+    finally:
+        start_path.touch()
+        release_path.touch()
+        for name, process in processes.items():
+            stdout, stderr = process.communicate(timeout=15)
+            assert process.returncode == 0, f"{name}: stdout={stdout!r}, stderr={stderr!r}"
+
+    assert sorted(result["state"] for result in results.values()) == [
+        "acquired",
+        "conflict",
+    ], results
+    conflict = next(result for result in results.values() if result["state"] == "conflict")
+    assert conflict.get("code") == "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT" or (
+        "authority" in conflict["message"].lower()
+        or "another implementation" in conflict["message"].lower()
+    ), conflict
+
+
 def test_same_implementation_can_concurrently_acquire_same_database(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     first = acquire_sqlite_database(path, "python")
