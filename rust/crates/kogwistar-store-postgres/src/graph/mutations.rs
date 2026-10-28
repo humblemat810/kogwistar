@@ -329,16 +329,15 @@ where
             PostgresStoreError::Backend(format!("graph projection delete failed: {error:?}"))
         })?;
     if mutation.entity_kind == "edge" {
-        client
-            .execute(
-                &format!(
-                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
-                    tables.edge_endpoints
-                ),
-                &[&mutation.entity_id],
-            )
-            .await
-            .map_err(backend)?;
+        for derived in [&tables.edge_endpoints, &tables.edge_refs] {
+            client
+                .execute(
+                    &format!("DELETE FROM {derived} WHERE metadata ->> 'edge_id' = $1"),
+                    &[&mutation.entity_id],
+                )
+                .await
+                .map_err(backend)?;
+        }
     } else if mutation.entity_kind == "node" {
         client
             .execute(
@@ -355,17 +354,6 @@ where
                 &format!(
                     "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
                     tables.node_refs
-                ),
-                &[&mutation.entity_id],
-            )
-            .await
-            .map_err(backend)?;
-    } else if mutation.entity_kind == "edge" {
-        client
-            .execute(
-                &format!(
-                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
-                    tables.edge_refs
                 ),
                 &[&mutation.entity_id],
             )

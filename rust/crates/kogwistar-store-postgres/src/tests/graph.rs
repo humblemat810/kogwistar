@@ -336,6 +336,122 @@ fn physical_graph_purge_requires_canonical_tombstone() {
     );
     assert!(canonical_tombstone_present(&tombstoned));
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn physical_edge_purge_removes_all_derived_rows_when_dsn_available() -> PostgresStoreResult<()>
+{
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("physical_edge_purge");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let edge_id = "purged-edge";
+    let scope = kogwistar_store::GraphScope {
+        namespace: format!("physical-edge-purge-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let mut metadata = Map::new();
+    metadata.insert(
+        "lifecycle_status".to_owned(),
+        Value::String("tombstoned".to_owned()),
+    );
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            record: kogwistar_store::GraphRecord {
+                id: edge_id.to_owned(),
+                document: Some("{}".to_owned()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    let client = store.client().await?;
+    for (table, id, document, row_metadata) in [
+        (
+            &tables.edge_endpoints,
+            "purged-edge::src::node::source",
+            r#"{"edge_id":"purged-edge","endpoint_id":"source"}"#,
+            serde_json::json!({"edge_id": edge_id, "namespace": scope.namespace.clone()}),
+        ),
+        (
+            &tables.edge_refs,
+            "purged-edge::mention::0::span::0",
+            r#"{"edge_id":"purged-edge","doc_id":"source-doc"}"#,
+            serde_json::json!({"edge_id": edge_id, "doc_id": "source-doc", "namespace": scope.namespace.clone()}),
+        ),
+    ] {
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {table} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB)"
+                ),
+                &[&id, &document, &row_metadata.to_string()],
+            )
+            .await
+            .map_err(backend)?;
+    }
+
+    let deleted = store
+        .apply_graph_delete_mutation(GraphDeleteMutation {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: "purged-edge-delete-event".to_owned(),
+            entity_id: edge_id.to_owned(),
+            payload: serde_json::json!({"id": edge_id}),
+        })
+        .await?;
+    assert!(deleted.is_some());
+
+    assert!(
+        store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![edge_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 1,
+            })
+            .await?
+            .is_empty()
+    );
+    for table in [&tables.edge_endpoints, &tables.edge_refs] {
+        let count: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {table} WHERE metadata ->> 'edge_id' = $1 OR id = $1"
+                ),
+                &[&edge_id],
+            )
+            .await
+            .map_err(backend)?
+            .try_get(0)
+            .map_err(backend)?;
+        assert_eq!(count, 0, "stale edge projection row remained in {table}");
+    }
+    let events = store.replay_raw_events(&scope.namespace, 0, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, "purged-edge-delete-event");
+    assert_eq!(events[0].op, "DELETE");
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 #[test]
 fn lifecycle_mutations_accept_only_nodes_and_edges() {
     assert!(validate_graph_lifecycle_target("gke_nodes", "node").is_ok());
