@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.two_stage_chroma import (
     SQLiteChromaTwoStageProjectionAdapter,
@@ -480,6 +481,75 @@ def test_chroma_reconciles_stage1_after_stage2_write_before_cleanup(tmp_path):
     assert adapter.reconcile_projection() == 1
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
     assert engine.backend.rows["n1"]["embedding"] == [1.0, 0.0]
+
+
+@pytest.mark.parametrize("case", ["inactive", "stale", "promoted"])
+@pytest.mark.parametrize("rust_metadata", [False, True])
+def test_reconcile_does_not_clear_newer_staged_revision(tmp_path, case, rust_metadata, monkeypatch):
+    engine, adapter = _engine(tmp_path)
+    if rust_metadata:
+        meta = RustEngineSQLite(tmp_path, filename="rust-meta.sqlite")
+        meta.ensure_initialized()
+        engine.metadata = engine.meta_sqlite = meta
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="old"))
+    if case == "inactive":
+        engine.indexing.state = "tombstoned"
+    elif case == "stale":
+        engine.indexing.fingerprint = "fp-2"
+    else:
+        staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+        payload = staged["payload"]
+        engine.backend.node_upsert(
+            ids=["n1"], documents=[payload["document"]],
+            metadatas=[{**payload["metadata"], "_kogwistar_source_fingerprint": "fp-1"}],
+            embeddings=[[1.0, 0.0]],
+        )
+
+    original_clear = adapter.remove_stage1
+
+    def replace_before_clear(**kwargs):
+        engine.indexing.state = "active"
+        engine.indexing.fingerprint = "fp-2"
+        adapter._stage1_upsert(
+            entity_kind="node", entity=build_entity_node(node_id="n1", doc_id="new")
+        )
+        if case == "inactive":
+            engine.backend.node_upsert(
+                ids=["n1"], documents=["new"], metadatas=[{}], embeddings=[[1.0, 0.0]]
+            )
+        return original_clear(**kwargs)
+
+    monkeypatch.setattr(adapter, "remove_stage1", replace_before_clear)
+    assert adapter.reconcile_projection() == 0
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert staged is not None
+    assert staged["last_authoritative_seq"] == 2
+    assert staged["payload"]["source_fingerprint"] == "fp-2"
+    if case == "inactive":
+        assert engine.backend.rows["n1"]["document"] == "new"
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+def test_current_stage1_wins_over_stale_chroma_row_on_get(tmp_path, kind):
+    engine, adapter = _engine(tmp_path)
+    def entity(doc_id):
+        if kind == "node":
+            return build_entity_node(node_id="n1", doc_id=doc_id)
+        return build_relationship_edge(edge_id="n1", src="a", tgt="b", doc_id=doc_id)
+
+    getattr(adapter, f"add_{kind}")(entity("old"))
+    key = "n1" if kind == "node" else "edge:n1"
+    old = engine.meta_sqlite.get_stage1_node_projection("tenant-a", key)["payload"]
+    engine.indexing.fingerprint = "fp-2"
+    getattr(adapter, f"add_{kind}")(entity("new"))
+    getattr(engine.backend, f"{kind}_upsert")(
+        ids=["n1"], documents=[old["document"]],
+        metadatas=[{**old["metadata"], "_kogwistar_source_fingerprint": "fp-1"}],
+        embeddings=[[1.0, 0.0]],
+    )
+    result = getattr(engine.read, f"_{kind}_get_raw")(ids=["n1"])
+    assert json.loads(result["documents"][0])["doc_id"] == "new"
+    assert result["embeddings"] == [None]
 
 
 @two_stage_case("recovery_reconciliation")

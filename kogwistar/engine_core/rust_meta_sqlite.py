@@ -531,8 +531,13 @@ class RustEngineSQLite:
     def get_stage1_node_projection(
         self, namespace: str, node_id: str
     ) -> dict[str, Any] | None:
-        return self._call(
+        row = self._call(
             "get_stage1_node_projection", namespace=namespace, key=node_id
+        )
+        if row is not None:
+            return row
+        return self._call(
+            "get_stage1_node_projection", namespace=namespace, key=f"node:{node_id}"
         )
 
     def list_stage1_node_projections(self, namespace: str) -> list[dict[str, Any]]:
@@ -559,6 +564,10 @@ class RustEngineSQLite:
         self._call(
             "clear_stage1_node_projection", namespace=namespace, key=node_id
         )
+        if not node_id.startswith(("node:", "edge:")):
+            self._call(
+                "clear_stage1_node_projection", namespace=namespace, key=f"node:{node_id}"
+            )
 
     def clear_stage1_node_projection_if_current(
         self, namespace: str, node_id: str, expected_last_authoritative_seq: int

@@ -420,8 +420,6 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         additions = [entity_id for entity_id in stage1_ids if entity_id not in existing]
         if limit is not None:
             additions = additions[: max(0, int(limit) - len(stage2_ids))]
-        if not additions:
-            return stage2
 
         result = dict(stage2)
         result["ids"] = [*stage2_ids, *additions]
@@ -437,6 +435,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 values = []
             else:
                 values = [None] * len(stage2_ids)
+            for index, entity_id in enumerate(stage2_ids):
+                pending_index = stage1_positions.get(entity_id)
+                if pending_index is not None and pending_index < len(pending_values):
+                    if index < len(values):
+                        values[index] = pending_values[pending_index]
             for entity_id in additions:
                 values.append(pending_values[stage1_positions[entity_id]])
             result[field] = cast(JsonValue, values)

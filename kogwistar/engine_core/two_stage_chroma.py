@@ -175,7 +175,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         entity_id: str,
         expected_last_authoritative_seq: int | None = None,
         **_: object,
-    ) -> None:
+    ) -> bool | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         meta = self._meta()
@@ -187,12 +187,13 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 raise RuntimeError(
                     "Chroma two-stage promotion requires revision-conditional Stage-1 cleanup"
                 )
-            compare_clear(
-                self._namespace(),
-                self._stage1_key(entity_kind, entity_id),
-                int(expected_last_authoritative_seq),
+            return bool(
+                compare_clear(
+                    self._namespace(),
+                    self._stage1_key(entity_kind, entity_id),
+                    int(expected_last_authoritative_seq),
+                )
             )
-            return
         clear = getattr(meta, "clear_stage1_node_projection", None)
         if not callable(clear):
             raise RuntimeError("Chroma two-stage arrangement lacks Stage-1 cleanup")
@@ -464,21 +465,28 @@ class SQLiteChromaTwoStageProjectionAdapter:
             payload = _mapping(row.get("payload"))
             entity_id = str(payload.get("id") or row.get("key") or "")
             entity_kind = str(payload.get("entity_kind") or "node")
+            staged_seq = int(row.get("last_authoritative_seq") or 0)
             current = self.engine.indexing.canonical_entity_revision(
                 entity_kind=entity_kind, entity_id=entity_id
             )
             if current is None or current.state != "active":
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
-                removed += 1
+                if self.remove_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                    removed += 1
                 continue
             current_fp = self._current_fingerprint(
                 entity_kind=entity_kind, entity_id=entity_id
             )
             staged_fp = str(payload.get("source_fingerprint") or "")
             if staged_fp and staged_fp != current_fp:
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                removed += 1
+                if self.remove_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    removed += 1
                 continue
             got = self._collection_call(
                 entity_kind, "get", ids=[entity_id],
@@ -498,8 +506,11 @@ class SQLiteChromaTwoStageProjectionAdapter:
                             Edge.model_validate_json(document),
                             _embedding(embeddings[0]) if embeddings else None,
                         )
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                removed += 1
+                if self.remove_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    removed += 1
         return removed
 
 

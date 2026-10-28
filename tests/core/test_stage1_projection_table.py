@@ -131,6 +131,22 @@ def test_stage1_query_has_portable_metadata_and_id_contract(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("store_type", [EngineSQLite, RustEngineSQLite])
+def test_stage1_legacy_node_lookup_and_clear_match(store_type, tmp_path) -> None:
+    store = store_type(tmp_path, filename="stage1-legacy.sqlite")
+    store.ensure_initialized()
+    for key in ("node:n1", "edge:n1"):
+        store.replace_stage1_node_projection(
+            "tenant-a", key, {"key": key}, last_authoritative_seq=1,
+            last_materialized_seq=1, projection_schema_version=1,
+            materialization_status="pending",
+        )
+    assert store.get_stage1_node_projection("tenant-a", "n1")["payload"]["key"] == "node:n1"
+    store.clear_stage1_node_projection("tenant-a", "n1")
+    assert store.get_stage1_node_projection("tenant-a", "n1") is None
+    assert store.get_stage1_node_projection("tenant-a", "edge:n1") is not None
+
+
+@pytest.mark.parametrize("store_type", [EngineSQLite, RustEngineSQLite])
 def test_stage1_conditional_clear_preserves_newer_revision(tmp_path, store_type) -> None:
     store = store_type(tmp_path, filename="stage1-cas.sqlite")
     store.ensure_initialized()
