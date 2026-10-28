@@ -50,6 +50,12 @@ def embedding_job_provider_input(job: object) -> EmbeddingJobProviderInput:
     payload_json = field("payload_json")
     return {
         "schema_version": 1,
-        **values,
+        "job_id": values["job_id"],
+        "namespace": values["namespace"],
+        "entity_kind": values["entity_kind"],
+        "entity_id": values["entity_id"],
+        "index_kind": values["index_kind"],
+        "coalesce_key": values["coalesce_key"],
+        "op": values["op"],
         "payload_json": payload_json if isinstance(payload_json, str) else None,
     }

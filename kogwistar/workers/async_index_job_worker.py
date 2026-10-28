@@ -159,6 +159,8 @@ class AsyncIndexJobWorker:
                                 raise RuntimeError(
                                     "accepted graph projection action requires projection_store"
                                 )
+                            if not isinstance(accepted_result, str):
+                                raise RuntimeError("accepted projection action must be JSON text")
                             identity_fields = (
                                 "job_id",
                                 "namespace",
@@ -256,18 +258,37 @@ class AsyncIndexJobWorker:
                         bump = getattr(meta, "bump_retry_and_requeue", None)
                         failed = getattr(meta, "mark_index_job_failed", None)
                         if retry < max_retries and callable(bump):
-                            kwargs = {
-                                "next_run_at_seconds": min(300, 2 ** min(retry - 1, 8))
-                            }
+                            delay = min(300, 2 ** min(retry - 1, 8))
                             if claim_token is not None:
-                                kwargs["claim_token"] = claim_token
-                            await _maybe_await(bump(str(job_id), error, **kwargs))
+                                await _maybe_await(
+                                    bump(
+                                        str(job_id),
+                                        error,
+                                        next_run_at_seconds=delay,
+                                        claim_token=claim_token,
+                                    )
+                                )
+                            else:
+                                await _maybe_await(
+                                    bump(
+                                        str(job_id), error, next_run_at_seconds=delay
+                                    )
+                                )
                             metrics.retried += 1
                         elif callable(failed):
-                            kwargs = {"final": True}
                             if claim_token is not None:
-                                kwargs["claim_token"] = claim_token
-                            await _maybe_await(failed(str(job_id), error, **kwargs))
+                                await _maybe_await(
+                                    failed(
+                                        str(job_id),
+                                        error,
+                                        final=True,
+                                        claim_token=claim_token,
+                                    )
+                                )
+                            else:
+                                await _maybe_await(
+                                    failed(str(job_id), error, final=True)
+                                )
                             metrics.failed += 1
                     finally:
                         durations.append(time.perf_counter() - started)

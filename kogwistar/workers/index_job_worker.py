@@ -5,7 +5,7 @@ import json
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -15,7 +15,10 @@ from ..engine_core.projection_action import (
     apply_projection_action,
     is_projection_action_payload,
 )
-from ..engine_core.index_job_provider import embedding_job_provider_input
+from ..engine_core.index_job_provider import (
+    EmbeddingJobProviderInput,
+    embedding_job_provider_input,
+)
 from ..implementation_selection import implementation_selection_bound
 from .lease_heartbeat import SyncLeaseHeartbeat
 
@@ -23,7 +26,9 @@ if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
 
-BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
+BatchApply = Callable[
+    [Sequence[EmbeddingJobProviderInput]], dict[str, BaseException | None]
+]
 
 
 class IndexJobDone(Protocol):
@@ -317,6 +322,8 @@ class IndexJobWorker:
                             raise RuntimeError(
                                 "accepted graph projection action requires projection_store"
                             )
+                        if not isinstance(accepted_result, str):
+                            raise RuntimeError("accepted projection action must be JSON text")
                         identity_fields = (
                             "job_id",
                             "namespace",
