@@ -488,6 +488,64 @@ def test_cross_implementation_acquire_race_grants_one_owner_only(
     assert sorted(outcome for _, outcome in outcomes) == ["acquired", "conflict"]
 
 
+@pytest.mark.requires_rust
+def test_cross_implementation_store_open_race_on_new_database_has_one_owner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "first-open-race" / "engine.db"
+    python_engine = EngineSQLite(path.parent)
+    rust_engine = RustEngineSQLite(path.parent)
+    barrier = threading.Barrier(2)
+    attempted = threading.Event()
+    lock = threading.Lock()
+    count = 0
+    outcomes: list[tuple[str, str, Exception | None]] = []
+
+    def initialize(implementation: str) -> None:
+        nonlocal count
+        connection: sqlite3.Connection | None = None
+        with independent_sqlite_execution_context(implementation):
+            barrier.wait(timeout=5)
+            try:
+                if implementation == "python":
+                    python_engine.ensure_initialized()
+                    connection = python_engine.connect()
+                else:
+                    rust_engine.ensure_initialized()
+                outcome = (implementation, "acquired", None)
+            except Exception as error:
+                outcome = (implementation, "failed", error)
+            finally:
+                with lock:
+                    count += 1
+                    if count == 2:
+                        attempted.set()
+            try:
+                assert attempted.wait(timeout=5)
+                outcomes.append(outcome)
+            finally:
+                if connection is not None:
+                    connection.close()
+                if implementation == "rust" and outcome[1] == "acquired":
+                    rust_engine.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(initialize, implementation)
+            for implementation in ("python", "rust")
+        ]
+        for future in futures:
+            future.result(timeout=20)
+
+    assert sorted(outcome for _, outcome, _ in outcomes) == ["acquired", "failed"]
+    failure = next(error for _, outcome, error in outcomes if outcome == "failed")
+    assert failure is not None
+    if isinstance(failure, SQLiteContextError):
+        _assert_code(failure, "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT")
+    else:
+        assert "authority" in str(failure).lower() or "another implementation" in str(failure).lower()
+
+
 def test_same_implementation_can_concurrently_acquire_same_database(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     first = acquire_sqlite_database(path, "python")
