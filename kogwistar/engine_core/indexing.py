@@ -401,13 +401,21 @@ class IndexingSubsystem:
 
     @implementation_selection_bound
     def repair_missing_two_stage_embedding_jobs(
-        self, *, max_entities: int = 100, namespace: str | None = None
+        self,
+        *,
+        max_entities: int = 100,
+        namespace: str | None = None,
+        max_event_window: int | None = None,
     ) -> int:
         """Recreate missing active embedding work from canonical events.
 
         This is a bounded repair scanner, not a second queue. Canonical events
         identify current entities; existing index jobs remain worker
         coordination. A DONE job with a missing vector is repaired too.
+
+        When ``max_event_window`` is provided, scan only that sequence range
+        and persist a replay cursor so callers can resume across invocations.
+        The default retains the legacy full-history scan behavior.
         """
         if getattr(self.engine, "persistence_mode", "single_stage") != "two_stage":
             return 0
@@ -416,12 +424,51 @@ class IndexingSubsystem:
         if not callable(iter_events) or not callable(list_jobs):
             return 0
         ns = self.engine.namespace if namespace is None else str(namespace)
+        if max_event_window is not None:
+            window = int(max_event_window)
+            entity_limit = max(int(max_entities), 0)
+            if window <= 0 or entity_limit <= 0:
+                return 0
+            cursor_get = getattr(self.metadata, "cursor_get", None)
+            cursor_set = getattr(self.metadata, "cursor_set", None)
+            if not callable(cursor_get) or not callable(cursor_set):
+                raise RuntimeError(
+                    "checkpointed two-stage repair requires replay cursor support"
+                )
+            consumer = "kogwistar.two_stage_embedding_repair.v1"
+            cursor = max(0, int(cursor_get(namespace=ns, consumer=consumer)))
+            from_seq = cursor + 1
+            to_seq = from_seq + min(window, entity_limit) - 1
+            page = list(
+                iter_events(
+                    namespace=ns,
+                    from_seq=from_seq,
+                    to_seq=to_seq,
+                    batch_size=min(window, entity_limit),
+                )
+            )
+            next_event = next(
+                iter_events(
+                    namespace=ns,
+                    from_seq=to_seq + 1,
+                    batch_size=1,
+                ),
+                None,
+            )
+        else:
+            page = list(iter_events(namespace=ns, from_seq=1))
+            cursor_set = None
+            consumer = ""
+            to_seq = 0
+
         latest: dict[tuple[str, str], Any] = {}
-        events = cast(Iterable[Any], iter_events(namespace=ns, from_seq=1))
-        for event in events:
-            if isinstance(event, dict):
+        for event in cast(Iterable[Any], page):
+            if isinstance(event, Mapping):
                 entity_kind = str(event.get("entity_kind") or "")
                 entity_id = str(event.get("entity_id") or "")
+            elif callable(getattr(event, "keys", None)):
+                entity_kind = str(event["entity_kind"] or "")
+                entity_id = str(event["entity_id"] or "")
             elif isinstance(event, (tuple, list)) and len(event) >= 4:
                 # EngineSQLite compatibility shape:
                 # (seq, entity_kind, entity_id, op, payload_json).
@@ -433,19 +480,9 @@ class IndexingSubsystem:
             if entity_kind in {"node", "edge"} and entity_id:
                 latest[(entity_kind, entity_id)] = event
         repaired = 0
-        for (entity_kind, entity_id), event in sorted(latest.items()):
+        for entity_kind, entity_id in sorted(latest):
             if repaired >= max(int(max_entities), 0):
                 break
-            op = str(
-                (
-                    event.get("op")
-                    if isinstance(event, dict)
-                    else event[3]
-                    if isinstance(event, (tuple, list))
-                    else getattr(event, "op", "")
-                )
-                or ""
-            ).upper()
             revision_payload = self.canonical_revision_payload(
                 entity_kind=entity_kind, entity_id=entity_id
             )
@@ -470,25 +507,20 @@ class IndexingSubsystem:
                 getattr(capability, "stage1_strategy", None) == "none"
             )
             is_tombstoned = _is_tombstoned(metadata)
+            if not current.get("ids") and not stage1_present:
+                continue
+            if inline_projection and is_tombstoned and not stage1_present and (
+                metadata.get("_kogwistar_stage2_ready") is False
+            ):
+                # The inline canonical row explicitly records that its derived
+                # projection has already been removed.
+                continue
             if inline_projection and not is_tombstoned:
                 # These backends keep the vectorless source in the canonical row;
                 # there is no separate Stage-1 projection to restore or query.
                 stage1_present = bool(current.get("ids"))
-            if op in {"DELETE", "TOMBSTONE", "REMOVE"}:
-                if not current.get("ids") and not stage1_present:
-                    continue
-                needs_delete = bool(current.get("ids")) and is_tombstoned
-                if (
-                    inline_projection
-                    and is_tombstoned
-                    and metadata.get("_kogwistar_stage2_ready") is False
-                    and not stage1_present
-                ):
-                    # The Rust/PostgreSQL inline projection retains canonical
-                    # tombstones. Its explicit not-ready marker proves the
-                    # derived vector cleanup has already converged.
-                    needs_delete = False
-                needs_delete = needs_delete or stage1_present
+            if is_tombstoned or not current.get("ids"):
+                needs_delete = bool(current.get("ids")) or stage1_present
                 desired_op = "DELETE"
             else:
                 needs_delete = False
@@ -534,6 +566,12 @@ class IndexingSubsystem:
                     namespace=ns,
                 )
                 repaired += 1
+        if cursor_set is not None:
+            cursor_set(
+                namespace=ns,
+                consumer=consumer,
+                last_seq=to_seq if next_event is not None else 0,
+            )
         return repaired
 
     @implementation_selection_bound

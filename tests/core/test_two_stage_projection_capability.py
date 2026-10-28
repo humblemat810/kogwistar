@@ -622,6 +622,159 @@ def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     assert engine.backend.node_get(ids=["n1"], include=["embeddings"])["embeddings"][0] is not None
 
 
+def test_two_stage_checkpointed_repair_scans_bounded_pages_across_calls(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    entity_ids = ["repair-a", "repair-b", "repair-c"]
+    for entity_id in entity_ids:
+        engine.write.add_node(build_entity_node(node_id=entity_id, doc_id="d1"))
+    engine.indexing.reconcile_indexes(max_jobs=20)
+    engine.backend.node_clear_embeddings(ids=entity_ids)
+
+    meta = engine.meta_sqlite
+    original_iter = meta.iter_entity_events
+    event_ranges: list[tuple[int, int, int]] = []
+
+    def tracked_iter_entity_events(**kwargs: object):
+        if "to_seq" in kwargs:
+            event_ranges.append(
+                (
+                    int(kwargs["from_seq"]),
+                    int(kwargs["to_seq"]),
+                    int(kwargs["batch_size"]),
+                )
+            )
+        return original_iter(**kwargs)
+
+    meta.iter_entity_events = tracked_iter_entity_events
+    try:
+        repaired_total = 0
+        for _ in range(30):
+            repaired_total += engine.indexing.repair_missing_two_stage_embedding_jobs(
+                max_entities=1,
+                max_event_window=1,
+            )
+            pending_ids = {
+                job.entity_id
+                for job in meta.list_index_jobs(namespace="default", status="PENDING")
+                if job.index_kind == "node_embedding"
+            }
+            if set(entity_ids).issubset(pending_ids):
+                break
+
+        assert set(entity_ids).issubset(pending_ids)
+        assert repaired_total == len(entity_ids)
+        assert event_ranges
+        assert all(to_seq == from_seq and batch_size == 1 for from_seq, to_seq, batch_size in event_ranges)
+    finally:
+        engine.close()
+
+
+def test_two_stage_checkpointed_repair_uses_current_state_not_old_event_op(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    engine.reconcile_indexes = lambda **kwargs: 0
+    assert engine.lifecycle.tombstone_node("n1") is True
+
+    # Retire the lifecycle-generated job so the bounded scan must reconstruct
+    # the operation from current canonical state, not the older UPSERT event.
+    for job in engine.meta_sqlite.claim_index_jobs(
+        limit=10, lease_seconds=60, namespace="default"
+    ):
+        engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+    events = list(engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1))
+    node_upsert_seq = next(
+        int(event[0])
+        for event in events
+        if event[1] == "node"
+        and event[2] == "n1"
+        and str(event[3]).upper() in {"ADD", "UPSERT", "REPLACE"}
+    )
+    consumer = "kogwistar.two_stage_embedding_repair.v1"
+    engine.meta_sqlite.cursor_set(
+        namespace="default", consumer=consumer, last_seq=node_upsert_seq - 1
+    )
+
+    try:
+        repaired = engine.indexing.repair_missing_two_stage_embedding_jobs(
+            max_entities=1,
+            max_event_window=1,
+        )
+
+        assert repaired == 1
+        pending = engine.meta_sqlite.list_index_jobs(
+            namespace="default", entity_kind="node", entity_id="n1", status="PENDING"
+        )
+        assert [job.op for job in pending if job.index_kind == "node_embedding"] == [
+            "DELETE"
+        ]
+    finally:
+        engine.close()
+
+
+def test_two_stage_checkpointed_repair_uses_rust_sqlite_metadata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        assert engine.metadata.sqlite_implementation == "rust"
+        engine.write.add_node(
+            build_entity_node(node_id="rust-bounded-repair", doc_id="d1", embedding=None)
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="rust-bounded-tail", doc_id="d1", embedding=None)
+        )
+
+        for job in engine.meta_sqlite.claim_index_jobs(
+            limit=10, lease_seconds=60, namespace="default"
+        ):
+            engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+        entity_seq = next(
+            int(event[0])
+            for event in engine.meta_sqlite.iter_entity_events(
+                namespace="default", from_seq=1
+            )
+            if event[1] == "node"
+            and event[2] == "rust-bounded-repair"
+            and str(event[3]).upper() in {"ADD", "UPSERT", "REPLACE"}
+        )
+        consumer = "kogwistar.two_stage_embedding_repair.v1"
+        engine.meta_sqlite.cursor_set(
+            namespace="default", consumer=consumer, last_seq=entity_seq - 1
+        )
+
+        repaired = engine.indexing.repair_missing_two_stage_embedding_jobs(
+            max_entities=1,
+            max_event_window=1,
+        )
+
+        assert repaired == 1
+        assert engine.meta_sqlite.cursor_get(namespace="default", consumer=consumer) == entity_seq
+        pending = engine.meta_sqlite.list_index_jobs(
+            namespace="default",
+            entity_kind="node",
+            entity_id="rust-bounded-repair",
+            status="PENDING",
+        )
+        assert [job.op for job in pending if job.index_kind == "node_embedding"] == [
+            "UPSERT"
+        ]
+    finally:
+        engine.close()
+
+
 def test_two_stage_repair_recreates_lost_delete_job(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
