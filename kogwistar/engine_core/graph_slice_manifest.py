@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from functools import lru_cache
-from typing import Annotated, Any, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 from pydantic_extension.model_slicing.mixin import ExcludeMode, ModeSlicingMixin
@@ -29,8 +29,8 @@ def _nested_model(annotation: Any) -> tuple[type[BaseModel], str] | None:
     if get_origin(annotation) is Annotated:
         return _nested_model(get_args(annotation)[0])
     if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        if isinstance(annotation, type) and issubclass(annotation, ModeSlicingMixin):
-            return annotation, "self"
+        if issubclass(annotation, ModeSlicingMixin):
+            return cast(type[BaseModel], annotation), "self"
         return None
     origin = get_origin(annotation)
     args = get_args(annotation)
@@ -74,10 +74,10 @@ def _excluded_modes(annotation: Any) -> set[str]:
 
 
 def _build_slice_manifest(
-    model: type[ModeSlicingMixin],
+    model: type[BaseModel],
     *,
     model_name: str | None = None,
-    _seen: tuple[type[ModeSlicingMixin], ...] = (),
+    _seen: tuple[type[BaseModel], ...] = (),
 ) -> dict[str, Any]:
     """Return a deterministic version-1 field-slice manifest.
 
@@ -87,6 +87,8 @@ def _build_slice_manifest(
 
     if not issubclass(model, ModeSlicingMixin):
         raise TypeError("slice manifests require a ModeSlicingMixin model")
+    if not issubclass(model, BaseModel):
+        raise TypeError("slice manifests require a Pydantic BaseModel")
     if model in _seen:
         return {
             "schema_version": 1,
@@ -100,9 +102,12 @@ def _build_slice_manifest(
         getattr(model, "include_unmarked_for_modes", set())
     )
     fields: dict[str, dict[str, Any]] = {}
-    for field_name in sorted(model.model_fields):
-        annotation = hints.get(field_name, model.model_fields[field_name].annotation)
-        marked = _mode_names(model, annotation)
+    pydantic_model = cast(type[BaseModel], model)
+    for field_name in sorted(pydantic_model.model_fields):
+        annotation = hints.get(
+            field_name, pydantic_model.model_fields[field_name].annotation
+        )
+        marked = _mode_names(cast(type[ModeSlicingMixin], model), annotation)
         excluded = _excluded_modes(annotation)
         modes = {
             mode
@@ -115,9 +120,9 @@ def _build_slice_manifest(
         if nested is not None and nested[0] not in (*_seen, model):
             nested_model, child_location = nested
             rule["child"] = _build_slice_manifest(
-                nested_model,
+                cast(type[BaseModel], nested_model),
                 model_name=nested_model.__name__,
-                _seen=(*_seen, model),
+                _seen=(*_seen, cast(type[BaseModel], model)),
             )
             if child_location != "self":
                 rule["child_location"] = child_location
@@ -137,7 +142,7 @@ def _cached_slice_manifest(
 ) -> dict[str, Any]:
     """Cache immutable-by-convention schema work for the process lifetime."""
 
-    return _build_slice_manifest(model, model_name=model_name)
+    return _build_slice_manifest(cast(type[BaseModel], model), model_name=model_name)
 
 
 def build_slice_manifest(
@@ -155,7 +160,11 @@ def build_slice_manifest(
     """
 
     if _seen:
-        return _build_slice_manifest(model, model_name=model_name, _seen=_seen)
+        return _build_slice_manifest(
+            cast(type[BaseModel], model),
+            model_name=model_name,
+            _seen=cast(tuple[type[BaseModel], ...], _seen),
+        )
     return deepcopy(_cached_slice_manifest(model, model_name))
 
 
@@ -173,10 +182,13 @@ def project_with_manifest(
 
     if mode not in SLICE_MODES:
         raise ValueError(f"unsupported graph slice mode: {mode}")
+    if not isinstance(value, ModeSlicingMixin):
+        raise TypeError("slice projection requires a ModeSlicingMixin instance")
     manifest = build_slice_manifest(model)
     # This reference receives a view for one target mode; it does not construct
     # the canonical source envelope used by the language-seam adapter.
-    source_payload = value.model_dump(dump_format="json", field_mode=mode)
+    slicing_value = cast(ModeSlicingMixin, value)
+    source_payload = slicing_value.model_dump(dump_format="json", field_mode=mode)
     return _project_value(
         source_payload, manifest, mode
     )

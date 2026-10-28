@@ -191,13 +191,16 @@ def build_graph_model_slice_envelope(
             ),
         }
 
+    slice_payload: dict[str, object] = {
+        "schema_version": 1,
+        "mode": field_mode,
+        "manifest": build_slice_manifest(type(model)),
+    }
     return {
-        **envelope,
-        "slice": {
-            "schema_version": 1,
-            "mode": field_mode,
-            "manifest": build_slice_manifest(type(model)),
-        },
+        "schema_version": envelope["schema_version"],
+        "model_class": envelope["model_class"],
+        "payload": envelope["payload"],
+        "slice": slice_payload,
     }
 
 

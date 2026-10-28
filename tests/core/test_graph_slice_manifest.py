@@ -26,6 +26,10 @@ class _MappingSliceModel(ModeSlicingMixin, BaseModel):
     values: Annotated[Mapping[str, _NestedSliceModel], BackendField(), LLMField()]
 
 
+class _MixinOnlyModel(ModeSlicingMixin):
+    pass
+
+
 def _node() -> Node:
     return Node(
         id="node-1",
@@ -90,6 +94,11 @@ def test_manifest_cache_returns_defensive_deterministic_copies() -> None:
     second = build_slice_manifest(Node)
     assert second["fields"]["label"]["modes"]
     assert second == build_slice_manifest(Node)
+
+
+def test_manifest_rejects_slicing_mixin_without_pydantic_model_fields() -> None:
+    with pytest.raises(TypeError, match="Pydantic BaseModel"):
+        build_slice_manifest(_MixinOnlyModel)
 
 
 def test_manifest_preserves_mapping_value_slicing() -> None:
