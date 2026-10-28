@@ -379,6 +379,29 @@
             execution["handoff"]["message_id"].is_string(),
             "claim must return work before exercising duplicate execution: {execution}"
         );
+        assert_eq!(execution["payload"]["executor_target"], "rust-native");
+        let mut wrong_target_execution = execution.clone();
+        wrong_target_execution["payload"]["executor_target"] = json!("python-worker");
+        let wrong_target = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&owner)
+            .json(&wrong_target_execution)
+            .send()
+            .await
+            .unwrap();
+        let wrong_target_status = wrong_target.status();
+        let wrong_target_body = wrong_target.text().await.unwrap();
+        assert_eq!(
+            wrong_target_status,
+            StatusCode::CONFLICT,
+            "{wrong_target_body}"
+        );
+        assert!(service.store.replay_raw_events("alpha", 0, 100).await.unwrap().is_empty());
+        assert!(service.store.list_index_jobs(Some("alpha"), None, None, None, None, 100).await.unwrap().is_empty());
+        let pending_lane = service.store.get_projected_lane_message(
+            work["message_id"].as_str().unwrap(),
+        ).await.unwrap().unwrap();
+        assert_eq!(pending_lane.status, "claimed");
         for denied in [&other, &wrong_scope, &no_write] {
             let response = client.post(format!("{base}/internal/runtime/native/execute"))
                 .bearer_auth(denied).json(&execution).send().await.unwrap();
