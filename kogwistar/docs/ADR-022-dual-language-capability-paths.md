@@ -245,7 +245,8 @@ evidence; do not add checklist rows for already-verified cases.
 
 Legacy Chroma Stage-2 rows created before `_kogwistar_source_revision` was
 introduced are intentionally hidden by the Rust read fence. An operator may
-backfill this marker only while the normal projection writer is quiesced, using
+backfill a missing or incorrect marker only while the normal projection
+writer is quiesced, using
 `SQLiteChromaTwoStageProjectionAdapter.backfill_stage2_source_revisions()` or
 its async counterpart in bounded pages. The adapter stamps a row only when its
 stored source fingerprint matches the current active canonical revision; it

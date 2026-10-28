@@ -373,15 +373,18 @@ async def test_async_chroma_backfills_only_legacy_stage2_rows_matching_active_so
         for node, stored_fingerprint in zip(
             nodes, (fingerprints[nodes[0].id]["source_fingerprint"], "old-fingerprint")
         ):
+            metadata = {
+                "_kogwistar_stage2_ready": True,
+                "_kogwistar_source_fingerprint": stored_fingerprint,
+            }
+            if node.id == nodes[0].id:
+                metadata["_kogwistar_source_revision"] = 999
             await backend.async_call(
                 "node",
                 "upsert",
                 ids=[node.id],
                 documents=[node.model_dump_json(field_mode="backend", exclude=["embedding"])],
-                metadatas=[{
-                    "_kogwistar_stage2_ready": True,
-                    "_kogwistar_source_fingerprint": stored_fingerprint,
-                }],
+                metadatas=[metadata],
                 embeddings=[[0.1, 0.2]],
             )
 

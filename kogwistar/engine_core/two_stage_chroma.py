@@ -685,12 +685,6 @@ class SQLiteChromaTwoStageProjectionAdapter:
             if metadata.get("_kogwistar_stage2_ready") is not True:
                 continue
             stored_revision = metadata.get("_kogwistar_source_revision")
-            if (
-                isinstance(stored_revision, int)
-                and not isinstance(stored_revision, bool)
-                and stored_revision > 0
-            ):
-                continue
             try:
                 current = json.loads(revisions[entity_id])
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -704,6 +698,8 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 or isinstance(revision, bool)
                 or revision <= 0
             ):
+                continue
+            if stored_revision == revision:
                 continue
             metadata["_kogwistar_source_revision"] = revision
             updates.append((entity_id, metadata))
