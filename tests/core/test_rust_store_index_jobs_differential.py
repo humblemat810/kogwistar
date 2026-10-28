@@ -583,6 +583,110 @@ def test_postgres_reconciler_recovers_admitted_result_after_restart_and_lost_ack
     assert completed.accepted_result_json == '{"embedding":[0.25,0.75]}'
 
 
+def test_python_worker_replays_rust_admitted_projection_after_pg_lease_expiry(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    namespace = f"projection-recovery-{uuid.uuid4().hex}"
+    job_id = f"rust-to-python-{uuid.uuid4().hex}"
+    python.enqueue_index_job(
+        job_id=job_id,
+        namespace=namespace,
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace=namespace)[0]
+
+    action = {
+        "version": 1,
+        "job_id": job_id,
+        "namespace": namespace,
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "admitted by Rust, projected by Python on PostgreSQL",
+            "metadata": {"kind": "node"},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    accepted = _pg(
+        dsn,
+        schema,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": job_id,
+            "claim_token": claim.claim_token,
+            "result_json": action_json,
+            "result_sha256": hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    # Model a worker crash after Rust admission but before graph projection/ack.
+    with sa_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f'UPDATE "{schema}".index_jobs SET lease_until=TIMESTAMPTZ \'epoch\' WHERE job_id=%s',
+            (job_id,),
+        )
+
+    reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    reopened.ensure_initialized()
+
+    class ProjectionStore:
+        def __init__(self) -> None:
+            self.upserts: list[tuple[str, object]] = []
+
+        def upsert_graph_record(self, namespace: str, record: object) -> None:
+            self.upserts.append((namespace, record))
+
+        def delete_graph_record(self, namespace: str, entity_id: str) -> None:
+            raise AssertionError("UPSERT recovery must not delete graph records")
+
+    projection = ProjectionStore()
+    worker = IndexJobWorker(
+        engine=SimpleNamespace(
+            meta_sqlite=reopened,
+            namespace=namespace,
+            indexing=SimpleNamespace(
+                apply_index_job=lambda **_: (_ for _ in ()).throw(
+                    AssertionError("accepted action must not rerun provider/index logic")
+                )
+            ),
+            _implementation_selection_snapshot=None,
+        ),
+        namespace=namespace,
+        projection_store=projection,
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.claimed == 1
+    assert metrics.done == 1
+    assert metrics.failed == 0
+    assert len(projection.upserts) == 1
+    assert projection.upserts[0][0] == namespace
+    record = projection.upserts[0][1]
+    assert getattr(record, "id") == "node-1"
+    assert getattr(record, "document") == "admitted by Rust, projected by Python on PostgreSQL"
+    assert getattr(record, "embedding") == (0.25, 0.75)
+    completed = _pg(
+        dsn,
+        schema,
+        {"kind": "list_index_jobs", "namespace": namespace},
+    )
+    assert len(completed) == 1
+    assert completed[0]["status"] == "DONE"
+    assert completed[0]["accepted_result_json"] == action_json
+
+
 def test_postgres_queue_concurrency_reclaim_and_terminal_retry_live(
     pg_dsn: str | None, pg_schema: str | None
 ) -> None:
