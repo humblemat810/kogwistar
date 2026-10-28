@@ -971,11 +971,12 @@ pub fn graph_find_edges_from_records(
             ))
         })
         .collect::<BTreeMap<_, _>>();
-    let contains = |label: &str, needle: &Option<String>| {
-        needle.as_deref().is_none_or(|needle| {
-            label
-                .to_ascii_lowercase()
-                .contains(&needle.to_ascii_lowercase())
+    let labels_match = |labels: &[&str], needle: Option<&str>| {
+        needle.is_none_or(|needle| {
+            let needle = needle.to_lowercase();
+            labels
+                .iter()
+                .any(|label| label.to_lowercase().contains(&needle))
         })
     };
     let mut result = edges
@@ -1017,12 +1018,8 @@ pub fn graph_find_edges_from_records(
             let target_labels = ids("target_ids")
                 .filter_map(|id| node_labels.get(id).map(String::as_str))
                 .collect::<Vec<_>>();
-            if !source_labels
-                .iter()
-                .any(|label| contains(label, &query.src_label_contains))
-                || !target_labels
-                    .iter()
-                    .any(|label| contains(label, &query.tgt_label_contains))
+            if !labels_match(&source_labels, query.src_label_contains.as_deref())
+                || !labels_match(&target_labels, query.tgt_label_contains.as_deref())
             {
                 return None;
             }
@@ -3301,6 +3298,91 @@ mod tests {
                 .collect::<BTreeSet<_>>();
             assert_eq!(neighbors.nodes, expected_nodes, "{}", principal_spec["id"]);
             assert_eq!(neighbors.edges, expected_edges, "{}", principal_spec["id"]);
+
+            let k_hop = graph_k_hop_from_records(
+                &GraphKHopQuery {
+                    start_ids: vec![
+                        fixture["nodes"][0]["id"]
+                            .as_str()
+                            .expect("source ID")
+                            .to_owned(),
+                    ],
+                    k: 2,
+                    doc_id: fixture["doc_id"].as_str().map(str::to_owned),
+                },
+                &visible_nodes,
+                &visible_edges,
+            );
+            let expected_k_hop = principal_spec["expected_k_hop"]
+                .as_array()
+                .expect("expected k-hop layers")
+                .iter()
+                .map(|layer| {
+                    serde_json::json!({
+                        "nodes": layer["nodes"],
+                        "edges": layer["edges"]
+                    })
+                })
+                .collect::<Vec<_>>();
+            let actual_k_hop = k_hop
+                .iter()
+                .map(|layer| {
+                    serde_json::json!({
+                        "nodes": layer.nodes,
+                        "edges": layer.edges
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual_k_hop, expected_k_hop, "{}", principal_spec["id"]);
+
+            let shortest_path = graph_shortest_path_from_records(
+                &GraphShortestPathQuery {
+                    src_id: fixture["nodes"][0]["id"]
+                        .as_str()
+                        .expect("source ID")
+                        .to_owned(),
+                    dst_id: fixture["nodes"][1]["id"]
+                        .as_str()
+                        .expect("target ID")
+                        .to_owned(),
+                    doc_id: fixture["doc_id"].as_str().map(str::to_owned),
+                    max_depth: 8,
+                },
+                &visible_nodes,
+                &visible_edges,
+            );
+            assert_eq!(
+                shortest_path,
+                principal_spec["expected_shortest_path"]
+                    .as_array()
+                    .expect("expected path")
+                    .iter()
+                    .map(|value| value.as_str().expect("path ID").to_owned())
+                    .collect::<Vec<_>>(),
+                "{}",
+                principal_spec["id"]
+            );
+
+            let find_edges = graph_find_edges_from_records(
+                &GraphFindEdgesQuery {
+                    relation: edge_spec["relation"].as_str().map(str::to_owned),
+                    doc_id: fixture["doc_id"].as_str().map(str::to_owned),
+                    ..Default::default()
+                },
+                &visible_nodes,
+                &visible_edges,
+            );
+            assert_eq!(
+                find_edges,
+                principal_spec["expected_find_edges"]
+                    .as_array()
+                    .expect("expected matching edges")
+                    .iter()
+                    .map(|value| value.as_str().expect("edge ID").to_owned())
+                    .collect::<Vec<_>>(),
+                "{}",
+                principal_spec["id"]
+            );
         }
     }
 

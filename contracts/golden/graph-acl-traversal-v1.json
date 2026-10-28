@@ -17,11 +17,23 @@
   "principals": [
     {
       "id": "owner-a",
-      "expected_neighbors": {"nodes": ["target-private"], "edges": ["edge-private"]}
+      "expected_neighbors": {"nodes": ["target-private"], "edges": ["edge-private"]},
+      "expected_k_hop": [
+        {"nodes": [], "edges": ["edge-private"]},
+        {"nodes": ["source-public", "target-private"], "edges": []}
+      ],
+      "expected_shortest_path": ["source-public", "edge-private", "target-private"],
+      "expected_find_edges": ["edge-private"]
     },
     {
       "id": "reader-b",
-      "expected_neighbors": {"nodes": [], "edges": []}
+      "expected_neighbors": {"nodes": [], "edges": []},
+      "expected_k_hop": [
+        {"nodes": [], "edges": []},
+        {"nodes": [], "edges": []}
+      ],
+      "expected_shortest_path": [],
+      "expected_find_edges": []
     }
   ]
 }
