@@ -12,6 +12,7 @@ use kogwistar_store::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::time::Duration;
 
 const ACTION_VERSION: i64 = 1;
 
@@ -41,6 +42,36 @@ fn backend_error(error: impl ToString) -> StoreError {
     StoreError::Backend {
         backend: "graph-projection-worker".to_owned(),
         message: error.to_string(),
+    }
+}
+
+async fn with_lease_renewal<Q, T, Fut>(
+    queue: &Q,
+    job_id: &str,
+    claim_token: &str,
+    lease_seconds: i64,
+    operation: Fut,
+) -> StoreResult<Option<StoreResult<T>>>
+where
+    Q: IndexJobWriteStore,
+    Fut: Future<Output = StoreResult<T>>,
+{
+    let interval_ms = (lease_seconds.max(1) as u64)
+        .saturating_mul(1_000)
+        .saturating_div(3)
+        .max(100);
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(interval_ms));
+    heartbeat.tick().await;
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return Ok(Some(result)),
+            _ = heartbeat.tick() => {
+                if !queue.renew_index_job_lease(job_id, claim_token, lease_seconds).await? {
+                    return Ok(None);
+                }
+            }
+        }
     }
 }
 
@@ -361,9 +392,21 @@ where
                 job.op.to_ascii_uppercase().as_str(),
                 "UPSERT" | "ADD" | "REPLACE"
             ) {
-                match provider(job.clone()).await {
-                    Ok(record) => Some(record),
-                    Err(error) => {
+                match with_lease_renewal(
+                    queue,
+                    &job.job_id,
+                    claim_token,
+                    lease_seconds,
+                    provider(job.clone()),
+                )
+                .await?
+                {
+                    None => {
+                        summary.claim_lost += 1;
+                        continue;
+                    }
+                    Some(Ok(record)) => Some(record),
+                    Some(Err(error)) => {
                         retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary)
                             .await?;
                         continue;
@@ -443,24 +486,36 @@ where
                 continue;
             }
         };
-        let projection = match action {
-            ProjectionAction::Upsert(record) => {
-                graph
-                    .upsert_graph_projection_record(&job.namespace, &job.entity_kind, record)
-                    .await
-            }
-            ProjectionAction::Delete => {
-                // A repeated delete after lost acknowledgement is already the
-                // desired state, so `false` is still a successful projection.
-                graph
-                    .delete_graph_projection_record(
-                        &job.namespace,
-                        &job.entity_kind,
-                        &job.entity_id,
-                    )
-                    .await
-                    .map(|_| ())
-            }
+        let projection =
+            with_lease_renewal(queue, &job.job_id, claim_token, lease_seconds, async {
+                match action {
+                    ProjectionAction::Upsert(record) => {
+                        graph
+                            .upsert_graph_projection_record(
+                                &job.namespace,
+                                &job.entity_kind,
+                                record,
+                            )
+                            .await
+                    }
+                    ProjectionAction::Delete => {
+                        // A repeated delete after lost acknowledgement is already the
+                        // desired state, so `false` is still a successful projection.
+                        graph
+                            .delete_graph_projection_record(
+                                &job.namespace,
+                                &job.entity_kind,
+                                &job.entity_id,
+                            )
+                            .await
+                            .map(|_| ())
+                    }
+                }
+            })
+            .await?;
+        let Some(projection) = projection else {
+            summary.claim_lost += 1;
+            continue;
         };
         if let Err(error) = projection {
             retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary).await?;
@@ -660,6 +715,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(done.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn slow_provider_renews_lease_before_another_worker_can_reclaim() {
+        let queue = InMemoryStore::new();
+        enqueue(&queue, "UPSERT").await;
+        let graph = InMemoryStore::new();
+        let worker_queue = queue.clone();
+        let worker_graph = graph.clone();
+        let worker = tokio::spawn(async move {
+            run_graph_projection_jobs_once_with_provider_input(
+                &worker_queue,
+                &worker_graph,
+                1,
+                1,
+                Some("workspace"),
+                |_input| async {
+                    tokio::time::sleep(Duration::from_millis(1_500)).await;
+                    Ok(candidate())
+                },
+            )
+            .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        let competing_claim = queue
+            .claim_index_jobs(1, 1, Some("workspace"))
+            .await
+            .unwrap();
+        assert!(competing_claim.is_empty());
+
+        let summary = worker.await.unwrap().unwrap();
+        assert_eq!(summary.projected, 1);
+        assert_eq!(summary.claim_lost, 0);
+        let completed = queue
+            .index_jobs(Some("workspace"), Some("DONE"), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(completed.len(), 1);
     }
 
     #[tokio::test]
