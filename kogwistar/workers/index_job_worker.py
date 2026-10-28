@@ -17,6 +17,7 @@ from ..engine_core.projection_action import (
 )
 from ..engine_core.index_job_provider import embedding_job_provider_input
 from ..implementation_selection import implementation_selection_bound
+from .lease_heartbeat import SyncLeaseHeartbeat
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -179,36 +180,45 @@ class IndexJobWorker:
                     work_units.append((group[start : start + max(1, self.batch_size)], batch_fn))
             work_units.extend(([job], None) for job in ordinary_jobs)
 
+            claims = [
+                (
+                    str(self._job_value(job, "job_id")),
+                    self._optional_text(self._job_value(job, "claim_token")),
+                )
+                for job in jobs
+            ]
             for unit, batch_fn in work_units:
                 batch_results: dict[str, BaseException | None] | None = None
-                if batch_fn is not None and len(unit) > 1:
-                    try:
-                        # Adapters receive only embedding inputs, never lease
-                        # tokens or other queue-authority fields.
-                        provider_inputs = [embedding_job_provider_input(job) for job in unit]
-                        batch_results = batch_fn(provider_inputs)
-                    except Exception as exc:
-                        # A provider/adapter batch failure is per-job failure,
-                        # not a worker-process failure or batch transaction.
-                        batch_results = {
-                            str(self._job_value(job, "job_id")): exc for job in unit
-                        }
+                with SyncLeaseHeartbeat(meta, claims, self.lease_seconds) as heartbeat:
+                    if batch_fn is not None and len(unit) > 1:
+                        try:
+                            # Adapters receive only embedding inputs, never lease
+                            # tokens or other queue-authority fields.
+                            provider_inputs = [embedding_job_provider_input(job) for job in unit]
+                            batch_results = batch_fn(provider_inputs)
+                        except Exception as exc:
+                            # A provider/adapter batch failure is per-job failure,
+                            # not a worker-process failure or batch transaction.
+                            batch_results = {
+                                str(self._job_value(job, "job_id")): exc for job in unit
+                            }
 
-                for job in unit:
-                    self._process_job(
-                        job=job,
-                        batch_results=batch_results,
-                        namespace=ns,
-                        entity_cache=entity_cache,
-                        mark_done=mark_done,
-                        bump=bump,
-                        mark_failed=mark_failed,
-                        metrics=metrics,
-                        durations=durations,
-                    )
-                    remaining -= 1
-                    if remaining <= 0:
-                        break
+                    for job in unit:
+                        self._process_job(
+                            job=job,
+                            batch_results=batch_results,
+                            namespace=ns,
+                            entity_cache=entity_cache,
+                            mark_done=mark_done,
+                            bump=bump,
+                            mark_failed=mark_failed,
+                            metrics=metrics,
+                            durations=durations,
+                            lease_heartbeat=heartbeat,
+                        )
+                        remaining -= 1
+                        if remaining <= 0:
+                            break
                 if remaining <= 0:
                     break
 
@@ -263,6 +273,7 @@ class IndexJobWorker:
         mark_failed: IndexJobFailed | None,
         metrics: WorkerTickMetrics,
         durations: list[float],
+        lease_heartbeat: SyncLeaseHeartbeat | None = None,
     ) -> None:
                 start = time.time()
 
@@ -283,6 +294,14 @@ class IndexJobWorker:
 
                 try_rc = self._as_int(retry_count, 0)
                 try_mr = self._as_int(max_retries, 10)
+
+                if (
+                    lease_heartbeat is not None
+                    and job_id
+                    and not lease_heartbeat.owns(str(job_id))
+                ):
+                    metrics.claim_lost += 1
+                    return
 
                 try:
                     # Rust-owned workers may have admitted the provider result
@@ -356,6 +375,13 @@ class IndexJobWorker:
                             payload_json=self._optional_text(payload_json),
                             validated_entity_cache=entity_cache,
                         )
+                    if (
+                        lease_heartbeat is not None
+                        and job_id
+                        and not lease_heartbeat.owns(str(job_id))
+                    ):
+                        metrics.claim_lost += 1
+                        return
                     if mark_done is not None and job_id:
                         if claim_token is None:
                             # Preserve compatibility with legacy queue rows that

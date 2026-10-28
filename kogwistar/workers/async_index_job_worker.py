@@ -16,6 +16,7 @@ from ..engine_core.projection_action import (
 )
 from ..engine_core.index_job_provider import embedding_job_provider_input
 from ..implementation_selection import implementation_selection_bound
+from .lease_heartbeat import AsyncLeaseHeartbeat
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -116,142 +117,160 @@ class AsyncIndexJobWorker:
                 work_units.append((group[start : start + width], batch_apply))
         work_units.extend(([job], None) for job in ordinary_jobs)
 
+        claims = [
+            (
+                str(self._value(job, "job_id")),
+                self._optional_text(self._value(job, "claim_token")),
+            )
+            for job in jobs
+        ]
         for unit, batch_apply in work_units:
             started = time.perf_counter()
-            batch_results: dict[str, BaseException | None] | None = None
-            if batch_apply is not None and len(unit) > 1:
-                try:
-                    if not inspect.iscoroutinefunction(batch_apply):
-                        raise RuntimeError("async embedding batch handler must be awaitable")
-                    # Expose only embedding inputs; lease tokens stay in the
-                    # worker's original claimed rows for acknowledgement.
-                    provider_inputs = [embedding_job_provider_input(job) for job in unit]
-                    batch_results = await batch_apply(provider_inputs)
-                except Exception as exc:
-                    batch_results = {
-                        str(self._value(job, "job_id")): exc for job in unit
-                    }
-            for job in unit:
-                job_id = self._value(job, "job_id")
-                claim_token = self._optional_text(self._value(job, "claim_token"))
-                try:
-                    # Match the Rust worker: an admitted result is the
-                    # idempotency record, so replay only finalizes the queue.
-                    accepted_result = self._value(job, "accepted_result_json")
-                    is_projection_action = (
-                        accepted_result is not None
-                        and is_projection_action_payload(accepted_result)
-                    )
-                    if is_projection_action:
-                        if self.projection_store is None:
-                            raise RuntimeError(
-                                "accepted graph projection action requires projection_store"
-                            )
-                        identity_fields = (
-                            "job_id",
-                            "namespace",
-                            "entity_kind",
-                            "entity_id",
-                            "index_kind",
-                            "op",
-                        )
-                        identity_values = {
-                            name: self._value(job, name) for name in identity_fields
+            async with AsyncLeaseHeartbeat(meta, claims, self.lease_seconds) as heartbeat:
+                batch_results: dict[str, BaseException | None] | None = None
+                if batch_apply is not None and len(unit) > 1:
+                    try:
+                        if not inspect.iscoroutinefunction(batch_apply):
+                            raise RuntimeError("async embedding batch handler must be awaitable")
+                        provider_inputs = [embedding_job_provider_input(job) for job in unit]
+                        batch_results = await batch_apply(provider_inputs)
+                    except Exception as exc:
+                        batch_results = {
+                            str(self._value(job, "job_id")): exc for job in unit
                         }
-                        if not all(
-                            isinstance(value, str)
-                            for value in identity_values.values()
-                        ):
-                            raise RuntimeError(
-                                "claimed projection action lacks a complete queue identity"
-                            )
-                        identity = ProjectionJobIdentity(
-                            job_id=cast(str, identity_values["job_id"]),
-                            namespace=cast(str, identity_values["namespace"]),
-                            entity_kind=cast(str, identity_values["entity_kind"]),
-                            entity_id=cast(str, identity_values["entity_id"]),
-                            index_kind=cast(str, identity_values["index_kind"]),
-                            op=cast(str, identity_values["op"]),
-                        )
-                        if identity.namespace != ns:
-                            raise RuntimeError(
-                                "claimed projection action is outside the worker namespace"
-                            )
-                        digest = self._value(job, "accepted_result_sha256")
-                        await apply_projection_action_async(
-                            identity,
-                            accepted_result,
-                            digest if isinstance(digest, str) else None,
-                            self.projection_store,
-                        )
-                    elif accepted_result is not None:
-                        # Existing provider-result records were already applied
-                        # by their producer; preserve their legacy replay rule.
-                        pass
-                    elif batch_results is not None:
-                        error = batch_results.get(str(job_id))
-                        if error is not None:
-                            raise error
-                    elif str(self._value(job, "index_kind") or "") == "node_embedding":
-                        apply = getattr(adapter, "apply_embedding_job", None)
-                        if not callable(apply) or not inspect.iscoroutinefunction(apply):
-                            raise RuntimeError(
-                                "node_embedding requires an executable async two-stage adapter"
-                            )
-                        await apply(
-                            entity_kind=str(self._value(job, "entity_kind")),
-                            entity_id=str(self._value(job, "entity_id")),
-                            op=str(self._value(job, "op") or "UPSERT"),
-                            payload_json=self._optional_text(self._value(job, "payload_json")),
-                        )
-                    else:
-                        # Legacy projection handlers remain isolated from the
-                        # event loop while retaining one-job semantics.
-                        await asyncio.to_thread(
-                            self.engine.indexing.apply_index_job,
-                            job_id=str(job_id),
-                            entity_kind=str(self._value(job, "entity_kind")),
-                            entity_id=str(self._value(job, "entity_id")),
-                            index_kind=str(self._value(job, "index_kind") or ""),
-                            op=str(self._value(job, "op") or "UPSERT"),
-                            namespace=ns,
-                            payload_json=self._optional_text(self._value(job, "payload_json")),
-                        )
-                    done = getattr(meta, "mark_index_job_done", None)
-                    acknowledged: object = None
-                    if callable(done):
-                        if claim_token is None:
-                            acknowledged = await _maybe_await(done(str(job_id)))
-                        else:
-                            acknowledged = await _maybe_await(
-                                done(str(job_id), claim_token=claim_token)
-                            )
-                    if acknowledged is False:
+                for job in unit:
+                    job_id = self._value(job, "job_id")
+                    claim_token = self._optional_text(self._value(job, "claim_token"))
+                    if (
+                        claim_token is not None
+                        and job_id
+                        and not heartbeat.owns(str(job_id))
+                    ):
                         metrics.claim_lost += 1
                         continue
-                    metrics.done += 1
-                except Exception as exc:
-                    error = f"{type(exc).__name__}: {exc}"
-                    retry = self._as_int(self._value(job, "retry_count"), 0) + 1
-                    max_retries = self._as_int(self._value(job, "max_retries"), 10)
-                    bump = getattr(meta, "bump_retry_and_requeue", None)
-                    failed = getattr(meta, "mark_index_job_failed", None)
-                    if retry < max_retries and callable(bump):
-                        kwargs = {
-                            "next_run_at_seconds": min(300, 2 ** min(retry - 1, 8))
-                        }
-                        if claim_token is not None:
-                            kwargs["claim_token"] = claim_token
-                        await _maybe_await(bump(str(job_id), error, **kwargs))
-                        metrics.retried += 1
-                    elif callable(failed):
-                        kwargs = {"final": True}
-                        if claim_token is not None:
-                            kwargs["claim_token"] = claim_token
-                        await _maybe_await(failed(str(job_id), error, **kwargs))
-                        metrics.failed += 1
-                finally:
-                    durations.append(time.perf_counter() - started)
+                    try:
+                        accepted_result = self._value(job, "accepted_result_json")
+                        is_projection_action = (
+                            accepted_result is not None
+                            and is_projection_action_payload(accepted_result)
+                        )
+                        if is_projection_action:
+                            if self.projection_store is None:
+                                raise RuntimeError(
+                                    "accepted graph projection action requires projection_store"
+                                )
+                            identity_fields = (
+                                "job_id",
+                                "namespace",
+                                "entity_kind",
+                                "entity_id",
+                                "index_kind",
+                                "op",
+                            )
+                            identity_values = {
+                                name: self._value(job, name) for name in identity_fields
+                            }
+                            if not all(
+                                isinstance(value, str)
+                                for value in identity_values.values()
+                            ):
+                                raise RuntimeError(
+                                    "claimed projection action lacks a complete queue identity"
+                                )
+                            identity = ProjectionJobIdentity(
+                                job_id=cast(str, identity_values["job_id"]),
+                                namespace=cast(str, identity_values["namespace"]),
+                                entity_kind=cast(str, identity_values["entity_kind"]),
+                                entity_id=cast(str, identity_values["entity_id"]),
+                                index_kind=cast(str, identity_values["index_kind"]),
+                                op=cast(str, identity_values["op"]),
+                            )
+                            if identity.namespace != ns:
+                                raise RuntimeError(
+                                    "claimed projection action is outside the worker namespace"
+                                )
+                            digest = self._value(job, "accepted_result_sha256")
+                            await apply_projection_action_async(
+                                identity,
+                                accepted_result,
+                                digest if isinstance(digest, str) else None,
+                                self.projection_store,
+                            )
+                        elif accepted_result is not None:
+                            pass
+                        elif batch_results is not None:
+                            error = batch_results.get(str(job_id))
+                            if error is not None:
+                                raise error
+                        elif str(self._value(job, "index_kind") or "") == "node_embedding":
+                            apply = getattr(adapter, "apply_embedding_job", None)
+                            if not callable(apply) or not inspect.iscoroutinefunction(apply):
+                                raise RuntimeError(
+                                    "node_embedding requires an executable async two-stage adapter"
+                                )
+                            await apply(
+                                entity_kind=str(self._value(job, "entity_kind")),
+                                entity_id=str(self._value(job, "entity_id")),
+                                op=str(self._value(job, "op") or "UPSERT"),
+                                payload_json=self._optional_text(
+                                    self._value(job, "payload_json")
+                                ),
+                            )
+                        else:
+                            await asyncio.to_thread(
+                                self.engine.indexing.apply_index_job,
+                                job_id=str(job_id),
+                                entity_kind=str(self._value(job, "entity_kind")),
+                                entity_id=str(self._value(job, "entity_id")),
+                                index_kind=str(self._value(job, "index_kind") or ""),
+                                op=str(self._value(job, "op") or "UPSERT"),
+                                namespace=ns,
+                                payload_json=self._optional_text(
+                                    self._value(job, "payload_json")
+                                ),
+                            )
+                        if (
+                            claim_token is not None
+                            and job_id
+                            and not heartbeat.owns(str(job_id))
+                        ):
+                            metrics.claim_lost += 1
+                            continue
+                        done = getattr(meta, "mark_index_job_done", None)
+                        acknowledged: object = None
+                        if callable(done):
+                            if claim_token is None:
+                                acknowledged = await _maybe_await(done(str(job_id)))
+                            else:
+                                acknowledged = await _maybe_await(
+                                    done(str(job_id), claim_token=claim_token)
+                                )
+                        if acknowledged is False:
+                            metrics.claim_lost += 1
+                            continue
+                        metrics.done += 1
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: {exc}"
+                        retry = self._as_int(self._value(job, "retry_count"), 0) + 1
+                        max_retries = self._as_int(self._value(job, "max_retries"), 10)
+                        bump = getattr(meta, "bump_retry_and_requeue", None)
+                        failed = getattr(meta, "mark_index_job_failed", None)
+                        if retry < max_retries and callable(bump):
+                            kwargs = {
+                                "next_run_at_seconds": min(300, 2 ** min(retry - 1, 8))
+                            }
+                            if claim_token is not None:
+                                kwargs["claim_token"] = claim_token
+                            await _maybe_await(bump(str(job_id), error, **kwargs))
+                            metrics.retried += 1
+                        elif callable(failed):
+                            kwargs = {"final": True}
+                            if claim_token is not None:
+                                kwargs["claim_token"] = claim_token
+                            await _maybe_await(failed(str(job_id), error, **kwargs))
+                            metrics.failed += 1
+                    finally:
+                        durations.append(time.perf_counter() - started)
         if durations:
             metrics.avg_job_duration_s = sum(durations) / len(durations)
         return metrics

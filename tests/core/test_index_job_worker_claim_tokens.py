@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +13,7 @@ import pytest
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from kogwistar.workers.index_job_worker import IndexJobWorker
+from kogwistar.workers.lease_heartbeat import AsyncLeaseHeartbeat, SyncLeaseHeartbeat
 
 _REPLAY_FIXTURE = json.loads(
     Path(__file__)
@@ -197,6 +200,150 @@ def test_sync_worker_propagates_claim_token_to_success_ack() -> None:
 
     assert metrics.done == 1
     assert meta.done == [("job-1", "claim-1")]
+
+
+def test_sync_worker_renews_slow_job_lease_before_competing_claim() -> None:
+    class LeasedMeta(_Meta):
+        def __init__(self, job: SimpleNamespace) -> None:
+            super().__init__(job)
+            self._lock = threading.Lock()
+            self._claim_number = 0
+            self._claim_token: str | None = None
+            self._lease_until = 0.0
+            self.renewal_count = 0
+
+        def claim_index_jobs(self, **kwargs: object) -> list[SimpleNamespace]:
+            now = time.monotonic()
+            with self._lock:
+                if self._claim_token is not None and self._lease_until > now:
+                    return []
+                self._claim_number += 1
+                self._claim_token = f"claim-{self._claim_number}"
+                self.job.claim_token = self._claim_token
+                self._lease_until = now + int(kwargs["lease_seconds"])
+                return [self.job]
+
+        def renew_index_job_lease(
+            self, job_id: str, *, claim_token: str, lease_seconds: int
+        ) -> bool:
+            assert job_id == self.job.job_id
+            with self._lock:
+                if claim_token != self._claim_token or self._lease_until <= time.monotonic():
+                    return False
+                self.renewal_count += 1
+                self._lease_until = time.monotonic() + lease_seconds
+                return True
+
+    class SlowIndexing(_Indexing):
+        def __init__(self, started: threading.Event) -> None:
+            super().__init__()
+            self.started = started
+
+        def apply_index_job(self, **_: object) -> None:
+            self.started.set()
+            time.sleep(1.5)
+            self.calls += 1
+
+    meta = LeasedMeta(_job(claim_token=None))
+    started = threading.Event()
+    engine = _engine(meta)
+    engine.indexing = SlowIndexing(started)
+    worker = IndexJobWorker(engine=engine, lease_seconds=1, batch_size=1)
+    result: list[object] = []
+    thread = threading.Thread(target=lambda: result.append(worker.tick()))
+    thread.start()
+
+    assert started.wait(timeout=2)
+    time.sleep(1.2)
+    assert meta.claim_index_jobs(limit=1, lease_seconds=1, namespace="test") == []
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert result[0].done == 1  # type: ignore[attr-defined]
+    assert meta.renewal_count >= 2
+    assert meta.done == [("job-1", "claim-1")]
+
+
+@pytest.mark.asyncio
+async def test_async_worker_renews_slow_job_lease_before_competing_claim() -> None:
+    class LeasedMeta(_Meta):
+        def __init__(self, job: SimpleNamespace) -> None:
+            super().__init__(job)
+            self._lock = threading.Lock()
+            self._claim_number = 0
+            self._claim_token: str | None = None
+            self._lease_until = 0.0
+            self.renewal_count = 0
+
+        def claim_index_jobs(self, **kwargs: object) -> list[SimpleNamespace]:
+            with self._lock:
+                if self._claim_token is not None and self._lease_until > time.monotonic():
+                    return []
+                self._claim_number += 1
+                self._claim_token = f"claim-{self._claim_number}"
+                self.job.claim_token = self._claim_token
+                self._lease_until = time.monotonic() + int(kwargs["lease_seconds"])
+                return [self.job]
+
+        def renew_index_job_lease(
+            self, job_id: str, *, claim_token: str, lease_seconds: int
+        ) -> bool:
+            assert job_id == self.job.job_id
+            with self._lock:
+                if claim_token != self._claim_token or self._lease_until <= time.monotonic():
+                    return False
+                self.renewal_count += 1
+                self._lease_until = time.monotonic() + lease_seconds
+                return True
+
+    class SlowIndexing(_Indexing):
+        def __init__(self, started: threading.Event) -> None:
+            super().__init__()
+            self.started = started
+
+        def apply_index_job(self, **_: object) -> None:
+            self.started.set()
+            time.sleep(1.5)
+            self.calls += 1
+
+    meta = LeasedMeta(_job(claim_token=None))
+    started = threading.Event()
+    engine = _engine(meta)
+    engine.indexing = SlowIndexing(started)
+    worker = AsyncIndexJobWorker(engine=engine, lease_seconds=1, batch_size=1)
+    task = asyncio.create_task(worker.tick())
+
+    assert await asyncio.to_thread(started.wait, 2)
+    await asyncio.sleep(1.2)
+    assert meta.claim_index_jobs(limit=1, lease_seconds=1, namespace="test") == []
+    metrics = await task
+
+    assert metrics.done == 1
+    assert meta.renewal_count >= 2
+    assert meta.done == [("job-1", "claim-1")]
+
+
+def test_sync_heartbeat_fails_closed_on_invalid_renewal_result() -> None:
+    class InvalidRenewal:
+        def renew_index_job_lease(self, *_: object, **__: object) -> None:
+            return None
+
+    with SyncLeaseHeartbeat(InvalidRenewal(), [("job-1", "claim-1")], 1) as heartbeat:
+        time.sleep(0.4)
+        assert not heartbeat.owns("job-1")
+
+
+@pytest.mark.asyncio
+async def test_async_heartbeat_fails_closed_on_invalid_renewal_result() -> None:
+    class InvalidRenewal:
+        async def renew_index_job_lease(self, *_: object, **__: object) -> None:
+            return None
+
+    async with AsyncLeaseHeartbeat(
+        InvalidRenewal(), [("job-1", "claim-1")], 1
+    ) as heartbeat:
+        await asyncio.sleep(0.4)
+        assert not heartbeat.owns("job-1")
 
 
 def test_sync_worker_applies_rust_projection_action_before_ack() -> None:
