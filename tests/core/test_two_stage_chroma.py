@@ -129,6 +129,14 @@ class _Indexing:
             }
         )
 
+    def canonical_revision_payloads(self, *, entity_kind: str, entity_ids):
+        return {
+            entity_id: self.canonical_revision_payload(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            for entity_id in entity_ids
+        }
+
     def canonical_entity_revision(self, *, entity_kind: str, entity_id: str):
         return SimpleNamespace(
             revision=1 if self.fingerprint == "fp-1" else 2,

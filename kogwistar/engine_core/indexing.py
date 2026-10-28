@@ -240,36 +240,64 @@ class IndexingSubsystem:
     @implementation_selection_bound
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
         """Return a stable identity derived from canonical entity events."""
-        revision = self.canonical_entity_revision(
-            entity_kind=entity_kind, entity_id=entity_id
+        return self.canonical_revision_payloads(
+            entity_kind=entity_kind, entity_ids=[entity_id]
+        )[entity_id]
+
+    @implementation_selection_bound
+    def canonical_revision_payloads(
+        self, *, entity_kind: str, entity_ids: Iterable[str], namespace: str | None = None
+    ) -> dict[str, str]:
+        """Return current revision identities after one canonical event scan."""
+        selected_namespace = str(
+            namespace or getattr(self.engine, "namespace", "default")
         )
-        if revision is None:
-            state = "missing"
-            revision_number = 0
-            payload: dict[str, Any] = {}
-        else:
-            state = revision.state
-            revision_number = revision.revision
-            payload = revision.payload
-        source = {
-            "entity_kind": entity_kind,
-            "entity_id": entity_id,
-            "state": state,
-            "revision": revision_number,
-            "payload": payload,
+        requested_ids = {str(entity_id) for entity_id in entity_ids}
+        events_by_id: dict[str, list[tuple[int, str, str, str, str]]] = {
+            entity_id: [] for entity_id in requested_ids
         }
-        blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
-        return json.dumps(
-            {
-                "source_fingerprint": hashlib.blake2b(
-                    blob.encode("utf-8"), digest_size=16
-                ).hexdigest(),
-                "source_state": state,
-                "canonical_revision": revision_number,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        if requested_ids:
+            iter_events = getattr(self.metadata, "iter_entity_events", None)
+            if not callable(iter_events):
+                raise RuntimeError("canonical event store does not support iter_entity_events")
+            for event in cast(
+                Iterable[tuple[int, str, str, str, str]],
+                iter_events(namespace=selected_namespace, from_seq=1),
+            ):
+                if str(event[1]) == entity_kind and str(event[2]) in requested_ids:
+                    events_by_id[str(event[2])].append(event)
+
+        result: dict[str, str] = {}
+        for entity_id in requested_ids:
+            revision = read_canonical_entity_revision(
+                events=events_by_id[entity_id],
+                namespace=selected_namespace,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            state = "missing" if revision is None else revision.state
+            revision_number = 0 if revision is None else revision.revision
+            payload: dict[str, Any] = {} if revision is None else revision.payload
+            source = {
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "state": state,
+                "revision": revision_number,
+                "payload": payload,
+            }
+            blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
+            result[entity_id] = json.dumps(
+                {
+                    "source_fingerprint": hashlib.blake2b(
+                        blob.encode("utf-8"), digest_size=16
+                    ).hexdigest(),
+                    "source_state": state,
+                    "canonical_revision": revision_number,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        return result
 
     @implementation_selection_bound
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:

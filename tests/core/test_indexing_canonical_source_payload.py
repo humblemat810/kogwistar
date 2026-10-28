@@ -39,6 +39,35 @@ def test_canonical_source_payload_distinguishes_active_tombstoned_and_missing(tm
     assert missing["source_fingerprint"] != deleted["source_fingerprint"]
 
 
+def test_canonical_revision_batch_matches_single_results_with_one_event_scan(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path), backend_factory=build_fake_backend
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    engine.write.add_node(build_entity_node(node_id="n2", doc_id="d2"))
+    engine.lifecycle.tombstone_node("n2")
+
+    original_iter = engine.metadata.iter_entity_events
+    calls = 0
+
+    def counted_iter_entity_events(**kwargs: object):
+        nonlocal calls
+        calls += 1
+        return original_iter(**kwargs)
+
+    engine.metadata.iter_entity_events = counted_iter_entity_events
+    batch = engine.indexing.canonical_revision_payloads(
+        entity_kind="node", entity_ids=["n1", "n2", "missing"]
+    )
+    assert calls == 1
+    for entity_id, payload in batch.items():
+        assert json.loads(payload) == json.loads(
+            engine.indexing.canonical_revision_payload(
+                entity_kind="node", entity_id=entity_id
+            )
+        )
+
+
 def test_rust_metadata_source_payload_uses_native_projection_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -86,5 +115,6 @@ def test_rust_metadata_source_payload_uses_native_projection_read(
             "ids": ["n1"],
             "metadata": {},
             "limit": 1,
+                "for_update": False,
         }
     ]

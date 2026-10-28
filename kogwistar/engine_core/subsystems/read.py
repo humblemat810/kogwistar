@@ -160,7 +160,29 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         """Drop vector rows whose embedded revision differs from canonical events."""
         if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
             return batches
-        revision_cache: dict[str, str | None] = {}
+        entity_ids = {
+            str(item.safe_get_id()) for batch in batches for item in batch
+        }
+        indexing = self._e.indexing
+        batch_lookup = getattr(indexing, "canonical_revision_payloads", None)
+        try:
+            if callable(batch_lookup):
+                raw_revisions = batch_lookup(
+                    entity_kind=entity_kind, entity_ids=entity_ids
+                )
+            else:
+                raw_revisions = {
+                    entity_id: indexing.canonical_revision_payload(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    for entity_id in entity_ids
+                }
+            revision_cache = {
+                entity_id: json.loads(payload)
+                for entity_id, payload in raw_revisions.items()
+            }
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            revision_cache = {}
         filtered: list[list[Node | Edge]] = []
         for batch in batches:
             current_batch: list[Node | Edge] = []
@@ -168,26 +190,18 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 entity_id = str(item.safe_get_id())
                 metadata = getattr(item, "metadata", {}) or {}
                 staged_fingerprint = metadata.get("_kogwistar_source_fingerprint")
-                if entity_id not in revision_cache:
-                    try:
-                        payload = json.loads(
-                            self._e.indexing.canonical_revision_payload(
-                                entity_kind=entity_kind, entity_id=entity_id
-                            )
-                        )
-                    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-                        revision_cache[entity_id] = None
-                    else:
-                        revision_cache[entity_id] = (
-                            str(payload.get("source_fingerprint"))
-                            if payload.get("source_state") == "active"
-                            and payload.get("source_fingerprint")
-                            else None
-                        )
+                canonical = revision_cache.get(entity_id)
+                current_fingerprint = (
+                    str(canonical.get("source_fingerprint"))
+                    if isinstance(canonical, Mapping)
+                    and canonical.get("source_state") == "active"
+                    and canonical.get("source_fingerprint")
+                    else None
+                )
                 if (
                     isinstance(staged_fingerprint, str)
                     and staged_fingerprint
-                    and staged_fingerprint == revision_cache[entity_id]
+                    and staged_fingerprint == current_fingerprint
                 ):
                     current_batch.append(item)
             filtered.append(current_batch)
