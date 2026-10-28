@@ -431,16 +431,13 @@ class ServiceSupervisor:
             if definition.target_kind == "workflow"
             else {}
         )
-        requested_user_id = (
-            _optional_text(payload.get("user_id")) or ""
-        ).strip() or (_optional_text(target_cfg.get("user_id")) or "").strip() or None
-        if enforce_authenticated_owner and requested_user_id is not None:
-            actor_user_id = (_optional_text(authenticated_user_id) or "").strip()
-            if not actor_user_id or requested_user_id != actor_user_id:
-                raise PermissionError(
-                    "Service-triggered run owner must match the authenticated actor"
-                )
-        run_user_id = requested_user_id
+        requested_user_id = None
+        if definition.target_kind == "workflow":
+            requested_user_id = (
+                (_optional_text(payload.get("user_id")) or "").strip()
+                or (_optional_text(target_cfg.get("user_id")) or "").strip()
+                or None
+            )
         if not definition.enabled and not force:
             return projection.model_dump(mode="python")
         spec = self._matching_trigger_spec(
@@ -462,6 +459,13 @@ class ServiceSupervisor:
             run = self.run_registry.get_run(projection.current_child_run_id)
             if run is not None and not bool(run.get("terminal")):
                 return projection.model_dump(mode="python")
+        if enforce_authenticated_owner and requested_user_id is not None:
+            actor_user_id = (_optional_text(authenticated_user_id) or "").strip()
+            if not actor_user_id or requested_user_id != actor_user_id:
+                raise PermissionError(
+                    "Service-triggered run owner must match the authenticated actor"
+                )
+        run_user_id = requested_user_id
         self._append_event(
             service_id=service_id,
             event_type="service.starting",

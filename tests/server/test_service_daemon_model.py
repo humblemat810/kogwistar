@@ -604,6 +604,16 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             for item in listed.json()["services"]
         )
 
+        rejected_payload_owner = client.post(
+            "/api/workflow/services/svc.rest.demo/trigger",
+            json={
+                "trigger_type": "external event",
+                "payload": {"user_id": "victim"},
+            },
+            headers=headers,
+        )
+        assert rejected_payload_owner.status_code == 403
+
         triggered = client.post(
             "/api/workflow/services/svc.rest.demo/trigger",
             json={"trigger_type": "external event", "payload": {}},
@@ -613,6 +623,9 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         run_id = str(triggered.json()["current_child_run_id"] or "")
         assert run_id
         assert service.run_registry.get_run(run_id)["user_id"] == "tester"
+        service.run_registry.update_status(
+            run_id, status="running", started=True, finished=False
+        )
 
         events = client.get(
             "/api/workflow/services/svc.rest.demo/events", headers=headers
@@ -622,8 +635,7 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         assert "service.heartbeat" not in names
         assert "service.triggered" in names
 
-        before_spoof_events = len(events.json()["events"])
-        spoofed_payload = client.post(
+        busy_spoof = client.post(
             "/api/workflow/services/svc.rest.demo/trigger",
             json={
                 "trigger_type": "external event",
@@ -631,12 +643,13 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             },
             headers=headers,
         )
-        assert spoofed_payload.status_code == 403
+        busy_spoof.raise_for_status()
+        assert busy_spoof.json()["current_child_run_id"] == run_id
         after_spoof_events = client.get(
             "/api/workflow/services/svc.rest.demo/events", headers=headers
         )
         after_spoof_events.raise_for_status()
-        assert len(after_spoof_events.json()["events"]) == before_spoof_events
+        assert after_spoof_events.json()["events"] == events.json()["events"]
 
         configured_spoof = client.post(
             "/api/workflow/services",
