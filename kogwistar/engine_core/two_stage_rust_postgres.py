@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Protocol, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
@@ -58,6 +59,8 @@ class _RustProjectionEngine(Protocol):
     write: _RustProjectionWriter
     embed: _RustEmbeddingHelper
     _ef: EmbeddingFunctionLike
+
+    def uow(self) -> AbstractContextManager[object | None]: ...
 
 
 def rust_postgres_two_stage_capability() -> TwoStageProjectionCapability:
