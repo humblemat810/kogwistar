@@ -216,6 +216,15 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
         backend=async_pg_backend,
     )
     assert engine.meta_sqlite.__class__.__name__ == "RustEnginePostgresMetaStore"
+    meta = engine.meta_sqlite
+    original_enqueue = meta.enqueue_index_job
+    enqueue_transaction_states: list[bool] = []
+
+    def capture_enqueue(**values):
+        enqueue_transaction_states.append(meta.transaction_active)
+        return original_enqueue(**values)
+
+    monkeypatch.setattr(meta, "enqueue_index_job", capture_enqueue)
 
     doc = kg_document(
         doc_id="doc::async-pg-rust-contract",
@@ -256,6 +265,74 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
         ("node", target.id, "ADD"),
         ("edge", edge.id, "ADD"),
     ]
+    assert enqueue_transaction_states
+    assert all(enqueue_transaction_states)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_rust_authority_rolls_back_graph_write_if_index_enqueue_fails(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_index_enqueue_failure_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    source = _mk_node(
+        node_id="node::async-pg-index-enqueue-source",
+        doc_id="doc::async-pg-index-enqueue",
+        summary="edge endpoint",
+    )
+    target = _mk_node(
+        node_id="node::async-pg-index-enqueue-target",
+        doc_id="doc::async-pg-index-enqueue",
+        summary="edge endpoint",
+    )
+    if entity_kind == "edge":
+        await engine.write.add_node_async(source)
+        await engine.write.add_node_async(target)
+        entity = build_relationship_edge(
+            edge_id="edge::async-pg-index-enqueue-failure",
+            src=source.id,
+            tgt=target.id,
+            doc_id="doc::async-pg-index-enqueue",
+        )
+    else:
+        entity = _mk_node(
+            node_id="node::async-pg-index-enqueue-failure",
+            doc_id="doc::async-pg-index-enqueue",
+            summary="must roll back with index intent",
+        )
+
+    def fail_enqueue(**_values):
+        raise RuntimeError("injected index enqueue failure")
+
+    monkeypatch.setattr(engine.meta_sqlite, "enqueue_index_job", fail_enqueue)
+    write = engine.write.add_node_async if entity_kind == "node" else engine.write.add_edge_async
+    with pytest.raises(RuntimeError, match="injected index enqueue failure"):
+        await write(entity)
+
+    entity_events = [
+        event
+        for event in engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
+        if event[2] == entity.id
+    ]
+    assert entity_events == []
+    assert all(
+        job.entity_id != entity.id
+        for job in engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
+    )
+    if entity_kind == "node":
+        assert (await async_pg_backend.node_get(ids=[entity.id]))["ids"] == []
+    else:
+        assert (await async_pg_backend.edge_get(ids=[entity.id]))["ids"] == []
 
 
 @pytest.mark.asyncio

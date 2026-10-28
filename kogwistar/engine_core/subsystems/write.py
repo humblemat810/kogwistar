@@ -874,24 +874,29 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return rows
 
     async def _async_post_write(
-        self, *, entity_kind: _ProjectionEntityKind, entity: Node | Edge
+        self,
+        *,
+        entity_kind: _ProjectionEntityKind,
+        entity: Node | Edge,
+        enqueue_index_jobs: bool = True,
     ) -> None:
         """Keep existing derived-index behavior off the event loop."""
         import asyncio
 
         if self._e._phase1_enable_index_jobs:
-            if entity_kind == "node":
-                await asyncio.to_thread(
-                    self._e.enqueue_index_jobs_for_node,
-                    entity.safe_get_id(),
-                    op="UPSERT",
-                )
-            else:
-                await asyncio.to_thread(
-                    self._e.enqueue_index_jobs_for_edge,
-                    entity.safe_get_id(),
-                    op="UPSERT",
-                )
+            if enqueue_index_jobs:
+                if entity_kind == "node":
+                    await asyncio.to_thread(
+                        self._e.enqueue_index_jobs_for_node,
+                        entity.safe_get_id(),
+                        op="UPSERT",
+                    )
+                else:
+                    await asyncio.to_thread(
+                        self._e.enqueue_index_jobs_for_edge,
+                        entity.safe_get_id(),
+                        op="UPSERT",
+                    )
             await asyncio.to_thread(self._e.reconcile_indexes, max_jobs=50)
             return
         if entity_kind == "node":
@@ -957,7 +962,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 document=document,
                 metadata=metadata,
                 embedding=_required_embedding(node.embedding),
-                enqueue_index_jobs=False,
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
             ) or await asyncio.to_thread(
                 self._rust_postgres_add,
                 entity_kind="node",
@@ -967,7 +972,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 embedding=_required_embedding(node.embedding),
                 payload=payload if isinstance(payload, dict) else {},
                 model_envelope=model_envelope,
-                enqueue_index_jobs=False,
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
             )
         if not native_added:
             async with self._e.async_uow():
@@ -986,7 +991,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     metadata=metadata,
                     embedding=_required_embedding(node.embedding),
                 )
-        await self._async_post_write(entity_kind="node", entity=node)
+        await self._async_post_write(
+            entity_kind="node", entity=node, enqueue_index_jobs=not native_added
+        )
         await asyncio.to_thread(
             self._e._emit_change,
             op="node.upsert", entity=EntityRefModel(
@@ -1039,7 +1046,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 document=document,
                 metadata=metadata,
                 embedding=_required_embedding(edge.embedding),
-                enqueue_index_jobs=False,
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
             ) or await asyncio.to_thread(
                 self._rust_postgres_add,
                 entity_kind="edge",
@@ -1049,7 +1056,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 embedding=_required_embedding(edge.embedding),
                 payload=payload if isinstance(payload, dict) else {},
                 model_envelope=model_envelope,
-                enqueue_index_jobs=False,
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
             )
         if not native_added:
             async with self._e.async_uow():
@@ -1068,7 +1075,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     metadata=metadata,
                     embedding=_required_embedding(edge.embedding),
                 )
-        await self._async_post_write(entity_kind="edge", entity=edge)
+        await self._async_post_write(
+            entity_kind="edge", entity=edge, enqueue_index_jobs=not native_added
+        )
         await asyncio.to_thread(
             self._e._emit_change,
             op="edge.upsert", entity=EntityRefModel(
