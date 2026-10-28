@@ -107,8 +107,11 @@ The practical dependency order is canonical persistence and graph effects,
 then workflow/worker execution and recovery, then conversation/agent and the
 remaining REST/MCP/CLI surfaces. PostgreSQL is the first complete graph and
 transaction proving ground. SQLite remains a metadata/event/runtime backend
-until a native graph authority is implemented and tested; Chroma is a derived
-vector projection, not a substitute for canonical graph authority. An internal
+until a native graph authority is implemented and tested. The Rust service can
+also compose SQLite metadata with Chroma node/edge projection reads; that does
+not make SQLite a graph authority or establish graph-write parity. In the
+PostgreSQL-to-Chroma projection design, Chroma is a derived projection, not a
+substitute for canonical graph authority. An internal
 pre-indexed route is a dependency, not proof that public ingestion, embeddings,
 or all graph operations are native. A Python provider used by a Rust-owned
 workflow makes that request mixed, not seam-free Rust.
@@ -251,8 +254,11 @@ preserves legacy opaque-string replay semantics, including malformed or
 non-object JSON strings. Projection actions are recognized only by their
 versioned object markers and then validated against the strict action schema.
 
-This worker is not yet wired into Rust HTTP backend selection. Its current
-contract also does not fence an older in-flight projection against a newer
+The Rust PostgreSQL service uses this worker for its opt-in inline embedding
+worker, with PostgreSQL as both queue and graph store. Rust server selection
+also supports SQLite metadata with Chroma graph reads, but does not wire this
+worker to a Chroma projection destination. Its generic contract does not fence
+an older in-flight projection against a newer
 write from another worker for the same entity. Do not run multiple concurrent
 projectors for overlapping entity scopes or advertise this as production-safe
 multiwriter Chroma projection until a backend-enforced revision/fencing
@@ -463,11 +469,14 @@ a native Rust path. Deployment labels must reflect the actual request path.
 7. **Execution-context ownership.** Selection remains fixed for an active
    capability execution. In particular, Python and Rust SQLite handles do not
    overlap on one database in one process; handoff closes/releases ownership
-   according to the existing SQLite interop contract. The current guard is
-   process-local, not a cross-process lock. Deployments sharing one SQLite file
-   across processes must select one language authority for that file or add an
-   external ownership mechanism; cross-process mixed-language handoff is not
-   currently guaranteed.
+   according to the existing SQLite interop contract. Participating Python and
+   Rust entrypoints also use cooperative cross-process authority locks for the
+   database path and file identity: POSIX file locks and Windows named mutexes.
+   Existing tests cover bounded startup, contention, crash, and handoff cases;
+   see the open `DL-07E` gate for remaining platform and entrypoint coverage.
+   These locks do not govern non-participating SQLite clients or guarantee
+   behavior on every filesystem or Windows session. Deployments must establish
+   equivalent ownership for clients outside this protocol.
 8. **No hidden crossing in native mode.** A path advertised as native records
    every participating component. It cannot invoke the other language in the
    measured hot path, including callbacks, provider adapters, or persistence
