@@ -366,6 +366,7 @@
                 "start_node_id":"entry", "node_ops":{"entry":"rust-native/app/graph"}}))
             .send().await.unwrap();
         assert_eq!(submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         let claim = client.post(format!("{base}/internal/runtime/claim")).bearer_auth(&owner)
             .json(&json!({"claimed_by":"rust-native-worker", "limit":1, "lease_seconds":60,
                 "recipient_ids":["rust-native-worker"]})).send().await.unwrap();
@@ -374,6 +375,10 @@
         let execution = json!({"handoff": {"message_id":work["message_id"], "claimed_by":work["claimed_by"],
             "run_id":work["run_id"], "step_id":work["step_id"], "correlation_id":work["correlation_id"]},
             "payload":work["payload"]});
+        assert!(
+            execution["handoff"]["message_id"].is_string(),
+            "claim must return work before exercising duplicate execution: {execution}"
+        );
         for denied in [&other, &wrong_scope, &no_write] {
             let response = client.post(format!("{base}/internal/runtime/native/execute"))
                 .bearer_auth(denied).json(&execution).send().await.unwrap();
@@ -480,9 +485,9 @@
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             ..AuthConfig::default()
         };
-        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+        let mut service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
             .unwrap()
-            .with_native_operations(registry)
+            .with_native_operations(registry.clone())
             .with_owner_auth_config(&auth_config)
             .await
             .unwrap();
@@ -677,6 +682,91 @@
             .unwrap();
         drop(fault_cleanup);
         task.await.unwrap().unwrap();
+
+        drop(service);
+        let (reclaim, connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let task = tokio::spawn(connection);
+        let expired = reclaim
+            .execute(
+                &format!(
+                    "UPDATE \"{schema}\".projected_lane_messages SET lease_until = NOW() - INTERVAL '1 second' WHERE correlation_id = $1 AND status = 'claimed'"
+                ),
+                &[&"inline-transaction-failure"],
+            )
+            .await
+            .unwrap();
+        assert_eq!(expired, 1, "the failed transaction must leave a reclaimable lane");
+        drop(reclaim);
+        task.await.unwrap().unwrap();
+        service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap()
+            .with_native_operations(registry.clone())
+            .with_owner_auth_config(&auth_config)
+            .await
+            .unwrap();
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        assert_eq!(
+            service
+                .store
+                .get_server_run("inline-transaction-failure")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
+        let recovered_lane = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some("inline-transaction-failure".to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(recovered_lane.len(), 1);
+        assert_eq!(recovered_lane[0].status, "completed");
+        let recovered_events = service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered_events
+                .iter()
+                .filter(|event| event.event_id == "inline-event-inline-transaction-failure")
+                .count(),
+            1
+        );
+        let recovered_rows = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["inline-node-inline-transaction-failure".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(recovered_rows.len(), 1);
+        let recovered_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered_jobs
+                .iter()
+                .filter(|job| job.job_id == "inline-job-inline-transaction-failure")
+                .count(),
+            1
+        );
 
         for (run_id, binding_update) in [
             (

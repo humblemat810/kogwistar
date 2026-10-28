@@ -136,8 +136,9 @@ be complete at the end of the slice. Use existing contracts and tests first;
 avoid new abstractions, side quests, and checklist IDs unless an actual gap
 requires a separately approved scope decision.
 
-For the next runtime slice, continue `DL-10` by verifying and closing gaps in
-the inline native graph-write path, not by reimplementing owner binding.
+`DL-10` is closed for the bounded PostgreSQL inline native graph-effect path;
+continue with the already-open `DL-07I` gaps rather than adding more DL-10
+cases or reimplementing owner binding.
 `NativeOperationRegistry::register_graph` lets a registered Rust operation
 return a validated graph mutation batch without changing the public
 `NativeOperationOutput` shape. The authenticated PostgreSQL HTTP result path
@@ -210,18 +211,22 @@ both cases the run is durably failed, the lane is completed, and no graph event,
 projection, or index job is written. The live test also installs a temporary
 PostgreSQL trigger that rejects index-job insertion after graph mutations have
 started; it proves the transaction leaves no graph event, projection, or index
-job and does not acknowledge the lane. Complete the existing `DL-10` acceptance
-criteria by covering duplicate-result behavior and restart/retry atomicity after
-the transient transaction failure; rollback evidence alone does not prove
-successful recovery.
+job and does not acknowledge the lane. The same test then expires the durable
+claim, reconstructs the application service, reclaims the run, and verifies one
+graph event, projection, index job, succeeded run, and completed lane. The live
+`postgres_authenticated_native_graph_operation_commits_and_replays` test
+repeats the same native execution and verifies graph/index effects remain
+singular. This closes the bounded DL-10 worker graph-effect transaction and
+recovery gate. It does not establish whole-stack parity or globally atomic
+revocation across the separate auth and graph stores.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
 actual consistency point. Do not mark `DL-10` complete until its existing
 acceptance criteria are met.
 
-After the remaining `DL-10` verification, continue `DL-07I` from its recorded
-gaps rather than repeating completed experiments. Existing evidence covers
+Continue `DL-07I` from its recorded gaps rather than repeating completed
+experiments. Existing evidence covers
 lease fencing, stale Python Chroma/PostgreSQL deletes, Rust-native PostgreSQL
 stale upsert/delete protection, and accepted-result recovery after projection
 failure. The checklist still leaves transaction/recovery parity across runtime
