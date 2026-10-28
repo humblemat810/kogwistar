@@ -222,8 +222,10 @@ revocation across the separate auth and graph stores.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
-actual consistency point. Do not mark `DL-10` complete until its existing
-acceptance criteria are met.
+actual consistency point. `DL-10` is complete for the bounded PostgreSQL inline
+native graph-effect transaction and recovery path described above; this does
+not claim whole-stack Rust/Python parity or globally atomic revocation across
+the separate auth and graph stores.
 
 Continue `DL-07I` from its recorded gaps rather than repeating completed
 experiments. Existing evidence covers
