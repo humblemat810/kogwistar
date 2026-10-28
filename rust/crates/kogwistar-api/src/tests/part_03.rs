@@ -2497,102 +2497,119 @@
         assert_eq!(completed_lane[0].status, "completed");
         assert!(!service.execute_inline_native_work_once().await.unwrap());
 
-        let revoked_service = service
-            .execute_async(ApiEffectRequest {
-                contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services".to_owned(),
-                body: serde_json::to_vec(&json!({
-                    "service_id": "svc-pg-trigger-revoked",
-                    "target_kind": "workflow",
-                    "target_ref": "wf-pg-trigger",
-                    "target_config": {
-                        "conversation_id": "conv-pg-trigger-revoked",
-                        "runtime_kind": "async",
-                        "user_id": "operator"
-                    }
-                }))
-                .unwrap(),
-                principal: principal.clone(),
-            })
-            .await;
-        assert_eq!(revoked_service.status, StatusCode::OK.as_u16());
-        let revoked_trigger = service
-            .execute_async(ApiEffectRequest {
-                contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services/svc-pg-trigger-revoked/trigger".to_owned(),
-                body: serde_json::to_vec(&json!({
-                    "trigger_type": "external event",
-                    "payload": {"source": "revoke-before-effect"}
-                }))
-                .unwrap(),
-                principal: principal.clone(),
-            })
-            .await;
-        assert_eq!(revoked_trigger.status, StatusCode::OK.as_u16());
-        let revoked_trigger: Value = serde_json::from_slice(&revoked_trigger.body).unwrap();
-        let revoked_run_id = revoked_trigger["current_child_run_id"]
-            .as_str()
-            .expect("service trigger admitted a child run")
-            .to_owned();
-        let changed = Connection::open(&auth_path)
-            .unwrap()
-            .execute(
-                "UPDATE users SET is_active = 0 WHERE user_id = ?1",
-                ["operator"],
-            )
-            .unwrap();
-        assert_eq!(changed, 1, "test must deactivate the admitted run owner");
+        let auth_connection = Connection::open(&auth_path).unwrap();
+        for (case, column, changed_value, restored_value) in [
+            ("deactivated", "is_active", "0", "1"),
+            ("role-downgraded", "global_role", "ro", "rw"),
+            ("namespace-moved", "global_ns", "other", "workflow"),
+        ] {
+            let service_id = format!("svc-pg-trigger-{case}");
+            let conversation_id = format!("conv-pg-trigger-{case}");
+            let declared = service
+                .execute_async(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/workflow/services".to_owned(),
+                    body: serde_json::to_vec(&json!({
+                        "service_id": service_id,
+                        "target_kind": "workflow",
+                        "target_ref": "wf-pg-trigger",
+                        "target_config": {
+                            "conversation_id": conversation_id,
+                            "runtime_kind": "async",
+                            "user_id": "operator"
+                        }
+                    }))
+                    .unwrap(),
+                    principal: principal.clone(),
+                })
+                .await;
+            assert_eq!(declared.status, StatusCode::OK.as_u16(), "{case}");
+            let triggered = service
+                .execute_async(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/services/{service_id}/trigger"),
+                    body: serde_json::to_vec(&json!({
+                        "trigger_type": "external event",
+                        "payload": {"source": format!("revalidate-{case}")}
+                    }))
+                    .unwrap(),
+                    principal: principal.clone(),
+                })
+                .await;
+            assert_eq!(triggered.status, StatusCode::OK.as_u16(), "{case}");
+            let triggered: Value = serde_json::from_slice(&triggered.body).unwrap();
+            let run_id = triggered["current_child_run_id"]
+                .as_str()
+                .expect("service trigger admitted a child run")
+                .to_owned();
 
-        assert!(service.execute_inline_native_work_once().await.unwrap());
-        let revoked_entity_id = format!("service-native-node-{revoked_run_id}");
-        let revoked_rows = service
-            .store
-            .graph_projection_records(GraphProjectionRead {
-                scope: GraphScope {
-                    namespace: "workflow".to_owned(),
-                    workspace_id: None,
-                    graph_space: None,
-                },
-                table: "gke_nodes".to_owned(),
-                ids: Some(vec![revoked_entity_id]),
-                metadata: MetadataFilter::default(),
-                limit: 10,
-            })
-            .await
-            .unwrap();
-        assert!(revoked_rows.is_empty(), "deactivated owner must not write graph data");
-        let events = service
-            .store
-            .replay_raw_events("workflow", 0, 100)
-            .await
-            .unwrap();
-        assert!(!events
-            .iter()
-            .any(|event| event.event_id == format!("service-native-event-{revoked_run_id}")));
-        assert_eq!(
-            service
+            let changed = auth_connection
+                .execute(
+                    &format!("UPDATE users SET {column} = ?1 WHERE user_id = ?2"),
+                    [changed_value, "operator"],
+                )
+                .unwrap();
+            assert_eq!(changed, 1, "test must apply the {case} change");
+
+            assert!(service.execute_inline_native_work_once().await.unwrap());
+            let entity_id = format!("service-native-node-{run_id}");
+            let graph_rows = service
                 .store
-                .get_server_run(&revoked_run_id)
+                .graph_projection_records(GraphProjectionRead {
+                    scope: GraphScope {
+                        namespace: "workflow".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(vec![entity_id]),
+                    metadata: MetadataFilter::default(),
+                    limit: 10,
+                })
                 .await
-                .unwrap()
-                .unwrap()
-                .status,
-            "failed",
-            "authorization denial must be recorded as a durable failed run"
-        );
-        let revoked_lane = service
-            .store
-            .list_projected_lane_messages(LaneMessageFilter {
-                correlation_id: Some(revoked_run_id),
-                limit: 10,
-                ..LaneMessageFilter::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(revoked_lane.len(), 1);
-        assert_eq!(revoked_lane[0].status, "completed");
+                .unwrap();
+            assert!(graph_rows.is_empty(), "{case} owner must not write graph data");
+            let events = service
+                .store
+                .replay_raw_events("workflow", 0, 100)
+                .await
+                .unwrap();
+            assert!(!events
+                .iter()
+                .any(|event| event.event_id == format!("service-native-event-{run_id}")));
+            assert_eq!(
+                service
+                    .store
+                    .get_server_run(&run_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "failed",
+                "{case} denial must be recorded as a durable failed run"
+            );
+            let lane = service
+                .store
+                .list_projected_lane_messages(LaneMessageFilter {
+                    correlation_id: Some(run_id),
+                    limit: 10,
+                    ..LaneMessageFilter::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(lane.len(), 1, "{case}");
+            assert_eq!(lane[0].status, "completed", "{case}");
+
+            let restored = auth_connection
+                .execute(
+                    &format!("UPDATE users SET {column} = ?1 WHERE user_id = ?2"),
+                    [restored_value, "operator"],
+                )
+                .unwrap();
+            assert_eq!(restored, 1, "restore auth state after {case}");
+        }
 
         let spoof_service = service
             .execute_async(ApiEffectRequest {
