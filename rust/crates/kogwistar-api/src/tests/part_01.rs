@@ -2572,6 +2572,33 @@
             python_before_claim.json::<Value>().await.unwrap()["work"][0].clone();
         assert_eq!(python_before_work["step_id"], "python-before");
         assert!(python_before_work["payload"]["executor_target"].is_null());
+        let events_before_wrong_executor = store
+            .list_server_run_events("mixed-language-run", 0, 100)
+            .unwrap();
+        let wrong_executor_result = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": python_before_work["message_id"],
+                    "claimed_by": python_before_work["claimed_by"],
+                    "run_id": python_before_work["run_id"],
+                    "step_id": python_before_work["step_id"],
+                    "correlation_id": python_before_work["correlation_id"]
+                },
+                "payload": python_before_work["payload"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong_executor_result.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            store
+                .list_server_run_events("mixed-language-run", 0, 100)
+                .unwrap(),
+            events_before_wrong_executor,
+            "Python-target work rejected by the native route must remain unconsumed"
+        );
         let python_before_result = client
             .post(format!("{base_url}/internal/runtime/results"))
             .header("x-kogwistar-roles", "reader")
