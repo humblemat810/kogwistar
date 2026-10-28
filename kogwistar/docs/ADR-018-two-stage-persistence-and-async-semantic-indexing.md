@@ -531,6 +531,13 @@ Until canonical event append and current-state reconstruction are made atomic
 enough per backend, this is an implementation constraint, not a guaranteed
 property of current code.
 
+The current bounded repair scanner uses a shared replay cursor without a
+scanner lease. Periodic worker scans are disabled by default; an operator may
+enable them on one designated worker per metadata store and namespace. Other
+workers may continue to process index jobs. Concurrent scanner ownership is
+not enforced, and this scheduling rule does not give Chroma transactional or
+multi-writer ordering guarantees.
+
 ## Cross-ADR Interaction
 
 ADR-017 observes lifecycle only; OTel never gates commit, job acknowledgement,

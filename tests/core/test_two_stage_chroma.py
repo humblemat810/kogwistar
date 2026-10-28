@@ -1141,6 +1141,42 @@ def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.e2e
+@pytest.mark.parametrize("drop_stage1", [False, True])
+def test_real_chroma_designated_worker_repairs_lost_embedding_job(tmp_path, drop_stage1):
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        namespace="repair-ns",
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="repair-node", doc_id="d1"))
+        for job in engine.meta_sqlite.claim_index_jobs(
+            limit=20, lease_seconds=60, namespace=engine.namespace
+        ):
+            engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+        if drop_stage1:
+            engine.two_stage_projection_adapter.remove_stage1(
+                entity_kind="node", entity_id="repair-node"
+            )
+
+        metrics = engine.indexing.make_index_job_worker(
+            max_jobs_per_tick=20, repair_scan_interval_s=30
+        ).tick()
+
+        assert metrics.repaired == 1
+        assert metrics.repair_scan_failures == 0
+        assert metrics.done >= 1
+        hits = engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+        assert [[node.id for node in row] for row in hits] == [["repair-node"]]
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
 def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
     tmp_path,
 ):

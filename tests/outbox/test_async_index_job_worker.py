@@ -579,10 +579,17 @@ async def test_async_worker_rejects_stale_delete_and_repairs_missing_job(tmp_pat
             batch_size=8, max_jobs_per_tick=8
         ).tick()
         engine.backend.node_clear_embeddings(ids=["async-repair"])
-        assert engine.indexing.repair_missing_two_stage_embedding_jobs() == 1
-        metrics = await engine.indexing.make_async_index_job_worker(
+        default_metrics = await engine.indexing.make_async_index_job_worker(
             batch_size=8, max_jobs_per_tick=8
         ).tick()
+        assert default_metrics.repaired == 0
+        assert engine.backend.node_get(ids=["async-repair"])["embeddings"][0] is None
+
+        metrics = await engine.indexing.make_async_index_job_worker(
+            batch_size=8, max_jobs_per_tick=8, repair_scan_interval_s=30
+        ).tick()
+        assert metrics.repaired == 1
+        assert metrics.repair_scan_failures == 0
         assert metrics.done == 1
         assert engine.backend.node_get(ids=["async-repair"])["embeddings"][0] is not None
     finally:

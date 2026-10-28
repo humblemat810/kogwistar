@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import time
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,6 +34,8 @@ class AsyncWorkerTickMetrics:
     retried: int = 0
     failed: int = 0
     claim_lost: int = 0
+    repaired: int = 0
+    repair_scan_failures: int = 0
     avg_job_duration_s: float | None = None
 
 
@@ -42,7 +46,7 @@ async def _maybe_await(value: T | Awaitable[T]) -> T:
 
 
 class AsyncIndexJobWorker:
-    """Async index worker using the existing queue and lease semantics."""
+    """Async index worker; optional repair scans require one designated scanner."""
 
     def __init__(
         self,
@@ -54,6 +58,7 @@ class AsyncIndexJobWorker:
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
         projection_store: AsyncProjectionGraphStore | None = None,
+        repair_scan_interval_s: float = 0.0,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -62,6 +67,8 @@ class AsyncIndexJobWorker:
         self.max_jobs_per_tick = int(max_jobs_per_tick)
         self.namespace = namespace
         self.projection_store = projection_store
+        self.repair_scan_interval_s = max(0.0, float(repair_scan_interval_s))
+        self._next_repair_scan_at = 0.0
 
     @property
     def _implementation_selection_snapshot(self) -> object:
@@ -75,6 +82,7 @@ class AsyncIndexJobWorker:
         if not callable(claim):
             return metrics
         ns = self.namespace or getattr(self.engine, "namespace", "default")
+        await self._run_repair_scan(metrics, namespace=ns)
         jobs = await _maybe_await(
             claim(
                 limit=max(0, self.max_jobs_per_tick),
@@ -295,6 +303,39 @@ class AsyncIndexJobWorker:
         if durations:
             metrics.avg_job_duration_s = sum(durations) / len(durations)
         return metrics
+
+    async def _run_repair_scan(
+        self, metrics: AsyncWorkerTickMetrics, *, namespace: str
+    ) -> None:
+        if (
+            getattr(self.engine, "persistence_mode", "single_stage") != "two_stage"
+            or self.repair_scan_interval_s <= 0
+            or self.max_jobs_per_tick <= 0
+        ):
+            return
+        now = time.monotonic()
+        if now < self._next_repair_scan_at:
+            return
+        self._next_repair_scan_at = now + self.repair_scan_interval_s
+        repair = getattr(
+            getattr(self.engine, "indexing", None),
+            "repair_missing_two_stage_embedding_jobs",
+            None,
+        )
+        if not callable(repair):
+            return
+        try:
+            metrics.repaired = int(
+                await asyncio.to_thread(
+                    repair,
+                    namespace=namespace,
+                    max_entities=self.max_jobs_per_tick,
+                    max_event_window=self.max_jobs_per_tick,
+                )
+            )
+        except Exception:
+            metrics.repair_scan_failures += 1
+            _logger.exception("bounded async two-stage repair scan failed")
 
     @staticmethod
     def _value(job: object, name: str) -> object:

@@ -416,6 +416,9 @@ class IndexingSubsystem:
         When ``max_event_window`` is provided, scan only that sequence range
         and persist a replay cursor so callers can resume across invocations.
         The default retains the legacy full-history scan behavior.
+        A checkpointed scan requires one operator-designated scanner per
+        metadata store and namespace; the replay cursor is not a lease.
+        The requested namespace must match the active engine namespace.
         """
         if getattr(self.engine, "persistence_mode", "single_stage") != "two_stage":
             return 0
@@ -424,6 +427,8 @@ class IndexingSubsystem:
         if not callable(iter_events) or not callable(list_jobs):
             return 0
         ns = self.engine.namespace if namespace is None else str(namespace)
+        if ns != self.engine.namespace:
+            raise ValueError("repair namespace must match the active engine namespace")
         if max_event_window is not None:
             window = int(max_event_window)
             entity_limit = max(int(max_entities), 0)
@@ -486,6 +491,10 @@ class IndexingSubsystem:
             revision_payload = self.canonical_revision_payload(
                 entity_kind=entity_kind, entity_id=entity_id
             )
+            revision_data = json.loads(revision_payload)
+            source_state = revision_data.get("source_state")
+            if source_state not in {"active", "deleted", "missing"}:
+                raise ValueError(f"unknown canonical source state: {source_state!r}")
             getter = getattr(self.engine.backend, f"{entity_kind}_get")
             current = _backend_object(
                 run_awaitable_blocking(
@@ -501,30 +510,32 @@ class IndexingSubsystem:
             adapter = getattr(self.engine, "two_stage_projection_adapter", None)
             stage1_query = getattr(adapter, "stage1_query", None)
             if callable(stage1_query):
-                stage1_present = bool(stage1_query(ids=[entity_id], limit=1))
+                stage1_present = bool(
+                    stage1_query(entity_kind=entity_kind, ids=[entity_id], limit=1)
+                )
             capability = getattr(self.engine, "two_stage_projection_capability", None)
             inline_projection = (
                 getattr(capability, "stage1_strategy", None) == "none"
             )
             is_tombstoned = _is_tombstoned(metadata)
-            if not current.get("ids") and not stage1_present:
+            if source_state != "active" and not current.get("ids") and not stage1_present:
                 continue
-            if inline_projection and is_tombstoned and not stage1_present and (
-                metadata.get("_kogwistar_stage2_ready") is False
+            if (
+                inline_projection
+                and source_state != "active"
+                and is_tombstoned
+                and not stage1_present
+                and metadata.get("_kogwistar_stage2_ready") is False
             ):
                 # The inline canonical row explicitly records that its derived
                 # projection has already been removed.
                 continue
-            if inline_projection and not is_tombstoned:
+            if inline_projection and source_state == "active" and not is_tombstoned:
                 # These backends keep the vectorless source in the canonical row;
                 # there is no separate Stage-1 projection to restore or query.
                 stage1_present = bool(current.get("ids"))
-            if is_tombstoned or not current.get("ids"):
-                needs_delete = bool(current.get("ids")) or stage1_present
-                desired_op = "DELETE"
-            else:
-                needs_delete = False
-                desired_op = "UPSERT"
+            needs_delete = source_state != "active"
+            desired_op = "DELETE" if needs_delete else "UPSERT"
             ready = bool(current.get("ids")) and bool(embeddings) and embeddings[0] is not None
             ready = ready and not is_tombstoned
             projected_fingerprint = (
@@ -532,7 +543,7 @@ class IndexingSubsystem:
                 if isinstance(metadata, dict)
                 else None
             )
-            current_fingerprint = json.loads(revision_payload).get("source_fingerprint")
+            current_fingerprint = revision_data.get("source_fingerprint")
             if projected_fingerprint and projected_fingerprint != current_fingerprint:
                 ready = False
             if not needs_delete and ready:
@@ -770,6 +781,7 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        repair_scan_interval_s: float = 0.0,
     ) -> IndexJobWorker:
         # local import to avoid subsystem importing workers at module import time if you want
         from ..workers.index_job_worker import IndexJobWorker
@@ -781,6 +793,7 @@ class IndexingSubsystem:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            repair_scan_interval_s=repair_scan_interval_s,
         )
 
     @implementation_selection_bound
@@ -792,6 +805,7 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        repair_scan_interval_s: float = 0.0,
     ) -> AsyncIndexJobWorker:
         """Build async worker without converting async projection calls to sync."""
         from ..workers.async_index_job_worker import AsyncIndexJobWorker
@@ -803,6 +817,7 @@ class IndexingSubsystem:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            repair_scan_interval_s=repair_scan_interval_s,
         )
 
     @implementation_selection_bound

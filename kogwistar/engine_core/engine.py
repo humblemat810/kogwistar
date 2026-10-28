@@ -1131,6 +1131,7 @@ class GraphKnowledgeEngine:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        repair_scan_interval_s: float = 0.0,
     ) -> IndexJobWorker:
         return self.indexing.make_index_job_worker(
             max_inflight=max_inflight,
@@ -1138,6 +1139,7 @@ class GraphKnowledgeEngine:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            repair_scan_interval_s=repair_scan_interval_s,
         )
 
     # ----------------------------

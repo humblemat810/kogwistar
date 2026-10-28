@@ -32,6 +32,9 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
     raw_backend = args.backend or os.getenv("GKE_BACKEND") or "chroma"
     backend = _normalize_backend_name(raw_backend)
     namespace = args.namespace or os.getenv("GKE_NAMESPACE") or "default"
+    persistence_mode = getattr(args, "persistence_mode", None) or os.getenv(
+        "GKE_PERSISTENCE_MODE", "single_stage"
+    )
 
     if backend == "chroma":
         persist = (
@@ -39,7 +42,9 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
             or os.getenv("GKE_PERSIST_DIRECTORY")
             or "./chroma_db"
         )
-        eng = GraphKnowledgeEngine(persist_directory=str(persist))
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist), persistence_mode=persistence_mode
+        )
         eng.namespace = namespace  # type: ignore[attr-defined]
         return eng
 
@@ -66,7 +71,9 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
         backend_obj = PgVectorBackend(
             engine=sa_engine, embedding_dim=embedding_dim, schema=schema
         )
-        eng = GraphKnowledgeEngine(backend=backend_obj)
+        eng = GraphKnowledgeEngine(
+            backend=backend_obj, persistence_mode=persistence_mode
+        )
         eng.namespace = namespace  # type: ignore[attr-defined]
         return eng
 
@@ -83,6 +90,9 @@ def build_worker(eng: GraphKnowledgeEngine, args: argparse.Namespace) -> IndexJo
         lease_seconds=int(args.lease_seconds),
         max_jobs_per_tick=int(args.max_jobs_per_tick),
         namespace=args.namespace,
+        repair_scan_interval_s=float(
+            getattr(args, "repair_scan_interval_s", 0.0)
+        ),
     )
 
 
@@ -113,6 +123,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="embedding dimension (or env GKE_EMBEDDING_DIM)",
     )
+    ap.add_argument(
+        "--persistence-mode",
+        choices=("single_stage", "two_stage"),
+        default=os.getenv("GKE_PERSISTENCE_MODE", "single_stage"),
+        help="Persistence mode shared with the producer (or env GKE_PERSISTENCE_MODE)",
+    )
 
     ap.add_argument(
         "--batch-size", type=int, default=int(os.getenv("GKE_WORKER_BATCH_SIZE", "50"))
@@ -126,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
         "--max-jobs-per-tick",
         type=int,
         default=int(os.getenv("GKE_WORKER_MAX_JOBS_PER_TICK", "200")),
+    )
+    ap.add_argument(
+        "--repair-scan-interval-s",
+        type=float,
+        default=float(os.getenv("GKE_WORKER_REPAIR_SCAN_INTERVAL_S", "0")),
+        help="Enable bounded repair on one designated worker per namespace; 0 disables it",
     )
     ap.add_argument(
         "--tick-interval",
@@ -144,6 +166,7 @@ def main(argv: list[str] | None = None) -> int:
         m = worker.tick()
         print(
             f"claimed={m.claimed} done={m.done} retried={m.retried} failed={m.failed} "
+            f"repaired={m.repaired} repair_scan_failures={m.repair_scan_failures} "
             + (
                 f"avg_s={m.avg_job_duration_s:.6f}"
                 if m.avg_job_duration_s is not None
@@ -155,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     def _log(m: WorkerTickMetrics) -> None:
         print(
             f"claimed={m.claimed} done={m.done} retried={m.retried} failed={m.failed} "
+            f"repaired={m.repaired} repair_scan_failures={m.repair_scan_failures} "
             + (
                 f"avg_s={m.avg_job_duration_s:.6f}"
                 if m.avg_job_duration_s is not None

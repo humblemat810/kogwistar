@@ -639,6 +639,49 @@ def test_postgres_two_stage_scanner_repairs_lost_enqueue(
     assert any(item.status == "PENDING" and item.index_kind == "node_embedding" for item in repaired)
 
 
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+@pytest.mark.parametrize("authority", ["python", "rust"])
+def test_postgres_designated_worker_repairs_lost_enqueue(
+    sa_engine, pg_schema, entity_kind, authority, monkeypatch
+) -> None:
+    _require_postgres(sa_engine, pg_schema)
+    if authority == "rust":
+        monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    engine = _engine(sa_engine, pg_schema)
+    expected_adapter = (
+        "RustPostgresTwoStageProjectionAdapter"
+        if authority == "rust"
+        else "PostgresTwoStageProjectionAdapter"
+    )
+    assert engine.two_stage_projection_adapter.__class__.__name__ == expected_adapter
+    if entity_kind == "node":
+        engine.write.add_node(build_entity_node(node_id="worker-repair", doc_id="d1", embedding=None))
+    else:
+        engine.write.add_node(build_entity_node(node_id="source", doc_id="d1"))
+        engine.write.add_node(build_entity_node(node_id="target", doc_id="d1"))
+        engine.indexing.make_index_job_worker(max_jobs_per_tick=10).tick()
+        engine.write.add_edge(
+            build_relationship_edge(
+                edge_id="worker-repair", src="source", tgt="target", doc_id="d1", embedding=None
+            )
+        )
+    claimed = engine.meta_sqlite.claim_index_jobs(limit=10, lease_seconds=60, namespace="default")
+    for job in claimed:
+        assert engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+    metrics = engine.indexing.make_index_job_worker(
+        max_jobs_per_tick=10, repair_scan_interval_s=30
+    ).tick()
+
+    assert metrics.repaired == 1
+    assert metrics.repair_scan_failures == 0
+    assert metrics.done >= 1
+    getter = getattr(engine.backend, f"{entity_kind}_get")
+    assert getter(ids=["worker-repair"], include=["embeddings"])["embeddings"][0] is not None
+
+
 def test_postgres_two_stage_public_api_and_batch_claim_isolate_failure(
     sa_engine, pg_schema, monkeypatch
 ) -> None:

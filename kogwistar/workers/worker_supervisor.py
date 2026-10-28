@@ -36,6 +36,15 @@ def _main(argv: list[str]) -> int:
     parser.add_argument("--max-inflight", type=int, default=50)
     parser.add_argument("--lease-seconds", type=int, default=60)
     parser.add_argument(
+        "--persistence-mode",
+        choices=("single_stage", "two_stage"),
+        default="single_stage",
+    )
+    parser.add_argument(
+        "--repair-scan-interval-s", type=float, default=0.0,
+        help="Enable bounded repair on one designated worker per namespace; 0 disables it",
+    )
+    parser.add_argument(
         "--pidfile", default="", help="Write worker PID here (for tests/ops)"
     )
     parser.add_argument(
@@ -90,6 +99,10 @@ def _main(argv: list[str]) -> int:
         str(args.max_inflight),
         "--lease-seconds",
         str(args.lease_seconds),
+        "--persistence-mode",
+        args.persistence_mode,
+        "--repair-scan-interval-s",
+        str(args.repair_scan_interval_s),
     ]
     if args.phase1_enable_index_jobs:
         worker_args.append("--phase1-enable-index-jobs")

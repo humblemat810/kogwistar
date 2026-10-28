@@ -589,6 +589,71 @@ def test_in_memory_two_stage_uses_existing_index_job_worker(tmp_path) -> None:
 
 
 @two_stage_case("recovery_reconciliation")
+def test_sync_worker_schedules_bounded_repair_for_two_stage(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        with pytest.raises(ValueError, match="repair namespace must match"):
+            engine.indexing.repair_missing_two_stage_embedding_jobs(namespace="other")
+        engine.write.add_node(
+            build_entity_node(node_id="worker-repair", doc_id="d1", embedding=None)
+        )
+        for job in engine.meta_sqlite.claim_index_jobs(
+            limit=10, lease_seconds=60, namespace="default"
+        ):
+            engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+        default_metrics = engine.indexing.make_index_job_worker(max_jobs_per_tick=10).tick()
+        assert default_metrics.repaired == 0
+        assert engine.backend.node_get(ids=["worker-repair"])["embeddings"][0] is None
+
+        metrics = engine.indexing.make_index_job_worker(
+            max_jobs_per_tick=10, repair_scan_interval_s=30
+        ).tick()
+
+        assert metrics.repaired == 1
+        assert metrics.repair_scan_failures == 0
+        assert metrics.done == 1
+        assert engine.backend.node_get(ids=["worker-repair"])["embeddings"][0] is not None
+    finally:
+        engine.close()
+
+
+@two_stage_case("recovery_reconciliation")
+def test_worker_scan_failure_does_not_block_queue_and_respects_interval(
+    tmp_path, monkeypatch
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        engine.write.add_node(
+            build_entity_node(node_id="scan-failure", doc_id="d1", embedding=None)
+        )
+
+        def fail_scan(**kwargs: object) -> int:
+            raise RuntimeError("repair unavailable")
+
+        monkeypatch.setattr(engine.indexing, "repair_missing_two_stage_embedding_jobs", fail_scan)
+        worker = engine.indexing.make_index_job_worker(
+            max_jobs_per_tick=10, repair_scan_interval_s=3600
+        )
+        first = worker.tick()
+        second = worker.tick()
+        assert first.repair_scan_failures == 1
+        assert first.done >= 1
+        assert engine.backend.node_get(ids=["scan-failure"])["embeddings"][0] is not None
+        assert second.repair_scan_failures == 0
+    finally:
+        engine.close()
+
+
+@two_stage_case("recovery_reconciliation")
 def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),

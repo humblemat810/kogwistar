@@ -14,6 +14,8 @@ tests, and optional integrations.
 | `GKE_PG_URL` | `kogwistar.workers.run_index_job_worker` | PostgreSQL connection string for `pg` backend runs. |
 | `GKE_PG_SCHEMA` | `kogwistar.workers.run_index_job_worker` | PostgreSQL schema name for pgvector collections. |
 | `GKE_EMBEDDING_DIM` | `kogwistar.workers.run_index_job_worker` | Embedding dimension used when constructing the backend. |
+| `GKE_PERSISTENCE_MODE` | `kogwistar.workers.run_index_job_worker` | Persistence mode shared with the producer: `single_stage` (default) or `two_stage`. |
+| `GKE_WORKER_REPAIR_SCAN_INTERVAL_S` | `kogwistar.workers.run_index_job_worker` | Interval for bounded two-stage lost-enqueue scans; defaults to `0` (disabled). Enable it on at most one designated worker per metadata store and namespace. Scanner ownership is operator-managed, not enforced by a lease. |
 | `GKE_JOBLIB_CACHE_DIR` | `scripts/tutorial_ladder.py`, `kogwistar.utils.cache_paths` | Cache directory for tutorial and runtime joblib caches. |
 | `GKE_TEST_PG_IMAGE` | `tests/conftest.py` | Docker image used for PostgreSQL testcontainers. |
 | `FRONTEND_SRC_PATH` | `scripts/export_schemas.py`, `kogwistar/scripts/schema_export.py` | Path to the frontend source tree for schema export tooling. |

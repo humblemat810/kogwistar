@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import signal
 import sys
 import time
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 BatchApply = Callable[
     [Sequence[EmbeddingJobProviderInput]], dict[str, BaseException | None]
 ]
+_logger = logging.getLogger(__name__)
 
 
 class IndexJobDone(Protocol):
@@ -72,6 +74,8 @@ class WorkerTickMetrics:
     retried: int = 0
     failed: int = 0
     claim_lost: int = 0
+    repaired: int = 0
+    repair_scan_failures: int = 0
     avg_job_duration_s: float | None = None
 
 
@@ -80,6 +84,7 @@ class IndexJobWorker:
 
     - Uses meta store's claim/ack/requeue APIs.
     - Applies jobs via engine.indexing.apply_index_job(...).
+    - Optional repair scans require a single designated scanner per namespace.
     - ``batch_size`` controls provider batch width; ``max_inflight`` is reserved
       for future concurrent batch scheduling and does not alter batch width.
 
@@ -96,6 +101,7 @@ class IndexJobWorker:
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
         projection_store: ProjectionGraphStore | None = None,
+        repair_scan_interval_s: float = 0.0,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -104,6 +110,8 @@ class IndexJobWorker:
         self.max_jobs_per_tick = int(max_jobs_per_tick)
         self.namespace = namespace
         self.projection_store = projection_store
+        self.repair_scan_interval_s = max(0.0, float(repair_scan_interval_s))
+        self._next_repair_scan_at = 0.0
 
     @property
     def _implementation_selection_snapshot(self) -> object:
@@ -136,6 +144,7 @@ class IndexJobWorker:
 
         ns = self.namespace or getattr(self.engine, "namespace", "default")
         entity_cache: dict[tuple[str, str, str], object] = {}
+        self._run_repair_scan(metrics, namespace=ns)
 
         while remaining > 0:
             # IMPORTANT: don't over-claim beyond what we can process this tick.
@@ -230,6 +239,36 @@ class IndexJobWorker:
         if durations:
             metrics.avg_job_duration_s = sum(durations) / len(durations)
         return metrics
+
+    def _run_repair_scan(self, metrics: WorkerTickMetrics, *, namespace: str) -> None:
+        if (
+            getattr(self.engine, "persistence_mode", "single_stage") != "two_stage"
+            or self.repair_scan_interval_s <= 0
+            or self.max_jobs_per_tick <= 0
+        ):
+            return
+        now = time.monotonic()
+        if now < self._next_repair_scan_at:
+            return
+        self._next_repair_scan_at = now + self.repair_scan_interval_s
+        repair = getattr(
+            getattr(self.engine, "indexing", None),
+            "repair_missing_two_stage_embedding_jobs",
+            None,
+        )
+        if not callable(repair):
+            return
+        try:
+            metrics.repaired = int(
+                repair(
+                    namespace=namespace,
+                    max_entities=self.max_jobs_per_tick,
+                    max_event_window=self.max_jobs_per_tick,
+                )
+            )
+        except Exception:
+            metrics.repair_scan_failures += 1
+            _logger.exception("bounded two-stage repair scan failed")
 
     @staticmethod
     def _job_value(job: object, name: str) -> object:
@@ -473,15 +512,28 @@ def _main(argv: list[str]) -> int:
     )
     parser.add_argument("--lease-seconds", type=int, default=60)
     parser.add_argument(
+        "--persistence-mode",
+        choices=("single_stage", "two_stage"),
+        default="single_stage",
+        help="Must match the producer's persistence mode",
+    )
+    parser.add_argument(
         "--phase1-enable-index-jobs",
         action="store_true",
         help="Enable index_jobs feature flag",
+    )
+    parser.add_argument(
+        "--repair-scan-interval-s", type=float, default=0.0,
+        help="Enable bounded repair on one designated worker per namespace; 0 disables it",
     )
     args = parser.parse_args(argv)
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-    eng = GraphKnowledgeEngine(persist_directory=args.persist_directory)
+    eng = GraphKnowledgeEngine(
+        persist_directory=args.persist_directory,
+        persistence_mode=args.persistence_mode,
+    )
     eng._phase1_enable_index_jobs = bool(args.phase1_enable_index_jobs)  # noqa: SLF001
 
     # Ensure the namespace matches what the producer uses.
@@ -497,6 +549,7 @@ def _main(argv: list[str]) -> int:
         max_jobs_per_tick=args.max_jobs_per_tick,
         max_inflight=args.max_inflight,
         lease_seconds=args.lease_seconds,
+        repair_scan_interval_s=args.repair_scan_interval_s,
     )
 
     stop = {"flag": False}
