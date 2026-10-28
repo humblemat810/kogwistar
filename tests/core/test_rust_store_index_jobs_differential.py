@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -22,8 +23,12 @@ from kogwistar.engine_core.engine_postgres_meta import (
 )
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.indexing import IndexingSubsystem
-from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
-from kogwistar.workers.index_job_worker import IndexJobWorker
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.workers.async_index_job_worker import (
+    AsyncIndexJobWorker,
+    AsyncWorkerTickMetrics,
+)
+from kogwistar.workers.index_job_worker import IndexJobWorker, WorkerTickMetrics
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -215,6 +220,73 @@ def test_sqlite_python_rust_claim_and_ack_handoff_is_interoperable(
         "python-enqueued": "DONE",
         "rust-acknowledged": "DONE",
     }
+
+
+@pytest.mark.parametrize("worker_kind", ["sync", "async"])
+def test_python_worker_renews_rust_sqlite_queue_lease(
+    tmp_path: Path, worker_kind: str
+) -> None:
+    metadata = RustEngineSQLite(tmp_path)
+    metadata.ensure_initialized()
+    metadata.enqueue_index_job(
+        job_id=f"rust-queue-{worker_kind}",
+        namespace="handoff",
+        entity_kind="node",
+        entity_id="slow-node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    started = threading.Event()
+
+    class SlowIndexing:
+        def apply_index_job(self, **_: object) -> None:
+            started.set()
+            time.sleep(1.5)
+
+    engine = SimpleNamespace(
+        meta_sqlite=metadata,
+        namespace="handoff",
+        indexing=SlowIndexing(),
+        _implementation_selection_snapshot=None,
+    )
+    if worker_kind == "sync":
+        worker = IndexJobWorker(
+            engine=cast(GraphKnowledgeEngine, engine), lease_seconds=1, batch_size=1
+        )
+        sync_results: list[WorkerTickMetrics] = []
+        thread = threading.Thread(target=lambda: sync_results.append(worker.tick()))
+        thread.start()
+        assert started.wait(timeout=2)
+        time.sleep(1.2)
+        competing_claim = metadata.claim_index_jobs(
+            limit=1, lease_seconds=1, namespace="handoff"
+        )
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+        assert sync_results[0].done == 1
+    else:
+        worker = AsyncIndexJobWorker(
+            engine=cast(GraphKnowledgeEngine, engine), lease_seconds=1, batch_size=1
+        )
+
+        async def run() -> tuple[AsyncWorkerTickMetrics, list[IndexJobRow]]:
+            task = asyncio.create_task(worker.tick())
+            assert await asyncio.to_thread(started.wait, 2)
+            await asyncio.sleep(1.2)
+            claimed = await asyncio.to_thread(
+                lambda: metadata.claim_index_jobs(
+                    limit=1, lease_seconds=1, namespace="handoff"
+                )
+            )
+            return await task, claimed
+
+        async_result, competing_claim = asyncio.run(run())
+        assert async_result.done == 1
+
+    assert competing_claim == []
+    completed = metadata.list_index_jobs(namespace="handoff")
+    assert len(completed) == 1
+    assert completed[0].status == "DONE"
 
 
 def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path: Path) -> None:
