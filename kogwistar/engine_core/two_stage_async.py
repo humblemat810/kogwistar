@@ -123,7 +123,7 @@ def _optional_row_mapping(value: object) -> dict[str, object] | None:
 
 
 def _sequence_number(value: object) -> int:
-    return value if isinstance(value, int) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _payload_text(value: object) -> str | None:

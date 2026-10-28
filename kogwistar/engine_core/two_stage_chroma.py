@@ -53,7 +53,7 @@ def _embedding(value: object) -> list[float] | None:
 
 
 def _sequence_number(value: object) -> int:
-    return value if isinstance(value, int) else 0
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _job_value(job: object, name: str) -> object:

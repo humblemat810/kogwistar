@@ -9,6 +9,7 @@ import pytest
 
 from kogwistar.engine_core.chroma_backend import AsyncChromaBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.two_stage_async import _sequence_number
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
@@ -16,6 +17,11 @@ from tests._helpers.graph_builders import build_entity_node, build_relationship_
 from tests.core.two_stage_case_catalog import two_stage_case
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime_async]
+
+
+@pytest.mark.parametrize(("value", "expected"), [(7, 7), (True, 0), (False, 0), ("7", 0)])
+def test_async_sequence_number_rejects_non_integer_and_boolean_values(value, expected):
+    assert _sequence_number(value) == expected
 
 
 class _AsyncCollection:

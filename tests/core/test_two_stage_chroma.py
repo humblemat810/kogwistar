@@ -12,12 +12,18 @@ from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.two_stage_chroma import (
     SQLiteChromaTwoStageProjectionAdapter,
+    _sequence_number,
     chroma_two_stage_capability,
 )
 from kogwistar.graph_query import GraphQuery
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
+
+
+@pytest.mark.parametrize(("value", "expected"), [(7, 7), (True, 0), (False, 0), ("7", 0)])
+def test_sync_sequence_number_rejects_non_integer_and_boolean_values(value, expected):
+    assert _sequence_number(value) == expected
 
 
 class _Backend:
