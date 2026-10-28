@@ -36,34 +36,48 @@ from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
 
 
 def _python_graph_models_by_wire_name() -> dict[str, type[ModeSlicingMixin]]:
-    return {
-        "node": Node,
-        "edge": Edge,
-        "acl_node": acl_models.ACLNode,
-        "acl_edge": acl_models.ACLEdge,
-        "conversation_node": conversation_models.ConversationNode,
-        "conversation_edge": conversation_models.ConversationEdge,
-        "workflow_node": runtime_models.WorkflowNode,
-        "workflow_edge": runtime_models.WorkflowEdge,
-        "workflow_run_node": runtime_models.WorkflowRunNode,
-        "workflow_step_exec_node": runtime_models.WorkflowStepExecNode,
-        "workflow_checkpoint_node": runtime_models.WorkflowCheckpointNode,
-        "workflow_completed_node": runtime_models.WorkflowCompletedNode,
-        "workflow_cancelled_node": runtime_models.WorkflowCancelledNode,
-        "workflow_failed_node": runtime_models.WorkflowFailedNode,
-        "workflow_runtime_edge": runtime_models.WorkflowRuntimeEdge,
-        "pure_chroma_node": engine_models.PureChromaNode,
-        "pure_chroma_edge": engine_models.PureChromaEdge,
-        "doc_node": engine_models.DocNode,
-        "llm_node": engine_models.LLMNode,
-        "llm_edge": engine_models.LLMEdge,
-        "llm_node_extraction": engine_models.LLMNodeExtraction,
-        "llm_edge_extraction": engine_models.LLMEdgeExtraction,
-        "flattened_llm_node": engine_models.FlattenedLLMNode,
-        "flattened_llm_edge": engine_models.FlattenedLLMEdge,
-        "assoc_flattened_llm_node": engine_models.AssocFlattenedLLMNode,
-        "assoc_flattened_llm_edge": engine_models.AssocFlattenedLLMEdge,
+    seen: set[type[ModeSlicingMixin]] = set()
+
+    def collect_subclasses(base: type[ModeSlicingMixin]) -> None:
+        for subclass in base.__subclasses__():
+            if subclass in seen:
+                continue
+            seen.add(subclass)
+            collect_subclasses(subclass)
+
+    collect_subclasses(engine_models.GraphEntityBase)
+    collect_subclasses(engine_models.GraphEntityRefBase)
+    structural_bases = {
+        engine_models.GraphEntityBase,
+        engine_models.GraphEntityRefBase,
+        engine_models.GraphEntityExtractionBase,
     }
+    discovered_models = {
+        model
+        for model in seen
+        if model.__module__.startswith("kogwistar.") and model not in structural_bases
+    }
+    discovered_names = [model.__name__ for model in discovered_models]
+    registered = set(graph_contracts._MODEL_CLASS_BY_NAME)
+    discovered_name_set = set(discovered_names)
+    assert len(discovered_names) == len(discovered_name_set) and discovered_name_set == registered, {
+        "duplicate_python_model_names": sorted(
+            name for name in discovered_name_set if discovered_names.count(name) > 1
+        ),
+        "unregistered_python_models": sorted(discovered_name_set - registered),
+        "missing_python_models": sorted(registered - discovered_name_set),
+    }
+    wire_names_by_model = {
+        model: graph_contracts.graph_model_class_for(model.model_construct())
+        for model in discovered_models
+    }
+    wire_names = list(wire_names_by_model.values())
+    assert len(wire_names) == len(set(wire_names)), {
+        "duplicate_wire_names": sorted(
+            wire_name for wire_name in set(wire_names) if wire_names.count(wire_name) > 1
+        )
+    }
+    return {wire_name: model for model, wire_name in wire_names_by_model.items()}
 
 
 def _mentions(excerpt: str) -> list[dict[str, list[dict[str, object]]]]:
