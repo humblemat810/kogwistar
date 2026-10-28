@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -1713,6 +1714,11 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
+
+    def defer_index_reconciliation(
+        self, *, max_jobs: int = 50
+    ) -> AbstractContextManager[None]:
+        return self._raw.defer_index_reconciliation(max_jobs=max_jobs)
 
     @implementation_selection_bound
     def add_document(self, document: Document) -> None:
