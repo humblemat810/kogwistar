@@ -604,6 +604,13 @@
             "description": "If provided and doc is new, store this as document content",
             "title": "Content"
           },
+          "contract_version": {
+            "const": 1,
+            "default": 1,
+            "description": "Version of the graph extraction request contract",
+            "title": "Contract Version",
+            "type": "integer"
+          },
           "doc_id": {
             "description": "Document id to scope persistence",
             "title": "Doc Id",
