@@ -179,6 +179,83 @@ def test_sqlite_authority_recovers_after_owner_process_crash(tmp_path: Path) -> 
         child.wait(timeout=10)
 
 
+@pytest.mark.requires_rust
+@pytest.mark.parametrize("owner_implementation", ["python", "rust"])
+def test_other_store_recovers_after_owner_process_crash(
+    tmp_path: Path,
+    owner_implementation: str,
+) -> None:
+    database = tmp_path / "rust-owner-crash" / "engine.db"
+    ready_path = tmp_path / "rust-owner-ready"
+    child_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from kogwistar.engine_core.engine_sqlite import EngineSQLite\n"
+        "from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite\n"
+        "from kogwistar.engine_core.sqlite_context import independent_sqlite_execution_context\n"
+        "implementation = sys.argv[1]\n"
+        "database = Path(sys.argv[2])\n"
+        "connection = None\n"
+        "with independent_sqlite_execution_context(implementation):\n"
+        "    engine = EngineSQLite(database.parent) if implementation == 'python' else RustEngineSQLite(database.parent)\n"
+        "    engine.ensure_initialized()\n"
+        "    if implementation == 'python':\n"
+        "        connection = engine.connect()\n"
+        "    assert engine.next_global_seq() == 1\n"
+        "Path(sys.argv[3]).write_text('ready', encoding='utf-8')\n"
+        "sys.stdin.read()\n"
+    )
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child_code,
+            owner_implementation,
+            str(database),
+            str(ready_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if ready_path.exists():
+                break
+            if child.poll() is not None:
+                output = child.stdout.read() if child.stdout else ""
+                raise AssertionError(f"Rust owner exited before readiness: {output}")
+            time.sleep(0.05)
+        else:
+            child.kill()
+            output, _ = child.communicate(timeout=10)
+            raise AssertionError(f"Rust owner did not become ready: {output}")
+
+        child.kill()
+        child.wait(timeout=10)
+        assert child.returncode is not None
+
+        successor_implementation = "rust" if owner_implementation == "python" else "python"
+        successor = (
+            RustEngineSQLite(database.parent)
+            if successor_implementation == "rust"
+            else EngineSQLite(database.parent)
+        )
+        with sqlite_execution_context(successor_implementation):
+            successor.ensure_initialized()
+            assert successor.current_global_seq() == 1
+            assert successor.next_global_seq() == 2
+            assert successor.current_global_seq() == 2
+    finally:
+        if child.poll() is None:
+            child.kill()
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=10)
+
+
 @pytest.mark.ci_full
 def test_python_authority_rejects_standalone_rust_process(
     tmp_path: Path,
