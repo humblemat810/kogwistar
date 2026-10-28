@@ -2005,6 +2005,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         spec = self._projection_table_spec(table_name)
         updated_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        monotonic_stage1_guard = (
+            f" WHERE excluded.last_authoritative_seq >= {spec.table_name}.last_authoritative_seq"
+            if table_name == STAGE1_NODE_PROJECTION_TABLE.table_name
+            else ""
+        )
         with self.transaction() as conn:
             conn.execute(
                 f"""
@@ -2020,6 +2025,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     projection_schema_version = excluded.projection_schema_version,
                     materialization_status = excluded.materialization_status,
                     updated_at_ms = excluded.updated_at_ms
+                {monotonic_stage1_guard}
                 """,
                 (
                     str(namespace),

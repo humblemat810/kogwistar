@@ -17,7 +17,11 @@ from ..implementation_selection import (
     selected_transaction_authority,
 )
 from .async_compat import run_awaitable_blocking
-from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
+from .canonical_events import (
+    CanonicalEntityRevision,
+    canonical_revision_job_payload,
+    read_canonical_entity_revision,
+)
 from .models import Edge, Grounding, Node, Span
 from .projection_action import is_projection_action_payload
 
@@ -275,28 +279,32 @@ class IndexingSubsystem:
                 entity_kind=entity_kind,
                 entity_id=entity_id,
             )
-            state = "missing" if revision is None else revision.state
-            revision_number = 0 if revision is None else revision.revision
-            payload: dict[str, Any] = {} if revision is None else revision.payload
-            source = {
-                "entity_kind": entity_kind,
-                "entity_id": entity_id,
-                "state": state,
-                "revision": revision_number,
-                "payload": payload,
-            }
-            blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
-            result[entity_id] = json.dumps(
-                {
-                    "source_fingerprint": hashlib.blake2b(
-                        blob.encode("utf-8"), digest_size=16
-                    ).hexdigest(),
-                    "source_state": state,
-                    "canonical_revision": revision_number,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+            if revision is None:
+                blob = json.dumps(
+                    {
+                        "entity_kind": entity_kind,
+                        "entity_id": entity_id,
+                        "state": "missing",
+                        "revision": 0,
+                        "payload": {},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                result[entity_id] = json.dumps(
+                    {
+                        "source_fingerprint": hashlib.blake2b(
+                            blob.encode("utf-8"),
+                            digest_size=16,
+                        ).hexdigest(),
+                        "source_state": "missing",
+                        "canonical_revision": 0,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            else:
+                result[entity_id] = canonical_revision_job_payload(revision)
         return result
 
     @implementation_selection_bound
@@ -422,6 +430,15 @@ class IndexingSubsystem:
             else:
                 needs_delete = False
                 desired_op = "UPSERT"
+                if not stage1_present:
+                    restore_stage1 = getattr(
+                        adapter, "restore_stage1_from_canonical_event", None
+                    )
+                    if not callable(restore_stage1) or not restore_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    ):
+                        continue
+                    stage1_present = True
             ready = bool(current.get("ids")) and bool(embeddings) and embeddings[0] is not None
             ready = ready and not _is_tombstoned(metadata)
             projected_fingerprint = (

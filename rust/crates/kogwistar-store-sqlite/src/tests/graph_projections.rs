@@ -73,6 +73,16 @@ fn stage1_conditional_clear_preserves_a_newer_authoritative_revision() {
     store
         .replace_stage1_node_projection("tenant-a", "node-1", write(8))
         .unwrap();
+    store
+        .replace_stage1_node_projection("tenant-a", "node-1", write(7))
+        .unwrap();
+
+    let current = store
+        .get_stage1_node_projection("tenant-a", "node-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.last_authoritative_seq, 8);
+    assert_eq!(current.payload["revision"], 8);
 
     assert!(
         !store

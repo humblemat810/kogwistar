@@ -122,7 +122,7 @@ pub(super) fn replace_stage1_node_projection(
 ) -> SqliteStoreResult<()> {
     let payload_json = projection_payload_json(&projection.payload)?;
     conn.execute(
-        &format!("INSERT INTO {STAGE1_NODE_PROJECTIONS_TABLE}(namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(namespace, key) DO UPDATE SET payload_json = excluded.payload_json, last_authoritative_seq = excluded.last_authoritative_seq, last_materialized_seq = excluded.last_materialized_seq, projection_schema_version = excluded.projection_schema_version, materialization_status = excluded.materialization_status, updated_at_ms = excluded.updated_at_ms"),
+        &format!("INSERT INTO {STAGE1_NODE_PROJECTIONS_TABLE}(namespace, key, payload_json, last_authoritative_seq, last_materialized_seq, projection_schema_version, materialization_status, updated_at_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT(namespace, key) DO UPDATE SET payload_json = excluded.payload_json, last_authoritative_seq = excluded.last_authoritative_seq, last_materialized_seq = excluded.last_materialized_seq, projection_schema_version = excluded.projection_schema_version, materialization_status = excluded.materialization_status, updated_at_ms = excluded.updated_at_ms WHERE excluded.last_authoritative_seq >= {STAGE1_NODE_PROJECTIONS_TABLE}.last_authoritative_seq"),
         params![namespace, key, payload_json, projection.last_authoritative_seq, projection.last_materialized_seq, projection.projection_schema_version, projection.materialization_status, unix_epoch_millis()],
     )?;
     Ok(())

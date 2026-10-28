@@ -168,6 +168,20 @@ def test_stage1_conditional_clear_preserves_newer_revision(tmp_path, store_type)
         projection_schema_version=1,
         materialization_status="pending",
     )
+    store.replace_stage1_node_projection(
+        "tenant-a",
+        "node-1",
+        {"revision": 7, "source": "late-repair"},
+        last_authoritative_seq=7,
+        last_materialized_seq=7,
+        projection_schema_version=1,
+        materialization_status="pending",
+    )
+
+    current = store.get_stage1_node_projection("tenant-a", "node-1")
+    assert current is not None
+    assert current["last_authoritative_seq"] == 8
+    assert current["payload"] == {"revision": 8}
 
     assert not store.clear_stage1_node_projection_if_current(
         "tenant-a", "node-1", 7

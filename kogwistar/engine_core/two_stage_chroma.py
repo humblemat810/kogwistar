@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol, cast
 
 from .async_compat import run_awaitable_blocking
+from .canonical_events import canonical_revision_job_payload
 from .edge_endpoint_rows import edge_endpoint_rows
 from .engine import GraphKnowledgeEngine
 from .models import Edge, Node
@@ -129,6 +130,61 @@ class SQLiteChromaTwoStageProjectionAdapter:
             projection_schema_version=1,
             materialization_status="pending",
         )
+
+    def restore_stage1_from_canonical_event(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Rebuild missing staging from one revalidated canonical event snapshot."""
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None or revision.state != "active":
+            return False
+        if entity_kind == "node":
+            entity: Node | Edge = Node.model_validate(revision.payload)
+            document, metadata = self.engine.write.node_doc_and_meta(entity)
+        elif entity_kind == "edge":
+            entity = Edge.model_validate(revision.payload)
+            document = entity.model_dump_json(
+                field_mode="backend", exclude=["embedding"]
+            )
+            metadata = self.engine.write.enrich_edge_meta(entity)
+        else:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+
+        revision_payload = json.loads(canonical_revision_job_payload(revision))
+        source_fingerprint = str(revision_payload["source_fingerprint"])
+        payload = {
+            "id": entity_id,
+            "entity_kind": entity_kind,
+            "document": str(document),
+            "metadata": dict(metadata or {}),
+            "source_fingerprint": source_fingerprint,
+        }
+        replace = getattr(self._meta(), "replace_stage1_node_projection", None)
+        if not callable(replace):
+            raise RuntimeError("Chroma two-stage arrangement requires SQLite Stage-1 storage")
+        replace(
+            self._namespace(),
+            self._stage1_key(entity_kind, entity_id),
+            payload,
+            last_authoritative_seq=int(revision.revision),
+            last_materialized_seq=int(revision.revision),
+            projection_schema_version=1,
+            materialization_status="pending",
+        )
+
+        latest = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if latest is None or latest.revision != revision.revision:
+            self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=int(revision.revision),
+            )
+            return False
+        return True
 
     def _enqueue(self, *, entity_kind: str, entity_id: str, op: str) -> None:
         self.engine.indexing.enqueue_index_job(

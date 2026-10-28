@@ -916,6 +916,100 @@ def test_real_chroma_rebuilds_lost_embedding_job_after_restart(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.e2e
+@pytest.mark.parametrize("kind", ["node", "edge"])
+@pytest.mark.parametrize("rust_metadata", [False, True])
+def test_real_chroma_repairs_late_stale_write_after_stage1_cleanup(
+    tmp_path, kind, rust_metadata
+):
+    """A late external write is hidden, then repaired from the canonical event."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    if rust_metadata:
+        metadata = RustEngineSQLite(tmp_path, filename="rust-meta.sqlite")
+        metadata.ensure_initialized()
+        engine.metadata = engine.meta_sqlite = metadata
+
+    def entity(doc_id: str):
+        if kind == "node":
+            return build_entity_node(node_id="shared", doc_id=doc_id)
+        return build_relationship_edge(
+            edge_id="shared", src="source", tgt="target", doc_id=doc_id
+        )
+
+    def write(value) -> None:
+        getattr(engine.write, f"add_{kind}")(value)
+
+    try:
+        if kind == "edge":
+            engine.write.add_node(build_entity_node(node_id="source", doc_id="d1"))
+            engine.write.add_node(build_entity_node(node_id="target", doc_id="d1"))
+            worker = engine.make_index_job_worker(batch_size=8, max_inflight=1)
+            assert worker.tick().done >= 2
+        write(entity("old"))
+        stage1_key = "shared" if kind == "node" else "edge:shared"
+        old_stage1 = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        )
+        old_payload = old_stage1["payload"]
+        worker = engine.make_index_job_worker(batch_size=8, max_inflight=1)
+        assert worker.tick().done >= 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        ) is None
+
+        write(entity("new"))
+        assert worker.tick().done >= 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        ) is None
+
+        stale_metadata = dict(old_payload["metadata"])
+        stale_metadata["_kogwistar_stage2_ready"] = True
+        stale_metadata["_kogwistar_source_fingerprint"] = old_payload[
+            "source_fingerprint"
+        ]
+        getattr(engine.backend, f"{kind}_upsert")(
+            ids=["shared"],
+            documents=[old_payload["document"]],
+            metadatas=[stale_metadata],
+            embeddings=[[0.1, 0.2]],
+        )
+        stale_query = getattr(engine.read, f"query_{kind}s")(
+            query_embeddings=[0.1, 0.2],
+            n_results=10,
+            include=["documents", "metadatas", "embeddings"],
+        )
+        assert not [item for batch in stale_query for item in batch]
+
+        assert engine.indexing.repair_missing_two_stage_embedding_jobs() == 1
+        restored = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        )
+        assert restored is not None
+        assert json.loads(restored["payload"]["document"])["doc_id"] == "new"
+        assert worker.tick().done >= 1
+
+        query = getattr(engine.read, f"query_{kind}s")
+        results = query(
+            query_embeddings=[0.1, 0.2],
+            n_results=10,
+            include=["documents", "metadatas", "embeddings"],
+        )
+        assert [item.safe_get_id() for batch in results for item in batch] == [
+            "shared"
+        ]
+        assert results[0][0].doc_id == "new"
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
 @two_stage_case("delete_race")
 def test_real_chroma_stage1_delete_is_repaired_from_canonical_event(tmp_path):
     from kogwistar.engine_core.engine import GraphKnowledgeEngine

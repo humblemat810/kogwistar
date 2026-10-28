@@ -81,6 +81,14 @@ Physical copies MAY temporarily coexist during crash recovery or cross-store rec
 
 The invariant is therefore serving exclusivity, not physical-storage exclusivity.
 
+Stage-1 admission is monotonic by `last_authoritative_seq`: a delayed materializer
+must not replace a projection produced from a later canonical event. Stores enforce
+this in the atomic upsert, rather than relying on callers to compare first. Chroma
+cannot conditionally fence an HTTP mutation already in flight; stale Stage-2 rows
+must remain semantically invisible, and bounded recovery may rematerialize the
+current Stage-1 projection from its canonical event before retrying the durable
+index job. This is eventual repair, not multiwriter ordering or cross-store atomicity.
+
 There is deliberately no requirement that one projection is always visible. During deletion, invalidation, or recovery, zero projections may be visible:
 
 canonical deleted
