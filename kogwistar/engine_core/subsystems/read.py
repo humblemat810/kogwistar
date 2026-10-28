@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
+TGraphEntity = TypeVar("TGraphEntity", bound=Node | Edge)
 
 
 def _json_object(value: object) -> JsonObject:
@@ -155,8 +156,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         super().__init__(engine)
 
     def _filter_current_stage2_records(
-        self, entity_kind: str, batches: list[list[Node | Edge]]
-    ) -> list[list[Node | Edge]]:
+        self, entity_kind: str, batches: list[list[TGraphEntity]]
+    ) -> list[list[TGraphEntity]]:
         """Drop vector rows whose embedded revision differs from canonical events."""
         if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
             return batches
@@ -177,15 +178,19 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     )
                     for entity_id in entity_ids
                 }
+            if not isinstance(raw_revisions, Mapping):
+                raise TypeError("canonical revision lookup returned a non-object")
             revision_cache = {
-                entity_id: json.loads(payload)
+                str(entity_id): json.loads(payload)
                 for entity_id, payload in raw_revisions.items()
+                if isinstance(entity_id, str)
+                and isinstance(payload, (str, bytes, bytearray))
             }
         except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
             revision_cache = {}
-        filtered: list[list[Node | Edge]] = []
+        filtered: list[list[TGraphEntity]] = []
         for batch in batches:
-            current_batch: list[Node | Edge] = []
+            current_batch: list[TGraphEntity] = []
             for item in batch:
                 entity_id = str(item.safe_get_id())
                 metadata = getattr(item, "metadata", {}) or {}
@@ -474,7 +479,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if limit is not None:
             additions = additions[: max(0, int(limit) - len(stage2_ids))]
 
-        result = dict(stage2)
+        result: JsonObject = dict(stage2)
         result["ids"] = [*stage2_ids, *additions]
         stage1_positions = {entity_id: index for index, entity_id in enumerate(stage1_ids)}
         for field in include:
@@ -483,7 +488,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 continue
             promoted_values = stage2.get(field)
             if isinstance(promoted_values, list):
-                values = list(promoted_values)
+                values: list[JsonValue] = list(promoted_values)
             elif not stage2_ids:
                 values = []
             else:
@@ -495,8 +500,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                         values[index] = pending_values[pending_index]
             for entity_id in additions:
                 values.append(pending_values[stage1_positions[entity_id]])
-            result[field] = cast(JsonValue, values)
-        return cast(JsonObject, result)
+            result[field] = values
+        return result
 
     def _node_get_raw(
         self,
@@ -919,9 +924,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = self.nodes_from_query_result(
             got, node_type=cast(type[TNode], node_type or Node)
         )
-        rows = cast(
-            list[list[TNode]], self._filter_current_stage2_records("node", rows)
-        )
+        rows = self._filter_current_stage2_records("node", rows)
         return [
             self._e._filter_items_by_resolve_mode(row, "active_only")
             for row in rows
@@ -1266,9 +1269,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = self.edges_from_query_result(
             got, edge_type=cast(type[TEdge], edge_type or Edge)
         )
-        rows = cast(
-            list[list[TEdge]], self._filter_current_stage2_records("edge", rows)
-        )
+        rows = self._filter_current_stage2_records("edge", rows)
         return [
             self._e._filter_items_by_resolve_mode(row, "active_only")
             for row in rows
