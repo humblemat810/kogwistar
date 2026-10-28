@@ -13,6 +13,16 @@ pub(crate) fn chroma_metadata(namespace: &str, record: &GraphRecord) -> Result<V
             message: format!("metadata key {NAMESPACE_KEY:?} is reserved"),
         });
     }
+    if record
+        .metadata
+        .get("namespace")
+        .is_some_and(|value| value != namespace)
+    {
+        return Err(StoreError::Backend {
+            backend: "chroma".to_owned(),
+            message: "graph metadata namespace conflicts with the store namespace".to_owned(),
+        });
+    }
     let mut value = record.metadata.clone();
     value.insert(
         NAMESPACE_KEY.to_owned(),
@@ -30,7 +40,12 @@ pub(crate) fn chroma_metadata(namespace: &str, record: &GraphRecord) -> Result<V
 }
 
 pub(crate) fn query_where(namespace: &str, filter: &kogwistar_store::MetadataFilter) -> Value {
-    let mut clauses = vec![json!({NAMESPACE_KEY: {"$eq": namespace}})];
+    let mut clauses = vec![json!({
+        "$or": [
+            {NAMESPACE_KEY: {"$eq": namespace}},
+            {"namespace": {"$eq": namespace}}
+        ]
+    })];
     clauses.extend(
         filter
             .equals
@@ -147,8 +162,27 @@ mod tests {
             equals: [("kind".to_owned(), json!("node"))].into(),
         };
         let query = query_where("workspace-a", &filter);
-        assert_eq!(query["$and"][0][NAMESPACE_KEY]["$eq"], "workspace-a");
+        assert_eq!(
+            query["$and"][0]["$or"][0][NAMESPACE_KEY]["$eq"],
+            "workspace-a"
+        );
+        assert_eq!(
+            query["$and"][0]["$or"][1]["namespace"]["$eq"],
+            "workspace-a"
+        );
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
+    }
+
+    #[test]
+    fn graph_metadata_cannot_claim_another_namespace() {
+        let record = GraphRecord {
+            id: "x".to_owned(),
+            document: None,
+            metadata: serde_json::from_value(json!({"namespace": "other"}))
+                .expect("metadata object"),
+            embedding: None,
+        };
+        assert!(chroma_metadata("workspace-a", &record).is_err());
     }
 
     #[test]

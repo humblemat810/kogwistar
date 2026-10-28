@@ -328,7 +328,11 @@ async fn chroma_graph_store_uses_scoped_v2_crud_and_vector_routes() {
         "workspace-a"
     );
     assert_eq!(
-        requests[2].1["where"]["_kogwistar_namespace"]["$eq"],
+        requests[2].1["where"]["$or"][0]["_kogwistar_namespace"]["$eq"],
+        "workspace-a"
+    );
+    assert_eq!(
+        requests[2].1["where"]["$or"][1]["namespace"]["$eq"],
         "workspace-a"
     );
     assert_eq!(requests[3].1["n_results"], 1);
