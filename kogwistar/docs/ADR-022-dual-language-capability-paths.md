@@ -136,54 +136,64 @@ be complete at the end of the slice. Use existing contracts and tests first;
 avoid new abstractions, side quests, and checklist IDs unless an actual gap
 requires a separately approved scope decision.
 
-For the next runtime slice, continue `DL-10` from the current implementation.
-`NativeOperationRegistry::register_graph` now lets a registered Rust operation
+For the next runtime slice, continue `DL-10` by verifying and closing gaps in
+the inline native graph-write path, not by reimplementing owner binding.
+`NativeOperationRegistry::register_graph` lets a registered Rust operation
 return a validated graph mutation batch without changing the public
-`NativeOperationOutput` shape. The authenticated PostgreSQL HTTP result path is
-also verified end to end: it checks request capability/scope and durable run
-owner, then commits graph events, projections, index intent, runtime result,
-and acknowledgement together. This does not prove autonomous inline-worker
-authorization. `execute_inline_native_work_once` currently applies results
-without an authenticated principal, so graph effects are rejected. Ordinary
-`submit_run` binds `user_id` to the authenticated request principal, but
-service-triggered runs can still derive `user_id` from trigger payload or target
-configuration. Treat neither an arbitrary stored `user_id` nor worker output as
-proof of identity.
+`NativeOperationOutput` shape. The authenticated PostgreSQL HTTP result path
+checks request capability/scope and durable run owner, then commits graph
+events, projections, index intent, runtime result, and acknowledgement
+together.
 
-Implement the selected policy for inline native writes by binding each admitted
-run to a trustworthy owner or service principal and resolving that identity's
-current `write_graph` authority and scope when the worker commits effects.
-Never restore authority from persisted request/JWT claims alone. The current
-commit check reuses the authenticated result request principal; capability
-state is process-local and its scope comes from request claims, so it does not
-establish freshness against an independent policy source or serialize a
-concurrent revocation with the graph transaction. Reuse an existing
-authoritative policy mechanism if available; introduce one narrowly scoped
-resolver only after verifying that current mechanisms cannot support the
-inline worker. Specify the policy's consistency point, and keep the operation
-fail-closed if current authority cannot be established. Service identities
-must have explicit authorization semantics; never allow a trigger payload to
+The current inline-worker implementation records a versioned
+`runtime_owner_binding` in the server-generated `run.created` event for
+authenticated run admission and service triggers. Before applying an inline
+graph effect, the worker matches that binding to the durable run owner, loads
+the current active user through the configured auth store, intersects current
+namespace/capability authority with the run's admitted scope/capability ceiling,
+and fails closed when it cannot establish authority. A denial is persisted as
+a failed worker result rather than left to repeat as a claimed graph write.
+Relevant code is in `postgres_runtime_service.rs`,
+`postgres_automation_service.rs`, and `application_services.rs`.
+
+This is not yet proof of complete inline authorization or atomic revocation.
+The auth identity store and PostgreSQL graph transaction are separate
+authorities; capability state is process-local. The implementation rechecks
+capability state during result application, but cannot serialize changes from
+an independent policy store with the graph commit. Do not claim globally
+linearizable revocation. Service-triggered runs bind the authenticated trigger
+actor; this is not a distinct service identity or credential. Do not restore
+authority from persisted request/JWT claims alone or permit a trigger payload to
 select an arbitrary owner.
 
-Extend the real PostgreSQL/pgvector vertical test to exercise the actual inline
-worker: authorized owner, different owner, missing or untrusted binding,
-revoked/currently denied capability, cross-scope mutation, transactional
-rollback, duplicate result, and restart/retry. Verify graph event, projection,
-index intent, runtime result, and acknowledgement together. Retain regression
-coverage for the authenticated HTTP path, legacy non-graph runs, and the Python
-worker contract. If policy revocation cannot be made atomic with the graph
-transaction, document and test the exact authorization linearization point;
-do not imply stronger revocation semantics. Do not mark `DL-10` complete until
-its existing acceptance criteria are met.
+The focused owner-revalidation unit test passes. The ignored PostgreSQL test,
+`postgres_inline_native_graph_effect_revalidates_current_owner`, was explicitly
+run with `KOGWISTAR_TEST_PG_DSN` against a disposable pgvector container and
+passed. It proves an authorized inline graph write persists and a subsequent
+process-local `write_graph` revocation prevents the graph projection and records
+a failed run. This test does not yet cover external auth-database changes or all
+failure/recovery cases. Complete the existing `DL-10` acceptance criteria by
+covering owner mismatch, missing/untrusted binding, service-trigger admission,
+current auth status/role/namespace changes, cross-scope writes, transaction
+failure, duplicate result, and restart/retry. Verify graph event, projection,
+index intent, runtime result, and acknowledgement together. Retain authenticated
+HTTP, legacy non-graph, and Python worker regressions. Keep SQLite graph batches
+explicitly unsupported where no atomic graph authority exists. If revocation
+cannot be atomic with graph commit, document and test its actual consistency
+point. Do not mark `DL-10` complete until its existing acceptance criteria are
+met.
 
-Next, use `DL-07I` to complete one indexing lifecycle on a named backend.
-The generic external projection worker reuses accepted actions, but its current
-write path does not establish source currentness or fence distinct revisions.
-Reproduce stale upsert/delete and concurrent-worker cases before changing it;
-prove a backend-enforced ordering or a correctly scoped alternative, retry and
-recovery, and parity with the Python path. A pre-write freshness check by
-itself cannot prevent a newer revision racing after the check. Do not advertise
-multiwriter Chroma projection until the relevant guarantees are demonstrated.
+After the remaining `DL-10` verification, continue `DL-07I` from its recorded
+gaps rather than repeating completed experiments. Existing evidence covers
+lease fencing, stale Python Chroma/PostgreSQL deletes, Rust-native PostgreSQL
+stale upsert/delete protection, and accepted-result recovery after projection
+failure. The checklist still leaves transaction/recovery parity across runtime
+and backend combinations open. Separately, the generic external projection
+worker does not fence distinct revisions across concurrent Chroma writers; a
+pre-write freshness check alone cannot prevent a newer revision racing after
+the check. Keep multiwriter Chroma projection unsupported until ordering is
+backend-enforced and tested. Use `DL-07I`'s existing acceptance criteria and
+evidence; do not add checklist rows for already-verified cases.
 Then advance an existing user-facing gate such as `DL-16BQ` only along a real
 ingress-to-durable-result path; preserve explicit unsupported results where
 the selected backend lacks authority.

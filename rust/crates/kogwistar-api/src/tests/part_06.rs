@@ -12,6 +12,68 @@
         assert_eq!(authenticated_run_owner_id(&json!({"role":"rw"})), None);
     }
 
+    #[test]
+    fn inline_run_owner_revalidation_uses_current_identity_and_admission_ceiling() {
+        let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
+        let admitted = json!({
+            "user_id": "alice",
+            "sub": "alice@example.test",
+            "role": "rw",
+            "ns": ["alpha", "beta"],
+            "storage_ns": "alpha",
+            "capabilities": ["read_graph", "write_graph"]
+        });
+        let binding = runtime_owner_binding_v1(&admitted, &capabilities).unwrap();
+        let current = AuthUser {
+            user_id: "alice".to_owned(),
+            email: "alice@example.test".to_owned(),
+            display_name: None,
+            is_active: true,
+            global_role: Some("rw".to_owned()),
+            global_ns: Some("alpha".to_owned()),
+        };
+        let principal =
+            revalidated_runtime_owner_principal(&binding, &current, &capabilities).unwrap();
+        assert_eq!(principal["ns"], json!(["alpha"]));
+        assert!(principal_strings(&principal, "capabilities").contains(&"write_graph".to_owned()));
+
+        let downgraded = AuthUser {
+            global_role: Some("ro".to_owned()),
+            ..current.clone()
+        };
+        assert!(revalidated_runtime_owner_principal(&binding, &downgraded, &capabilities).is_err());
+        let deactivated = AuthUser {
+            is_active: false,
+            ..current.clone()
+        };
+        assert!(revalidated_runtime_owner_principal(&binding, &deactivated, &capabilities).is_err());
+        let moved_namespace = AuthUser {
+            global_ns: Some("beta".to_owned()),
+            ..current.clone()
+        };
+        assert!(
+            revalidated_runtime_owner_principal(&binding, &moved_namespace, &capabilities).is_err()
+        );
+
+        let narrow_admission = json!({
+            "user_id": "alice",
+            "sub": "alice@example.test",
+            "role": "rw",
+            "ns": "alpha",
+            "capabilities": ["read_graph"]
+        });
+        let narrow_binding = runtime_owner_binding_v1(&narrow_admission, &capabilities).unwrap();
+        capabilities
+            .lock()
+            .unwrap()
+            .approvals
+            .insert(("alice".to_owned(), "later-approval".to_owned()), BTreeSet::from(["write_graph".to_owned()]));
+        assert!(
+            revalidated_runtime_owner_principal(&narrow_binding, &current, &capabilities).is_err(),
+            "a post-admission capability approval must not widen the run"
+        );
+    }
+
     #[tokio::test]
     async fn postgres_submit_rejects_user_id_spoofing_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
@@ -310,6 +372,172 @@
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let task = tokio::spawn(connection);
         cleanup.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
+        drop(cleanup);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
+    async fn postgres_inline_native_graph_effect_revalidates_current_owner() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
+        let schema = format!("rust_inline_owner_{}", uuid::Uuid::new_v4().simple());
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-inline-auth-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let auth = SqliteAuthStore::open(&auth_path).unwrap();
+        auth.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "alice".to_owned(),
+            email: "alice@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "alice".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "alpha".to_owned(),
+        })
+        .await
+        .unwrap();
+        drop(auth);
+
+        let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
+        registry
+            .register_graph("app/inline-graph", "v1", |request| {
+                let entity_id = format!("inline-node-{}", request.run_id);
+                let batch = serde_json::from_value(json!({
+                    "contract_version": 1,
+                    "atomic": true,
+                    "mutations": [{
+                        "scope": {"namespace": "alpha"},
+                        "table": "gke_nodes",
+                        "entity_kind": "node",
+                        "event_id": format!("inline-event-{}", request.run_id),
+                        "op": "ADD",
+                        "payload": {"id": entity_id},
+                        "record": {"id": entity_id, "document": "inline native graph"},
+                        "embedding_dim": 0
+                    }],
+                    "index_jobs": []
+                }))
+                .unwrap();
+                Ok((
+                    kogwistar_runtime::NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"native_graph": true})),
+                    },
+                    batch,
+                ))
+            })
+            .unwrap();
+        let auth_config = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+            ..AuthConfig::default()
+        };
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap()
+            .with_native_operations(registry)
+            .with_owner_auth_config(&auth_config)
+            .await
+            .unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let submit = |run_id: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "workflow_id": "wf",
+                "conversation_id": format!("conv-{run_id}"),
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/app/inline-graph"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "user_id": "alice",
+                "sub": "alice",
+                "role": "rw",
+                "ns": "alpha",
+                "storage_ns": "alpha",
+                "capabilities": ["workflow.run.write", "write_graph"]
+            }),
+        };
+        assert_eq!(
+            service.execute(submit("inline-authorized")).await.status,
+            StatusCode::ACCEPTED.as_u16()
+        );
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let authorized = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["inline-node-inline-authorized".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(authorized.len(), 1);
+
+        assert_eq!(
+            service.execute(submit("inline-revoked")).await.status,
+            StatusCode::ACCEPTED.as_u16()
+        );
+        service
+            .capabilities
+            .lock()
+            .unwrap()
+            .revoked
+            .entry("alice@example.test".to_owned())
+            .or_default()
+            .insert("write_graph".to_owned());
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let denied = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["inline-node-inline-revoked".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(denied.is_empty());
+        assert_eq!(
+            service
+                .store
+                .get_server_run("inline-revoked")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "failed",
+            "deterministic authorization denial must be acknowledged as a failed step"
+        );
+        drop(service);
+        let _ = std::fs::remove_file(auth_path);
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let task = tokio::spawn(connection);
+        cleanup
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
         drop(cleanup);
         task.await.unwrap().unwrap();
     }

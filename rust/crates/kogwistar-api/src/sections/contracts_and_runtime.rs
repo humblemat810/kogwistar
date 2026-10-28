@@ -346,6 +346,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         .collect();
     let backend = environment("KOGWISTAR_BACKEND", "in_memory");
     let inline_embedding_worker = boolean_environment("KOGWISTAR_EMBEDDING_WORKER_INLINE")?;
+    let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
     let state = ApiState {
         health: HealthSnapshot {
             backend: backend.clone(),
@@ -378,6 +379,12 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     &environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar"),
                 )
                 .map_err(std::io::Error::other)?;
+                if inline_native_runtime {
+                    service = service
+                        .with_owner_auth_config(&state.auth)
+                        .await
+                        .map_err(std::io::Error::other)?;
+                }
                 let embedding_provider = embedding_provider_from_settings(
                     std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
                     std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
@@ -454,7 +461,6 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         )
         .into());
     }
-    let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
     let native_worker = if inline_native_runtime {
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         let application = Arc::clone(&application);

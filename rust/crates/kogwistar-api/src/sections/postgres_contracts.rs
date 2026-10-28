@@ -4,8 +4,18 @@ pub struct PostgresRunApplicationService {
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
+    owner_auth_store: Option<Arc<AuthStore>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     embedding_storage_scope: Result<String, String>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeOwnerBindingV1 {
+    version: u32,
+    user_id: String,
+    admitted_capabilities: BTreeSet<String>,
+    admitted_scope: Value,
 }
 
 fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1, String> {

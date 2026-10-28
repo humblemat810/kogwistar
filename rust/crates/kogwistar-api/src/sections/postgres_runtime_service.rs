@@ -8,6 +8,99 @@ enum RuntimeGraphCommitDenial {
     Scope,
 }
 
+fn runtime_owner_binding_v1(
+    principal: &Value,
+    capabilities: &SharedCapabilityState,
+) -> Option<RuntimeOwnerBindingV1> {
+    let user_id = authenticated_run_owner_id(principal)?.to_owned();
+    let state = capabilities
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let admitted_capabilities = effective_capabilities(principal, &state);
+    let mut admitted_scope = serde_json::Map::new();
+    for key in [
+        "ns",
+        "storage_ns",
+        "execution_ns",
+        "security_scope",
+        "tenant",
+        "workspace",
+        "project",
+        "graph_space",
+    ] {
+        if let Some(value) = principal.get(key) {
+            admitted_scope.insert(key.to_owned(), value.clone());
+        }
+    }
+    if principal_strings(principal, "ns").is_empty() {
+        admitted_scope.insert("ns".to_owned(), json!("docs"));
+    }
+    Some(RuntimeOwnerBindingV1 {
+        version: 1,
+        user_id,
+        admitted_capabilities,
+        admitted_scope: Value::Object(admitted_scope),
+    })
+}
+
+fn revalidated_runtime_owner_principal(
+    binding: &RuntimeOwnerBindingV1,
+    user: &AuthUser,
+    capabilities: &SharedCapabilityState,
+) -> Result<Value, String> {
+    if binding.version != 1 || binding.user_id != user.user_id || !user.is_active {
+        return Err("run owner binding is missing, mismatched, or inactive".to_owned());
+    }
+    let mut principal = runtime_principal_from_auth_user(user);
+    let admitted_namespaces = principal_strings(&binding.admitted_scope, "ns")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let current_namespaces = principal_strings(&principal, "ns")
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let namespaces = admitted_namespaces
+        .intersection(&current_namespaces)
+        .cloned()
+        .collect::<Vec<_>>();
+    if namespaces.is_empty() {
+        return Err("run owner no longer has an admitted namespace".to_owned());
+    }
+    principal["ns"] = json!(namespaces.clone());
+    for key in [
+        "storage_ns",
+        "execution_ns",
+        "security_scope",
+        "tenant",
+        "workspace",
+        "project",
+        "graph_space",
+    ] {
+        if let Some(value) = binding.admitted_scope.get(key) {
+            principal[key] = value.clone();
+        }
+    }
+    let current_scope = security_scope_value(&principal);
+    if !namespaces
+        .iter()
+        .any(|namespace| current_scope["storage_namespace"].as_str() == Some(namespace))
+    {
+        return Err("run owner storage namespace is no longer authorized".to_owned());
+    }
+    let state = capabilities
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let current_capabilities = effective_capabilities(&principal, &state);
+    let effective = current_capabilities
+        .intersection(&binding.admitted_capabilities)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if !effective.contains("write_graph") {
+        return Err("run owner no longer has write_graph capability".to_owned());
+    }
+    principal["capabilities"] = json!(effective);
+    Ok(principal)
+}
+
 fn rust_pgvector_embedding_scope(
     config: &tokio_postgres::Config,
     schema: &str,
@@ -101,6 +194,7 @@ impl PostgresRunApplicationService {
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
+                owner_auth_store: None,
                 embedding_provider: None,
                 embedding_storage_scope,
             })
@@ -194,6 +288,58 @@ impl PostgresRunApplicationService {
     ) -> Self {
         self.native_operations = native_operations;
         self
+    }
+
+    pub async fn with_owner_auth_config(
+        mut self,
+        config: &AuthConfig,
+    ) -> Result<Self, String> {
+        self.owner_auth_store = Some(Arc::new(AuthStore::from_config(config).await?));
+        Ok(self)
+    }
+
+    async fn resolve_inline_native_owner_principal(&self, run_id: &str) -> Result<Value, String> {
+        let run = self
+            .store
+            .server_run(run_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "native worker run is missing".to_owned())?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "native worker run has no authenticated owner".to_owned())?;
+        let created = self
+            .store
+            .server_run_events(run_id, 0, 1)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|event| event.event_type == "run.created")
+            .ok_or_else(|| "native worker run has no admission event".to_owned())?;
+        let created_payload: Value = serde_json::from_str(&created.payload_json)
+            .map_err(|_| "native worker admission event is invalid".to_owned())?;
+        let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
+            created_payload
+                .get("runtime_owner_binding")
+                .cloned()
+                .ok_or_else(|| "native worker run has no trusted owner binding".to_owned())?,
+        )
+        .map_err(|_| "native worker owner binding is invalid".to_owned())?;
+        if binding.user_id != owner_id {
+            return Err("native worker owner binding does not match the durable run owner".to_owned());
+        }
+        let auth_store = self
+            .owner_auth_store
+            .as_ref()
+            .ok_or_else(|| "native worker owner revalidation is not configured".to_owned())?;
+        let user = auth_store
+            .auth_user(owner_id)
+            .await?
+            .filter(|user| user.is_active)
+            .ok_or_else(|| "native worker run owner is missing or inactive".to_owned())?;
+        revalidated_runtime_owner_principal(&binding, &user, &self.capabilities)
     }
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
@@ -361,6 +507,7 @@ impl PostgresRunApplicationService {
             );
         }
         let run_user_id = authenticated_owner.map(str::to_owned);
+        let owner_binding = runtime_owner_binding_v1(&request.principal, &self.capabilities);
         let run_id = input
             .run_id
             .as_deref()
@@ -653,6 +800,7 @@ impl PostgresRunApplicationService {
                                 "workflow_id": workflow_id,
                                 "status": "queued",
                                 "turn_node_id": turn_node_id,
+                                "runtime_owner_binding": owner_binding,
                                 "implementation_attestation": runtime_implementation_attestation(&runtime_kind),
                             }))?,
                         )
@@ -883,13 +1031,14 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        self.apply_runtime_result_input(input, Some(request)).await
+        self.apply_runtime_result_input(input, Some(request), None).await
     }
 
     async fn apply_runtime_result_input(
         &self,
         input: RuntimeWorkerResultRequest,
         request: Option<&ApiEffectRequest>,
+        inline_principal: Option<Value>,
     ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
@@ -927,14 +1076,22 @@ impl PostgresRunApplicationService {
                     "Worker graph effects require atomic graph authority with index jobs",
                 );
             }
-            let Some(request) = request else {
+            let principal = request
+                .map(|request| &request.principal)
+                .or(inline_principal.as_ref());
+            let Some(principal) = principal else {
                 return effect_error(
                     StatusCode::FORBIDDEN,
                     "KOGWISTAR_CAPABILITY_FORBIDDEN",
                     "Worker graph effects require an authenticated write_graph principal",
                 );
             };
-            if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"])
+            if !capability_allowed_for_principal(
+                principal,
+                &self.capabilities,
+                "write_graph",
+                &["write_graph"],
+            )
             {
                 return effect_error(
                     StatusCode::FORBIDDEN,
@@ -942,7 +1099,18 @@ impl PostgresRunApplicationService {
                     "Worker graph effects require write_graph capability",
                 );
             }
-            let Some(run_owner_id) = authenticated_run_owner_id(&request.principal) else {
+            if inline_principal.is_some()
+                && !principal_strings(principal, "capabilities")
+                    .iter()
+                    .any(|capability| capability == "write_graph")
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Inline graph effects exceed the run's admitted capability ceiling",
+                );
+            }
+            let Some(run_owner_id) = authenticated_run_owner_id(principal) else {
                 return effect_error(
                     StatusCode::FORBIDDEN,
                     "KOGWISTAR_RUN_OWNER_FORBIDDEN",
@@ -974,7 +1142,7 @@ impl PostgresRunApplicationService {
                     error,
                 );
             }
-            let security_scope = security_scope_value(&request.principal);
+            let security_scope = security_scope_value(principal);
             if mutations
                 .iter()
                 .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
@@ -999,7 +1167,8 @@ impl PostgresRunApplicationService {
                 mutations,
                 index_jobs,
                 run_owner_id.to_owned(),
-                request.principal.clone(),
+                principal.clone(),
+                inline_principal.is_some(),
             ))
         } else {
             None
@@ -1009,13 +1178,17 @@ impl PostgresRunApplicationService {
             .store
             .transaction(|uow| {
                 Box::pin(async move {
-                    if let Some((mutations, _, run_owner_id, principal)) = graph_effects.as_ref() {
+                    if let Some((mutations, _, run_owner_id, principal, inline)) = graph_effects.as_ref() {
                         if !capability_allowed_for_principal(
                             principal,
                             &commit_capabilities,
                             "write_graph.commit",
                             &["write_graph"],
-                        ) {
+                        ) || (*inline
+                            && !principal_strings(principal, "capabilities")
+                                .iter()
+                                .any(|capability| capability == "write_graph"))
+                        {
                             return Ok(Err(RuntimeGraphCommitDenial::Capability));
                         }
                         let commit_scope = security_scope_value(principal);
@@ -1031,7 +1204,7 @@ impl PostgresRunApplicationService {
                             return Ok(Err(RuntimeGraphCommitDenial::Owner));
                         }
                     }
-                    if let Some((mutations, index_jobs, _, _)) = graph_effects {
+                    if let Some((mutations, index_jobs, _, _, _)) = graph_effects {
                         for mutation in mutations {
                             uow.apply_graph_mutation(mutation).await?;
                         }

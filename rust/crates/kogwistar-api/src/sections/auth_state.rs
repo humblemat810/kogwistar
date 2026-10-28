@@ -259,6 +259,7 @@ fn oidc_providers(config: &AuthConfig) -> Result<OidcProvidersConfig, &'static s
     serde_json::from_str(raw).map_err(|_| "OIDC provider configuration is invalid")
 }
 
+#[derive(Clone)]
 enum AuthStore {
     Sqlite(SqliteAuthStore),
     Postgres(PostgresAuthStore),
@@ -296,6 +297,24 @@ impl AuthStore {
         }
         .map_err(|error| error.to_string())
     }
+
+    async fn auth_user(&self, user_id: &str) -> Result<Option<AuthUser>, String> {
+        match self {
+            Self::Sqlite(store) => store.auth_user(user_id).await,
+            Self::Postgres(store) => store.auth_user(user_id).await,
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn runtime_principal_from_auth_user(user: &AuthUser) -> Value {
+    let namespace = user.global_ns.as_ref().map(|value| json!(value));
+    json!({
+        "user_id": user.user_id,
+        "sub": user.email,
+        "role": user.global_role.as_deref().unwrap_or("ro"),
+        "ns": normalized_string_or_list(namespace.as_ref(), json!("docs")),
+    })
 }
 
 fn mint_app_token(config: &AuthConfig, user: &AuthUser) -> Result<String, &'static str> {

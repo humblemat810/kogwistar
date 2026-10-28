@@ -38,7 +38,8 @@ impl PostgresRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        self.apply_runtime_result_input(result, Some(request)).await
+        self.apply_runtime_result_input(result, Some(request), None)
+            .await
     }
 }
 
@@ -59,8 +60,47 @@ impl ApplicationService for PostgresRunApplicationService {
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
-            let result = native_result_for_claimed_work(work, &self.native_operations)?;
-            let applied = self.apply_runtime_result_input(result, None).await;
+            let mut result = native_result_for_claimed_work(work, &self.native_operations)?;
+            let run_id = result.handoff.run_id.clone();
+            let inline_principal = if result
+                .effect
+                .as_ref()
+                .and_then(|effect| effect.graph_mutation_batch.as_ref())
+                .is_some()
+            {
+                match self.resolve_inline_native_owner_principal(&run_id).await {
+                    Ok(principal) => Some(principal),
+                    Err(_) => {
+                        let effect = result
+                            .effect
+                            .as_mut()
+                            .expect("graph batch is present in this branch");
+                        effect.graph_mutation_batch = None;
+                        effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
+                        effect.state_update.clear();
+                        effect.update = None;
+                        effect.state_schema.clear();
+                        effect.successors.clear();
+                        effect.route_next.clear();
+                        effect.result = Some(serde_json::json!({
+                            "code": "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED"
+                        }));
+                        effect.errors = vec![
+                            "inline graph effects failed current owner authorization".to_owned(),
+                        ];
+                        effect.wait_reason = None;
+                        effect.resume_payload = None;
+                        effect.usage = None;
+                        effect.trace_events.clear();
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let applied = self
+                .apply_runtime_result_input(result, None, inline_principal)
+                .await;
             if !(200..300).contains(&applied.status) {
                 return Err(format!(
                     "native runtime result application returned HTTP {}",

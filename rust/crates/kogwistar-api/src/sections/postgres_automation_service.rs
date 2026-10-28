@@ -33,6 +33,7 @@ impl PostgresRunApplicationService {
         let now_seconds = (timestamp / 1000) as i64;
         let max_queue = self.max_queue;
         let service_id_owned = service_id.to_owned();
+        let owner_binding = runtime_owner_binding_v1(&request.principal, &self.capabilities);
         let outcome = self
             .store
             .transaction(move |uow| {
@@ -254,6 +255,7 @@ impl PostgresRunApplicationService {
                                     "workflow_id": target_ref,
                                     "status": "queued",
                                     "turn_node_id": turn_node_id,
+                                    "runtime_owner_binding": owner_binding,
                                     "implementation_attestation": runtime_implementation_attestation(runtime_kind),
                                 })
                                 .to_string(),
