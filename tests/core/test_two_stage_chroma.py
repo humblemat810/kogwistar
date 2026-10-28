@@ -438,7 +438,9 @@ def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
 
 
 @pytest.mark.parametrize("batched", [False, True])
-def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(tmp_path, batched):
+def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(
+    tmp_path, batched, monkeypatch
+):
     engine, adapter = _engine(tmp_path)
     first = build_entity_node(node_id="n1", doc_id="d1")
     adapter.add_node(first)
@@ -452,6 +454,12 @@ def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(tmp_path, batch
         engine.indexing.fingerprint = "fp-2"
         adapter.add_node(build_entity_node(node_id="n1", doc_id="d2"))
 
+    monkeypatch.setattr(
+        adapter,
+        "restore_stage1_from_canonical_event",
+        lambda **_: engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+        is not None,
+    )
     engine.backend.node_upsert = upsert_then_stage_new_revision
     if batched:
         from types import SimpleNamespace
@@ -482,6 +490,91 @@ def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(tmp_path, batch
     assert staged["last_authoritative_seq"] == 2
     assert staged["payload"]["source_fingerprint"] == "fp-2"
     assert "n1" not in engine.backend.rows
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+@pytest.mark.parametrize("batched", [False, True])
+def test_chroma_late_old_promotion_restages_newer_revision(
+    tmp_path, kind, batched
+):
+    engine, adapter = _engine(tmp_path)
+
+    def entity(doc_id: str):
+        if kind == "node":
+            return build_entity_node(node_id="shared", doc_id=doc_id)
+        return build_relationship_edge(
+            edge_id="shared", src="source", tgt="target", doc_id=doc_id
+        )
+
+    getattr(adapter, f"add_{kind}")(entity("old"))
+    old_payload = engine.indexing.canonical_revision_payload(
+        entity_kind=kind, entity_id="shared"
+    )
+    upsert_name = f"{kind}_upsert"
+    original_upsert = getattr(engine.backend, upsert_name)
+    interleaved = False
+
+    def newer_promotion_then_late_old_upsert(**kwargs):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            engine.indexing.fingerprint = "fp-2"
+            getattr(adapter, f"add_{kind}")(entity("new"))
+            new_payload = engine.indexing.canonical_revision_payload(
+                entity_kind=kind, entity_id="shared"
+            )
+            setattr(engine.backend, upsert_name, original_upsert)
+            adapter.apply_embedding_job(
+                entity_kind=kind,
+                entity_id="shared",
+                op="UPSERT",
+                payload_json=new_payload,
+            )
+            setattr(engine.backend, upsert_name, newer_promotion_then_late_old_upsert)
+        original_upsert(**kwargs)
+
+    setattr(engine.backend, upsert_name, newer_promotion_then_late_old_upsert)
+
+    def restore_current_stage1(*, entity_kind: str, entity_id: str) -> bool:
+        assert entity_kind == kind
+        assert entity_id == "shared"
+        assert engine.indexing.fingerprint == "fp-2"
+        adapter._stage1_upsert(entity_kind=kind, entity=entity("new"))
+        return True
+
+    adapter.restore_stage1_from_canonical_event = restore_current_stage1
+    if batched:
+        from types import SimpleNamespace
+
+        engine._ef = lambda documents: [[1.0, 0.0] for _ in documents]
+        result = adapter.apply_embedding_jobs_batch(
+            [
+                SimpleNamespace(
+                    job_id="late-old-job",
+                    entity_kind=kind,
+                    entity_id="shared",
+                    op="UPSERT",
+                    payload_json=old_payload,
+                )
+            ]
+        )
+        assert result == {"late-old-job": None}
+    else:
+        adapter.apply_embedding_job(
+            entity_kind=kind,
+            entity_id="shared",
+            op="UPSERT",
+            payload_json=old_payload,
+        )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", adapter._stage1_key(kind, "shared")
+    )
+    assert staged is not None
+    assert staged["payload"]["source_fingerprint"] == "fp-2"
+    assert engine.backend.rows["shared"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == "fp-1"
 
 
 @two_stage_case("recovery_reconciliation")

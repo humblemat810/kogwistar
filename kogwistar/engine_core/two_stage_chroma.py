@@ -52,6 +52,10 @@ def _embedding(value: object) -> list[float] | None:
     return [float(item) for item in value]
 
 
+def _sequence_number(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
 def _job_value(job: object, name: str) -> object:
     if isinstance(job, Mapping):
         return job.get(name)
@@ -340,7 +344,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         if not row:
             raise RuntimeError("current Stage-1 projection is missing")
         staged = _mapping(row.get("payload"))
-        staged_seq = int(row.get("last_authoritative_seq") or 0)
+        staged_seq = _sequence_number(row.get("last_authoritative_seq"))
         if expected and str(staged.get("source_fingerprint") or "") != expected:
             return
         document = str(staged.get("document") or "")
@@ -362,6 +366,28 @@ class SQLiteChromaTwoStageProjectionAdapter:
             from .models import Edge
 
             self._promote_edge_endpoints(Edge.model_validate_json(document), embedding)
+        latest = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if latest is None or latest.state != "active":
+            self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=staged_seq,
+            )
+            self.remove_stage2_or_invalidate(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        if self._current_fingerprint(
+            entity_kind=entity_kind, entity_id=entity_id
+        ) != str(staged.get("source_fingerprint") or ""):
+            if self.restore_stage1_from_canonical_event(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
+                return
+            raise RuntimeError("Chroma promotion became stale and could not restore Stage-1")
         self.remove_stage1(
             entity_kind=entity_kind,
             entity_id=entity_id,
@@ -421,7 +447,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     outcomes[job_id] = None
                     continue
                 staged["_stage1_authoritative_seq"] = int(
-                    row.get("last_authoritative_seq") or 0
+                    _sequence_number(row.get("last_authoritative_seq"))
                 )
                 prepared.append(
                     (job_id, entity_kind, entity_id, expected, payload_json, staged)
@@ -488,11 +514,41 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     self._promote_edge_endpoints(
                         Edge.model_validate_json(str(staged["document"])), embedding
                     )
+                latest = self.engine.indexing.canonical_entity_revision(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                if latest is None or latest.state != "active":
+                    self.remove_stage1(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        expected_last_authoritative_seq=_sequence_number(
+                            staged.get("_stage1_authoritative_seq")
+                        ),
+                    )
+                    self.remove_stage2_or_invalidate(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
+                if self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ) != str(staged.get("source_fingerprint") or ""):
+                    if self.restore_stage1_from_canonical_event(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    ):
+                        self._enqueue(
+                            entity_kind=entity_kind, entity_id=entity_id, op="UPSERT"
+                        )
+                        outcomes[job_id] = None
+                        continue
+                    raise RuntimeError(
+                        "Chroma batch promotion became stale and could not restore Stage-1"
+                    )
                 self.remove_stage1(
                     entity_kind=entity_kind,
                     entity_id=entity_id,
-                    expected_last_authoritative_seq=int(
-                        staged.get("_stage1_authoritative_seq") or 0
+                    expected_last_authoritative_seq=_sequence_number(
+                        staged.get("_stage1_authoritative_seq")
                     ),
                 )
                 outcomes[job_id] = None
@@ -521,7 +577,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
             payload = _mapping(row.get("payload"))
             entity_id = str(payload.get("id") or row.get("key") or "")
             entity_kind = str(payload.get("entity_kind") or "node")
-            staged_seq = int(row.get("last_authoritative_seq") or 0)
+            staged_seq = _sequence_number(row.get("last_authoritative_seq"))
             current = self.engine.indexing.canonical_entity_revision(
                 entity_kind=entity_kind, entity_id=entity_id
             )
