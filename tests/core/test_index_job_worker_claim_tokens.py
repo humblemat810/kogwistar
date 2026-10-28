@@ -694,6 +694,35 @@ def test_reconciler_replays_admitted_result_without_projection() -> None:
     assert calls == 0
 
 
+def test_reconciler_requeues_projection_action_for_action_aware_worker() -> None:
+    meta = _Meta(_job(claim_token="claim-1"))
+    action = {
+        "version": 1,
+        "job_id": "job-1",
+        "namespace": "test",
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "accepted projection",
+            "metadata": {},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    meta.job.accepted_result_json = action_json
+    meta.job.accepted_result_sha256 = hashlib.sha256(
+        action_json.encode("utf-8")
+    ).hexdigest()
+    subsystem = _reconciler(meta)
+
+    assert subsystem.reconcile_indexes(max_jobs=1) == 0
+    assert meta.done == []
+    assert meta.retried == [("job-1", "claim-1")]
+
+
 def test_reconciler_propagates_claim_token_to_retry() -> None:
     meta = _Meta(_job(claim_token="claim-1"))
     subsystem = _reconciler(meta, fail=True)

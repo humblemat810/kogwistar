@@ -19,6 +19,7 @@ from ..implementation_selection import (
 from .async_compat import run_awaitable_blocking
 from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
 from .models import Edge, Grounding, Node, Span
+from .projection_action import is_projection_action_payload
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
@@ -545,6 +546,13 @@ class IndexingSubsystem:
                 accepted_result = getattr(job, "accepted_result_json", None)
                 if isinstance(job, dict):
                     accepted_result = job.get("accepted_result_json")
+                if accepted_result is not None and is_projection_action_payload(
+                    accepted_result
+                ):
+                    raise RuntimeError(
+                        "accepted graph projection action must be handled by "
+                        "IndexJobWorker with a projection store"
+                    )
                 if accepted_result is None:
                     self.apply_index_job(
                         job_id=str(job_id),
