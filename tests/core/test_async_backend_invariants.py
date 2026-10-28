@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Edge, Node
+from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._kg_factories import kg_document
@@ -213,7 +215,6 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
         embedding_function=_AsyncEmbeddingFunction(),
         backend=async_pg_backend,
     )
-    engine._phase1_enable_index_jobs = False
     assert engine.meta_sqlite.__class__.__name__ == "RustEnginePostgresMetaStore"
 
     doc = kg_document(
@@ -259,6 +260,157 @@ async def test_async_pg_rust_authority_writes_event_and_projection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_rust_authority_rejects_inline_index_mode_before_graph_effect(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_rust_inline_disabled_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    engine._phase1_enable_index_jobs = False
+    if entity_kind == "node":
+        entity = _mk_node(
+            node_id="node::async-pg-inline-disabled",
+            doc_id="doc::async-pg-inline-disabled",
+            summary="must not be committed",
+        )
+    else:
+        entity = build_relationship_edge(
+            edge_id="edge::async-pg-inline-disabled",
+            src="missing-source",
+            tgt="missing-target",
+            doc_id="doc::async-pg-inline-disabled",
+        )
+
+    write = engine.write.add_node_async if entity_kind == "node" else engine.write.add_edge_async
+    with pytest.raises(RuntimeError, match="requires durable index jobs"):
+        await write(entity)
+
+    assert list(engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)) == []
+    if entity_kind == "node":
+        assert (await async_pg_backend.node_get(ids=[entity.id]))["ids"] == []
+    else:
+        assert (await async_pg_backend.edge_get(ids=[entity.id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
+    async_pg_backend, tmp_path, monkeypatch
+):
+    """Derived Pydantic models cross Python/Rust writes and reads intact."""
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "async_pg_rust_derived_contract"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+
+    run_base = _mk_node(
+        node_id="node::async-pg-derived-run",
+        doc_id="doc::async-pg-derived",
+        summary="derived workflow run",
+    )
+    run_node = WorkflowRunNode(
+        id=run_base.id,
+        label=run_base.label,
+        type=run_base.type,
+        summary=run_base.summary,
+        doc_id=run_base.doc_id,
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "workflow_run",
+            "workflow_id": "wf::derived",
+            "workflow_version": "v1",
+            "run_id": "run::derived",
+            "conversation_id": "conversation::derived",
+            "turn_node_id": "turn::derived",
+            "status": "running",
+        },
+    )
+    target = _mk_node(
+        node_id="node::async-pg-derived-target",
+        doc_id="doc::async-pg-derived",
+        summary="derived workflow edge target",
+    )
+    runtime_edge = WorkflowRuntimeEdge(
+        id="edge::async-pg-derived-runtime",
+        label="runtime transition",
+        type="relationship",
+        summary="workflow run links to target",
+        relation="next",
+        source_ids=[run_node.id],
+        target_ids=[target.id],
+        source_edge_ids=None,
+        target_edge_ids=None,
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "relation": "next",
+            "conversation_id": "conversation::derived",
+            "run_id": "run::derived",
+            "entity_type": "conversation_edge",
+        },
+    )
+
+    meta = engine.meta_sqlite
+    original_apply = meta.apply_graph_mutation
+    envelopes: list[dict[str, object]] = []
+
+    def capture_envelope(**values):
+        envelope = values.get("model_envelope")
+        assert isinstance(envelope, dict)
+        envelopes.append(envelope)
+        return original_apply(**values)
+
+    monkeypatch.setattr(meta, "apply_graph_mutation", capture_envelope)
+    await engine.write.add_node_async(run_node)
+    await engine.write.add_node_async(target)
+    await engine.write.add_edge_async(runtime_edge)
+
+    assert [envelope["model_class"] for envelope in envelopes] == [
+        "workflow_run_node",
+        "node",
+        "workflow_runtime_edge",
+    ]
+    events = list(meta.iter_entity_events(namespace=engine.namespace))
+    event_payloads = {
+        entity_id: json.loads(payload_json)
+        for _, _, entity_id, _, payload_json in events
+    }
+    assert type(WorkflowRunNode.model_validate(event_payloads[run_node.id])) is WorkflowRunNode
+    assert (
+        type(WorkflowRuntimeEdge.model_validate(event_payloads[runtime_edge.id]))
+        is WorkflowRuntimeEdge
+    )
+
+    node_rows = await async_pg_backend.node_get(
+        ids=[run_node.id], include=["documents", "metadatas"]
+    )
+    edge_rows = await async_pg_backend.edge_get(
+        ids=[runtime_edge.id], include=["documents", "metadatas"]
+    )
+    assert node_rows["ids"] == [run_node.id]
+    assert node_rows["metadatas"][0]["_class_name"] == "WorkflowRunNode"
+    assert edge_rows["ids"] == [runtime_edge.id]
+    assert edge_rows["metadatas"][0]["relation"] == "next"
+    assert edge_rows["metadatas"][0]["node_endpoint_count"] == 2
+    assert edge_rows["metadatas"][0]["edge_endpoint_count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
 async def test_async_pg_rust_authority_rolls_back_event_and_projection_together(
     entity_kind, async_pg_backend, tmp_path, monkeypatch
 ):
@@ -273,7 +425,6 @@ async def test_async_pg_rust_authority_rolls_back_event_and_projection_together(
         embedding_function=_AsyncEmbeddingFunction(),
         backend=async_pg_backend,
     )
-    engine._phase1_enable_index_jobs = False
     node = _mk_node(
         node_id=f"node::async-pg-rollback-{entity_kind}",
         doc_id="doc::async-pg-rollback",

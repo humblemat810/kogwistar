@@ -913,11 +913,22 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 }
                 await self._async_backend_call("edge_endpoints", "upsert", **kwargs)
 
+    def _require_supported_async_rust_post_write(self) -> None:
+        if (
+            not self._e._phase1_enable_index_jobs
+            and self.uses_rust_postgres_authority()
+        ):
+            raise RuntimeError(
+                "Rust PostgreSQL authority requires durable index jobs for async "
+                "graph writes; inline Python derived-index writes are not allowed"
+            )
+
     async def _add_node_async_single_stage(
         self, node: Node, *, doc_id: str | None
     ) -> None:
         import asyncio
 
+        self._require_supported_async_rust_post_write()
         if doc_id is not None:
             node.doc_id = doc_id
         await asyncio.to_thread(self._run_pre_add_node_hooks, node)
@@ -990,6 +1001,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> None:
         import asyncio
 
+        self._require_supported_async_rust_post_write()
         if doc_id is not None:
             edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = await asyncio.to_thread(
