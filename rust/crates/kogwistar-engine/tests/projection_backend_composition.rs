@@ -8,6 +8,7 @@ use kogwistar_store_memory::InMemoryStore;
 use kogwistar_store_postgres::PostgresStore;
 use kogwistar_store_sqlite::SqliteStore;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     env,
     sync::{
@@ -342,6 +343,127 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
     assert_eq!(
         upserts[1].1["metadatas"][0]["_kogwistar_namespace"],
         "workspace-a"
+    );
+
+    drop(graph);
+    drop(queue);
+    let _ = std::fs::remove_file(&database);
+    let _ = std::fs::remove_file(format!("{}.kogwistar-authority.lock", database.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+}
+
+#[tokio::test]
+async fn rust_projection_worker_applies_python_wire_action_from_sqlite_queue() {
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let database = env::temp_dir().join(format!(
+        "kg-python-action-rust-projection-{}-{nonce}.sqlite3",
+        std::process::id()
+    ));
+    let queue = SqliteStore::open(&database).expect("open shared SQLite queue");
+    queue
+        .enqueue_index_job(NewIndexJob {
+            job_id: "projection-job".to_owned(),
+            namespace: "workspace".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .expect("enqueue projection job");
+    let claim = queue
+        .claim_index_jobs(1, 30, Some("workspace"))
+        .expect("claim projection job")
+        .remove(0);
+    let action = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-projection-action-v1.json"
+    ))
+    .trim();
+    let digest = hex::encode(Sha256::digest(action.as_bytes()));
+    let accepted = queue
+        .accept_index_job_result(
+            &claim.job_id,
+            claim.claim_token.as_deref().expect("claim token"),
+            action,
+            &digest,
+        )
+        .expect("admit Python-compatible projection action");
+    assert_eq!(accepted.status, "accepted");
+
+    // Preserve the accepted action while making it available to a replacement
+    // worker, modelling a crash after result admission and before projection.
+    queue
+        .bump_retry_and_requeue(
+            &claim.job_id,
+            "simulate worker loss after result admission",
+            0,
+            claim.claim_token.as_deref(),
+        )
+        .expect("release crashed worker claim");
+
+    let (endpoint, server) = fake_chroma().await;
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: "test-python-action-rust-nodes".to_owned(),
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: "test-python-action-rust-edges".to_owned(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect fake Chroma");
+
+    let summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace"),
+            move |_input| async { panic!("accepted Python action must not call provider") },
+        )
+        .await
+        .expect("apply Python-compatible action through Rust worker");
+
+    assert_eq!(summary.claimed, 1);
+    assert_eq!(summary.reused, 1);
+    assert_eq!(
+        queue
+            .index_jobs(
+                Some("workspace"),
+                Some("DONE"),
+                Some("node"),
+                Some("node-1"),
+                Some("node_embedding"),
+                10,
+            )
+            .await
+            .expect("read completed queue item")
+            .len(),
+        1
+    );
+
+    let requests = server.await.expect("fake Chroma server");
+    let upsert = requests
+        .iter()
+        .find(|(line, _)| line.contains("/upsert HTTP"))
+        .expect("Rust worker writes accepted Python action to Chroma");
+    assert_eq!(upsert.1["ids"], json!(["node-1"]));
+    assert_eq!(upsert.1["documents"], json!(["current node"]));
+    assert_eq!(upsert.1["embeddings"], json!([[0.25, 0.75]]));
+    assert_eq!(
+        upsert.1["metadatas"][0]["_kogwistar_namespace"],
+        "workspace"
     );
 
     drop(graph);
