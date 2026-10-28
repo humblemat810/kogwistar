@@ -547,6 +547,52 @@
     }
 
     #[tokio::test]
+    async fn mount_memory_syscall_checks_namespace_and_capability_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "mount_memory_auth_contract",
+        )
+        .unwrap();
+        let make_request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version": "v1",
+                "op": "mount_memory",
+                "args": {"conversation_id": "c-1"}
+            }))
+            .unwrap(),
+            principal,
+        };
+        let namespace_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "docs",
+                "capabilities": ["project_view"]
+            })))
+            .await;
+        assert_eq!(namespace_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&namespace_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+
+        let capability_denied = service
+            .execute(make_request(json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": []
+            })))
+            .await;
+        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
     async fn context_snapshot_authorization_is_bound_to_request_principal() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
@@ -635,6 +681,57 @@
                     id: expected["snapshot_node_id"].as_str().unwrap().to_owned(),
                     document: Some(expected.to_string()),
                     metadata: snapshot_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+
+        let mut private_snapshot_metadata = Map::new();
+        private_snapshot_metadata.insert("entity_type".to_owned(), json!("context_snapshot"));
+        private_snapshot_metadata.insert(
+            "conversation_id".to_owned(),
+            expected["conversation_id"].clone(),
+        );
+        private_snapshot_metadata.insert("run_id".to_owned(), json!("run-private"));
+        private_snapshot_metadata.insert("stage".to_owned(), json!("final"));
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "snapshot-private".to_owned(),
+                    document: Some(json!({"summary": "private snapshot"}).to_string()),
+                    metadata: private_snapshot_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        let mut private_acl_metadata = Map::new();
+        for (key, value) in [
+            ("entity_type", json!("acl_record")),
+            ("acl_truth_graph", json!("conversation")),
+            ("acl_target_entity_id", json!("snapshot-private")),
+            ("acl_target_grain", json!("node")),
+            ("acl_version", json!(1)),
+            ("acl_mode", json!("private")),
+            ("owner_id", json!("bob")),
+        ] {
+            private_acl_metadata.insert(key.to_owned(), value);
+        }
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "acl-snapshot-private".to_owned(),
+                    document: None,
+                    metadata: private_acl_metadata,
                     embedding: None,
                 },
                 embedding_dim: 3,
@@ -736,6 +833,42 @@
         assert_eq!(syscall_payload["op"], "mount_memory");
         assert_eq!(syscall_payload["status"], "ok");
         assert_eq!(syscall_payload["result"], expected);
+
+        let private_syscall_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "run-private",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            private_syscall_response.status,
+            StatusCode::NOT_FOUND.as_u16()
+        );
+        let private_payload: Value =
+            serde_json::from_slice(&private_syscall_response.body).unwrap();
+        assert_eq!(
+            private_payload["code"],
+            "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND"
+        );
+        assert!(!private_payload.to_string().contains("private snapshot"));
 
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
