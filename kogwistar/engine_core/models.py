@@ -565,7 +565,7 @@ class LevelAwareMixin(BaseModel):
     """Mixin to handle level_from_root synchronization with metadata"""
 
     level_from_root: int | None = Field(
-        None,
+        default=None,
         description="Hierarchy level from root, metadata store final authoritative",
     )
 
