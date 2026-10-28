@@ -2221,7 +2221,14 @@
                         "record": {"id": entity_id, "document": "service-triggered native graph"},
                         "embedding_dim": 0
                     }],
-                    "index_jobs": []
+                    "index_jobs": [{
+                        "job_id": format!("service-native-job-{}", request.run_id),
+                        "namespace": "workflow",
+                        "entity_kind": "node",
+                        "entity_id": entity_id,
+                        "index_kind": "node_embedding",
+                        "op": "UPSERT"
+                    }]
                 }))
                 .unwrap();
                 Ok((
@@ -2474,6 +2481,16 @@
         assert!(graph_events
             .iter()
             .any(|event| event.event_id == format!("service-native-event-{run_id}")));
+        let index_jobs = service
+            .store
+            .list_index_jobs(Some("workflow"), None, None, None, None, 100)
+            .await
+            .unwrap();
+        assert!(index_jobs.iter().any(|job| {
+            job.job_id == format!("service-native-job-{run_id}")
+                && job.entity_id == entity_id
+                && job.status == "PENDING"
+        }));
         assert_eq!(
             service
                 .store
@@ -2579,6 +2596,14 @@
             assert!(!events
                 .iter()
                 .any(|event| event.event_id == format!("service-native-event-{run_id}")));
+            let jobs = service
+                .store
+                .list_index_jobs(Some("workflow"), None, None, None, None, 100)
+                .await
+                .unwrap();
+            assert!(!jobs
+                .iter()
+                .any(|job| job.job_id == format!("service-native-job-{run_id}")));
             assert_eq!(
                 service
                     .store

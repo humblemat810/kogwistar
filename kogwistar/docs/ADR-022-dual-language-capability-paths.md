@@ -198,13 +198,13 @@ completion, completed lane acknowledgement, and rejection of a mismatched
 configured owner before lane creation. It now also admits a second service run,
 changes the owner's active status, role, or namespace in the separate SQLite
 auth database before native effect execution, and verifies for each case that
-no graph event or projection is written, the run is durably failed, and the
-lane is acknowledged. Complete the existing `DL-10` acceptance criteria by
-covering inline durable-run-owner/binding mismatch and missing/untrusted
-bindings, cross-scope writes, transaction failure, duplicate result, and
-restart/retry.
-Verify graph event, projection, non-empty index intent, runtime result, and
-acknowledgement together for effect batches that include index intents.
+no graph event, projection, or index job is written, the run is durably failed,
+and the lane is acknowledged. The successful service batch carries a
+non-empty index intent and verifies its pending job alongside the graph event,
+projection, succeeded run, and completed lane. Complete the existing `DL-10`
+acceptance criteria by covering inline durable-run-owner/binding mismatch and
+missing/untrusted bindings, cross-scope writes, injected transaction failure,
+duplicate result, and restart/retry atomicity.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
