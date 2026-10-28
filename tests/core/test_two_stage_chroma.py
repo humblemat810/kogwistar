@@ -55,9 +55,25 @@ class _Backend:
         for node_id in kwargs.get("ids") or []:
             self.rows.pop(str(node_id), None)
 
+    def node_query(self, **kwargs):
+        rows = list(self.rows.values())
+        count = int(kwargs.get("n_results", len(rows)))
+        rows = rows[:count]
+        result = {
+            "ids": [[row["id"] for row in rows]],
+            "documents": [[row["document"] for row in rows]],
+            "metadatas": [[row["metadata"] for row in rows]],
+        }
+        if "embeddings" in kwargs.get("include", []):
+            result["embeddings"] = [[row.get("embedding") for row in rows]]
+        if "distances" in kwargs.get("include", []):
+            result["distances"] = [[float(index) for index, _ in enumerate(rows)]]
+        return result
+
     edge_get = node_get
     edge_upsert = node_upsert
     edge_delete = node_delete
+    edge_query = node_query
 
     def edge_endpoints_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
@@ -550,6 +566,54 @@ def test_current_stage1_wins_over_stale_chroma_row_on_get(tmp_path, kind):
     result = getattr(engine.read, f"_{kind}_get_raw")(ids=["n1"])
     assert json.loads(result["documents"][0])["doc_id"] == "new"
     assert result["embeddings"] == [None]
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+def test_vector_query_drops_stale_or_unversioned_chroma_records(tmp_path, kind):
+    engine, _ = _engine(tmp_path)
+    current = (
+        build_entity_node(node_id="current", doc_id="d1")
+        if kind == "node"
+        else build_relationship_edge(edge_id="current", src="a", tgt="b", doc_id="d1")
+    )
+    stale = (
+        build_entity_node(node_id="stale", doc_id="d1")
+        if kind == "node"
+        else build_relationship_edge(edge_id="stale", src="a", tgt="b", doc_id="d1")
+    )
+    unversioned = (
+        build_entity_node(node_id="legacy", doc_id="d1")
+        if kind == "node"
+        else build_relationship_edge(edge_id="legacy", src="a", tgt="b", doc_id="d1")
+    )
+    upsert = getattr(engine.backend, f"{kind}_upsert")
+    upsert(
+        ids=[current.safe_get_id(), stale.safe_get_id(), unversioned.safe_get_id()],
+        documents=[
+            current.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            stale.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            unversioned.model_dump_json(field_mode="backend", exclude=["embedding"]),
+        ],
+        metadatas=[
+            {"_kogwistar_source_fingerprint": "fp-1"},
+            {"_kogwistar_source_fingerprint": "old-fp"},
+            {},
+        ],
+        embeddings=[[1.0, 0.0]] * 3,
+    )
+    queried = getattr(engine.backend, f"{kind}_query")(
+        query_embeddings=[[1.0, 0.0]], include=["documents", "metadatas", "embeddings"]
+    )
+    assert queried["ids"][0]
+    parsed = getattr(engine.read, f"{kind}s_from_query_result")(queried)
+    assert parsed and parsed[0], (queried, parsed)
+    assert parsed[0][0].metadata.get("_kogwistar_source_fingerprint") == "fp-1"
+    query = getattr(engine.read, f"query_{kind}s")
+    result = query(
+        query_embeddings=[1.0, 0.0],
+        include=["documents", "metadatas", "embeddings"],
+    )
+    assert [[item.safe_get_id() for item in batch] for batch in result] == [["current"]]
 
 
 @two_stage_case("recovery_reconciliation")

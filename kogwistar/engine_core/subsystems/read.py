@@ -154,6 +154,45 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
+    def _filter_current_stage2_records(
+        self, entity_kind: str, batches: list[list[Node | Edge]]
+    ) -> list[list[Node | Edge]]:
+        """Drop vector rows whose embedded revision differs from canonical events."""
+        if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
+            return batches
+        revision_cache: dict[str, str | None] = {}
+        filtered: list[list[Node | Edge]] = []
+        for batch in batches:
+            current_batch: list[Node | Edge] = []
+            for item in batch:
+                entity_id = str(item.safe_get_id())
+                metadata = getattr(item, "metadata", {}) or {}
+                staged_fingerprint = metadata.get("_kogwistar_source_fingerprint")
+                if entity_id not in revision_cache:
+                    try:
+                        payload = json.loads(
+                            self._e.indexing.canonical_revision_payload(
+                                entity_kind=entity_kind, entity_id=entity_id
+                            )
+                        )
+                    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+                        revision_cache[entity_id] = None
+                    else:
+                        revision_cache[entity_id] = (
+                            str(payload.get("source_fingerprint"))
+                            if payload.get("source_state") == "active"
+                            and payload.get("source_fingerprint")
+                            else None
+                        )
+                if (
+                    isinstance(staged_fingerprint, str)
+                    and staged_fingerprint
+                    and staged_fingerprint == revision_cache[entity_id]
+                ):
+                    current_batch.append(item)
+            filtered.append(current_batch)
+        return filtered
+
     @staticmethod
     def _native_equality_filter(where: object) -> dict[str, JsonValue] | None:
         if where is None:
@@ -866,6 +905,9 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = self.nodes_from_query_result(
             got, node_type=cast(type[TNode], node_type or Node)
         )
+        rows = cast(
+            list[list[TNode]], self._filter_current_stage2_records("node", rows)
+        )
         return [
             self._e._filter_items_by_resolve_mode(row, "active_only")
             for row in rows
@@ -1209,6 +1251,9 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         rows = self.edges_from_query_result(
             got, edge_type=cast(type[TEdge], edge_type or Edge)
+        )
+        rows = cast(
+            list[list[TEdge]], self._filter_current_stage2_records("edge", rows)
         )
         return [
             self._e._filter_items_by_resolve_mode(row, "active_only")
