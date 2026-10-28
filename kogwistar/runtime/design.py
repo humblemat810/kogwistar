@@ -441,8 +441,10 @@ def validate_workflow_design(
                 try:
                     if callable(resolve_version):
                         versioned_handler = resolve_version(op, version)
-                    else:
+                    elif callable(resolve_async_version):
                         versioned_handler = resolve_async_version(op, version)
+                    else:
+                        versioned_handler = None
                     supported = callable(versioned_handler)
                 except (LookupError, ValueError):
                     supported = False

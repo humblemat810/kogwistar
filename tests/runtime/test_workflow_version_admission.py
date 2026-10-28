@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib
 import json
+import queue
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from kogwistar.runtime.design import validate_workflow_design
 from kogwistar.runtime.models import WorkflowNode, WorkflowNodeMetadata
+from kogwistar.runtime.step_worker import SyncStepWorker
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
@@ -57,6 +61,16 @@ class _VersionResolver:
         return self.environments.get((op, version))
 
 
+class _NonCallableVersionResolver:
+    ops = {"compute"}
+
+    def __call__(self, _op: str) -> object:
+        return None
+
+    def resolve_version(self, _op: str, _version: str) -> None:
+        return None
+
+
 def _design(monkeypatch, version: str, environment_id: str | None = None):
     metadata: dict[str, object] = {
         "wf_start": True,
@@ -89,6 +103,72 @@ def test_workflow_admission_rejects_unregistered_operation_version(monkeypatch) 
             predicate_registry={},
             resolver=_VersionResolver({("compute", "v1")}),
         )
+
+
+def test_workflow_admission_rejects_non_callable_versioned_handler(monkeypatch) -> None:
+    _design(monkeypatch, "v2")
+
+    with pytest.raises(ValueError, match="requires unsupported version 'v2'"):
+        validate_workflow_design(
+            workflow_engine=object(),
+            workflow_id="wf-version-admission",
+            predicate_registry={},
+            resolver=_NonCallableVersionResolver(),
+        )
+
+
+def test_step_worker_rejects_handler_changed_to_non_callable() -> None:
+    class Resolver:
+        def __call__(self, _op: str) -> object:
+            raise AssertionError("legacy resolver must not be used for v2")
+
+        def resolve_version(self, _op: str, _version: str) -> None:
+            return None
+
+    class Emitter:
+        def step_started(self, _trace_context: object) -> None:
+            pass
+
+        def step_completed(
+            self, _trace_context: object, *, status: str, duration_ms: int
+        ) -> None:
+            del status, duration_ms
+
+    message_queue: queue.Queue[dict[str, object]] = queue.Queue()
+    done_queue: queue.Queue[tuple[object, ...]] = queue.Queue()
+    runtime = SimpleNamespace(
+        step_resolver=Resolver(),
+        lane_message_sender=None,
+        lane_message_event_sink=None,
+        emitter=Emitter(),
+        conversation_engine=object(),
+        _should_step_uow=lambda _op, _state: False,
+    )
+    worker = SyncStepWorker(
+        runtime=runtime,
+        workflow_id="wf",
+        run_id="run",
+        conversation_id=None,
+        turn_node_id=None,
+        nodes={"node": SimpleNamespace(op="compute", version="v2", fail_actiion="continue")},
+        trace_context=None,
+        message_queue=message_queue,
+        done_queue=done_queue,
+        work_condition=threading.Condition(),
+        authority_context=None,
+        cancel_requested=lambda: False,
+        parent_lease_renew=None,
+        renew_run_ownership=lambda: None,
+        apply_child_result=lambda *_args: None,
+        now_ms=iter((10, 20)).__next__,
+    )
+
+    worker("node", {}, "token", None, 1, 0)
+
+    completed = done_queue.get_nowait()
+    assert completed[5] == "error"
+    result = completed[1]
+    assert "versioned step resolver returned a non-callable handler" in result.errors[0]
 
 
 def test_workflow_admission_accepts_registered_historical_version(monkeypatch) -> None:

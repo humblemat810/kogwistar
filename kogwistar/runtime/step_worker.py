@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias, cast
 
 from kogwistar.json_types import JsonValue
 
@@ -26,6 +26,7 @@ from .step_context import (
     LaneMessageEventSinkLike,
     LaneMessageSenderLike,
     StepContext,
+    StepFn,
     StepResolver,
 )
 from .telemetry import EventEmitter, TraceContext
@@ -184,7 +185,12 @@ class SyncStepWorker:
                             self.runtime.step_resolver, "resolve_version", None
                         )
                         if callable(resolve_version):
-                            step_fn = resolve_version(op, op_version)
+                            resolved_step = resolve_version(op, op_version)
+                            if not callable(resolved_step):
+                                raise TypeError(
+                                    "versioned step resolver returned a non-callable handler"
+                                )
+                            step_fn = cast(StepFn, resolved_step)
                         elif op_version == "v1":
                             step_fn = self.runtime.step_resolver(op)
                         else:
