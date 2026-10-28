@@ -1031,7 +1031,8 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        self.apply_runtime_result_input(input, Some(request), None).await
+        self.apply_runtime_result_input(input, Some(request), None, "python-worker")
+            .await
     }
 
     async fn apply_runtime_result_input(
@@ -1039,6 +1040,7 @@ impl PostgresRunApplicationService {
         input: RuntimeWorkerResultRequest,
         request: Option<&ApiEffectRequest>,
         inline_principal: Option<Value>,
+        executor_target: &str,
     ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
@@ -1174,10 +1176,24 @@ impl PostgresRunApplicationService {
             None
         };
         let commit_capabilities = self.capabilities.clone();
+        let expected_executor_target = executor_target.to_owned();
         let outcome = self
             .store
             .transaction(|uow| {
                 Box::pin(async move {
+                    let lane = uow
+                        .get_projected_lane_message(&input.handoff.message_id)
+                        .await?
+                        .ok_or_else(|| {
+                            kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                "claimed runtime lane does not exist".to_owned(),
+                            )
+                        })?;
+                    validate_runtime_lane_executor(&lane, &expected_executor_target).map_err(|message| {
+                        kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            message.to_owned(),
+                        )
+                    })?;
                     if let Some((mutations, _, run_owner_id, principal, inline)) = graph_effects.as_ref() {
                         if !capability_allowed_for_principal(
                             principal,

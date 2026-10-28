@@ -58,7 +58,12 @@ impl PostgresRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        self.apply_runtime_result_input(result, Some(request), None)
+        self.apply_runtime_result_input(
+            result,
+            Some(request),
+            None,
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        )
             .await
     }
 }
@@ -140,7 +145,12 @@ impl ApplicationService for PostgresRunApplicationService {
                 inline_principal = None;
             }
             let applied = self
-                .apply_runtime_result_input(result, None, inline_principal)
+                .apply_runtime_result_input(
+                    result,
+                    None,
+                    inline_principal,
+                    kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                )
                 .await;
             if !(200..300).contains(&applied.status) {
                 return Err(format!(
@@ -199,7 +209,10 @@ impl ApplicationService for SqliteRunApplicationService {
                 return Ok(false);
             };
             let result = native_result_for_claimed_work(work, &self.native_operations)?;
-            let applied = self.apply_runtime_result_input(result);
+            let applied = self.apply_runtime_result_input(
+                result,
+                kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+            );
             if !(200..300).contains(&applied.status) {
                 return Err(format!(
                     "native runtime result application returned HTTP {}",

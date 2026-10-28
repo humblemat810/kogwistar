@@ -1549,12 +1549,13 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        self.apply_runtime_result_input(input)
+        self.apply_runtime_result_input(input, "python-worker")
     }
 
     fn apply_runtime_result_input(
         &self,
         input: RuntimeWorkerResultRequest,
+        executor_target: &str,
     ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
@@ -1589,6 +1590,18 @@ impl SqliteRunApplicationService {
         }
         let outcome = self.store.immediate_transaction(|uow| {
             let handoff = input.handoff;
+            let lane = uow
+                .get_projected_lane_message(&handoff.message_id)?
+                .ok_or_else(|| {
+                    kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                        "claimed runtime lane does not exist".to_owned(),
+                    )
+                })?;
+            validate_runtime_lane_executor(&lane, executor_target).map_err(|message| {
+                kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                    message.to_owned(),
+                )
+            })?;
             let usage = input
                 .effect
                 .as_ref()
@@ -1840,6 +1853,6 @@ impl SqliteRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        self.apply_runtime_result_input(result)
+        self.apply_runtime_result_input(result, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
     }
 }

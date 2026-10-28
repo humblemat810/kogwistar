@@ -2647,6 +2647,38 @@
             native_middle_work["payload"]["state"]["python_before_seen"],
             true
         );
+        let events_before_python_result_bypass = store
+            .list_server_run_events("mixed-language-run", 0, 100)
+            .unwrap();
+        let python_result_bypass = client
+            .post(format!("{base_url}/internal/runtime/results"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": native_middle_work["message_id"],
+                    "claimed_by": native_middle_work["claimed_by"],
+                    "run_id": native_middle_work["run_id"],
+                    "step_id": native_middle_work["step_id"],
+                    "correlation_id": native_middle_work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "forged-python-result-for-native-step",
+                    "state_update": [["u", {"counter": 999}]],
+                    "successors": []
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(python_result_bypass.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            store
+                .list_server_run_events("mixed-language-run", 0, 100)
+                .unwrap(),
+            events_before_python_result_bypass,
+            "generic Python results must not consume Rust-targeted work"
+        );
         let events_before_wrong_target = store
             .list_server_run_events("mixed-language-run", 0, 100)
             .unwrap();

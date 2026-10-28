@@ -1278,6 +1278,49 @@ struct RuntimeWorkerResultRequest {
     effect: Option<RecordedWorkerSuccessEffect>,
 }
 
+fn validate_runtime_lane_executor(
+    lane: &ProjectedLaneMessage,
+    requested_executor_target: &str,
+) -> Result<(), &'static str> {
+    let recipient_target = (lane.recipient_id == "rust-native-worker")
+        .then_some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+    let payload = match lane.payload_json.as_deref() {
+        Some(payload_json) => Some(
+            serde_json::from_str::<Value>(payload_json)
+                .map_err(|_| "claimed runtime lane payload is not valid JSON")?,
+        ),
+        None => None,
+    };
+    let operation_target = payload
+        .as_ref()
+        .and_then(|value| value.get("op"))
+        .and_then(Value::as_str)
+        .and_then(kogwistar_runtime::native_operation_name)
+        .map(|_| kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+    let explicit_target = match payload
+        .as_ref()
+        .and_then(|value| value.get("executor_target"))
+    {
+        Some(Value::String(target)) => Some(target.as_str()),
+        Some(Value::Null) | None => None,
+        Some(_) => return Err("claimed runtime lane has an invalid executor target"),
+    };
+    if explicit_target.is_some_and(|target| {
+        recipient_target.is_some_and(|recipient| recipient != target)
+            || operation_target.is_some_and(|operation| operation != target)
+    }) {
+        return Err("claimed runtime lane executor metadata is inconsistent");
+    }
+    let actual_target = explicit_target
+        .or(operation_target)
+        .or(recipient_target)
+        .unwrap_or("python-worker");
+    if actual_target != requested_executor_target {
+        return Err("worker result route does not match the claimed lane executor target");
+    }
+    Ok(())
+}
+
 fn validate_python_worker_submission_trace_binding(
     trace_events: &[Value],
     lease_claim_id: &str,

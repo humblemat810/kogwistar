@@ -380,6 +380,50 @@
             "claim must return work before exercising duplicate execution: {execution}"
         );
         assert_eq!(execution["payload"]["executor_target"], "rust-native");
+        let python_result_bypass = client
+            .post(format!("{base}/internal/runtime/results"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "handoff": execution["handoff"],
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "forged-python-graph-effect",
+                    "graph_mutation_batch": {
+                        "contract_version": 1,
+                        "atomic": true,
+                        "mutations": [{
+                            "scope": {"namespace": "alpha"},
+                            "table": "gke_nodes",
+                            "entity_kind": "node",
+                            "event_id": "forged-python-graph-event",
+                            "op": "ADD",
+                            "payload": {"id": "forged-python-node"},
+                            "record": {"id": "forged-python-node", "document": "forged"},
+                            "embedding_dim": 0
+                        }],
+                        "index_jobs": [{
+                            "job_id": "forged-python-graph-job",
+                            "namespace": "alpha",
+                            "entity_kind": "node",
+                            "entity_id": "forged-python-node",
+                            "index_kind": "node_embedding",
+                            "op": "UPSERT"
+                        }]
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        let python_result_bypass_status = python_result_bypass.status();
+        let python_result_bypass_body = python_result_bypass.text().await.unwrap();
+        assert_eq!(
+            python_result_bypass_status,
+            StatusCode::CONFLICT,
+            "{python_result_bypass_body}"
+        );
+        assert!(service.store.replay_raw_events("alpha", 0, 100).await.unwrap().is_empty());
+        assert!(service.store.list_index_jobs(Some("alpha"), None, None, None, None, 100).await.unwrap().is_empty());
         let mut wrong_target_execution = execution.clone();
         wrong_target_execution["payload"]["executor_target"] = json!("python-worker");
         let wrong_target = client
@@ -1643,7 +1687,7 @@
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
                         serde_json::to_vec(&json!({
-                            "claimed_by": "numpy-worker",
+                            "claimed_by": "rust-native-worker",
                             "limit": 1,
                             "lease_seconds": 60,
                             "recipient_ids": [
@@ -1662,6 +1706,10 @@
         assert_eq!(work["step_id"], "graph-start");
         assert_eq!(work["payload"]["op"], "noop");
         assert_eq!(work["payload"]["executor_target"], "rust-native");
+        let run_id = work["run_id"].as_str().unwrap();
+        let events_before_misrouted_result = store
+            .list_server_run_events(run_id, 0, 100)
+            .unwrap();
         let result = app
             .clone()
             .oneshot(
@@ -1691,7 +1739,38 @@
             )
             .await
             .unwrap();
-        assert_eq!(result.status(), StatusCode::OK);
+        assert_eq!(result.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            store.list_server_run_events(run_id, 0, 100).unwrap(),
+            events_before_misrouted_result,
+            "misrouted result must not append durable events"
+        );
+        let native_result = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/native/execute")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "handoff": {
+                                "message_id": work["message_id"],
+                                "claimed_by": work["claimed_by"],
+                                "run_id": work["run_id"],
+                                "step_id": work["step_id"],
+                                "correlation_id": work["correlation_id"],
+                            },
+                            "payload": work["payload"],
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(native_result.status(), StatusCode::OK);
         let next = app
             .oneshot(
                 Request::builder()
