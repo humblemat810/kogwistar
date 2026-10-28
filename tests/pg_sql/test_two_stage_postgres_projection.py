@@ -864,8 +864,9 @@ async def test_postgres_two_stage_async_reconciles_edge_endpoints_after_stage2_w
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("batched", [False, True])
 async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
-    async_pg_backend, monkeypatch
+    async_pg_backend, monkeypatch, batched
 ) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
@@ -881,6 +882,20 @@ async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
         persistence_mode="two_stage",
         embedding_function=provider,
     )
+
+    async def apply_delete(job) -> None:
+        adapter = engine.async_two_stage_projection_adapter
+        if batched:
+            outcomes = await adapter.apply_embedding_jobs_batch([job])
+            assert outcomes[job.job_id] is None
+        else:
+            await adapter.apply_embedding_job(
+                entity_kind=job.entity_kind,
+                entity_id=job.entity_id,
+                op=job.op,
+                payload_json=job.payload_json,
+            )
+
     try:
         assert engine.async_two_stage_projection_adapter.__class__.__name__ == (
             "AsyncRustPostgresTwoStageProjectionAdapter"
@@ -898,6 +913,46 @@ async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
             ids=["async-rust-pg-n1", "async-rust-pg-n2"], include=["embeddings"]
         )
         assert all(embedding is not None for embedding in ready["embeddings"])
+
+        delete_target = "async-rust-pg-n1"
+        assert engine.lifecycle.tombstone_node(delete_target) is True
+        delete_job = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == delete_target
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
+        )
+        await apply_delete(delete_job)
+        tombstoned = await engine.backend.node_get(
+            ids=[delete_target], include=["embeddings", "metadatas"]
+        )
+        assert tombstoned["ids"] == [delete_target]
+        assert tombstoned["embeddings"] == [None]
+        assert tombstoned["metadatas"][0]["lifecycle_status"] == "tombstoned"
+
+        await engine.async_add_node(
+            build_entity_node(node_id=delete_target, doc_id="d2", embedding=None)
+        )
+        resurrect_worker = AsyncIndexJobWorker(
+            engine=engine, batch_size=8, max_jobs_per_tick=8
+        )
+        for _ in range(3):
+            await resurrect_worker.tick()
+            resurrected = await engine.backend.node_get(
+                ids=[delete_target], include=["embeddings", "metadatas"]
+            )
+            if resurrected["embeddings"][0] is not None:
+                break
+        assert resurrected["embeddings"][0] is not None
+        assert resurrected["metadatas"][0]["lifecycle_status"] == "active"
+
+        await apply_delete(delete_job)
+        after_stale_delete = await engine.backend.node_get(
+            ids=[delete_target], include=["embeddings"]
+        )
+        assert after_stale_delete["embeddings"][0] is not None
+        assert calls == [2, 1]
     finally:
         engine.close()
 
@@ -1098,11 +1153,26 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
         assert engine.backend.node_get(ids=["rust-stale"], include=["embeddings"])["embeddings"] == [None]
 
         engine.write.add_node(build_entity_node(node_id="rust-delete", doc_id="d1", embedding=None))
-        delete_job = next(
+        upsert_job = next(
             job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
             if job.entity_id == "rust-delete" and job.index_kind == "node_embedding"
         )
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=upsert_job.entity_kind,
+            entity_id=upsert_job.entity_id,
+            op=upsert_job.op,
+            payload_json=upsert_job.payload_json,
+        )
+        assert engine.backend.node_get(
+            ids=["rust-delete"], include=["embeddings"]
+        )["embeddings"][0] is not None
         assert engine.lifecycle.tombstone_node("rust-delete") is True
+        delete_job = next(
+            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_id == "rust-delete"
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
+        )
         engine.two_stage_projection_adapter.apply_embedding_job(
             entity_kind=delete_job.entity_kind,
             entity_id=delete_job.entity_id,

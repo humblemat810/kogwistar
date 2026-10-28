@@ -1020,14 +1020,27 @@ class AsyncRustPostgresTwoStageProjectionAdapter:
             return
         if not callable(provider):
             raise RuntimeError("async Rust two-stage projection requires an embedding provider")
+        expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
+        if op.upper() == "DELETE":
+            await asyncio.to_thread(
+                self._sync_adapter._clear_embedding_projection,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            return
         async_provider = cast(EmbeddingProvider, provider)
         current = await asyncio.to_thread(
             self.engine.indexing.canonical_entity_revision,
             entity_kind=entity_kind,
             entity_id=entity_id,
         )
-        expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
-        if op.upper() == "DELETE" or current is None or current.state != "active":
+        if current is None or current.state != "active":
+            await asyncio.to_thread(
+                self._sync_adapter._clear_embedding_projection,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                only_if_inactive=True,
+            )
             return
         actual = await asyncio.to_thread(
             self.engine.indexing.canonical_revision_payload,
@@ -1087,16 +1100,27 @@ class AsyncRustPostgresTwoStageProjectionAdapter:
             entity_id = str(_job_value(job, "entity_id") or "")
             op = str(_job_value(job, "op") or "UPSERT")
             try:
-                if op.upper() == "DELETE":
-                    outcomes[job_id] = None
-                    continue
                 payload_json = _payload_text(_job_value(job, "payload_json"))
                 expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
+                if op.upper() == "DELETE":
+                    await asyncio.to_thread(
+                        self._sync_adapter._clear_embedding_projection,
+                        entity_kind=kind,
+                        entity_id=entity_id,
+                    )
+                    outcomes[job_id] = None
+                    continue
                 current = await asyncio.to_thread(
                     self.engine.indexing.canonical_entity_revision,
                     entity_kind=kind, entity_id=entity_id,
                 )
                 if current is None or current.state != "active":
+                    await asyncio.to_thread(
+                        self._sync_adapter._clear_embedding_projection,
+                        entity_kind=kind,
+                        entity_id=entity_id,
+                        only_if_inactive=True,
+                    )
                     outcomes[job_id] = None
                     continue
                 actual = await asyncio.to_thread(

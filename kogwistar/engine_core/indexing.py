@@ -421,17 +421,36 @@ class IndexingSubsystem:
             stage1_query = getattr(adapter, "stage1_query", None)
             if callable(stage1_query):
                 stage1_present = bool(stage1_query(ids=[entity_id], limit=1))
+            capability = getattr(self.engine, "two_stage_projection_capability", None)
+            inline_projection = (
+                getattr(capability, "stage1_strategy", None) == "none"
+            )
+            is_tombstoned = _is_tombstoned(metadata)
+            if inline_projection and not is_tombstoned:
+                # These backends keep the vectorless source in the canonical row;
+                # there is no separate Stage-1 projection to restore or query.
+                stage1_present = bool(current.get("ids"))
             if op in {"DELETE", "TOMBSTONE", "REMOVE"}:
                 if not current.get("ids") and not stage1_present:
                     continue
-                needs_delete = bool(current.get("ids")) and _is_tombstoned(metadata)
+                needs_delete = bool(current.get("ids")) and is_tombstoned
+                if (
+                    inline_projection
+                    and is_tombstoned
+                    and metadata.get("_kogwistar_stage2_ready") is False
+                    and not stage1_present
+                ):
+                    # The Rust/PostgreSQL inline projection retains canonical
+                    # tombstones. Its explicit not-ready marker proves the
+                    # derived vector cleanup has already converged.
+                    needs_delete = False
                 needs_delete = needs_delete or stage1_present
                 desired_op = "DELETE"
             else:
                 needs_delete = False
                 desired_op = "UPSERT"
             ready = bool(current.get("ids")) and bool(embeddings) and embeddings[0] is not None
-            ready = ready and not _is_tombstoned(metadata)
+            ready = ready and not is_tombstoned
             projected_fingerprint = (
                 metadata.get("_kogwistar_source_fingerprint")
                 if isinstance(metadata, dict)
