@@ -10,9 +10,11 @@ from kogwistar.workers.index_job_worker import IndexJobWorker
 @dataclass
 class _Job:
     job_id: str
+    namespace: str = "ns"
     entity_kind: str = "node"
     entity_id: str = "n1"
     index_kind: str = "node_docs"
+    coalesce_key: str = "test-coalesce-key"
     op: str = "upsert"
     retry_count: int = 0
     max_retries: int = 10
@@ -130,8 +132,8 @@ def test_batch_size_is_not_capped_by_max_inflight():
             self.calls: list[list[str]] = []
 
         def apply_embedding_jobs_batch(self, batch):
-            self.calls.append([job.job_id for job in batch])
-            return {job.job_id: None for job in batch}
+            self.calls.append([job["job_id"] for job in batch])
+            return {job["job_id"]: None for job in batch}
 
     adapter = _BatchAdapter()
     eng.two_stage_projection_adapter = adapter
@@ -173,8 +175,8 @@ def test_mixed_claim_batches_embeddings_then_applies_other_jobs_individually():
             self.calls: list[list[str]] = []
 
         def apply_embedding_jobs_batch(self, batch):
-            self.calls.append([job.job_id for job in batch])
-            return {job.job_id: None for job in batch}
+            self.calls.append([job["job_id"] for job in batch])
+            return {job["job_id"]: None for job in batch}
 
     adapter = _BatchAdapter()
     eng.two_stage_projection_adapter = adapter
@@ -266,8 +268,8 @@ def test_partial_batch_outcomes_acknowledge_members_independently():
     class _PartialBatchAdapter:
         def apply_embedding_jobs_batch(self, batch):
             return {
-                batch[0].job_id: None,
-                batch[1].job_id: RuntimeError("one document failed"),
+                batch[0]["job_id"]: None,
+                batch[1]["job_id"]: RuntimeError("one document failed"),
             }
 
     eng.two_stage_projection_adapter = _PartialBatchAdapter()

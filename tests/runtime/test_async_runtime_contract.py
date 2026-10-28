@@ -3631,6 +3631,8 @@ async def test_async_runtime_checkpoint_resume_roundtrip_postgres(request, tmp_p
 
 
 def test_async_runtime_rust_authority_rejects_native_resume_marker(monkeypatch):
+    import importlib
+
     rt = AsyncWorkflowRuntime(
         workflow_engine=object(),
         conversation_engine=object(),
@@ -3641,10 +3643,8 @@ def test_async_runtime_rust_authority_rejects_native_resume_marker(monkeypatch):
         trace=False,
         experimental_native_scheduler=True,
     )
-    monkeypatch.setattr(
-        "kogwistar.runtime.rust_runtime_authority.rust_runtime_authority_selected",
-        lambda: True,
-    )
+    authority = importlib.import_module("kogwistar.runtime.rust_runtime_authority")
+    monkeypatch.setattr(authority, "rust_runtime_authority_selected", lambda: True)
 
     with pytest.raises(NotImplementedError, match="Rust async authority"):
         asyncio.run(

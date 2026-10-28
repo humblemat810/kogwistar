@@ -50,7 +50,8 @@ def test_rust_postgres_tests_are_explicitly_gated_and_ci_runs_them() -> None:
                 f"{path}:{source.count(chr(10), 0, declaration.start()) + 1}: "
                 "the ignore reason must explain the PostgreSQL DSN requirement"
             )
-            assert ".expect(" in source[occurrence.end() : occurrence.end() + 120], (
+            missing_dsn_handling = source[occurrence.end() : occurrence.end() + 120]
+            assert any(token in missing_dsn_handling for token in (".expect(", ".unwrap(")), (
                 f"{path}:{source.count(chr(10), 0, occurrence.start()) + 1}: "
                 "an explicitly selected PostgreSQL test must fail if its DSN is missing"
             )

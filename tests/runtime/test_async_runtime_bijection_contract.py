@@ -288,8 +288,13 @@ def test_async_runtime_linear_terminal_status_equivalent(monkeypatch):
         def add_edge(self, _edge):
             return None
 
+    class _Read:
+        def get_nodes(self, **_kwargs):
+            return []
+
     class _Engine:
         write = _Write()
+        read = _Read()
 
     resolver = AsyncMappingStepResolver()
 
@@ -448,8 +453,13 @@ def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
         def add_edge(self, _edge):
             return None
 
+    class _Read:
+        def get_nodes(self, **_kwargs):
+            return []
+
     class _Engine:
         write = _Write()
+        read = _Read()
 
     resolver = AsyncMappingStepResolver()
 
@@ -641,8 +651,13 @@ def test_async_runtime_native_update_schema_applies_known_and_falls_back_unknown
         def add_edge(self, _edge):
             return None
 
+    class _Read:
+        def get_nodes(self, **_kwargs):
+            return []
+
     class _Engine:
         write = _Write()
+        read = _Read()
 
     resolver = AsyncMappingStepResolver()
     resolver.set_state_schema({"op_log": "a"})

@@ -517,7 +517,13 @@ async def test_async_in_memory_rejects_stale_delete_after_resurrection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("batched", [False, True])
-@pytest.mark.parametrize("meta_impl", ["python", "rust"])
+@pytest.mark.parametrize(
+    "meta_impl",
+    [
+        "python",
+        pytest.param("rust", marks=pytest.mark.requires_rust, id="rust"),
+    ],
+)
 async def test_async_in_memory_slow_embedding_cannot_overwrite_newer_revision(
     tmp_path, monkeypatch, batched, meta_impl
 ):
