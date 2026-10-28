@@ -147,12 +147,15 @@ together.
 
 The current inline-worker implementation records a versioned
 `runtime_owner_binding` in the server-generated `run.created` event for
-authenticated run admission and service triggers. Before applying an inline
-graph effect, the worker matches that binding to the durable run owner, loads
-the current active user through the configured auth store, intersects current
-namespace/capability authority with the run's admitted scope/capability ceiling,
-and fails closed when it cannot establish authority. A denial is persisted as
-a failed worker result rather than left to repeat as a claimed graph write.
+authenticated run admission. A service trigger records a binding only when its
+requested owner (from payload or target configuration) matches the authenticated
+trigger actor; an ownerless legacy service run remains unbound. Before applying
+an inline graph effect, the worker matches any binding to the durable run owner,
+loads the current active user through the configured auth store, intersects
+current namespace/capability authority with the run's admitted
+scope/capability ceiling, and fails closed when it cannot establish authority.
+A denial is persisted as a failed worker result rather than left to repeat as a
+claimed graph write.
 Relevant code is in `postgres_runtime_service.rs`,
 `postgres_automation_service.rs`, and `application_services.rs`.
 
@@ -161,27 +164,35 @@ The auth identity store and PostgreSQL graph transaction are separate
 authorities; capability state is process-local. The implementation rechecks
 capability state during result application, but cannot serialize changes from
 an independent policy store with the graph commit. Do not claim globally
-linearizable revocation. Service-triggered runs bind the authenticated trigger
-actor; this is not a distinct service identity or credential. Do not restore
-authority from persisted request/JWT claims alone or permit a trigger payload to
-select an arbitrary owner.
+linearizable revocation. For a service-triggered workflow, a supplied owner from
+the trigger payload or target configuration must match the authenticated trigger
+actor; otherwise admission returns `KOGWISTAR_RUN_OWNER_FORBIDDEN` before run or
+lane creation. A legacy service run with no owner remains unowned and has no
+inline graph-write authority. This is not a distinct service identity or
+credential, and it does not authorize a trigger payload to select an arbitrary
+owner.
 
-The focused owner-revalidation unit test passes. The ignored PostgreSQL test,
+The focused owner-revalidation and service-owner-binding unit tests pass. The
+ignored PostgreSQL owner-revalidation test,
 `postgres_inline_native_graph_effect_revalidates_current_owner`, was explicitly
 run with `KOGWISTAR_TEST_PG_DSN` against a disposable pgvector container and
 passed. It proves an authorized inline graph write persists and a subsequent
 process-local `write_graph` revocation prevents the graph projection and records
 a failed run. This test does not yet cover external auth-database changes or all
-failure/recovery cases. Complete the existing `DL-10` acceptance criteria by
-covering owner mismatch, missing/untrusted binding, service-trigger admission,
-current auth status/role/namespace changes, cross-scope writes, transaction
-failure, duplicate result, and restart/retry. Verify graph event, projection,
-index intent, runtime result, and acknowledgement together. Retain authenticated
-HTTP, legacy non-graph, and Python worker regressions. Keep SQLite graph batches
-explicitly unsupported where no atomic graph authority exists. If revocation
-cannot be atomic with graph commit, document and test its actual consistency
-point. Do not mark `DL-10` complete until its existing acceptance criteria are
-met.
+failure/recovery cases. The PostgreSQL service-trigger test also passes for a
+matching configured owner and proves a mismatched requested owner is rejected
+without a runtime lane message. It does not execute an inline graph effect from
+a service-triggered run. Complete the existing `DL-10` acceptance criteria by
+covering inline durable-run-owner/binding mismatch and missing/untrusted
+bindings, current auth
+status/role/namespace changes, service-triggered graph effects, cross-scope
+writes, transaction failure, duplicate result, and restart/retry. Verify graph
+event, projection, index intent, runtime result, and acknowledgement together.
+Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
+SQLite graph batches explicitly unsupported where no atomic graph authority
+exists. If revocation cannot be atomic with graph commit, document and test its
+actual consistency point. Do not mark `DL-10` complete until its existing
+acceptance criteria are met.
 
 After the remaining `DL-10` verification, continue `DL-07I` from its recorded
 gaps rather than repeating completed experiments. Existing evidence covers

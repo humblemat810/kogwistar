@@ -1,4 +1,21 @@
 impl PostgresRunApplicationService {
+    fn service_run_owner_binding(
+        requested_user_id: Option<&str>,
+        trigger_binding: Option<&RuntimeOwnerBindingV1>,
+    ) -> Result<(Option<String>, Option<RuntimeOwnerBindingV1>), &'static str> {
+        let Some(requested_user_id) = requested_user_id
+            .map(str::trim)
+            .filter(|user_id| !user_id.is_empty())
+        else {
+            return Ok((None, None));
+        };
+        let Some(binding) = trigger_binding.filter(|binding| binding.user_id == requested_user_id)
+        else {
+            return Err("KOGWISTAR_RUN_OWNER_FORBIDDEN");
+        };
+        Ok((Some(binding.user_id.clone()), Some(binding.clone())))
+    }
+
     async fn trigger_service(
         &self,
         request: &ApiEffectRequest,
@@ -130,12 +147,30 @@ impl PostgresRunApplicationService {
                             .or_else(|| target.get("turn_node_id").and_then(Value::as_str))
                             .map(str::to_owned)
                             .unwrap_or_else(|| format!("wf_turn|{}", uuid::Uuid::new_v4()));
-                        let user_id = input
+                        let requested_user_id = input
                             .payload
                             .get("user_id")
                             .and_then(Value::as_str)
-                            .or_else(|| target.get("user_id").and_then(Value::as_str))
+                            .map(str::trim)
+                            .filter(|user_id| !user_id.is_empty())
+                            .or_else(|| {
+                                target
+                                    .get("user_id")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|user_id| !user_id.is_empty())
+                            })
                             .map(str::to_owned);
+                        let (user_id, run_owner_binding) =
+                            Self::service_run_owner_binding(
+                                requested_user_id.as_deref(),
+                                owner_binding.as_ref(),
+                            )
+                            .map_err(|code| {
+                                kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                    code.to_owned(),
+                                )
+                            })?;
                         let mut initial_state = target
                             .get("initial_state")
                             .and_then(Value::as_object)
@@ -255,7 +290,7 @@ impl PostgresRunApplicationService {
                                     "workflow_id": target_ref,
                                     "status": "queued",
                                     "turn_node_id": turn_node_id,
-                                    "runtime_owner_binding": owner_binding,
+                                    "runtime_owner_binding": run_owner_binding,
                                     "implementation_attestation": runtime_implementation_attestation(runtime_kind),
                                 })
                                 .to_string(),
@@ -407,6 +442,13 @@ impl PostgresRunApplicationService {
                     StatusCode::NOT_FOUND,
                     "KOGWISTAR_SERVICE_NOT_FOUND",
                     format!("Unknown service_id: {service_id}"),
+                )
+            }
+            Err(error) if error.to_string().contains("KOGWISTAR_RUN_OWNER_FORBIDDEN") => {
+                effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "A service-triggered run owner must match the authenticated trigger principal",
                 )
             }
             Err(error) => effect_error(

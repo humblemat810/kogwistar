@@ -13,6 +13,42 @@
     }
 
     #[test]
+    fn service_trigger_owner_must_match_authenticated_actor() {
+        let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
+        let principal = json!({
+            "user_id": "alice",
+            "sub": "alice@example.test",
+            "role": "rw",
+            "ns": "alpha",
+            "capabilities": ["service.manage", "write_graph"]
+        });
+        let admitted = runtime_owner_binding_v1(&principal, &capabilities).unwrap();
+
+        let (owner, binding) = PostgresRunApplicationService::service_run_owner_binding(
+            Some(" alice "),
+            Some(&admitted),
+        )
+        .unwrap();
+        assert_eq!(owner.as_deref(), Some("alice"));
+        assert_eq!(binding.as_ref().map(|value| value.user_id.as_str()), Some("alice"));
+
+        let (owner, binding) =
+            PostgresRunApplicationService::service_run_owner_binding(None, Some(&admitted))
+                .unwrap();
+        assert!(owner.is_none() && binding.is_none());
+        assert!(PostgresRunApplicationService::service_run_owner_binding(
+            Some("victim"),
+            Some(&admitted)
+        )
+        .is_err());
+        assert!(PostgresRunApplicationService::service_run_owner_binding(
+            Some("victim"),
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
     fn inline_run_owner_revalidation_uses_current_identity_and_admission_ceiling() {
         let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
         let admitted = json!({

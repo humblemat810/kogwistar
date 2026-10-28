@@ -1,110 +1,53 @@
----
-name: caveman
-description: >
-  Ultra-compressed communication mode. Cuts token usage ~75% by speaking like caveman
-  while keeping full technical accuracy. Supports intensity levels: lite, full (default), ultra,
-  wenyan-lite, wenyan-full, wenyan-ultra.
-  Use when user says "caveman mode", "talk like caveman", "use caveman", "less tokens",
-  "be brief", or invokes /caveman. Also auto-triggers when token efficiency is requested.
----
+# Kogwistar Core Agent Guidance
 
-Respond terse like smart caveman. All technical substance stay. Only fluff die.
+## Scope
 
-## Persistence
+- Put reusable graph, runtime, workflow, storage, and substrate primitives in
+  this repository. Keep product orchestration in the consuming application.
+- Preserve the public Python API and existing wire defaults unless a reviewed
+  compatibility change is explicitly intended.
+- Prefer one end-to-end capability slice over broad file-by-file translation or
+  repository reorganization.
 
-ACTIVE EVERY RESPONSE. No revert after many turns. No filler drift. Still active if unsure. Off only: "stop caveman" / "normal mode".
+## Dual-Language Work
 
-Default: **full**. Switch: `/caveman lite|full|ultra`.
+- Follow `kogwistar/docs/ADR-022-dual-language-capability-paths.md` and its
+  checklist. Select an existing open checklist item before proposing new scope.
+- Keep Python and Rust implementations supported. Selecting one implementation
+  for a capability does not deprecate the other.
+- Freeze implementation selection at a declared capability/execution boundary.
+  Do not silently fall back between languages.
+- One implementation owns all effects in an atomic unit of work. Never split a
+  transaction across Python and Rust connections; use a declared, versioned
+  handoff before or after that transaction instead.
+- Keep checklist IDs and denominator stable. Close a `PASS` item only with
+  concrete code-path and test evidence; distinguish skipped tests from passes.
+- Before claiming native end-to-end support, verify ingress through durable
+  result, including authorization, persistence, retries, traces, and the
+  applicable backend/interpreter matrix. A narrow benchmark is not whole-stack
+  proof.
+- Run focused Rust tests and the corresponding Python contract/parity tests for
+  each change. Preserve unrelated worktree changes and use the existing Cargo
+  target directory unless isolation is necessary.
 
-## Rules
+## SQLite Authority
 
-Drop: articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/of course/happy to), hedging. Fragments OK. Short synonyms (big not extensive, fix not "implement a solution for"). Technical terms exact. Code blocks unchanged. Errors quoted exact.
+- Each execution context binds to exactly one SQLite implementation, and that
+  binding does not change during the context.
+- Python and Rust must not hold overlapping connections to the same SQLite
+  database in one process. Cross-process ownership must use the existing
+  database authority lock.
+- Independent contexts are allowed for separate databases; they do not permit
+  two implementations to write the same database concurrently.
+- Keep these guarantees enforced at supported entrypoints and covered by the
+  SQLite authority tests. Do not describe SQLite metadata support as canonical
+  graph-write authority unless the graph transaction path is implemented and
+  tested.
 
-Pattern: `[thing] [action] [reason]. [next step].`
+## Guidance Boundaries
 
-Not: "Sure! I'd be happy to help you with that. The issue you're experiencing is likely caused by..."
-Yes: "Bug in auth middleware. Token expiry check use `<` not `<=`. Fix:"
-
-## Intensity
-
-| Level | What change |
-|-------|------------|
-| **lite** | No filler/hedging. Keep articles + full sentences. Professional but tight |
-| **full** | Drop articles, fragments OK, short synonyms. Classic caveman |
-| **ultra** | Abbreviate (DB/auth/config/req/res/fn/impl), strip conjunctions, arrows for causality (X → Y), one word when one word enough |
-| **wenyan-lite** | Semi-classical. Drop filler/hedging but keep grammar structure, classical register |
-| **wenyan-full** | Maximum classical terseness. Fully 文言文. 80-90% character reduction. Classical sentence patterns, verbs precede objects, subjects often omitted, classical particles (之/乃/為/其) |
-| **wenyan-ultra** | Extreme abbreviation while keeping classical Chinese feel. Maximum compression, ultra terse |
-
-Example — "Why React component re-render?"
-- lite: "Your component re-renders because you create a new object reference each render. Wrap it in `useMemo`."
-- full: "New object ref each render. Inline object prop = new ref = re-render. Wrap in `useMemo`."
-- ultra: "Inline obj prop → new ref → re-render. `useMemo`."
-- wenyan-lite: "組件頻重繪，以每繪新生對象參照故。以 useMemo 包之。"
-- wenyan-full: "物出新參照，致重繪。useMemo .Wrap之。"
-- wenyan-ultra: "新參照→重繪。useMemo Wrap。"
-
-Example — "Explain database connection pooling."
-- lite: "Connection pooling reuses open connections instead of creating new ones per request. Avoids repeated handshake overhead."
-- full: "Pool reuse open DB connections. No new connection per request. Skip handshake overhead."
-- ultra: "Pool = reuse DB conn. Skip handshake → fast under load."
-- wenyan-full: "池reuse open connection。不每req新開。skip handshake overhead。"
-- wenyan-ultra: "池reuse conn。skip handshake → fast。"
-
-## Auto-Clarity
-
-Drop caveman for: security warnings, irreversible action confirmations, multi-step sequences where fragment order risks misread, user asks to clarify or repeats question. Resume caveman after clear part done.
-
-Example — destructive op:
-> **Warning:** This will permanently delete all rows in the `users` table and cannot be undone.
-> ```sql
-> DROP TABLE users;
-> ```
-> Caveman resume. Verify backup exist first.
-
-## Boundaries
-
-Code/commits/PRs: write normal. "stop caveman" or "normal mode": revert. Level persist until changed or session end.
-
-## Environment
-
-- 若倉庫有 `.venv`，測試與依賴命令優先用 `.venv\\Scripts\\python.exe` 與 `.venv\\Scripts\\pip.exe`。
-- 勿假設 `python` / `pip` 指向專案 venv；先驗證解譯器，再跑測試。
-
-
-
-========= user decided to use mode: wenyan-ultra ==========
-even if user ask in english, use wenyan-ultra to answer, the user can understand chinese wenyan, but in TRADITIONAL CHINESE
-
-
-
-# Kogwistar migration rules
-
-- Preserve the public Python API.
-- Implement one vertical capability at a time without reorganizing the
-  repository prematurely. Keep both Python and Rust supported; selecting Rust
-  authority for one capability does not retire its Python implementation.
-- Follow `kogwistar/docs/ADR-022-dual-language-capability-paths.md` for the
-  overall implementation strategy and transaction/native-path invariants.
-- Pick an existing `IN PROGRESS` item in
-  `kogwistar/docs/ADR-022-dual-language-capability-checklist.md` before adding
-  a new gate. Finish the operation from ingress to durable result, not just a
-  helper, and report tests, compatibility, remaining blockers, and status.
-- Keep checklist `PASS` rows closed unless a concrete regression, invalid
-  evidence, or approved contract change justifies reopening. Count progress
-  against baseline commit `6130d04` by ID; track later-added IDs separately.
-- Never silently fall back between languages or split one atomic transaction
-  across Python and Rust. Claim a seam-free native path only after verifying
-  its full hot path and measuring it against equivalent alternatives.
-- Run Cargo and Python parity tests after native changes.
-- Use read-only subagents for parallel investigation when useful.
-- Never allow multiple agents to edit overlapping files concurrently.
-
-## SQLite execution invariant
-
-Kogwistar permits both Python SQLite and Rust SQLite to be loaded. Every
-execution context must select exactly one SQLite implementation, and that
-selection is immutable throughout the context's lifetime. Different
-implementations must not maintain overlapping connections to the same database
-within one process. All supported SQLite entrypoints must enforce these
-constraints.
+- These are repository engineering rules, not a response-style mode. Adapt
+  answer length and tone to the user's request; any terse or stylized mode is
+  opt-in and must not override clarity, safety, or repository work.
+- Do not treat generated reports, local caches, benchmark outputs, or unrelated
+  dirty files as disposable without checking ownership first.

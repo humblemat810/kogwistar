@@ -2282,7 +2282,8 @@
                     "target_ref": "wf-pg-trigger",
                     "target_config": {
                         "conversation_id":"conv-pg-trigger",
-                        "runtime_kind":"async"
+                        "runtime_kind":"async",
+                        "user_id":"operator"
                     },
                 }))
                 .unwrap(),
@@ -2312,14 +2313,17 @@
         let second = serde_json::from_slice::<Value>(&second.body).unwrap();
         let run_id = first["current_child_run_id"].as_str().unwrap();
         assert_eq!(second["current_child_run_id"], run_id);
-        assert!(
-            service
-                .store
-                .get_server_run(run_id)
-                .await
-                .unwrap()
-                .is_some()
-        );
+        let run = service
+            .store
+            .get_server_run(run_id)
+            .await
+            .unwrap()
+            .expect("service trigger run");
+        assert_eq!(run.user_id.as_deref(), Some("operator"));
+        let run_events = service.store.server_run_events(run_id, 0, 10).await.unwrap();
+        let created_payload: Value =
+            serde_json::from_str(&run_events[0].payload_json).expect("run.created payload");
+        assert_eq!(created_payload["runtime_owner_binding"]["user_id"], "operator");
         let lanes = service
             .store
             .list_projected_lane_messages(LaneMessageFilter {
@@ -2339,6 +2343,52 @@
         .unwrap();
         assert_eq!(payload["worker_protocol"], "async-v2");
         assert_eq!(payload["initial_state"]["_rt_worker_protocol"], "async-v2");
+
+        let spoof_service = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "service_id": "svc-pg-trigger-spoof",
+                    "target_kind": "workflow",
+                    "target_ref": "wf-pg-trigger",
+                    "target_config": {
+                        "conversation_id": "conv-pg-trigger-spoof",
+                        "user_id": "victim"
+                    }
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(spoof_service.status, StatusCode::OK.as_u16());
+        let spoof_trigger = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services/svc-pg-trigger-spoof/trigger".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "trigger_type": "external event",
+                    "payload": {}
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(spoof_trigger.status, StatusCode::FORBIDDEN.as_u16());
+        let spoof_error: Value = serde_json::from_slice(&spoof_trigger.body).unwrap();
+        assert_eq!(spoof_error["code"], "KOGWISTAR_RUN_OWNER_FORBIDDEN");
+        assert!(service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                conversation_id: Some("conv-pg-trigger-spoof".to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
         drop(service);
 
         let cleanup_dsn = dsn
