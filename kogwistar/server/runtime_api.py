@@ -468,10 +468,15 @@ def create_runtime_router(
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
+            authenticated_user_id = (
+                get_user_id() if callable(get_user_id) else None
+            ) or (get_subject() if callable(get_subject) else None)
             return get_service_r().trigger_service(
                 service_id,
                 trigger_type=inp.trigger_type,
                 payload=inp.payload,
+                authenticated_user_id=authenticated_user_id,
+                enforce_authenticated_owner=True,
             )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)

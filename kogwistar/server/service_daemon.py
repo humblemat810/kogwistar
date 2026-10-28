@@ -312,12 +312,16 @@ class ServiceSupervisor:
         *,
         trigger_type: str,
         payload: JsonObject | None = None,
+        authenticated_user_id: str | None = None,
+        enforce_authenticated_owner: bool = False,
     ) -> JsonObject:
         return self._trigger_service(
             service_id=service_id,
             trigger_type=trigger_type,
             payload=dict(payload or {}),
             force=True,
+            authenticated_user_id=authenticated_user_id,
+            enforce_authenticated_owner=enforce_authenticated_owner,
         )
 
     def health_snapshot(self, service_id: str) -> JsonObject:
@@ -406,6 +410,8 @@ class ServiceSupervisor:
         trigger_type: str,
         payload: JsonObject,
         force: bool = False,
+        authenticated_user_id: str | None = None,
+        enforce_authenticated_owner: bool = False,
     ) -> JsonObject:
         definition = self._latest_definition(service_id)
         if definition is None:
@@ -420,6 +426,21 @@ class ServiceSupervisor:
         if projection_payload is None:
             raise KeyError(f"Unknown service_id: {service_id}")
         projection = ServiceProjectionRow.model_validate(projection_payload)
+        target_cfg = (
+            dict(definition.target_config or {})
+            if definition.target_kind == "workflow"
+            else {}
+        )
+        requested_user_id = (
+            _optional_text(payload.get("user_id")) or ""
+        ).strip() or (_optional_text(target_cfg.get("user_id")) or "").strip() or None
+        if enforce_authenticated_owner and requested_user_id is not None:
+            actor_user_id = (_optional_text(authenticated_user_id) or "").strip()
+            if not actor_user_id or requested_user_id != actor_user_id:
+                raise PermissionError(
+                    "Service-triggered run owner must match the authenticated actor"
+                )
+        run_user_id = requested_user_id
         if not definition.enabled and not force:
             return projection.model_dump(mode="python")
         spec = self._matching_trigger_spec(
@@ -452,7 +473,6 @@ class ServiceSupervisor:
             payload={"trigger_type": normalized_trigger_type, **payload},
         )
         if definition.target_kind == "workflow":
-            target_cfg = dict(definition.target_config or {})
             conversation_id = str(
                 payload.get("conversation_id")
                 or target_cfg.get("conversation_id")
@@ -461,14 +481,13 @@ class ServiceSupervisor:
             turn_node_id = _optional_text(
                 payload.get("turn_node_id") or target_cfg.get("turn_node_id")
             )
-            user_id = _optional_text(payload.get("user_id") or target_cfg.get("user_id"))
             initial_state = _json_object(target_cfg.get("initial_state"))
             initial_state.update(_json_object(payload.get("initial_state")))
             run_payload = self.spawn_workflow_run(
                 workflow_id=definition.target_ref,
                 conversation_id=conversation_id,
                 turn_node_id=turn_node_id,
-                user_id=user_id,
+                user_id=run_user_id,
                 initial_state=initial_state,
                 priority_class=str(target_cfg.get("priority_class") or "background"),
                 token_budget=_optional_int(target_cfg.get("token_budget")),

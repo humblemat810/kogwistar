@@ -953,6 +953,8 @@ class ChatRunService:
         *,
         trigger_type: str,
         payload: dict[str, Any] | None = None,
+        authenticated_user_id: str | None = None,
+        enforce_authenticated_owner: bool = False,
     ) -> dict[str, Any]:
         self._require_capability(
             "service.manage",
@@ -963,6 +965,8 @@ class ChatRunService:
             service_id,
             trigger_type=trigger_type,
             payload=payload,
+            authenticated_user_id=authenticated_user_id,
+            enforce_authenticated_owner=enforce_authenticated_owner,
         )
 
     def list_service_events(

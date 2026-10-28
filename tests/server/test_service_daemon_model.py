@@ -578,7 +578,10 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
                 "service_kind": "daemon",
                 "target_kind": "workflow",
                 "target_ref": "wf.service.rest",
-                "target_config": {"conversation_id": created["conversation_id"]},
+                "target_config": {
+                    "conversation_id": created["conversation_id"],
+                    "user_id": "tester",
+                },
                 "enabled": True,
             },
             headers=headers,
@@ -609,6 +612,7 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         triggered.raise_for_status()
         run_id = str(triggered.json()["current_child_run_id"] or "")
         assert run_id
+        assert service.run_registry.get_run(run_id)["user_id"] == "tester"
 
         events = client.get(
             "/api/workflow/services/svc.rest.demo/events", headers=headers
@@ -617,6 +621,53 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         names = [evt["event_type"] for evt in events.json()["events"]]
         assert "service.heartbeat" not in names
         assert "service.triggered" in names
+
+        before_spoof_events = len(events.json()["events"])
+        spoofed_payload = client.post(
+            "/api/workflow/services/svc.rest.demo/trigger",
+            json={
+                "trigger_type": "external event",
+                "payload": {"user_id": "victim"},
+            },
+            headers=headers,
+        )
+        assert spoofed_payload.status_code == 403
+        after_spoof_events = client.get(
+            "/api/workflow/services/svc.rest.demo/events", headers=headers
+        )
+        after_spoof_events.raise_for_status()
+        assert len(after_spoof_events.json()["events"]) == before_spoof_events
+
+        configured_spoof = client.post(
+            "/api/workflow/services",
+            json={
+                "service_id": "svc.rest.spoof",
+                "service_kind": "daemon",
+                "target_kind": "workflow",
+                "target_ref": "wf.service.rest",
+                "target_config": {
+                    "conversation_id": created["conversation_id"],
+                    "user_id": "victim",
+                },
+                "enabled": True,
+            },
+            headers=headers,
+        )
+        configured_spoof.raise_for_status()
+        rejected_config = client.post(
+            "/api/workflow/services/svc.rest.spoof/trigger",
+            json={"trigger_type": "external event", "payload": {}},
+            headers=headers,
+        )
+        assert rejected_config.status_code == 403
+        spoof_events = client.get(
+            "/api/workflow/services/svc.rest.spoof/events", headers=headers
+        )
+        spoof_events.raise_for_status()
+        assert not any(
+            event["event_type"] in {"service.starting", "service.triggered"}
+            for event in spoof_events.json()["events"]
+        )
 
 
 def test_supervisor_flow_does_not_touch_service_health_projection(monkeypatch, engine_triplet):

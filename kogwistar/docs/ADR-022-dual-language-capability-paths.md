@@ -172,6 +172,16 @@ inline graph-write authority. This is not a distinct service identity or
 credential, and it does not authorize a trigger payload to select an arbitrary
 owner.
 
+The authenticated Python service-trigger API applies the same owner match at
+its admission boundary: it passes the authenticated user ID (falling back to
+the authenticated subject) through the service layer and rejects a different
+owner from either the trigger payload or target configuration before writing
+service events. Internal scheduler/message/graph triggers that do not carry an
+authenticated API actor retain their existing internal behavior. This aligns
+requested-owner binding across the public Python and Rust service-trigger
+paths; it does not make internal triggers a separately authenticated principal
+or close the remaining inline-effect authorization gaps.
+
 The focused owner-revalidation and service-owner-binding unit tests pass. The
 ignored PostgreSQL owner-revalidation test,
 `postgres_inline_native_graph_effect_revalidates_current_owner`, was explicitly
