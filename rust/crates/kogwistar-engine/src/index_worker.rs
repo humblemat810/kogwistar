@@ -4,6 +4,7 @@
 //! vector projection remain caller-owned capabilities, so Python and Rust
 //! providers can use the same lease, retry, and idempotency contract.
 
+use crate::worker_lease::with_lease_renewal;
 use kogwistar_store::{
     IndexJob, IndexJobProviderInput, IndexJobWriteStore, StoreError, StoreResult,
 };
@@ -109,8 +110,17 @@ where
             continue;
         }
         let retry = job.retry_count + 1;
-        match provider(job.clone()).await {
-            Ok(result_json) => {
+        match with_lease_renewal(
+            store,
+            &job.job_id,
+            claim_token,
+            lease_seconds,
+            provider(job.clone()),
+        )
+        .await?
+        {
+            None => summary.claim_lost += 1,
+            Some(Ok(result_json)) => {
                 let admission = store
                     .accept_index_job_result(
                         &job.job_id,
@@ -137,7 +147,7 @@ where
                     summary.claim_lost += 1;
                 }
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 let message = error.to_string();
                 if retry < job.max_retries {
                     store
@@ -258,6 +268,32 @@ mod tests {
                 .status,
             "existing"
         );
+    }
+
+    #[tokio::test]
+    async fn slow_result_provider_renews_lease_before_reclaim() {
+        let store = InMemoryStore::new();
+        enqueue(&store, 3).await;
+        let task_store = store.clone();
+        let task = tokio::spawn(async move {
+            run_index_jobs_once_with_provider_input(&task_store, 1, 1, Some("ns"), |_input| async {
+                tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+                Ok("{\"embedding\":[1,0]}".to_owned())
+            })
+            .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        assert!(
+            store
+                .claim_index_jobs(1, 1, Some("ns"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let summary = task.await.unwrap().unwrap();
+        assert_eq!(summary.accepted, 1);
+        assert_eq!(summary.claim_lost, 0);
     }
 
     #[tokio::test]

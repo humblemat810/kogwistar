@@ -5,6 +5,7 @@
 //! the idempotent upsert/delete succeeds. This lets a retry reuse the accepted
 //! result after a crash between admission and projection.
 
+use crate::worker_lease::with_lease_renewal;
 use kogwistar_store::{
     GraphProjectionWriteStore, GraphRecord, IndexJob, IndexJobClaimFilter, IndexJobProviderInput,
     IndexJobWriteStore, StoreError, StoreResult,
@@ -12,7 +13,6 @@ use kogwistar_store::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::future::Future;
-use std::time::Duration;
 
 const ACTION_VERSION: i64 = 1;
 
@@ -42,36 +42,6 @@ fn backend_error(error: impl ToString) -> StoreError {
     StoreError::Backend {
         backend: "graph-projection-worker".to_owned(),
         message: error.to_string(),
-    }
-}
-
-async fn with_lease_renewal<Q, T, Fut>(
-    queue: &Q,
-    job_id: &str,
-    claim_token: &str,
-    lease_seconds: i64,
-    operation: Fut,
-) -> StoreResult<Option<StoreResult<T>>>
-where
-    Q: IndexJobWriteStore,
-    Fut: Future<Output = StoreResult<T>>,
-{
-    let interval_ms = (lease_seconds.max(1) as u64)
-        .saturating_mul(1_000)
-        .saturating_div(3)
-        .max(100);
-    let mut heartbeat = tokio::time::interval(Duration::from_millis(interval_ms));
-    heartbeat.tick().await;
-    tokio::pin!(operation);
-    loop {
-        tokio::select! {
-            result = &mut operation => return Ok(Some(result)),
-            _ = heartbeat.tick() => {
-                if !queue.renew_index_job_lease(job_id, claim_token, lease_seconds).await? {
-                    return Ok(None);
-                }
-            }
-        }
     }
 }
 
@@ -549,6 +519,7 @@ mod tests {
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    use std::time::Duration;
 
     #[derive(Clone)]
     struct FailOnceGraph {

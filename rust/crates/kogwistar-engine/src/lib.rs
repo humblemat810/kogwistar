@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 pub mod embedding;
 pub mod index_worker;
 pub mod projection_worker;
+mod worker_lease;
 
 const STATE_VERSION: i64 = 1;
 
