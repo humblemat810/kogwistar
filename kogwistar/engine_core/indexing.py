@@ -45,6 +45,20 @@ def _is_tombstoned(meta: Mapping[str, object] | None) -> bool:
     return str(meta.get("lifecycle_status") or "active") == "tombstoned"
 
 
+def _canonical_source_payload_json(source: dict[str, object]) -> str:
+    blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "source_fingerprint": hashlib.blake2b(
+                blob.encode("utf-8"), digest_size=16
+            ).hexdigest(),
+            "source_state": source["state"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _backend_object(value: object) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -210,12 +224,25 @@ class IndexingSubsystem:
                 "metadata": metadata,
             }
 
-        blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
-        return json.dumps(
-            {"source_fingerprint": hashlib.blake2b(blob.encode("utf-8"), digest_size=16).hexdigest(),
-             "source_state": source["state"]},
-            sort_keys=True,
-            separators=(",", ":"),
+        return _canonical_source_payload_json(source)
+
+    def canonical_source_payload_for_projection(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: Mapping[str, object],
+    ) -> str:
+        """Build the same fingerprint from a projection being written now."""
+        return _canonical_source_payload_json(
+            {
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "state": "deleted" if _is_tombstoned(metadata) else "active",
+                "document": document,
+                "metadata": dict(metadata),
+            }
         )
 
     @implementation_selection_bound
@@ -313,8 +340,14 @@ class IndexingSubsystem:
         return result
 
     @implementation_selection_bound
-    def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
-        payload_json = self.canonical_source_payload(
+    def enqueue_index_jobs_for_node(
+        self,
+        node_id: str,
+        *,
+        op: str,
+        source_payload_json: str | None = None,
+    ) -> None:
+        payload_json = source_payload_json or self.canonical_source_payload(
             entity_kind="node", entity_id=node_id
         )
         if getattr(self.engine, "persistence_mode", "single_stage") == "two_stage":
@@ -337,8 +370,14 @@ class IndexingSubsystem:
             )
 
     @implementation_selection_bound
-    def enqueue_index_jobs_for_edge(self, edge_id: str, *, op: str) -> None:
-        payload_json = self.canonical_source_payload(
+    def enqueue_index_jobs_for_edge(
+        self,
+        edge_id: str,
+        *,
+        op: str,
+        source_payload_json: str | None = None,
+    ) -> None:
+        payload_json = source_payload_json or self.canonical_source_payload(
             entity_kind="edge", entity_id=edge_id
         )
         if getattr(self.engine, "persistence_mode", "single_stage") == "two_stage":

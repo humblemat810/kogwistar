@@ -974,6 +974,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 model_envelope=model_envelope,
                 enqueue_index_jobs=self._e._phase1_enable_index_jobs,
             )
+        index_jobs_enqueued = False
         if not native_added:
             async with self._e.async_uow():
                 await self._e._append_event_for_entity_async(
@@ -991,8 +992,27 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     metadata=metadata,
                     embedding=_required_embedding(node.embedding),
                 )
+                if (
+                    self._e._phase1_enable_index_jobs
+                    and self._e._async_backend_uow is not None
+                ):
+                    source_payload = self._e.indexing.canonical_source_payload_for_projection(
+                        entity_kind="node",
+                        entity_id=node.safe_get_id(),
+                        document=document,
+                        metadata=metadata,
+                    )
+                    await asyncio.to_thread(
+                        self._e.indexing.enqueue_index_jobs_for_node,
+                        node.safe_get_id(),
+                        op="UPSERT",
+                        source_payload_json=source_payload,
+                    )
+                    index_jobs_enqueued = True
         await self._async_post_write(
-            entity_kind="node", entity=node, enqueue_index_jobs=not native_added
+            entity_kind="node",
+            entity=node,
+            enqueue_index_jobs=not native_added and not index_jobs_enqueued,
         )
         await asyncio.to_thread(
             self._e._emit_change,
@@ -1058,6 +1078,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 model_envelope=model_envelope,
                 enqueue_index_jobs=self._e._phase1_enable_index_jobs,
             )
+        index_jobs_enqueued = False
         if not native_added:
             async with self._e.async_uow():
                 await self._e._append_event_for_entity_async(
@@ -1075,8 +1096,27 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     metadata=metadata,
                     embedding=_required_embedding(edge.embedding),
                 )
+                if (
+                    self._e._phase1_enable_index_jobs
+                    and self._e._async_backend_uow is not None
+                ):
+                    source_payload = self._e.indexing.canonical_source_payload_for_projection(
+                        entity_kind="edge",
+                        entity_id=edge.safe_get_id(),
+                        document=document,
+                        metadata=metadata,
+                    )
+                    await asyncio.to_thread(
+                        self._e.indexing.enqueue_index_jobs_for_edge,
+                        edge.safe_get_id(),
+                        op="UPSERT",
+                        source_payload_json=source_payload,
+                    )
+                    index_jobs_enqueued = True
         await self._async_post_write(
-            entity_kind="edge", entity=edge, enqueue_index_jobs=not native_added
+            entity_kind="edge",
+            entity=edge,
+            enqueue_index_jobs=not native_added and not index_jobs_enqueued,
         )
         await asyncio.to_thread(
             self._e._emit_change,
