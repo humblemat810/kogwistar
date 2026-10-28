@@ -42,6 +42,10 @@ class _RevisionLike(Protocol):
 class _IndexingLike(Protocol):
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str: ...
 
+    def canonical_revision_payloads(
+        self, *, entity_kind: str, entity_ids: Sequence[str]
+    ) -> Mapping[str, str]: ...
+
     def canonical_entity_revision(
         self, *, entity_kind: str, entity_id: str
     ) -> _RevisionLike | None: ...
@@ -985,6 +989,76 @@ class AsyncChromaTwoStageProjectionAdapter:
             except BaseException as exc:
                 outcomes[job_id] = exc
         return outcomes
+
+    async def backfill_stage2_source_revisions(
+        self, *, entity_kind: str, limit: int = 100, offset: int = 0
+    ) -> tuple[int, int]:
+        """Stamp verified legacy rows without changing vectors.
+
+        This operator migration requires the normal Chroma projection writer
+        to be quiesced. Unverifiable rows remain untouched and hidden.
+        """
+        import asyncio
+
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+        if not 1 <= limit <= 1000 or offset < 0:
+            raise ValueError("limit must be in [1, 1000] and offset must be non-negative")
+        page = _row_mapping(
+            await self.engine.backend.async_call(
+                entity_kind,
+                "get",
+                limit=limit,
+                offset=offset,
+                include=["metadatas"],
+            )
+        )
+        ids = [str(value) for value in _object_list(page.get("ids"))]
+        if not ids:
+            return 0, 0
+        metadatas = _object_list(page.get("metadatas"))
+        revisions = await asyncio.to_thread(
+            self.engine.indexing.canonical_revision_payloads,
+            entity_kind=entity_kind,
+            entity_ids=ids,
+        )
+        updates: list[tuple[str, dict[str, object]]] = []
+        for index, entity_id in enumerate(ids):
+            raw_metadata = metadatas[index] if index < len(metadatas) else None
+            metadata = _row_mapping(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+            if metadata.get("_kogwistar_stage2_ready") is not True:
+                continue
+            stored_revision = metadata.get("_kogwistar_source_revision")
+            if (
+                isinstance(stored_revision, int)
+                and not isinstance(stored_revision, bool)
+                and stored_revision > 0
+            ):
+                continue
+            try:
+                current = json.loads(revisions[entity_id])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            revision = current.get("canonical_revision")
+            if (
+                current.get("source_state") != "active"
+                or current.get("source_fingerprint")
+                != metadata.get("_kogwistar_source_fingerprint")
+                or not isinstance(revision, int)
+                or isinstance(revision, bool)
+                or revision <= 0
+            ):
+                continue
+            metadata["_kogwistar_source_revision"] = revision
+            updates.append((entity_id, metadata))
+        if updates:
+            await self.engine.backend.async_call(
+                entity_kind,
+                "update",
+                ids=[row[0] for row in updates],
+                metadatas=[row[1] for row in updates],
+            )
+        return len(ids), len(updates)
 
     async def reconcile_projection(self, **_: object) -> int:
         removed = 0

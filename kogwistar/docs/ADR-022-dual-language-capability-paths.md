@@ -242,6 +242,19 @@ Python and Rust concurrently opening the same single-writer Chroma store
 applies during shadow/canary migration; it does not redefine Chroma's general
 consistency contract. Use `DL-07I`'s existing acceptance criteria and
 evidence; do not add checklist rows for already-verified cases.
+
+Legacy Chroma Stage-2 rows created before `_kogwistar_source_revision` was
+introduced are intentionally hidden by the Rust read fence. An operator may
+backfill this marker only while the normal projection writer is quiesced, using
+`SQLiteChromaTwoStageProjectionAdapter.backfill_stage2_source_revisions()` or
+its async counterpart in bounded pages. The adapter stamps a row only when its
+stored source fingerprint matches the current active canonical revision; it
+updates metadata only and leaves the stored document/vector unchanged. Rows
+that are stale, deleted, malformed, or unverifiable stay hidden and must be
+reprojected through the normal durable indexing path. This is an offline
+compatibility migration, not a concurrent-writer protocol or a Chroma
+transaction guarantee. Callers must advance the page offset by the returned
+`fetched` count and complete the scan before resuming the projection writer.
 Then advance an existing user-facing gate such as `DL-16BQ` only along a real
 ingress-to-durable-result path; preserve explicit unsupported results where
 the selected backend lacks authority.

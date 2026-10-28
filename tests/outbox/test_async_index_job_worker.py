@@ -31,6 +31,12 @@ class _AsyncCollection:
                 "embedding": None if embeddings is None else embeddings[index],
             }
 
+    async def update(self, *, ids, metadatas, **kwargs):
+        del kwargs
+        for entity_id, metadata in zip(ids, metadatas):
+            if str(entity_id) in self.rows:
+                self.rows[str(entity_id)]["metadata"] = metadata
+
     async def add(self, *, ids, documents, metadatas, embeddings=None, **kwargs):
         await self.upsert(
             ids=ids, documents=documents, metadatas=metadatas,
@@ -42,10 +48,12 @@ class _AsyncCollection:
         for entity_id in ids or []:
             self.rows.pop(str(entity_id), None)
 
-    async def get(self, *, ids=None, **kwargs):
+    async def get(self, *, ids=None, limit=None, offset=0, **kwargs):
         del kwargs
         selected = [str(entity_id) for entity_id in (ids or self.rows)]
         selected = [entity_id for entity_id in selected if entity_id in self.rows]
+        if ids is None:
+            selected = selected[offset : offset + limit] if limit is not None else selected[offset:]
         return {
             "ids": selected,
             "documents": [self.rows[entity_id]["document"] for entity_id in selected],
@@ -332,6 +340,70 @@ async def test_async_chroma_legacy_job_promotes_with_staged_fingerprint(
         assert engine.meta_sqlite.get_stage1_node_projection(
             engine.namespace, f"{kind}:legacy"
         ) is None
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+async def test_async_chroma_backfills_only_legacy_stage2_rows_matching_active_source(
+    tmp_path,
+):
+    backend = _async_chroma_backend()
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=lambda _engine: backend,
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        nodes = [
+            build_entity_node(node_id="migration-current", doc_id="d1", embedding=None),
+            build_entity_node(node_id="migration-stale", doc_id="d1", embedding=None),
+        ]
+        for node in nodes:
+            await engine.async_add_node(node)
+        fingerprints = {
+            node.id: json.loads(
+                engine.indexing.canonical_revision_payload(
+                    entity_kind="node", entity_id=node.id
+                )
+            )
+            for node in nodes
+        }
+        for node, stored_fingerprint in zip(
+            nodes, (fingerprints[nodes[0].id]["source_fingerprint"], "old-fingerprint")
+        ):
+            await backend.async_call(
+                "node",
+                "upsert",
+                ids=[node.id],
+                documents=[node.model_dump_json(field_mode="backend", exclude=["embedding"])],
+                metadatas=[{
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": stored_fingerprint,
+                }],
+                embeddings=[[0.1, 0.2]],
+            )
+
+        adapter = engine.async_two_stage_projection_adapter
+        assert await adapter.backfill_stage2_source_revisions(
+            entity_kind="node", limit=1, offset=0
+        ) == (1, 1)
+        assert await adapter.backfill_stage2_source_revisions(
+            entity_kind="node", limit=1, offset=1
+        ) == (1, 0)
+        promoted = await backend.async_node_get(
+            ids=[node.id for node in nodes], include=["documents", "metadatas", "embeddings"]
+        )
+        assert promoted["metadatas"][0]["_kogwistar_source_revision"] == fingerprints[
+            nodes[0].id
+        ]["canonical_revision"]
+        assert "_kogwistar_source_revision" not in promoted["metadatas"][1]
+        assert promoted["embeddings"] == [[0.1, 0.2], [0.1, 0.2]]
+        assert promoted["documents"] == [
+            node.model_dump_json(field_mode="backend", exclude=["embedding"])
+            for node in nodes
+        ]
     finally:
         engine.close()
 

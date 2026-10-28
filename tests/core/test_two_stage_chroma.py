@@ -27,7 +27,14 @@ class _Backend:
 
     def node_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
-        rows = [self.rows[value] for value in ids if value in self.rows]
+        rows = (
+            [self.rows[value] for value in ids if value in self.rows]
+            if ids
+            else list(self.rows.values())[
+                int(kwargs.get("offset") or 0) : int(kwargs.get("offset") or 0)
+                + int(kwargs.get("limit") or len(self.rows))
+            ]
+        )
         result = {
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
@@ -50,6 +57,12 @@ class _Backend:
                 "metadata": metadata,
                 "embedding": embedding,
             }
+
+    def node_update(self, *, ids, metadatas, **kwargs):
+        del kwargs
+        for node_id, metadata in zip(ids, metadatas):
+            if str(node_id) in self.rows:
+                self.rows[str(node_id)]["metadata"] = metadata
 
     def node_delete(self, **kwargs):
         for node_id in kwargs.get("ids") or []:
@@ -240,6 +253,50 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
         entity_kind="node", entity_id="n1"
     ).revision
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
+
+
+def test_chroma_backfills_only_legacy_stage2_rows_matching_active_source(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    engine.backend.rows.update(
+        {
+            "current": {
+                "id": "current",
+                "document": "current document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "fp-1",
+                },
+                "embedding": [0.1, 0.2],
+            },
+            "stale": {
+                "id": "stale",
+                "document": "stale document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "old-fingerprint",
+                },
+                "embedding": [0.3, 0.4],
+            },
+        }
+    )
+    original_vector = list(engine.backend.rows["current"]["embedding"])
+    original_document = engine.backend.rows["current"]["document"]
+
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=0
+    ) == (1, 1)
+    assert engine.backend.rows["current"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == 1
+    assert engine.backend.rows["current"]["embedding"] == original_vector
+    assert engine.backend.rows["current"]["document"] == original_document
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=1
+    ) == (1, 0)
+    assert "_kogwistar_source_revision" not in engine.backend.rows["stale"]["metadata"]
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=0
+    ) == (1, 0)
 
 
 @two_stage_case("batch_embedding")
@@ -1148,6 +1205,63 @@ def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
         assert (
             engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
             is None
+        )
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_legacy_stage2_backfill_updates_metadata_only(tmp_path):
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="legacy-node", doc_id="d1"))
+        worker = engine.indexing.make_index_job_worker(max_jobs_per_tick=8)
+        assert worker.tick().done >= 1
+        before = engine.backend.node_get(
+            ids=["legacy-node"], include=["documents", "metadatas", "embeddings"]
+        )
+        metadata = dict(before["metadatas"][0])
+        metadata.pop("_kogwistar_source_revision")
+        engine.backend.node_delete(ids=["legacy-node"])
+        engine.backend.node_upsert(
+            ids=["legacy-node"],
+            documents=before["documents"],
+            metadatas=[metadata],
+            embeddings=[list(map(float, before["embeddings"][0]))],
+        )
+        current = json.loads(
+            engine.indexing.canonical_revision_payload(
+                entity_kind="node", entity_id="legacy-node"
+            )
+        )
+        assert metadata["_kogwistar_source_fingerprint"] == current["source_fingerprint"]
+        page = engine.two_stage_projection_adapter._collection_call(
+            "node", "get", limit=10, offset=0, include=["metadatas"]
+        )
+        assert page["ids"] == ["legacy-node"]
+        assert page["metadatas"][0]["_kogwistar_stage2_ready"] is True
+        assert page["metadatas"][0]["_kogwistar_source_fingerprint"] == current[
+            "source_fingerprint"
+        ]
+        assert "_kogwistar_source_revision" not in page["metadatas"][0]
+
+        assert engine.two_stage_projection_adapter.backfill_stage2_source_revisions(
+            entity_kind="node", limit=10
+        ) == (1, 1)
+        after = engine.backend.node_get(
+            ids=["legacy-node"], include=["documents", "metadatas", "embeddings"]
+        )
+        assert after["metadatas"][0]["_kogwistar_source_revision"] > 0
+        assert after["documents"] == before["documents"]
+        assert list(map(float, after["embeddings"][0])) == list(
+            map(float, before["embeddings"][0])
         )
     finally:
         engine.close()

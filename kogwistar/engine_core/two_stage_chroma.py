@@ -651,6 +651,71 @@ class SQLiteChromaTwoStageProjectionAdapter:
             payload_json=payload_json,
         )
 
+    def backfill_stage2_source_revisions(
+        self, *, entity_kind: str, limit: int = 100, offset: int = 0
+    ) -> tuple[int, int]:
+        """Stamp verified legacy Stage-2 rows without changing their vectors.
+
+        Returns ``(fetched, updated)`` so callers can advance ``offset`` by
+        fetched rows. Run this operator migration with the normal Chroma
+        projection writer quiesced. Rows without a matching active fingerprint
+        are untouched and remain unavailable to the Rust read fence.
+        """
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+        if not 1 <= limit <= 1000 or offset < 0:
+            raise ValueError("limit must be in [1, 1000] and offset must be non-negative")
+        page = self._collection_call(
+            entity_kind,
+            "get",
+            limit=limit,
+            offset=offset,
+            include=["metadatas"],
+        )
+        ids = [str(value) for value in _objects(page.get("ids"))]
+        if not ids:
+            return 0, 0
+        metadatas = _objects(page.get("metadatas"))
+        revisions = self.engine.indexing.canonical_revision_payloads(
+            entity_kind=entity_kind, entity_ids=ids
+        )
+        updates: list[tuple[str, dict[str, object]]] = []
+        for index, entity_id in enumerate(ids):
+            metadata = _mapping(metadatas[index]) if index < len(metadatas) else {}
+            if metadata.get("_kogwistar_stage2_ready") is not True:
+                continue
+            stored_revision = metadata.get("_kogwistar_source_revision")
+            if (
+                isinstance(stored_revision, int)
+                and not isinstance(stored_revision, bool)
+                and stored_revision > 0
+            ):
+                continue
+            try:
+                current = json.loads(revisions[entity_id])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            revision = current.get("canonical_revision")
+            if (
+                current.get("source_state") != "active"
+                or current.get("source_fingerprint")
+                != metadata.get("_kogwistar_source_fingerprint")
+                or not isinstance(revision, int)
+                or isinstance(revision, bool)
+                or revision <= 0
+            ):
+                continue
+            metadata["_kogwistar_source_revision"] = revision
+            updates.append((entity_id, metadata))
+        if updates:
+            self._collection_call(
+                entity_kind,
+                "update",
+                ids=[row[0] for row in updates],
+                metadatas=[row[1] for row in updates],
+            )
+        return len(ids), len(updates)
+
     def reconcile_projection(self, **_: object) -> int:
         removed = 0
         for row in self.stage1_query():
