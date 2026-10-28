@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from typing import NoReturn, cast
 
 from kogwistar._rust_bridge import store_postgres
-from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.json_types import JsonObject, JsonValue, decode_json_object
 from kogwistar.implementation_selection import transaction_authority_scope
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
@@ -72,6 +72,24 @@ def _valid_graph_projection_match(match: object) -> bool:
         _valid_graph_projection_record(match.get("record"))
         and _finite_projection_number(distance)
     )
+
+
+def _decode_graph_projection_match_rows(value: JsonValue) -> list[list[JsonObject]]:
+    if not isinstance(value, list):
+        raise RuntimeError("native batched graph vector query returned invalid matches")
+    rows: list[list[JsonObject]] = []
+    for row in value:
+        if not isinstance(row, list):
+            raise RuntimeError("native batched graph vector query returned invalid matches")
+        matches: list[JsonObject] = []
+        for match in row:
+            if not _valid_graph_projection_match(match):
+                raise RuntimeError(
+                    "native batched graph vector query returned invalid matches"
+                )
+            matches.append(cast(JsonObject, match))
+        rows.append(matches)
+    return rows
 
 
 class RustPostgresSession:
@@ -243,34 +261,40 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         validated = validate_graph_mutation_batch(batch)
         operations: list[JsonObject] = []
         for mutation in validated.mutations:
-            operation: JsonObject = {
-                "kind": "graph_mutation",
-                "namespace": mutation.scope.namespace,
-                "workspace_id": mutation.scope.workspace_id,
-                "graph_space": mutation.scope.graph_space,
-                "table": mutation.table,
-                "entity_kind": mutation.entity_kind,
-                "event_id": mutation.event_id,
-                "op": mutation.op,
-                "record": mutation.record.model_dump(mode="json"),
-                "payload": mutation.payload,
-                "embedding_dim": mutation.embedding_dim,
-                "model_envelope": mutation.model_envelope,
-            }
+            operation = decode_json_object(
+                {
+                    "kind": "graph_mutation",
+                    "namespace": mutation.scope.namespace,
+                    "workspace_id": mutation.scope.workspace_id,
+                    "graph_space": mutation.scope.graph_space,
+                    "table": mutation.table,
+                    "entity_kind": mutation.entity_kind,
+                    "event_id": mutation.event_id,
+                    "op": mutation.op,
+                    "record": mutation.record.model_dump(mode="json"),
+                    "payload": mutation.payload,
+                    "embedding_dim": mutation.embedding_dim,
+                    "model_envelope": mutation.model_envelope,
+                },
+                label="graph mutation operation",
+            )
             operations.append(operation)
         for job in validated.index_jobs:
             operations.append(
-                {
-                    "kind": "enqueue_index_job",
-                    "job_id": job.job_id,
-                    "namespace": job.namespace,
-                    "entity_kind": job.entity_kind,
-                    "entity_id": job.entity_id,
-                    "index_kind": job.index_kind,
-                    "op": job.op,
-                    "payload_json": job.payload_json,
-                    "max_retries": job.max_retries,
-                }
+                decode_json_object(
+                    {
+                        "kind": "enqueue_index_job",
+                        "job_id": job.job_id,
+                        "namespace": job.namespace,
+                        "entity_kind": job.entity_kind,
+                        "entity_id": job.entity_id,
+                        "index_kind": job.index_kind,
+                        "op": job.op,
+                        "payload_json": job.payload_json,
+                        "max_retries": job.max_retries,
+                    },
+                    label="index job operation",
+                )
             )
         result = self.execute_batch(operations)
         if (
@@ -378,25 +402,13 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         self, **values: JsonValue
     ) -> list[list[JsonObject]]:
         result = self._call("graph_projection_vector_query_batch", **values)
-        if not isinstance(result, list) or not all(
-            isinstance(row, list)
-            and all(_valid_graph_projection_match(match) for match in row)
-            for row in result
-        ):
-            raise RuntimeError("native batched graph vector query returned invalid matches")
-        return [[cast(JsonObject, match) for match in row] for row in result]
+        return _decode_graph_projection_match_rows(result)
 
     def graph_projection_vector_query_batch_excluding_metadata(
         self, **values: JsonValue
     ) -> list[list[JsonObject]]:
         result = self._call("graph_projection_vector_query_batch", **values)
-        if not isinstance(result, list) or not all(
-            isinstance(row, list)
-            and all(_valid_graph_projection_match(match) for match in row)
-            for row in result
-        ):
-            raise RuntimeError("native batched graph vector query returned invalid matches")
-        return [[cast(JsonObject, match) for match in row] for row in result]
+        return _decode_graph_projection_match_rows(result)
 
     def ensure_initialized(self) -> None:
         self._native_session.ensure_initialized()

@@ -462,6 +462,42 @@ def test_postgres_graph_mutation_batch_rejects_invalid_contract_before_native_ca
     assert calls == []
 
 
+@pytest.mark.parametrize("field", ["payload", "model_envelope"])
+def test_postgres_graph_mutation_batch_rejects_non_json_before_native_call(
+    monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        store,
+        "_call",
+        lambda kind, **values: calls.append(kind),
+    )
+    mutation: dict[str, object] = {
+        "scope": {"namespace": "ns"},
+        "table": "gke_nodes",
+        "entity_kind": "node",
+        "event_id": "node-event",
+        "op": "ADD",
+        "payload": {"id": "node-1"},
+        "record": {"id": "node-1"},
+        "embedding_dim": 0,
+    }
+    mutation[field] = (
+        {"id": "node-1", "unexpected": object()}
+        if field == "payload"
+        else {"unexpected": object()}
+    )
+    batch = {"contract_version": 1, "atomic": True, "mutations": [mutation]}
+
+    with pytest.raises(TypeError, match="non-JSON value"):
+        store.apply_graph_mutations_atomic(batch)
+
+    assert calls == []
+
+
 def test_native_session_rejects_rust_transaction_inside_python_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -836,6 +872,10 @@ def test_postgres_meta_facade_validates_batched_graph_vector_matches(monkeypatch
     ) == [[valid_match], []]
 
     results[:] = [[{**valid_match, "distance": float("nan")}]]
+    with pytest.raises(RuntimeError, match="batched graph vector query"):
+        store.graph_projection_vector_query_batch(embeddings=[[1.0, 0.0]])
+
+    results[:] = [{"not": "a result row"}]
     with pytest.raises(RuntimeError, match="batched graph vector query"):
         store.graph_projection_vector_query_batch(embeddings=[[1.0, 0.0]])
 
