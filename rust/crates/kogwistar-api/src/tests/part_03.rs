@@ -2176,13 +2176,116 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_service_events_fold_authoritative_history_when_dsn_available() {
-        use kogwistar_store_postgres::NewRawEntityEvent;
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use kogwistar_store_postgres::{GraphTableNames, NewRawEntityEvent};
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_service_events_{}", uuid::Uuid::new_v4().simple());
-        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-service-trigger-auth-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let auth = SqliteAuthStore::open(&auth_path).unwrap();
+        auth.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "operator".to_owned(),
+            email: "operator@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "operator".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "workflow".to_owned(),
+        })
+        .await
+        .unwrap();
+        drop(auth);
+        let auth_config = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+            ..AuthConfig::default()
+        };
+        let mut native_operations = kogwistar_runtime::NativeOperationRegistry::default();
+        native_operations
+            .register_graph("app/service-owner-graph", "v1", |request| {
+                let entity_id = format!("service-native-node-{}", request.run_id);
+                let batch = serde_json::from_value(json!({
+                    "contract_version": 1,
+                    "atomic": true,
+                    "mutations": [{
+                        "scope": {"namespace": "workflow"},
+                        "table": "gke_nodes",
+                        "entity_kind": "node",
+                        "event_id": format!("service-native-event-{}", request.run_id),
+                        "op": "ADD",
+                        "payload": {"id": entity_id},
+                        "record": {"id": entity_id, "document": "service-triggered native graph"},
+                        "embedding_dim": 0
+                    }],
+                    "index_jobs": []
+                }))
+                .unwrap();
+                Ok((
+                    kogwistar_runtime::NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"service_native_graph": true})),
+                    },
+                    batch,
+                ))
+            })
+            .unwrap();
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap()
+            .with_native_operations(native_operations)
+            .with_owner_auth_config(&auth_config)
+            .await
+            .unwrap();
         service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await
+            .unwrap();
+        service
+            .store
+            .replace_named_projection(
+                "workflow_design",
+                "wf-pg-trigger",
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        service
+            .store
+            .put_workflow_design_snapshot(
+                "wf-pg-trigger",
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({
+                        "nodes": [{
+                            "id": "service-start",
+                            "metadata": {
+                                "wf_start": true,
+                                "wf_op": "rust-native/app/service-owner-graph",
+                                "wf_executor_target": "rust-native"
+                            }
+                        }],
+                        "edges": []
+                    }))
+                    .unwrap(),
+                },
+            )
+            .await
+            .unwrap();
         for (event_id, entity_id, op, payload) in [
             (
                 "service-event-1",
@@ -2269,7 +2372,7 @@
             "sub": "operator",
             "role": "rw",
             "ns": "workflow",
-            "capabilities": ["service.manage", "service.inspect", "project_view"],
+            "capabilities": ["service.manage", "service.inspect", "project_view", "write_graph"],
         });
         let declared = service
             .execute_async(ApiEffectRequest {
@@ -2343,6 +2446,55 @@
         .unwrap();
         assert_eq!(payload["worker_protocol"], "async-v2");
         assert_eq!(payload["initial_state"]["_rt_worker_protocol"], "async-v2");
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let entity_id = format!("service-native-node-{run_id}");
+        let graph_rows = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "workflow".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![entity_id.clone()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(graph_rows.len(), 1);
+        assert_eq!(graph_rows[0].id, entity_id);
+        let graph_events = service
+            .store
+            .replay_raw_events("workflow", 0, 100)
+            .await
+            .unwrap();
+        assert!(graph_events
+            .iter()
+            .any(|event| event.event_id == format!("service-native-event-{run_id}")));
+        assert_eq!(
+            service
+                .store
+                .get_server_run(run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
+        let completed_lane = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some(run_id.to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(completed_lane.len(), 1);
+        assert_eq!(completed_lane[0].status, "completed");
+        assert!(!service.execute_inline_native_work_once().await.unwrap());
 
         let spoof_service = service
             .execute_async(ApiEffectRequest {
@@ -2390,6 +2542,7 @@
             .unwrap()
             .is_empty());
         drop(service);
+        let _ = std::fs::remove_file(auth_path);
 
         let cleanup_dsn = dsn
             .strip_prefix("postgresql+psycopg://")

@@ -179,15 +179,17 @@ run with `KOGWISTAR_TEST_PG_DSN` against a disposable pgvector container and
 passed. It proves an authorized inline graph write persists and a subsequent
 process-local `write_graph` revocation prevents the graph projection and records
 a failed run. This test does not yet cover external auth-database changes or all
-failure/recovery cases. The PostgreSQL service-trigger test also passes for a
-matching configured owner and proves a mismatched requested owner is rejected
-without a runtime lane message. It does not execute an inline graph effect from
-a service-triggered run. Complete the existing `DL-10` acceptance criteria by
-covering inline durable-run-owner/binding mismatch and missing/untrusted
-bindings, current auth
-status/role/namespace changes, service-triggered graph effects, cross-scope
-writes, transaction failure, duplicate result, and restart/retry. Verify graph
-event, projection, index intent, runtime result, and acknowledgement together.
+failure/recovery cases. The PostgreSQL service-trigger test also executes the
+service's Rust-native graph operation end to end. It verifies the actor-matched
+durable binding, graph event and projection persistence, successful run
+completion, completed lane acknowledgement, and rejection of a mismatched
+configured owner before lane creation. Complete the existing `DL-10` acceptance
+criteria by covering inline durable-run-owner/binding mismatch and
+missing/untrusted bindings, service-triggered effects under current auth
+status/role/namespace changes, cross-scope writes, transaction failure,
+duplicate result, and restart/retry. Verify graph event, projection, index
+intent, runtime result, and acknowledgement together for effect batches that
+include index intents.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
