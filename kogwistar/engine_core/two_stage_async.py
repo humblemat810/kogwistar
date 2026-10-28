@@ -118,6 +118,10 @@ def _optional_row_mapping(value: object) -> dict[str, object] | None:
     return _row_mapping(value)
 
 
+def _sequence_number(value: object) -> int:
+    return value if isinstance(value, int) else 0
+
+
 def _payload_text(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
@@ -663,6 +667,36 @@ class AsyncChromaTwoStageProjectionAdapter:
                 "edge_endpoints", "delete", where={"edge_id": entity_id}
             )
 
+    async def _delete_projection_and_restore_if_active(
+        self, *, entity_kind: str, entity_id: str
+    ) -> None:
+        row = _optional_row_mapping(
+            await self._meta(
+                "get_stage1_node_projection",
+                self._namespace(),
+                self._key(entity_kind, entity_id),
+            )
+        )
+        if row is not None:
+            raw_sequence = row.get("last_authoritative_seq")
+            sequence = raw_sequence if isinstance(raw_sequence, int) else 0
+            await self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=sequence,
+            )
+        await self.remove_stage2_or_invalidate(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        latest = await self._current(entity_kind, entity_id)
+        if latest is not None and latest.state == "active":
+            if not await self.restore_stage1_from_canonical_event(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                raise RuntimeError(
+                    "async Chroma delete raced with resurrection and could not restore Stage-1"
+                )
+
     async def _promote_edge_endpoints(
         self, document: str, embedding: list[float] | None = None
     ) -> None:
@@ -698,12 +732,14 @@ class AsyncChromaTwoStageProjectionAdapter:
                 and expected != await self._fingerprint(entity_kind, entity_id)
             ):
                 return
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         if current is None or current.state != "active":
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         current_fingerprint = await self._fingerprint(entity_kind, entity_id)
         if expected and expected != current_fingerprint:
@@ -717,7 +753,7 @@ class AsyncChromaTwoStageProjectionAdapter:
         if not row:
             raise RuntimeError("current Chroma Stage-1 projection is missing")
         staged = _row_mapping(row.get("payload"))
-        staged_seq = int(row.get("last_authoritative_seq") or 0)
+        staged_seq = _sequence_number(row.get("last_authoritative_seq"))
         staged_fingerprint = str(staged.get("source_fingerprint") or "")
         if expected and staged_fingerprint != expected:
             return
@@ -815,8 +851,8 @@ class AsyncChromaTwoStageProjectionAdapter:
                         {
                             **staged,
                             "_expected": expected,
-                            "_stage1_authoritative_seq": int(
-                                row.get("last_authoritative_seq") or 0
+                            "_stage1_authoritative_seq": _sequence_number(
+                                row.get("last_authoritative_seq")
                             ),
                         },
                     )
@@ -855,8 +891,8 @@ class AsyncChromaTwoStageProjectionAdapter:
                     await self.remove_stage1(
                         entity_kind=kind,
                         entity_id=entity_id,
-                        expected_last_authoritative_seq=int(
-                            staged.get("_stage1_authoritative_seq") or 0
+                        expected_last_authoritative_seq=_sequence_number(
+                            staged.get("_stage1_authoritative_seq")
                         ),
                     )
                     await self.remove_stage2_or_invalidate(
@@ -877,8 +913,8 @@ class AsyncChromaTwoStageProjectionAdapter:
                 await self.remove_stage1(
                     entity_kind=kind,
                     entity_id=entity_id,
-                    expected_last_authoritative_seq=int(
-                        staged.get("_stage1_authoritative_seq") or 0
+                    expected_last_authoritative_seq=_sequence_number(
+                        staged.get("_stage1_authoritative_seq")
                     ),
                 )
                 outcomes[job_id] = None
@@ -894,7 +930,7 @@ class AsyncChromaTwoStageProjectionAdapter:
             entity_id = str(payload.get("id") or row.get("id") or row.get("key") or "")
             if ":" in entity_id and entity_id.startswith(("node:", "edge:")):
                 entity_id = entity_id.split(":", 1)[1]
-            staged_seq = int(row.get("last_authoritative_seq") or 0)
+            staged_seq = _sequence_number(row.get("last_authoritative_seq"))
             current = await self._current(kind, entity_id)
             source_fingerprint = str(
                 payload.get("source_fingerprint") or row.get("source_fingerprint") or ""

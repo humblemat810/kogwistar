@@ -417,6 +417,147 @@ def test_chroma_arrangement_rejects_stale_delete_for_newer_active_revision(tmp_p
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
 
 
+@pytest.mark.parametrize("kind", ["node", "edge"])
+def test_chroma_late_delete_after_resurrection_restages_current_revision(
+    tmp_path, kind
+):
+    engine, adapter = _engine(tmp_path)
+
+    def entity(doc_id: str):
+        if kind == "node":
+            return build_entity_node(node_id="shared-delete", doc_id=doc_id)
+        return build_relationship_edge(
+            edge_id="shared-delete", src="source", tgt="target", doc_id=doc_id
+        )
+
+    getattr(adapter, f"add_{kind}")(entity("old"))
+    engine.indexing.state = "deleted"
+    engine.indexing.fingerprint = "fp-delete"
+    delete_payload = engine.indexing.canonical_revision_payload(
+        entity_kind=kind, entity_id="shared-delete"
+    )
+    delete_name = f"{kind}_delete"
+    original_delete = getattr(engine.backend, delete_name)
+    interleaved = False
+
+    def resurrect_and_delete_late(**kwargs):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            engine.backend.__dict__[delete_name] = original_delete
+            engine.indexing.state = "active"
+            engine.indexing.fingerprint = "fp-new"
+            getattr(adapter, f"add_{kind}")(entity("new"))
+            adapter.apply_embedding_job(
+                entity_kind=kind,
+                entity_id="shared-delete",
+                op="UPSERT",
+                payload_json=engine.indexing.canonical_revision_payload(
+                    entity_kind=kind, entity_id="shared-delete"
+                ),
+            )
+            engine.backend.__dict__[delete_name] = resurrect_and_delete_late
+        original_delete(**kwargs)
+
+    engine.backend.__dict__[delete_name] = resurrect_and_delete_late
+
+    def restore_current_stage1(*, entity_kind: str, entity_id: str) -> bool:
+        assert entity_kind == kind
+        assert entity_id == "shared-delete"
+        assert engine.indexing.state == "active"
+        adapter._stage1_upsert(entity_kind=kind, entity=entity("new"))
+        return True
+
+    adapter.restore_stage1_from_canonical_event = restore_current_stage1
+    adapter.apply_embedding_job(
+        entity_kind=kind,
+        entity_id="shared-delete",
+        op="DELETE",
+        payload_json=delete_payload,
+    )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", adapter._stage1_key(kind, "shared-delete")
+    )
+    assert staged is not None
+    assert staged["payload"]["source_fingerprint"] == "fp-new"
+    assert "shared-delete" not in engine.backend.rows
+
+
+@pytest.mark.asyncio
+async def test_async_chroma_late_delete_after_resurrection_restages_current_revision(
+    tmp_path,
+):
+    from kogwistar.engine_core.two_stage_async import AsyncChromaTwoStageProjectionAdapter
+
+    engine, _ = _engine(tmp_path)
+    store = engine.backend
+
+    async def async_call(entity_kind: str, method: str, **kwargs):
+        return getattr(store, f"{entity_kind}_{method}")(**kwargs)
+
+    backend = SimpleNamespace(async_call=async_call)
+    engine.backend = backend
+    latest_entity = build_entity_node(node_id="async-delete", doc_id="old")
+    original_revision = engine.indexing.canonical_entity_revision
+
+    def revision_with_payload(*, entity_kind: str, entity_id: str):
+        revision = original_revision(entity_kind=entity_kind, entity_id=entity_id)
+        return SimpleNamespace(
+            revision=revision.revision,
+            state=revision.state,
+            payload=latest_entity.model_dump(field_mode="backend"),
+        )
+
+    engine.indexing.canonical_entity_revision = revision_with_payload
+    engine._ef = lambda documents: [[1.0, 0.0] for _ in documents]
+    adapter = AsyncChromaTwoStageProjectionAdapter(engine)
+    await adapter.add_node(latest_entity)
+
+    engine.indexing.state = "deleted"
+    engine.indexing.fingerprint = "fp-delete"
+    delete_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="async-delete"
+    )
+    original_async_call = backend.async_call
+    interleaved = False
+
+    async def resurrect_and_delete_late(entity_kind: str, method: str, **kwargs):
+        nonlocal interleaved, latest_entity
+        if method == "delete" and not interleaved:
+            interleaved = True
+            backend.async_call = original_async_call
+            engine.indexing.state = "active"
+            engine.indexing.fingerprint = "fp-new"
+            latest_entity = build_entity_node(node_id="async-delete", doc_id="new")
+            await adapter.add_node(latest_entity)
+            await adapter.apply_embedding_job(
+                entity_kind="node",
+                entity_id="async-delete",
+                op="UPSERT",
+                payload_json=engine.indexing.canonical_revision_payload(
+                    entity_kind="node", entity_id="async-delete"
+                ),
+            )
+            backend.async_call = resurrect_and_delete_late
+        return await original_async_call(entity_kind, method, **kwargs)
+
+    backend.async_call = resurrect_and_delete_late
+    await adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="async-delete",
+        op="DELETE",
+        payload_json=delete_payload,
+    )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-delete"
+    )
+    assert staged is not None
+    assert staged["payload"]["source_fingerprint"] == "fp-new"
+    assert "async-delete" not in store.rows
+
+
 def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")

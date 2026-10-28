@@ -303,6 +303,31 @@ class SQLiteChromaTwoStageProjectionAdapter:
         )
         return str(json.loads(revision_payload).get("source_fingerprint") or "")
 
+    def _delete_projection_and_restore_if_active(
+        self, *, entity_kind: str, entity_id: str
+    ) -> None:
+        row = self._meta().get_stage1_node_projection(
+            self._namespace(), self._stage1_key(entity_kind, entity_id)
+        )
+        if row is not None:
+            self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=_sequence_number(
+                    row.get("last_authoritative_seq")
+                ),
+            )
+        self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+        latest = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if latest is not None and latest.state == "active":
+            if not self.restore_stage1_from_canonical_event(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                raise RuntimeError("Chroma delete raced with resurrection and could not restore Stage-1")
+            self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
+
     def apply_embedding_job(
         self,
         *,
@@ -327,12 +352,14 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 )
             ):
                 return
-            self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         if current is None or current.state != "active":
-            self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         if expected and expected != self._current_fingerprint(
             entity_kind=entity_kind, entity_id=entity_id
