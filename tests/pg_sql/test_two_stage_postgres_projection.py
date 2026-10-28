@@ -903,6 +903,49 @@ async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
 
 
 @pytest.mark.asyncio
+async def test_postgres_two_stage_async_rust_authority_rolls_back_event_and_stage1(
+    async_pg_backend, monkeypatch
+) -> None:
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "rust")
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    adapter = engine.async_two_stage_projection_adapter
+    assert adapter is not None
+    assert adapter.__class__.__name__ == "AsyncRustPostgresTwoStageProjectionAdapter"
+    add_node = adapter.add_node
+
+    async def fail_after_stage1(node, *, doc_id=None):
+        await add_node(node, doc_id=doc_id)
+        raise RuntimeError("injected Rust-authority async Stage-1 failure")
+
+    monkeypatch.setattr(adapter, "add_node", fail_after_stage1)
+    entity_id = "async-rust-authority-admission-rollback"
+    try:
+        with pytest.raises(RuntimeError, match="injected Rust-authority async Stage-1 failure"):
+            await engine.async_add_node(
+                build_entity_node(node_id=entity_id, doc_id="d1", embedding=None)
+            )
+
+        assert list(engine.metadata.iter_entity_events(namespace="default", from_seq=1)) == []
+        assert await async_pg_backend.stage1_projection_get_async(
+            namespace="default", entity_kind="node", entity_id=entity_id
+        ) is None
+        assert (await async_pg_backend.node_get(
+            ids=[entity_id], include=["embeddings"]
+        ))["ids"] == []
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
 async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_promotion(
     async_pg_backend, monkeypatch
 ) -> None:
