@@ -878,6 +878,11 @@ enum SqliteStoreOperation {
         namespace: String,
         key: String,
     },
+    ClearStage1NodeProjectionIfCurrent {
+        namespace: String,
+        key: String,
+        expected_last_authoritative_seq: i64,
+    },
     PutWorkflowDesignSnapshot {
         workflow_id: String,
         version: i64,
@@ -1540,6 +1545,15 @@ fn sqlite_store_operation_json(
             store.clear_stage1_node_projection(&namespace, &key)?;
             Ok(Value::Null)
         }
+        SqliteStoreOperation::ClearStage1NodeProjectionIfCurrent {
+            namespace,
+            key,
+            expected_last_authoritative_seq,
+        } => Ok(json!(store.clear_stage1_node_projection_if_current(
+            &namespace,
+            &key,
+            expected_last_authoritative_seq,
+        )?)),
         SqliteStoreOperation::PutWorkflowDesignSnapshot {
             workflow_id,
             version,
@@ -2209,6 +2223,15 @@ fn sqlite_batch_operation_json(
             uow.clear_stage1_node_projection(&namespace, &key)?;
             Ok(Value::Null)
         }
+        SqliteStoreOperation::ClearStage1NodeProjectionIfCurrent {
+            namespace,
+            key,
+            expected_last_authoritative_seq,
+        } => Ok(json!(uow.clear_stage1_node_projection_if_current(
+            &namespace,
+            &key,
+            expected_last_authoritative_seq,
+        )?)),
         SqliteStoreOperation::PutWorkflowDesignSnapshot {
             workflow_id,
             version,
@@ -6295,6 +6318,12 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
         | "clear_named_projection"
         | "get_stage1_node_projection"
         | "clear_stage1_node_projection" => &["kind", "namespace", "key"][..],
+        "clear_stage1_node_projection_if_current" => &[
+            "kind",
+            "namespace",
+            "key",
+            "expected_last_authoritative_seq",
+        ][..],
         "list_named_projections"
         | "clear_projection_namespace"
         | "list_stage1_node_projections" => &["kind", "namespace"][..],

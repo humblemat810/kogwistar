@@ -2311,6 +2311,25 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, f"node:{node_id}"
             )
 
+    def clear_stage1_node_projection_if_current(
+        self, namespace: str, node_id: str, expected_last_authoritative_seq: int
+    ) -> bool:
+        """Clear only the staged revision consumed by a completed promotion."""
+        table_name = self._projection_table_spec(
+            STAGE1_NODE_PROJECTION_TABLE.table_name
+        ).table_name
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM {table_name} "
+                "WHERE namespace = ? AND key = ? AND last_authoritative_seq = ?",
+                (
+                    str(namespace),
+                    str(node_id),
+                    int(expected_last_authoritative_seq),
+                ),
+            )
+        return cursor.rowcount == 1
+
     def clear_stage1_node_namespace(self, namespace: str) -> None:
         self._clear_projection_rows(STAGE1_NODE_PROJECTION_TABLE.table_name, namespace)
 

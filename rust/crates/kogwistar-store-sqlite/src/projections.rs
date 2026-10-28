@@ -253,6 +253,22 @@ pub(super) fn clear_stage1_node_projection(
     Ok(())
 }
 
+pub(super) fn clear_stage1_node_projection_if_current(
+    conn: &Connection,
+    namespace: &str,
+    key: &str,
+    expected_last_authoritative_seq: i64,
+) -> SqliteStoreResult<bool> {
+    let changed = conn.execute(
+        &format!(
+            "DELETE FROM {STAGE1_NODE_PROJECTIONS_TABLE} \
+             WHERE namespace = ?1 AND key = ?2 AND last_authoritative_seq = ?3"
+        ),
+        params![namespace, key, expected_last_authoritative_seq],
+    )?;
+    Ok(changed == 1)
+}
+
 pub(super) fn clear_projection_namespace(
     conn: &Connection,
     namespace: &str,

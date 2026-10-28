@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 
 
 def _replace_stage1(store: EngineSQLite, node_id: str, payload: dict[str, object]) -> None:
@@ -127,3 +128,38 @@ def test_stage1_query_has_portable_metadata_and_id_contract(tmp_path) -> None:
     with pytest.raises(ValueError, match="flat equality"):
         store.query_stage1_node_projections("tenant-a", metadata={"kind": {"$eq": "person"}})
     assert store.query_stage1_node_projections("tenant-a", limit=0) == []
+
+
+@pytest.mark.parametrize("store_type", [EngineSQLite, RustEngineSQLite])
+def test_stage1_conditional_clear_preserves_newer_revision(tmp_path, store_type) -> None:
+    store = store_type(tmp_path, filename="stage1-cas.sqlite")
+    store.ensure_initialized()
+    store.replace_stage1_node_projection(
+        "tenant-a",
+        "node-1",
+        {"revision": 7},
+        last_authoritative_seq=7,
+        last_materialized_seq=7,
+        projection_schema_version=1,
+        materialization_status="pending",
+    )
+    store.replace_stage1_node_projection(
+        "tenant-a",
+        "node-1",
+        {"revision": 8},
+        last_authoritative_seq=8,
+        last_materialized_seq=8,
+        projection_schema_version=1,
+        materialization_status="pending",
+    )
+
+    assert not store.clear_stage1_node_projection_if_current(
+        "tenant-a", "node-1", 7
+    )
+    assert store.get_stage1_node_projection("tenant-a", "node-1")[
+        "last_authoritative_seq"
+    ] == 8
+    assert store.clear_stage1_node_projection_if_current(
+        "tenant-a", "node-1", 8
+    )
+    assert store.get_stage1_node_projection("tenant-a", "node-1") is None

@@ -168,10 +168,32 @@ class SQLiteChromaTwoStageProjectionAdapter:
             )
         )
 
-    def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
+    def remove_stage1(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        expected_last_authoritative_seq: int | None = None,
+        **_: object,
+    ) -> None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
-        clear = getattr(self._meta(), "clear_stage1_node_projection", None)
+        meta = self._meta()
+        if expected_last_authoritative_seq is not None:
+            compare_clear = getattr(
+                meta, "clear_stage1_node_projection_if_current", None
+            )
+            if not callable(compare_clear):
+                raise RuntimeError(
+                    "Chroma two-stage promotion requires revision-conditional Stage-1 cleanup"
+                )
+            compare_clear(
+                self._namespace(),
+                self._stage1_key(entity_kind, entity_id),
+                int(expected_last_authoritative_seq),
+            )
+            return
+        clear = getattr(meta, "clear_stage1_node_projection", None)
         if not callable(clear):
             raise RuntimeError("Chroma two-stage arrangement lacks Stage-1 cleanup")
         clear(self._namespace(), self._stage1_key(entity_kind, entity_id))
@@ -261,6 +283,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         if not row:
             raise RuntimeError("current Stage-1 projection is missing")
         staged = _mapping(row.get("payload"))
+        staged_seq = int(row.get("last_authoritative_seq") or 0)
         if expected and str(staged.get("source_fingerprint") or "") != expected:
             return
         document = str(staged.get("document") or "")
@@ -282,7 +305,11 @@ class SQLiteChromaTwoStageProjectionAdapter:
             from .models import Edge
 
             self._promote_edge_endpoints(Edge.model_validate_json(document), embedding)
-        self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+        self.remove_stage1(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            expected_last_authoritative_seq=staged_seq,
+        )
 
     def apply_embedding_jobs_batch(
         self, jobs: Sequence[object]
@@ -336,6 +363,9 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 if expected and str(staged.get("source_fingerprint") or "") != expected:
                     outcomes[job_id] = None
                     continue
+                staged["_stage1_authoritative_seq"] = int(
+                    row.get("last_authoritative_seq") or 0
+                )
                 prepared.append(
                     (job_id, entity_kind, entity_id, expected, payload_json, staged)
                 )
@@ -401,7 +431,13 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     self._promote_edge_endpoints(
                         Edge.model_validate_json(str(staged["document"])), embedding
                     )
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                self.remove_stage1(
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
+                    expected_last_authoritative_seq=int(
+                        staged.get("_stage1_authoritative_seq") or 0
+                    ),
+                )
                 outcomes[job_id] = None
             except BaseException as exc:
                 outcomes[job_id] = exc

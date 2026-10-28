@@ -50,6 +50,21 @@ impl SqliteStore {
         self.immediate_transaction(|uow| uow.clear_stage1_node_projection(namespace, key))
     }
 
+    pub fn clear_stage1_node_projection_if_current(
+        &self,
+        namespace: &str,
+        key: &str,
+        expected_last_authoritative_seq: i64,
+    ) -> SqliteStoreResult<bool> {
+        self.immediate_transaction(|uow| {
+            uow.clear_stage1_node_projection_if_current(
+                namespace,
+                key,
+                expected_last_authoritative_seq,
+            )
+        })
+    }
+
     pub fn replace_named_projection(
         &self,
         namespace: &str,

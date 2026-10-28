@@ -64,6 +64,20 @@ impl SqliteUnitOfWork<'_> {
         clear_stage1_node_projection(self.transaction, namespace, key)
     }
 
+    pub fn clear_stage1_node_projection_if_current(
+        &mut self,
+        namespace: &str,
+        key: &str,
+        expected_last_authoritative_seq: i64,
+    ) -> SqliteStoreResult<bool> {
+        clear_stage1_node_projection_if_current(
+            self.transaction,
+            namespace,
+            key,
+            expected_last_authoritative_seq,
+        )
+    }
+
     pub fn clear_projection_namespace(&mut self, namespace: &str) -> SqliteStoreResult<()> {
         clear_projection_namespace(self.transaction, namespace)
     }

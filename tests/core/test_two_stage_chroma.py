@@ -113,7 +113,10 @@ class _Indexing:
         )
 
     def canonical_entity_revision(self, *, entity_kind: str, entity_id: str):
-        return SimpleNamespace(revision=1, state=self.state)
+        return SimpleNamespace(
+            revision=1 if self.fingerprint == "fp-1" else 2,
+            state=self.state,
+        )
 
     def enqueue_index_job(self, **kwargs) -> None:
         self.jobs.append(kwargs)
@@ -407,6 +410,53 @@ def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d2"))
     assert "n1" not in engine.backend.rows
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(tmp_path, batched):
+    engine, adapter = _engine(tmp_path)
+    first = build_entity_node(node_id="n1", doc_id="d1")
+    adapter.add_node(first)
+    old_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="n1"
+    )
+    original_upsert = engine.backend.node_upsert
+
+    def upsert_then_stage_new_revision(**kwargs):
+        original_upsert(**kwargs)
+        engine.indexing.fingerprint = "fp-2"
+        adapter.add_node(build_entity_node(node_id="n1", doc_id="d2"))
+
+    engine.backend.node_upsert = upsert_then_stage_new_revision
+    if batched:
+        from types import SimpleNamespace
+
+        engine._ef = lambda documents: [[1.0, 0.0] for _ in documents]
+        result = adapter.apply_embedding_jobs_batch(
+            [
+                SimpleNamespace(
+                    job_id="old-batch-job",
+                    entity_kind="node",
+                    entity_id="n1",
+                    op="UPSERT",
+                    payload_json=old_payload,
+                )
+            ]
+        )
+        assert result == {"old-batch-job": None}
+    else:
+        adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="n1",
+            op="UPSERT",
+            payload_json=old_payload,
+        )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert staged is not None
+    assert staged["last_authoritative_seq"] == 2
+    assert staged["payload"]["source_fingerprint"] == "fp-2"
+    assert "n1" not in engine.backend.rows
 
 
 @two_stage_case("recovery_reconciliation")

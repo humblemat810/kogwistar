@@ -560,6 +560,18 @@ class RustEngineSQLite:
             "clear_stage1_node_projection", namespace=namespace, key=node_id
         )
 
+    def clear_stage1_node_projection_if_current(
+        self, namespace: str, node_id: str, expected_last_authoritative_seq: int
+    ) -> bool:
+        return bool(
+            self._call(
+                "clear_stage1_node_projection_if_current",
+                namespace=namespace,
+                key=node_id,
+                expected_last_authoritative_seq=int(expected_last_authoritative_seq),
+            )
+        )
+
     def query_stage1_node_projections(
         self,
         namespace: str,

@@ -53,6 +53,54 @@ fn stage1_node_projection_isolated_crud() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn stage1_conditional_clear_preserves_a_newer_authoritative_revision() {
+    let (store, path) = store("stage1-conditional-clear");
+    let write = |seq| NamedProjectionWrite {
+        payload: serde_json::json!({"revision": seq})
+            .as_object()
+            .unwrap()
+            .clone(),
+        last_authoritative_seq: seq,
+        last_materialized_seq: seq,
+        projection_schema_version: 1,
+        materialization_status: "pending".to_owned(),
+    };
+    store
+        .replace_stage1_node_projection("tenant-a", "node-1", write(7))
+        .unwrap();
+    store
+        .replace_stage1_node_projection("tenant-a", "node-1", write(8))
+        .unwrap();
+
+    assert!(
+        !store
+            .clear_stage1_node_projection_if_current("tenant-a", "node-1", 7)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .get_stage1_node_projection("tenant-a", "node-1")
+            .unwrap()
+            .unwrap()
+            .last_authoritative_seq,
+        8
+    );
+    assert!(
+        store
+            .clear_stage1_node_projection_if_current("tenant-a", "node-1", 8)
+            .unwrap()
+    );
+    assert!(
+        store
+            .get_stage1_node_projection("tenant-a", "node-1")
+            .unwrap()
+            .is_none()
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
 #[test]
 fn named_projection_batch_cas_is_all_or_nothing() {
     let (store, path) = store("named-projection-batch-cas");
