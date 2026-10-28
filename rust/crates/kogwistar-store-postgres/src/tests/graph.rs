@@ -73,6 +73,35 @@ fn graph_reference_rows_match_python_reference_projection_contract() {
     );
     assert!(graph_reference_rows("document", "d-1", &document).is_empty());
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn concurrent_graph_schema_bootstrap_serializes_vector_extension_creation()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let first_schema = test_schema("concurrent_graph_bootstrap_a");
+    let second_schema = test_schema("concurrent_graph_bootstrap_b");
+    let first = PostgresStore::from_dsn(&dsn, &first_schema)?;
+    let second = PostgresStore::from_dsn(&dsn, &second_schema)?;
+
+    let (first_result, second_result) = tokio::join!(
+        first.create_graph_schema(3, GraphTableNames::default()),
+        second.create_graph_schema(3, GraphTableNames::default()),
+    );
+    first_result?;
+    second_result?;
+
+    let client = first.client().await?;
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA \"{first_schema}\" CASCADE; DROP SCHEMA \"{second_schema}\" CASCADE;"
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn graph_mutations_materialize_node_docs_in_the_same_transaction() -> PostgresStoreResult<()>

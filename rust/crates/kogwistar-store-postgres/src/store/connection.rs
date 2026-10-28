@@ -68,8 +68,18 @@ impl PostgresStore {
         embedding_dim: usize,
         names: GraphTableNames,
     ) -> PostgresStoreResult<()> {
-        let client = self.client().await?;
-        create_graph_schema(&**client, &self.tables, embedding_dim, names).await
+        let mut pooled_client = self.client().await?;
+        let client: &mut tokio_postgres::Client = &mut pooled_client;
+        let transaction = client.transaction().await.map_err(backend)?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))",
+                &[],
+            )
+            .await
+            .map_err(backend)?;
+        create_graph_schema(&transaction, &self.tables, embedding_dim, names).await?;
+        transaction.commit().await.map_err(backend)
     }
 
     /// Run append/cursor work in one RAII PostgreSQL transaction.

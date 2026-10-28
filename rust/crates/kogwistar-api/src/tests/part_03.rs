@@ -596,13 +596,21 @@
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_graph_mutation_{}", uuid::Uuid::new_v4().simple());
         let embedding_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        let (mut client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        client
+        let transaction = client.transaction().await.unwrap();
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))",
+                &[],
+            )
+            .await
+            .unwrap();
+        transaction
             .batch_execute(&format!(
                 r#"CREATE EXTENSION IF NOT EXISTS vector;
                 CREATE SCHEMA "{schema}";
@@ -632,6 +640,7 @@
             ))
             .await
             .unwrap();
+        transaction.commit().await.unwrap();
         let embedding_calls = Arc::new(Mutex::new(Vec::new()));
         let embedding_profile = kogwistar_engine::embedding::EmbeddingProfile {
             provider: "test".to_owned(),
@@ -1947,13 +1956,21 @@
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_document_{}", uuid::Uuid::new_v4().simple());
-        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        let (mut client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        client
+        let transaction = client.transaction().await.unwrap();
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))",
+                &[],
+            )
+            .await
+            .unwrap();
+        transaction
             .batch_execute(&format!(
                 r#"CREATE EXTENSION IF NOT EXISTS vector;
                 CREATE SCHEMA "{schema}";
@@ -1968,6 +1985,7 @@
             ))
             .await
             .unwrap();
+        transaction.commit().await.unwrap();
 
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
