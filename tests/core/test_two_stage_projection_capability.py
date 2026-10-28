@@ -594,6 +594,15 @@ def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     )
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
     engine.indexing.reconcile_indexes(max_jobs=10)
+    healthy_before_repair = engine.backend.node_get(
+        ids=["n1"], include=["embeddings"]
+    )["embeddings"][0]
+    assert healthy_before_repair is not None
+    assert engine.indexing.repair_missing_two_stage_embedding_jobs() == 0
+    assert engine.backend.node_get(
+        ids=["n1"], include=["embeddings"]
+    )["embeddings"][0] == healthy_before_repair
+
     engine.backend.node_clear_embeddings(ids=["n1"])
 
     repaired = engine.indexing.repair_missing_two_stage_embedding_jobs()
@@ -912,11 +921,13 @@ def test_rust_sqlite_meta_authority_runs_two_stage_in_memory_profile(
         engine.write.add_node(
             build_entity_node(node_id="rust-sqlite-delete", doc_id="d1", embedding=None)
         )
+        assert engine.lifecycle.tombstone_node("rust-sqlite-delete") is True
         delete_job = next(
             job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
-            if job.entity_id == "rust-sqlite-delete" and job.index_kind == "node_embedding"
+            if job.entity_id == "rust-sqlite-delete"
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
         )
-        assert engine.lifecycle.tombstone_node("rust-sqlite-delete") is True
         engine.two_stage_projection_adapter.apply_embedding_job(
             entity_kind=delete_job.entity_kind,
             entity_id=delete_job.entity_id,

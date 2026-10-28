@@ -795,6 +795,64 @@ class _InMemoryTwoStageProjectionCommon:
             ),
         )
 
+    def restore_stage1_from_canonical_event(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Restore the volatile vectorless projection from canonical events."""
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None or revision.state != "active":
+            return False
+        if entity_kind == "node":
+            entity: Node | Edge = Node.model_validate(revision.payload)
+            document, metadata = self.engine.write.node_doc_and_meta(entity)
+        elif entity_kind == "edge":
+            entity = Edge.model_validate(revision.payload)
+            document = entity.model_dump_json(
+                field_mode="backend", exclude=["embedding"]
+            )
+            metadata = self.engine.write.enrich_edge_meta(entity)
+        else:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+
+        revision_payload = self.engine.indexing.canonical_revision_payload(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        revision_identity = json.loads(revision_payload)
+        if int(revision_identity.get("canonical_revision") or 0) != int(
+            revision.revision
+        ):
+            return False
+        source_fingerprint = str(revision_identity.get("source_fingerprint") or "")
+
+        current = getattr(self.backend, f"{entity_kind}_get")(
+            ids=[entity_id], include=["documents", "embeddings"]
+        )
+        documents = current.get("documents") or []
+        embeddings = current.get("embeddings") or []
+        if (
+            documents
+            and documents[0] == str(document)
+            and embeddings
+            and embeddings[0] is not None
+        ):
+            return True
+        getattr(self.backend, f"{entity_kind}_upsert")(
+            ids=[entity_id],
+            documents=[str(document)],
+            metadatas=[dict(metadata or {})],
+            embeddings=[None],
+        )
+        return source_fingerprint == str(
+            json.loads(
+                self.engine.indexing.canonical_revision_payload(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            ).get("source_fingerprint")
+            or ""
+        )
+
     enqueue_embedding_job = _enqueue
 
 

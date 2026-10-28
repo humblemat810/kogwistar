@@ -430,15 +430,6 @@ class IndexingSubsystem:
             else:
                 needs_delete = False
                 desired_op = "UPSERT"
-                if not stage1_present:
-                    restore_stage1 = getattr(
-                        adapter, "restore_stage1_from_canonical_event", None
-                    )
-                    if not callable(restore_stage1) or not restore_stage1(
-                        entity_kind=entity_kind, entity_id=entity_id
-                    ):
-                        continue
-                    stage1_present = True
             ready = bool(current.get("ids")) and bool(embeddings) and embeddings[0] is not None
             ready = ready and not _is_tombstoned(metadata)
             projected_fingerprint = (
@@ -451,6 +442,14 @@ class IndexingSubsystem:
                 ready = False
             if not needs_delete and ready:
                 continue
+            if not needs_delete and not stage1_present:
+                restore_stage1 = getattr(
+                    adapter, "restore_stage1_from_canonical_event", None
+                )
+                if not callable(restore_stage1) or not restore_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ):
+                    continue
             jobs = cast(
                 Iterable[Any],
                 list_jobs(namespace=ns, entity_kind=entity_kind, entity_id=entity_id),
