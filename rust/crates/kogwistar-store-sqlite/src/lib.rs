@@ -84,6 +84,7 @@ pub struct SqliteAuthStore {
 }
 
 mod auth;
+mod auth_schema;
 mod authority;
 mod authority_identity;
 mod connection_uow;
@@ -104,6 +105,7 @@ pub use types::{
     RestoredRawEntityEvent, SqliteStoreError, SqliteStoreResult,
 };
 
+use auth_schema::initialize_auth_schema;
 use authority::{ProcessAuthorityLock, database_initialization_lock, is_private_memory_database};
 #[cfg(test)]
 use authority_identity::ACTIVE_DATABASE_IDENTITIES;
