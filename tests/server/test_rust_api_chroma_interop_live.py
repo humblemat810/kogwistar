@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sysconfig
 import time
 import uuid
 from pathlib import Path
@@ -96,7 +97,13 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Exercise sequential Python-write/Rust-read recovery over shared stores."""
-    chroma_command = shutil.which("chroma")
+    script_name = "chroma.exe" if os.name == "nt" else "chroma"
+    interpreter_chroma = Path(sysconfig.get_path("scripts")) / script_name
+    chroma_command = (
+        str(interpreter_chroma)
+        if interpreter_chroma.is_file()
+        else shutil.which("chroma")
+    )
     if chroma_command is None:
         pytest.skip("install the Chroma extra and CLI to run this manual integration")
     if not _server_is_current():
