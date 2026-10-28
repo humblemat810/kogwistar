@@ -1298,6 +1298,146 @@ sql_engine.dispose()
     assert persisted.summary == summaries[-1]
 
 
+@pytest.mark.parametrize("holder", ["python", "rust"])
+@pytest.mark.parametrize("same_payload", [True, False])
+def test_mixed_postgres_create_once_serializes_across_processes(
+    tmp_path: Path,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+    holder: str,
+    same_payload: bool,
+) -> None:
+    from sqlalchemy import text as sql_text
+
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    namespace = f"create-once-{uuid.uuid4().hex}"
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    child_script = r"""
+import json
+import os
+import time
+from pathlib import Path
+from sqlalchemy import create_engine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from tests._helpers.graph_builders import build_entity_node
+
+root = Path(os.environ["KOGWISTAR_TEST_GATE_DIR"])
+authority = os.environ["KOGWISTAR_TEST_AUTHORITY"]
+holder = os.environ["KOGWISTAR_TEST_HOLDER"]
+def wait_for(name):
+    deadline = time.monotonic() + 40
+    while not (root / name).exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError(name)
+        time.sleep(0.01)
+
+sql_engine = create_engine(os.environ["KOGWISTAR_TEST_PG_DSN"])
+backend = PgVectorBackend(engine=sql_engine, embedding_dim=3, schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"])
+engine = GraphKnowledgeEngine(backend=backend, namespace=os.environ["KOGWISTAR_TEST_NAMESPACE"], embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts])
+engine.reconcile_indexes = lambda **kwargs: 0
+original_lock = engine.metadata.lock_entity_identity
+def coordinated_lock(**kwargs):
+    if authority != holder:
+        (root / "waiter-attempt").touch()
+    original_lock(**kwargs)
+    if authority == holder:
+        (root / "holder-acquired").touch()
+        wait_for("release-holder")
+engine.metadata.lock_entity_identity = coordinated_lock
+(root / (authority + "-ready")).touch()
+wait_for(authority + "-start")
+node = build_entity_node(node_id="shared", doc_id="d1", summary=os.environ["KOGWISTAR_TEST_SUMMARY"], embedding=[1.0, 0.0, 0.0])
+result = engine.write.create_node_if_absent(node)
+(root / (authority + "-result")).write_text(json.dumps({"status": result.status, "revision": result.revision}), encoding="utf-8")
+engine.close()
+sql_engine.dispose()
+"""
+    processes: dict[str, subprocess.Popen[str]] = {}
+    try:
+        for authority in ("python", "rust"):
+            child_env = os.environ.copy()
+            child_env.update({
+                "KOGWISTAR_IMPL_MODE": authority,
+                "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": authority,
+                "KOGWISTAR_IMPL_META_STORE": authority,
+                "KOGWISTAR_IMPL_GRAPH_STORE": authority,
+                "KOGWISTAR_TEST_PG_DSN": dsn,
+                "KOGWISTAR_TEST_PG_SCHEMA": schema,
+                "KOGWISTAR_TEST_NAMESPACE": namespace,
+                "KOGWISTAR_TEST_GATE_DIR": str(tmp_path),
+                "KOGWISTAR_TEST_AUTHORITY": authority,
+                "KOGWISTAR_TEST_HOLDER": holder,
+                "KOGWISTAR_TEST_SUMMARY": "same" if same_payload else authority,
+            })
+            processes[authority] = subprocess.Popen(
+                [sys.executable, "-c", child_script],
+                cwd=Path(__file__).resolve().parents[2], env=child_env,
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+
+        def wait_for(name: str) -> None:
+            deadline = time.monotonic() + 40
+            while not (tmp_path / name).exists():
+                failures = [key for key, process in processes.items() if process.poll() is not None]
+                assert not failures, f"processes exited before {name}: {failures}"
+                assert time.monotonic() < deadline, f"timed out waiting for {name}"
+                time.sleep(0.01)
+
+        wait_for("python-ready")
+        wait_for("rust-ready")
+        (tmp_path / f"{holder}-start").touch()
+        wait_for("holder-acquired")
+        waiter = "rust" if holder == "python" else "python"
+        (tmp_path / f"{waiter}-start").touch()
+        wait_for("waiter-attempt")
+        lock_key = f"{namespace}\x1fnode\x1fshared"
+        deadline = time.monotonic() + 10
+        with sa_engine.connect() as conn:
+            while not conn.execute(
+                sql_text("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_locks
+                        WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+                          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                          AND CAST(classid AS bigint) = ((hashtextextended(:key, 0) >> 32) & 4294967295)
+                          AND CAST(objid AS bigint) = (hashtextextended(:key, 0) & 4294967295)
+                    )
+                """),
+                {"key": lock_key},
+            ).scalar_one():
+                assert processes[waiter].poll() is None, "waiter did not block on the identity lock"
+                assert time.monotonic() < deadline, "identity lock wait was not observed"
+                time.sleep(0.01)
+        (tmp_path / "release-holder").touch()
+        for authority, process in processes.items():
+            stdout, stderr = process.communicate(timeout=40)
+            assert process.returncode == 0, f"{authority}: {stdout}\n{stderr}"
+        holder_result = json.loads((tmp_path / f"{holder}-result").read_text())
+        waiter_result = json.loads((tmp_path / f"{waiter}-result").read_text())
+        assert holder_result["status"] == "created"
+        assert waiter_result["status"] == ("already_exists" if same_payload else "conflict")
+        assert holder_result["revision"] == waiter_result["revision"]
+        metadata = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+        events = [row for row in metadata.iter_entity_events(namespace=namespace) if row[1:3] == ("node", "shared")]
+        assert len(events) == 1
+        jobs = metadata.list_index_jobs(namespace=namespace)
+        assert {(job.entity_id, job.index_kind) for job in jobs} == {
+            ("shared", "node_docs"), ("shared", "node_refs")
+        }
+        assert len(jobs) == 2
+        projection = backend.node_get(ids=["shared"], include=["documents"])
+        assert Node.model_validate_json(projection["documents"][0]).summary == ("same" if same_payload else holder)
+    finally:
+        (tmp_path / "release-holder").touch()
+        for process in processes.values():
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+
 def test_postgres_transaction_token_is_rejected_in_another_process(
     pg_dsn: str | None,
     pg_schema: str | None,
