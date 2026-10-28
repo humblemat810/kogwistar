@@ -104,6 +104,23 @@ def test_rust_authority_uow_is_atomic_and_raw_python_writer_is_closed(
     assert [row[0] for row in store.iter_entity_events(namespace="authority")] == [1]
 
 
+def test_rust_sqlite_identity_lock_requires_native_transaction(tmp_path: Path) -> None:
+    store = RustEngineSQLite(tmp_path, "identity-lock.sqlite")
+    store.ensure_initialized()
+
+    with pytest.raises(
+        RustSQLiteConnectionUnavailable, match="active Rust SQLite transaction"
+    ):
+        store.lock_entity_identity(
+            namespace="ns", entity_kind="node", entity_id="node-1"
+        )
+
+    with store.transaction():
+        store.lock_entity_identity(
+            namespace="ns", entity_kind="node", entity_id="node-1"
+        )
+
+
 def test_sqlite_transaction_token_cannot_cross_facade_owner(
     tmp_path: Path,
 ) -> None:

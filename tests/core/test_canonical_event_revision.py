@@ -100,7 +100,11 @@ def test_indexing_reads_canonical_revision_from_existing_event_store(tmp_path) -
     assert deleted.is_deleted
 
 
-def test_create_node_if_absent_is_idempotent_and_rejects_payload_conflicts(tmp_path) -> None:
+@pytest.mark.parametrize("metadata_implementation", ["python", "rust"])
+def test_create_node_if_absent_is_idempotent_and_rejects_payload_conflicts(
+    tmp_path, monkeypatch, metadata_implementation
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", metadata_implementation)
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
         embedding_function=FakeEmbeddingFunction(dim=3),

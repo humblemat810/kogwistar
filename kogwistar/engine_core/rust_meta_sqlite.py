@@ -175,6 +175,16 @@ class RustEngineSQLite:
             with self._transaction_scope(immediate=immediate) as token:
                 yield token
 
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        """Use the active native ``BEGIN IMMEDIATE`` transaction as identity lock."""
+        del namespace, entity_kind, entity_id
+        if not self.transaction_active:
+            raise RustSQLiteConnectionUnavailable(
+                "identity locks require an active Rust SQLite transaction"
+            )
+
     @asynccontextmanager
     async def async_transaction(
         self, *, immediate: bool = True
