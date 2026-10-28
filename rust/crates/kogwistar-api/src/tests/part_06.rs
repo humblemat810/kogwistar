@@ -603,6 +603,81 @@
                 .any(|event| event.event_id == "inline-event-inline-cross-scope"));
         }
 
+        let (fault_setup, connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let task = tokio::spawn(connection);
+        fault_setup
+            .batch_execute(&format!(
+                "CREATE FUNCTION \"{schema}\".reject_inline_index_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected inline index-job failure'; END; $$; CREATE TRIGGER reject_inline_index_job BEFORE INSERT ON \"{schema}\".index_jobs FOR EACH ROW EXECUTE FUNCTION \"{schema}\".reject_inline_index_job();"
+            ))
+            .await
+            .unwrap();
+        drop(fault_setup);
+        task.await.unwrap().unwrap();
+        assert_eq!(
+            service.execute(submit("inline-transaction-failure")).await.status,
+            StatusCode::ACCEPTED.as_u16()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(service
+            .execute_inline_native_work_once()
+            .await
+            .is_err());
+        let failure_events = service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .await
+            .unwrap();
+        assert!(!failure_events
+            .iter()
+            .any(|event| event.event_id == "inline-event-inline-transaction-failure"));
+        let failure_rows = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["inline-node-inline-transaction-failure".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(failure_rows.is_empty());
+        let failure_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 10)
+            .await
+            .unwrap();
+        assert!(!failure_jobs
+            .iter()
+            .any(|job| job.job_id == "inline-job-inline-transaction-failure"));
+        let failure_lane = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some("inline-transaction-failure".to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(failure_lane.len(), 1);
+        assert_ne!(failure_lane[0].status, "completed");
+        let (fault_cleanup, connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let task = tokio::spawn(connection);
+        fault_cleanup
+            .batch_execute(&format!(
+                "DROP TRIGGER reject_inline_index_job ON \"{schema}\".index_jobs; DROP FUNCTION \"{schema}\".reject_inline_index_job();"
+            ))
+            .await
+            .unwrap();
+        drop(fault_cleanup);
+        task.await.unwrap().unwrap();
+
         for (run_id, binding_update) in [
             (
                 "inline-binding-missing",

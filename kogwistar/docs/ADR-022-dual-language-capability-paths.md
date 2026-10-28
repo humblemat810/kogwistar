@@ -207,9 +207,13 @@ failed run and completed lane with no graph event, projection, or index job in
 either namespace. The same live inline-worker test now tampers with the durable
 `run.created` event by removing the owner binding or changing its user ID; in
 both cases the run is durably failed, the lane is completed, and no graph event,
-projection, or index job is written. Complete the existing `DL-10` acceptance
-criteria by covering injected transaction failure, duplicate result, and
-restart/retry atomicity.
+projection, or index job is written. The live test also installs a temporary
+PostgreSQL trigger that rejects index-job insertion after graph mutations have
+started; it proves the transaction leaves no graph event, projection, or index
+job and does not acknowledge the lane. Complete the existing `DL-10` acceptance
+criteria by covering duplicate-result behavior and restart/retry atomicity after
+the transient transaction failure; rollback evidence alone does not prove
+successful recovery.
 Retain authenticated HTTP, legacy non-graph, and Python worker regressions. Keep
 SQLite graph batches explicitly unsupported where no atomic graph authority
 exists. If revocation cannot be atomic with graph commit, document and test its
