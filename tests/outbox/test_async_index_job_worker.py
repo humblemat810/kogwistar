@@ -438,3 +438,78 @@ async def test_async_worker_rejects_stale_delete_and_repairs_missing_job(tmp_pat
         assert engine.backend.node_get(ids=["async-repair"])["embeddings"][0] is not None
     finally:
         engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entity_kind", "batched"),
+    [("node", False), ("edge", False), ("node", True), ("edge", True)],
+)
+async def test_async_in_memory_rejects_stale_delete_after_resurrection(
+    tmp_path, entity_kind, batched
+):
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    entity_id = f"restored-{entity_kind}"
+
+    async def write_current() -> None:
+        if entity_kind == "node":
+            await engine.async_add_node(build_entity_node(node_id=entity_id, doc_id="d1"))
+        else:
+            await engine.async_add_node(build_entity_node(node_id="source", doc_id="d1"))
+            await engine.async_add_node(build_entity_node(node_id="target", doc_id="d1"))
+            await engine.async_add_edge(
+                build_relationship_edge(
+                    edge_id=entity_id, src="source", tgt="target", doc_id="d1"
+                )
+            )
+
+    try:
+        await write_current()
+        tombstone = getattr(engine.lifecycle, f"tombstone_{entity_kind}")
+        assert tombstone(entity_id) is True
+        stale_delete = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_kind == entity_kind
+            and job.entity_id == entity_id
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
+        )
+
+        await write_current()
+        current_revision = engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        assert current_revision is not None and current_revision.state == "active"
+        adapter = engine.async_two_stage_projection_adapter
+        if batched:
+            outcomes = await adapter.apply_embedding_jobs_batch(
+                [
+                    {
+                        "job_id": "stale-delete",
+                        "entity_kind": entity_kind,
+                        "entity_id": entity_id,
+                        "op": stale_delete.op,
+                        "payload_json": stale_delete.payload_json,
+                    }
+                ]
+            )
+            assert outcomes["stale-delete"] is None
+        else:
+            await adapter.apply_embedding_job(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                op=stale_delete.op,
+                payload_json=stale_delete.payload_json,
+            )
+
+        current = getattr(engine.backend, f"{entity_kind}_get")(ids=[entity_id])
+        assert current["ids"] == [entity_id]
+        assert current["embeddings"] == [None]
+    finally:
+        engine.close()

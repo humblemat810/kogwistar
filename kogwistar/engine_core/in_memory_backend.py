@@ -895,6 +895,11 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
         if op.upper() == "DELETE":
+            current_revision = self.engine.indexing.canonical_entity_revision(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            if current_revision is not None and current_revision.state == "active":
+                return
             getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
             return
         current = getattr(self.backend, f"{entity_kind}_get")(
@@ -956,6 +961,11 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
         if op.upper() == "DELETE":
+            current_revision = self.engine.indexing.canonical_entity_revision(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            if current_revision is not None and current_revision.state == "active":
+                return
             getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
             return
         current = getattr(self.backend, f"{entity_kind}_get")(

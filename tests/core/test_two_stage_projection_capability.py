@@ -740,6 +740,61 @@ def test_in_memory_two_stage_rejects_old_job_after_delete(tmp_path) -> None:
     )["ids"] == [[]]
 
 
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+def test_in_memory_two_stage_rejects_stale_delete_after_resurrection(
+    tmp_path, entity_kind
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    entity_id = f"restored-{entity_kind}"
+
+    def write_current() -> None:
+        if entity_kind == "node":
+            engine.write.add_node(build_entity_node(node_id=entity_id, doc_id="d1"))
+        else:
+            engine.write.add_node(build_entity_node(node_id="source", doc_id="d1"))
+            engine.write.add_node(build_entity_node(node_id="target", doc_id="d1"))
+            engine.write.add_edge(
+                build_relationship_edge(
+                    edge_id=entity_id, src="source", tgt="target", doc_id="d1"
+                )
+            )
+
+    try:
+        write_current()
+        tombstone = getattr(engine.lifecycle, f"tombstone_{entity_kind}")
+        assert tombstone(entity_id) is True
+        stale_delete = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_kind == entity_kind
+            and job.entity_id == entity_id
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
+        )
+
+        write_current()
+        current_revision = engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        assert current_revision is not None and current_revision.state == "active"
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=stale_delete.op,
+            payload_json=stale_delete.payload_json,
+        )
+
+        current = getattr(engine.backend, f"{entity_kind}_get")(ids=[entity_id])
+        assert current["ids"] == [entity_id]
+        assert current["embeddings"] == [None]
+    finally:
+        engine.close()
+
+
 def test_in_memory_two_stage_delete_hides_ready_projection(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
