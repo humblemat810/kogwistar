@@ -238,7 +238,7 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
         })
         .expect("enqueue durable projection job in SQLite");
 
-    let (endpoint, server) = fake_chroma().await;
+    let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![503, 200]).await;
     let graph = ChromaGraphStore::connect_entity_collections(
         ChromaStoreConfig {
             endpoint: endpoint.clone(),
@@ -253,28 +253,56 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
     )
     .await
     .expect("connect fake Chroma");
-    let summary =
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let first_provider_calls = Arc::clone(&provider_calls);
+    let first_summary =
         kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
             &queue,
             &graph,
             1,
             30,
             Some("workspace-a"),
-            |input| async move {
-                assert_eq!(input.namespace, "workspace-a");
-                assert_eq!(input.entity_id, "node-1");
-                let mut record = GraphRecord::new("node-1");
-                record.document = Some("SQLite metadata, Chroma graph".to_owned());
-                record.metadata.insert("kind".to_owned(), json!("node"));
-                record.embedding = Some(vec![0.25, 0.75]);
-                Ok(record)
+            move |input| {
+                first_provider_calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    assert_eq!(input.namespace, "workspace-a");
+                    assert_eq!(input.entity_id, "node-1");
+                    let mut record = GraphRecord::new("node-1");
+                    record.document = Some("SQLite metadata, Chroma graph".to_owned());
+                    record.metadata.insert("kind".to_owned(), json!("node"));
+                    record.embedding = Some(vec![0.25, 0.75]);
+                    Ok(record)
+                }
             },
         )
         .await
-        .expect("project SQLite queue item to Chroma");
+        .expect("first SQLite-to-Chroma projection attempt");
 
-    assert_eq!(summary.claimed, 1);
-    assert_eq!(summary.projected, 1);
+    assert_eq!(first_summary.retried, 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    std::thread::sleep(Duration::from_millis(1_100));
+    let retry_provider_calls = Arc::clone(&provider_calls);
+    let retry_summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace-a"),
+            move |_input| {
+                retry_provider_calls.fetch_add(1, Ordering::SeqCst);
+                async {
+                    let mut record = GraphRecord::new("node-1");
+                    record.document = Some("unexpected provider replay".to_owned());
+                    record.embedding = Some(vec![0.0, 1.0]);
+                    Ok(record)
+                }
+            },
+        )
+        .await
+        .expect("reuse SQLite-admitted result after Chroma recovers");
+    assert_eq!(retry_summary.reused, 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
     let completed = queue
         .index_jobs(
             Some("workspace-a"),
@@ -289,23 +317,30 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
     assert_eq!(completed.len(), 1);
 
     let requests = server.await.expect("fake Chroma server");
-    assert_eq!(requests.len(), 3);
-    let upsert = requests
+    assert_eq!(requests.len(), 4);
+    let upserts = requests
         .iter()
-        .find(|(line, _)| line.contains("/upsert HTTP"))
-        .expect("projection writes to Chroma");
+        .filter(|(line, _)| line.contains("/upsert HTTP"))
+        .collect::<Vec<_>>();
+    assert_eq!(upserts.len(), 2);
     assert!(
-        upsert
-            .0
-            .contains("/collections/collection-test-sqlite-queue-nodes/upsert")
+        upserts.iter().all(
+            |(line, _)| line.contains("/collections/collection-test-sqlite-queue-nodes/upsert")
+        )
     );
-    assert_eq!(upsert.1["ids"], json!(["node-1"]));
+    assert!(
+        upserts
+            .iter()
+            .all(|(_, request)| request["ids"] == json!(["node-1"]))
+    );
     assert_eq!(
-        upsert.1["documents"],
+        upserts[0].1["documents"],
         json!(["SQLite metadata, Chroma graph"])
     );
+    assert_eq!(upserts[1].1["documents"], upserts[0].1["documents"]);
+    assert_eq!(upserts[1].1["embeddings"], upserts[0].1["embeddings"]);
     assert_eq!(
-        upsert.1["metadatas"][0]["_kogwistar_namespace"],
+        upserts[1].1["metadatas"][0]["_kogwistar_namespace"],
         "workspace-a"
     );
 
