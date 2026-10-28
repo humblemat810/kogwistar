@@ -41,6 +41,10 @@
             None,
         ));
         assert!(!SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(true), Some(Value::Bool(true))),
+            Some(&event),
+        ));
+        assert!(!SqliteRunApplicationService::stage2_record_is_current(
             &stage2_record(Value::Bool(false), Some(json!(7))),
             Some(&event),
         ));
