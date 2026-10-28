@@ -136,29 +136,45 @@ be complete at the end of the slice. Use existing contracts and tests first;
 avoid new abstractions, side quests, and checklist IDs unless an actual gap
 requires a separately approved scope decision.
 
-For the next runtime slice, use `DL-10` and finish one PostgreSQL native-worker
-graph-write path from admitted run through durable graph event, projection,
-index intent, runtime result, and acknowledgement. Commit `6450701` binds
-ordinary authenticated run submission to the request principal and checks the
-durable owner and request capability/scope before graph effects. It is not an
-end-to-end autonomous worker implementation: the inline worker currently calls
-`apply_runtime_result_input` without a principal, and service-triggered runs
-can obtain `user_id` from a payload or target configuration. Do not treat that
-field as proof of an authenticated owner. Design a trustworthy owner binding
-for every admitted run origin and resolve the owner's current authority for the
-background worker; never take authority from worker results or persisted JWT
-claims alone. The existing capability state is process-local, while scope is
-derived from request claims; the commit-time check is not atomic with an
-independent policy revocation. Keep unsupported paths fail-closed until their
-authority and revocation semantics are established.
+For the next runtime slice, continue `DL-10` from the current implementation.
+`NativeOperationRegistry::register_graph` now lets a registered Rust operation
+return a validated graph mutation batch without changing the public
+`NativeOperationOutput` shape. The authenticated PostgreSQL HTTP result path is
+also verified end to end: it checks request capability/scope and durable run
+owner, then commits graph events, projections, index intent, runtime result,
+and acknowledgement together. This does not prove autonomous inline-worker
+authorization. `execute_inline_native_work_once` currently applies results
+without an authenticated principal, so graph effects are rejected. Ordinary
+`submit_run` binds `user_id` to the authenticated request principal, but
+service-triggered runs can still derive `user_id` from trigger payload or target
+configuration. Treat neither an arbitrary stored `user_id` nor worker output as
+proof of identity.
 
-Prove this slice with a real PostgreSQL/pgvector run, including an allowed
-owner write, denied other owner, missing or untrusted owner, revoked capability,
-cross-scope mutation, rollback, duplicate result, and restart/retry. Check the
-actual inline-worker route and durable effects, not just helpers or status
-codes. Verify legacy non-graph runs and the Python worker contract as well.
-Explicitly report any unimplemented owner resolver or policy race. Do not mark
-`DL-10` complete until its full existing acceptance criteria are met.
+Implement the selected policy for inline native writes by binding each admitted
+run to a trustworthy owner or service principal and resolving that identity's
+current `write_graph` authority and scope when the worker commits effects.
+Never restore authority from persisted request/JWT claims alone. The current
+commit check reuses the authenticated result request principal; capability
+state is process-local and its scope comes from request claims, so it does not
+establish freshness against an independent policy source or serialize a
+concurrent revocation with the graph transaction. Reuse an existing
+authoritative policy mechanism if available; introduce one narrowly scoped
+resolver only after verifying that current mechanisms cannot support the
+inline worker. Specify the policy's consistency point, and keep the operation
+fail-closed if current authority cannot be established. Service identities
+must have explicit authorization semantics; never allow a trigger payload to
+select an arbitrary owner.
+
+Extend the real PostgreSQL/pgvector vertical test to exercise the actual inline
+worker: authorized owner, different owner, missing or untrusted binding,
+revoked/currently denied capability, cross-scope mutation, transactional
+rollback, duplicate result, and restart/retry. Verify graph event, projection,
+index intent, runtime result, and acknowledgement together. Retain regression
+coverage for the authenticated HTTP path, legacy non-graph runs, and the Python
+worker contract. If policy revocation cannot be made atomic with the graph
+transaction, document and test the exact authorization linearization point;
+do not imply stronger revocation semantics. Do not mark `DL-10` complete until
+its existing acceptance criteria are met.
 
 Next, use `DL-07I` to complete one indexing lifecycle on a named backend.
 The generic external projection worker reuses accepted actions, but its current
