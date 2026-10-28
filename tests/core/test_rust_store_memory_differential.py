@@ -95,13 +95,13 @@ def _projection_snapshot(meta: Any, namespaces: tuple[str, ...]) -> list[dict[st
 def _snapshot(
     backend: Any, *, projection_namespaces: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    events, cursors = _meta_snapshot(backend._engine.meta_sqlite)
+    events, cursors = _meta_snapshot(backend._engine.metadata)
     return {
         "records": _record_snapshot(backend),
         "events": events,
         "cursors": cursors,
         "projections": _projection_snapshot(
-            backend._engine.meta_sqlite, projection_namespaces
+            backend._engine.metadata, projection_namespaces
         ),
     }
 
@@ -197,7 +197,7 @@ def _seed() -> Any:
         metadatas=[{"team": "red"}],
         embeddings=[[1.0, 1.0]],
     )
-    meta = backend._engine.meta_sqlite
+    meta = backend._engine.metadata
     first = meta.append_entity_event(
         namespace="alpha",
         event_id="evt-replace",
@@ -281,7 +281,7 @@ def test_graph_store_modes_namespace_filter_stable_order_and_read_only(monkeypat
 @pytest.mark.parametrize("mode", ["python", "shadow", "rust"])
 def test_meta_store_modes_replay_cursor_latest_identity_and_payload(monkeypatch, mode: str) -> None:
     backend = _seed()
-    meta = backend._engine.meta_sqlite
+    meta = backend._engine.metadata
     snapshot = _snapshot(backend)
     before = _state_hash(backend)
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", mode)
@@ -427,7 +427,7 @@ def test_pruned_event_snapshot_prefix_and_high_cursor_round_trip(monkeypatch, mo
     read from that real meta store before native comparison.
     """
     backend = _seed()
-    meta = backend._engine.meta_sqlite
+    meta = backend._engine.metadata
     with meta._lock:
         meta._state.entity_events["alpha"] = meta._state.entity_events["alpha"][1:]
     meta.cursor_set(namespace="alpha", consumer="replay", last_seq=9)
@@ -481,7 +481,7 @@ def test_pruned_event_snapshot_prefix_and_high_cursor_round_trip(monkeypatch, mo
 @pytest.mark.parametrize("mode", ["python", "shadow", "rust"])
 def test_named_projection_read_snapshot_parity_and_read_only(monkeypatch, mode: str) -> None:
     backend = _seed()
-    meta = backend._engine.meta_sqlite
+    meta = backend._engine.metadata
     namespaces = ("bridge_governance", "workflow_design", "isolated")
     meta.replace_named_projection(
         "bridge_governance",

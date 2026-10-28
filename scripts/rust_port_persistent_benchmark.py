@@ -21,7 +21,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_ROOT = ROOT / "rust"
-sys.path.insert(0, str(ROOT))
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+for import_root in (ROOT, SCRIPTS_ROOT):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from kogwistar._rust_bridge import store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
