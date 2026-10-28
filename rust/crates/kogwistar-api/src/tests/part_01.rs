@@ -2611,10 +2611,43 @@
         let native_middle_work =
             native_middle_claim.json::<Value>().await.unwrap()["work"][0].clone();
         assert_eq!(native_middle_work["payload"]["node_id"], "native-middle");
+        assert_eq!(
+            native_middle_work["payload"]["executor_target"],
+            "rust-native"
+        );
         assert_eq!(native_middle_work["payload"]["state"]["counter"], 4);
         assert_eq!(
             native_middle_work["payload"]["state"]["python_before_seen"],
             true
+        );
+        let events_before_wrong_target = store
+            .list_server_run_events("mixed-language-run", 0, 100)
+            .unwrap();
+        let mut wrong_target_payload = native_middle_work["payload"].clone();
+        wrong_target_payload["executor_target"] = json!("python-worker");
+        let wrong_target_result = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "handoff": {
+                    "message_id": native_middle_work["message_id"],
+                    "claimed_by": native_middle_work["claimed_by"],
+                    "run_id": native_middle_work["run_id"],
+                    "step_id": native_middle_work["step_id"],
+                    "correlation_id": native_middle_work["correlation_id"]
+                },
+                "payload": wrong_target_payload
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong_target_result.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            store
+                .list_server_run_events("mixed-language-run", 0, 100)
+                .unwrap(),
+            events_before_wrong_target,
+            "wrong-target rejection must not persist a worker result or trace"
         );
         let native_middle_result = client
             .post(format!("{base_url}/internal/runtime/native/execute"))
@@ -2688,6 +2721,13 @@
                 && event.payload_json.contains("native-middle")
                 && event.payload_json.contains("seam_crossings")
         }));
+        let native_trace = mixed_events
+            .iter()
+            .filter(|event| event.event_type == "workflow.trace.v1")
+            .map(|event| serde_json::from_str::<Value>(&event.payload_json).unwrap())
+            .find(|event| event["trace"]["event"] == "runtime.native.step.completed")
+            .expect("successful Rust-native step must persist its trace");
+        assert_eq!(native_trace["trace"]["executor_target"], "rust-native");
 
         // A non-native operation must keep the legacy Python-worker lane and
         // must not acquire native executor metadata implicitly.
