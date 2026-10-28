@@ -755,13 +755,17 @@ class AsyncChromaTwoStageProjectionAdapter:
         staged = _row_mapping(row.get("payload"))
         staged_seq = _sequence_number(row.get("last_authoritative_seq"))
         staged_fingerprint = str(staged.get("source_fingerprint") or "")
-        if expected and staged_fingerprint != expected:
+        if not staged_fingerprint:
+            raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+        if (expected and staged_fingerprint != expected) or (
+            staged_fingerprint != current_fingerprint
+        ):
             return
         embedding = (await _embed(self.engine._ef, [str(staged.get("document") or "")]))[0]
         current = await self._current(entity_kind, entity_id)
         if current is None or current.state != "active":
             return
-        if expected and expected != await self._fingerprint(entity_kind, entity_id):
+        if staged_fingerprint != await self._fingerprint(entity_kind, entity_id):
             return
         collection_key = entity_kind
         await self.engine.backend.async_call(
@@ -770,7 +774,7 @@ class AsyncChromaTwoStageProjectionAdapter:
             metadatas=[{
                 **_row_mapping(staged.get("metadata")),
                 "_kogwistar_stage2_ready": True,
-                "_kogwistar_source_fingerprint": expected,
+                "_kogwistar_source_fingerprint": staged_fingerprint,
             }],
             embeddings=[list(embedding)],
         )
@@ -787,9 +791,10 @@ class AsyncChromaTwoStageProjectionAdapter:
             return
         latest_fingerprint = await self._fingerprint(entity_kind, entity_id)
         if latest_fingerprint != staged_fingerprint:
-            await self.restore_stage1_from_canonical_event(
+            if not await self.restore_stage1_from_canonical_event(
                 entity_kind=entity_kind, entity_id=entity_id
-            )
+            ):
+                raise RuntimeError("async Chroma promotion could not restore Stage-1")
             return
         if entity_kind == "edge":
             await self._promote_edge_endpoints(
@@ -840,7 +845,12 @@ class AsyncChromaTwoStageProjectionAdapter:
                 if not row:
                     raise RuntimeError("current Chroma Stage-1 projection is missing")
                 staged = _row_mapping(row.get("payload"))
-                if expected and str(staged.get("source_fingerprint") or "") != expected:
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if not staged_fingerprint:
+                    raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+                if (expected and staged_fingerprint != expected) or (
+                    staged_fingerprint != await self._fingerprint(kind, entity_id)
+                ):
                     outcomes[job_id] = None
                     continue
                 prepared.append(
@@ -850,7 +860,6 @@ class AsyncChromaTwoStageProjectionAdapter:
                         entity_id,
                         {
                             **staged,
-                            "_expected": expected,
                             "_stage1_authoritative_seq": _sequence_number(
                                 row.get("last_authoritative_seq")
                             ),
@@ -877,13 +886,14 @@ class AsyncChromaTwoStageProjectionAdapter:
                 current = await self._current(kind, entity_id)
                 if current is None or current.state != "active":
                     continue
-                expected = str(staged.get("_expected") or "")
-                if expected and expected != await self._fingerprint(kind, entity_id):
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if staged_fingerprint != await self._fingerprint(kind, entity_id):
+                    outcomes[job_id] = None
                     continue
                 await self.engine.backend.async_call(
                     kind, "upsert", ids=[entity_id],
                     documents=[str(staged.get("document") or "")],
-                    metadatas=[{**_row_mapping(staged.get("metadata")), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": str(staged.get("_expected") or staged.get("source_fingerprint") or "")}],
+                    metadatas=[{**_row_mapping(staged.get("metadata")), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": staged_fingerprint}],
                     embeddings=[embedding],
                 )
                 latest = await self._current(kind, entity_id)
@@ -900,10 +910,11 @@ class AsyncChromaTwoStageProjectionAdapter:
                     )
                     outcomes[job_id] = None
                     continue
-                if expected and expected != await self._fingerprint(kind, entity_id):
-                    await self.restore_stage1_from_canonical_event(
+                if staged_fingerprint != await self._fingerprint(kind, entity_id):
+                    if not await self.restore_stage1_from_canonical_event(
                         entity_kind=kind, entity_id=entity_id
-                    )
+                    ):
+                        raise RuntimeError("async Chroma batch promotion could not restore Stage-1")
                     outcomes[job_id] = None
                     continue
                 if kind == "edge":

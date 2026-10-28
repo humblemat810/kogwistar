@@ -279,9 +279,57 @@ async def test_async_chroma_admission_and_promotion_use_async_adapter(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["node", "edge"])
 @pytest.mark.parametrize("batched", [False, True])
+async def test_async_chroma_legacy_job_promotes_with_staged_fingerprint(
+    tmp_path, kind, batched
+):
+    backend = _async_chroma_backend()
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=lambda _engine: backend,
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        if kind == "edge":
+            for endpoint in ("a", "b"):
+                await engine.async_add_node(
+                    build_entity_node(node_id=endpoint, doc_id="d1", embedding=None)
+                )
+        entity = (
+            build_entity_node(node_id="legacy", doc_id="d1", embedding=None)
+            if kind == "node"
+            else build_relationship_edge(edge_id="legacy", src="a", tgt="b", doc_id="d1")
+        )
+        await getattr(engine, f"async_add_{kind}")(entity)
+        fingerprint = json.loads(engine.indexing.canonical_revision_payload(
+            entity_kind=kind, entity_id="legacy"
+        ))["source_fingerprint"]
+        adapter = engine.async_two_stage_projection_adapter
+        if batched:
+            outcomes = await adapter.apply_embedding_jobs_batch([
+                SimpleNamespace(job_id="legacy", entity_kind=kind, entity_id="legacy", op="UPSERT", payload_json=None)
+            ])
+            assert outcomes == {"legacy": None}
+        else:
+            await adapter.apply_embedding_job(
+                entity_kind=kind, entity_id="legacy", op="UPSERT", payload_json=None
+            )
+        result = await backend.async_call(kind, "get", ids=["legacy"])
+        assert result["metadatas"][0]["_kogwistar_source_fingerprint"] == fingerprint
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, f"{kind}:legacy"
+        ) is None
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("legacy_payload", [False, True])
 async def test_async_chroma_late_stale_write_restages_current_revision(
-    tmp_path, batched
+    tmp_path, batched, legacy_payload
 ):
     backend = _async_chroma_backend()
     engine = GraphKnowledgeEngine(
@@ -325,7 +373,7 @@ async def test_async_chroma_late_stale_write_restages_current_revision(
                             entity_kind="node",
                             entity_id="async-late",
                             op="UPSERT",
-                            payload_json=old_payload,
+                            payload_json=None if legacy_payload else old_payload,
                         )
                     ]
                 )
@@ -336,7 +384,7 @@ async def test_async_chroma_late_stale_write_restages_current_revision(
                     entity_kind="node",
                     entity_id="async-late",
                     op="UPSERT",
-                    payload_json=old_payload,
+                    payload_json=None if legacy_payload else old_payload,
                 )
             )
         await asyncio.wait_for(stale_write_started.wait(), timeout=5)

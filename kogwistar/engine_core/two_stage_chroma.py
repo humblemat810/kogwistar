@@ -372,15 +372,20 @@ class SQLiteChromaTwoStageProjectionAdapter:
             raise RuntimeError("current Stage-1 projection is missing")
         staged = _mapping(row.get("payload"))
         staged_seq = _sequence_number(row.get("last_authoritative_seq"))
-        if expected and str(staged.get("source_fingerprint") or "") != expected:
+        staged_fingerprint = str(staged.get("source_fingerprint") or "")
+        if not staged_fingerprint:
+            raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+        if (expected and staged_fingerprint != expected) or (
+            staged_fingerprint != self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+        ):
             return
         document = str(staged.get("document") or "")
         embedding = self.engine.embed.iterative_defensive_emb(document)
         metadata = cast(dict[str, Any], staged.get("metadata") or {})
         metadata["_kogwistar_stage2_ready"] = True
-        metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
-            entity_kind=entity_kind, entity_id=entity_id
-        )
+        metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
         self._collection_call(
             entity_kind,
             "upsert",
@@ -470,7 +475,14 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 if not row:
                     raise RuntimeError("current Stage-1 projection is missing")
                 staged = _mapping(row.get("payload"))
-                if expected and str(staged.get("source_fingerprint") or "") != expected:
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if not staged_fingerprint:
+                    raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+                if (expected and staged_fingerprint != expected) or (
+                    staged_fingerprint != self._current_fingerprint(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                ):
                     outcomes[job_id] = None
                     continue
                 staged["_stage1_authoritative_seq"] = int(
@@ -509,7 +521,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     outcomes[job_id] = exc
             return outcomes
 
-        for (job_id, entity_kind, entity_id, expected, _, staged), embedding in zip(
+        for (job_id, entity_kind, entity_id, _, _, staged), embedding in zip(
             prepared, embeddings
         ):
             try:
@@ -518,15 +530,15 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 )
                 if current is None or current.state != "active":
                     continue
-                if expected and expected != self._current_fingerprint(
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if staged_fingerprint != self._current_fingerprint(
                     entity_kind=entity_kind, entity_id=entity_id
                 ):
+                    outcomes[job_id] = None
                     continue
                 metadata = cast(dict[str, Any], staged.get("metadata") or {})
                 metadata["_kogwistar_stage2_ready"] = True
-                metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
-                    entity_kind=entity_kind, entity_id=entity_id
-                )
+                metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
                 self._collection_call(
                     entity_kind,
                     "upsert",

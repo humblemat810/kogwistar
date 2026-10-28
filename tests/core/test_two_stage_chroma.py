@@ -637,8 +637,9 @@ def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(
 
 @pytest.mark.parametrize("kind", ["node", "edge"])
 @pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("legacy_payload", [False, True])
 def test_chroma_late_old_promotion_restages_newer_revision(
-    tmp_path, kind, batched
+    tmp_path, kind, batched, legacy_payload
 ):
     engine, adapter = _engine(tmp_path)
 
@@ -697,7 +698,7 @@ def test_chroma_late_old_promotion_restages_newer_revision(
                     entity_kind=kind,
                     entity_id="shared",
                     op="UPSERT",
-                    payload_json=old_payload,
+                    payload_json=None if legacy_payload else old_payload,
                 )
             ]
         )
@@ -707,7 +708,7 @@ def test_chroma_late_old_promotion_restages_newer_revision(
             entity_kind=kind,
             entity_id="shared",
             op="UPSERT",
-            payload_json=old_payload,
+            payload_json=None if legacy_payload else old_payload,
         )
 
     staged = engine.meta_sqlite.get_stage1_node_projection(
