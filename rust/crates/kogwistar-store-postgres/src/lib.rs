@@ -329,6 +329,7 @@ pub struct PostgresStore {
 mod auth;
 mod event_projection;
 mod graph;
+mod index_job_results;
 mod index_jobs;
 mod lane_messages;
 mod named_projections;
@@ -342,6 +343,7 @@ mod workflow_runtime;
 pub use auth::PostgresAuthStore;
 use event_projection::*;
 use graph::*;
+use index_job_results::*;
 use index_jobs::*;
 use lane_messages::*;
 use named_projections::*;
