@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -273,6 +275,108 @@ async def test_async_chroma_admission_and_promotion_use_async_adapter(tmp_path):
         assert promoted["ids"] == [node.id for node in nodes]
         assert all(embedding is not None for embedding in promoted["embeddings"])
     finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batched", [False, True])
+async def test_async_chroma_late_stale_write_restages_current_revision(
+    tmp_path, batched
+):
+    backend = _async_chroma_backend()
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=lambda _engine: backend,
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    stale_write_started = asyncio.Event()
+    release_stale_write = asyncio.Event()
+    original_async_call = backend.async_call
+
+    try:
+        old = build_entity_node(node_id="async-late", doc_id="old", embedding=None)
+        await engine.async_add_node(old)
+        old_payload = engine.indexing.canonical_revision_payload(
+            entity_kind="node", entity_id="async-late"
+        )
+        old_fingerprint = json.loads(old_payload)["source_fingerprint"]
+
+        async def delay_old_upsert(collection_key, method, **kwargs):
+            metadatas = kwargs.get("metadatas") or []
+            metadata = metadatas[0] if metadatas else {}
+            if (
+                collection_key == "node"
+                and method == "upsert"
+                and metadata.get("_kogwistar_source_fingerprint") == old_fingerprint
+            ):
+                stale_write_started.set()
+                await release_stale_write.wait()
+            return await original_async_call(collection_key, method, **kwargs)
+
+        backend.async_call = delay_old_upsert
+        adapter = engine.async_two_stage_projection_adapter
+        if batched:
+            stale_operation = asyncio.create_task(
+                adapter.apply_embedding_jobs_batch(
+                    [
+                        SimpleNamespace(
+                            job_id="old-async-batch",
+                            entity_kind="node",
+                            entity_id="async-late",
+                            op="UPSERT",
+                            payload_json=old_payload,
+                        )
+                    ]
+                )
+            )
+        else:
+            stale_operation = asyncio.create_task(
+                adapter.apply_embedding_job(
+                    entity_kind="node",
+                    entity_id="async-late",
+                    op="UPSERT",
+                    payload_json=old_payload,
+                )
+            )
+        await asyncio.wait_for(stale_write_started.wait(), timeout=5)
+
+        new = build_entity_node(node_id="async-late", doc_id="new", embedding=None)
+        await engine.async_add_node(new)
+        current_payload = engine.indexing.canonical_revision_payload(
+            entity_kind="node", entity_id="async-late"
+        )
+        await adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="async-late",
+            op="UPSERT",
+            payload_json=current_payload,
+        )
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "node:async-late"
+        ) is None
+
+        release_stale_write.set()
+        await stale_operation
+        restored = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, "node:async-late"
+        )
+        assert restored is not None
+        assert json.loads(restored["payload"]["document"])["doc_id"] == "new"
+
+        await adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="async-late",
+            op="UPSERT",
+            payload_json=current_payload,
+        )
+        result = await backend.async_node_get(
+            ids=["async-late"], include=["documents", "metadatas", "embeddings"]
+        )
+        assert json.loads(result["documents"][0])["doc_id"] == "new"
+        assert result["embeddings"][0] is not None
+    finally:
+        release_stale_write.set()
         engine.close()
 
 
