@@ -225,6 +225,9 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+/// Manual code-smell probe. Absolute timings vary by host; growth ratio is
+/// the useful signal. Both indexed retry lookup and warm current-state read
+/// should remain near-flat as unrelated recorded history grows.
 #[test]
 #[ignore = "manual runtime serving-path scale probe"]
 fn runtime_serving_lookup_scale_probe() {

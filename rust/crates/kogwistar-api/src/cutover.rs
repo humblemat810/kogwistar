@@ -15,6 +15,9 @@ pub struct ImplementationSnapshot {
 }
 
 impl ImplementationSnapshot {
+    // Keep this explicit release gate: it becomes true only after the pending
+    // route inventory is deliberately emptied as part of a verified cutover.
+    #[allow(clippy::const_is_empty)]
     pub fn effective_server_cutover_ready(&self) -> bool {
         self.server_cutover_ready
             && PENDING_SERVER_CUTOVER_ROUTES.is_empty()

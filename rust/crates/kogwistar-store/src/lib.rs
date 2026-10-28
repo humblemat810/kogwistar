@@ -2547,6 +2547,8 @@ pub trait GraphProjectionWriteStore: Send + Sync {
 }
 
 impl<T: GraphWriteStore> GraphProjectionWriteStore for T {
+    // Preserve the trait's explicit opaque-future + Send contract here.
+    #[allow(clippy::manual_async_fn)]
     fn upsert_graph_projection_record(
         &self,
         namespace: &str,
@@ -2569,6 +2571,7 @@ impl<T: GraphWriteStore> GraphProjectionWriteStore for T {
         }
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn delete_graph_projection_record(
         &self,
         namespace: &str,

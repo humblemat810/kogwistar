@@ -190,10 +190,6 @@ fn block_on<T>(future: impl Future<Output = T>) -> T {
 
 #[path = "tests/auth.rs"]
 mod auth;
-/// Manual code-smell probe. Absolute timings vary by host; growth ratio is
-/// the useful signal. Both indexed retry lookup and warm current-state read
-/// should remain near-flat as unrelated recorded history grows.
-
 #[path = "tests/authority.rs"]
 mod authority;
 #[path = "tests/events.rs"]
