@@ -814,6 +814,7 @@ class AsyncChromaTwoStageProjectionAdapter:
                 **_row_mapping(staged.get("metadata")),
                 "_kogwistar_stage2_ready": True,
                 "_kogwistar_source_fingerprint": staged_fingerprint,
+                "_kogwistar_source_revision": staged_seq,
             }],
             embeddings=[list(embedding)],
         )
@@ -945,7 +946,7 @@ class AsyncChromaTwoStageProjectionAdapter:
                 await self.engine.backend.async_call(
                     kind, "upsert", ids=[entity_id],
                     documents=[str(staged.get("document") or "")],
-                    metadatas=[{**_row_mapping(staged.get("metadata")), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": staged_fingerprint}],
+                    metadatas=[{**_row_mapping(staged.get("metadata")), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": staged_fingerprint, "_kogwistar_source_revision": _sequence_number(staged.get("_stage1_authoritative_seq"))}],
                     embeddings=[embedding],
                 )
                 latest = await self._current(kind, entity_id)

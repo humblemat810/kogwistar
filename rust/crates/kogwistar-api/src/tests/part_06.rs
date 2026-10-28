@@ -1,4 +1,71 @@
     #[test]
+    fn sqlite_chroma_stage2_read_fence_requires_matching_active_event_revision() {
+        let event = SqliteRawEntityEvent {
+            namespace: "tenant-a".to_owned(),
+            seq: 7,
+            event_id: "node-7".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "n1".to_owned(),
+            op: "REPLACE".to_owned(),
+            payload_json: r#"{"lifecycle_patch":{"lifecycle_status":"active"}}"#.to_owned(),
+            created_at: 0,
+        };
+        let stage2_record = |ready: Value, revision: Option<Value>| {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("_kogwistar_stage2_ready".to_owned(), ready);
+            if let Some(revision) = revision {
+                metadata.insert("_kogwistar_source_revision".to_owned(), revision);
+            }
+            GraphRecord {
+                id: "n1".to_owned(),
+                document: Some("node payload".to_owned()),
+                metadata,
+                embedding: None,
+            }
+        };
+
+        assert!(SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(true), Some(json!(7))),
+            Some(&event),
+        ));
+        assert!(!SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(true), Some(json!(6))),
+            Some(&event),
+        ));
+        assert!(!SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(true), None),
+            Some(&event),
+        ));
+        assert!(!SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(true), Some(json!(7))),
+            None,
+        ));
+        assert!(!SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(false), Some(json!(7))),
+            Some(&event),
+        ));
+
+        let deleted = SqliteRawEntityEvent {
+            op: "DELETE".to_owned(),
+            ..event.clone()
+        };
+        assert!(!SqliteRunApplicationService::stage2_record_is_current(
+            &stage2_record(Value::Bool(true), Some(json!(7))),
+            Some(&deleted),
+        ));
+        let legacy_single_stage = GraphRecord {
+            id: "legacy".to_owned(),
+            document: None,
+            metadata: serde_json::Map::new(),
+            embedding: None,
+        };
+        assert!(SqliteRunApplicationService::stage2_record_is_current(
+            &legacy_single_stage,
+            None,
+        ));
+    }
+
+    #[test]
     fn authenticated_run_owner_uses_stable_user_id_and_rejects_anonymous() {
         assert_eq!(
             authenticated_run_owner_id(&json!({"user_id":"User-42", "sub":"alice@example.test"})),
@@ -2260,17 +2327,24 @@
                 let payload = if line.contains("/collections HTTP") {
                     json!({"id": format!("collection-{}", input["name"].as_str().unwrap()), "metadata":{"hnsw:space":"cosine"}})
                 } else if line.contains("collection-nodes/query") {
-                    let scoped = |document: &str| json!({
-                        "_kogwistar_namespace":"scope-a",
-                        "workspace_id":"workspace-a",
-                        "graph_space":"knowledge",
-                        "_kogwistar_original_metadata":"{}",
-                        "_test_document": document
-                    });
+                    let scoped = |document: &str| {
+                        let original = if document == "doc2" {
+                            json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1})
+                        } else {
+                            json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2})
+                        };
+                        json!({
+                            "_kogwistar_namespace":"scope-a",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"knowledge",
+                            "_kogwistar_original_metadata":original.to_string(),
+                            "_test_document": document
+                        })
+                    };
                     json!({
-                        "ids":[["n3","n2"]],
-                        "documents":[["doc3","doc2"]],
-                        "metadatas":[[scoped("doc3"),scoped("doc2")]],
+                        "ids":[["n4","n2"]],
+                        "documents":[["doc4","doc2"]],
+                        "metadatas":[[scoped("doc4"),scoped("doc2")]],
                         "embeddings":[[[0.1,0.2],[0.1,0.2]]],
                         "distances":[[0.03,0.1]]
                     })
@@ -2294,16 +2368,20 @@
                     })
                 } else if line.contains("collection-nodes/get") {
                     let metas = [
-                        json!({}), json!({}), json!({}),
+                        json!({}),
+                        json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1}),
+                        json!({}),
+                        json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n2","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n3","acl_version":1,"acl_mode":"private"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n4","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
                     ];
-                    json!({"ids":["n1","n2","n3","acl-n1","acl-n2","acl-n3","acl-e1"],
-                        "documents":["{}","{}","{}","{}","{}","{}","{}"],
+                    json!({"ids":["n1","n2","n3","n4","acl-n1","acl-n2","acl-n3","acl-n4","acl-e1"],
+                        "documents":["{}","{}","{}","{}","{}","{}","{}","{}","{}"],
                         "metadatas":metas.into_iter().map(|m| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","_kogwistar_original_metadata":m.to_string()})).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null]})
+                        "embeddings":[null,null,null,null,null,null,null,null,null]})
                 } else {
                     json!({"ids":["e1"],
                         "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"]}"#],
@@ -2328,11 +2406,11 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 7, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 9, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
-        assert_eq!(visible_nodes.len(), 2, "ACL-visible nodes: {visible_nodes:?}");
+        assert_eq!(visible_nodes.len(), 3, "ACL-visible nodes: {visible_nodes:?}");
         assert_eq!(visible_edges.len(), 1, "ACL-visible edges: {visible_edges:?}");
         assert_eq!(
             graph_neighbors_from_records("n1", &visible_nodes, &visible_edges, None).nodes,
@@ -2346,6 +2424,22 @@
         assert_eq!(batched.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), ["n2"]);
         let path = std::env::temp_dir().join(format!("kogwistar-sqlite-chroma-{}.sqlite3", uuid::Uuid::new_v4()));
         let service = SqliteRunApplicationService::open(&path).unwrap().with_chroma_graph(graph);
+        for (event_id, entity_id, op) in [
+            ("n2-current", "n2", "ADD"),
+            ("n4-old", "n4", "ADD"),
+            ("n4-current", "n4", "REPLACE"),
+        ] {
+            service.store.append_raw_entity_event(
+                "scope-a",
+                SqliteNewRawEntityEvent {
+                    event_id: event_id.to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: entity_id.to_owned(),
+                    op: op.to_owned(),
+                    payload_json: "{}".to_owned(),
+                },
+            ).unwrap();
+        }
         let graph_read_tools = ["kg_neighbors", "kg_find_edges", "kg_shortest_path", "kg_k_hop"];
         assert!(graph_read_tools.iter().all(|name| service.supports_mcp_tool("root", name)));
         assert!(!service.supports_mcp_tool("root", "kg_graph_mutate"));

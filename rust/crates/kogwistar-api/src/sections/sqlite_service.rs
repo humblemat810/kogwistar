@@ -16,6 +16,74 @@ fn runtime_max_queue() -> usize {
 }
 
 impl SqliteRunApplicationService {
+    fn stage2_record_is_current(
+        record: &GraphRecord,
+        latest: Option<&SqliteRawEntityEvent>,
+    ) -> bool {
+        match record.metadata.get("_kogwistar_stage2_ready") {
+            None => true,
+            Some(Value::Bool(true)) => {
+                let Some(source_revision) = record
+                    .metadata
+                    .get("_kogwistar_source_revision")
+                    .and_then(Value::as_i64)
+                else {
+                    return false;
+                };
+                let Some(event) = latest else {
+                    return false;
+                };
+                if event.seq != source_revision {
+                    return false;
+                }
+                match event.op.to_ascii_uppercase().as_str() {
+                    "ADD" | "REPLACE" => serde_json::from_str::<Value>(&event.payload_json)
+                        .ok()
+                        .is_some_and(|payload| {
+                            payload.is_object()
+                                && payload
+                                    .get("lifecycle_patch")
+                                    .and_then(|patch| patch.get("lifecycle_status"))
+                                    .and_then(Value::as_str)
+                                    != Some("tombstoned")
+                        }),
+                    "TOMBSTONE" | "DELETE" => false,
+                    _ => false,
+                }
+            }
+            Some(Value::Bool(false)) | Some(_) => false,
+        }
+    }
+
+    fn filter_current_chroma_stage2(
+        &self,
+        namespace: &str,
+        nodes: &mut Vec<GraphRecord>,
+        edges: &mut Vec<GraphRecord>,
+    ) -> Result<(), String> {
+        for (entity_kind, records) in [("node", nodes), ("edge", edges)] {
+            let ids = records
+                .iter()
+                .filter(|record| {
+                    record
+                        .metadata
+                        .get("_kogwistar_stage2_ready")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                })
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>();
+            let latest = self
+                .store
+                .latest_entity_events(namespace, entity_kind, &ids)
+                .map_err(|error| error.to_string())?;
+            records.retain(|record| {
+                Self::stage2_record_is_current(record, latest.get(&record.id))
+            });
+        }
+        Ok(())
+    }
+
     fn design_events(&self, workflow_id: &str) -> Result<Vec<EntityEvent>, String> {
         let namespace = format!("wf_design:{workflow_id}");
         self.store
@@ -545,7 +613,7 @@ impl SqliteRunApplicationService {
             ));
         };
         const MAX_GRAPH_SNAPSHOT_RECORDS: usize = 10_000;
-        let (nodes, edges) = match tokio::try_join!(
+        let (mut nodes, mut edges) = match tokio::try_join!(
             graph.graph_records_of_kind_bounded(
                 namespace,
                 GraphEntityKind::Node,
@@ -568,6 +636,13 @@ impl SqliteRunApplicationService {
                 ));
             }
         };
+        if let Err(error) = self.filter_current_chroma_stage2(namespace, &mut nodes, &mut edges) {
+            return Err(effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error,
+            ));
+        }
         let principal = graph_acl_principal_from_claims(
             &request.principal,
             scope_value["security_scope"].as_str(),
@@ -842,6 +917,34 @@ impl SqliteRunApplicationService {
                     );
                 }
             }
+        }
+
+        let projected_hits = matches_by_query
+            .iter()
+            .flatten()
+            .map(|matched| matched.record.clone())
+            .collect::<Vec<_>>();
+        let (mut hit_nodes, mut hit_edges) = if kind == GraphEntityKind::Node {
+            (projected_hits, Vec::new())
+        } else {
+            (Vec::new(), projected_hits)
+        };
+        if let Err(error) =
+            self.filter_current_chroma_stage2(namespace, &mut hit_nodes, &mut hit_edges)
+        {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error,
+            );
+        }
+        let current_hit_ids = hit_nodes
+            .iter()
+            .chain(hit_edges.iter())
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        for matches in &mut matches_by_query {
+            matches.retain(|matched| current_hit_ids.contains(matched.record.id.as_str()));
         }
 
         let mut candidate_by_id = BTreeMap::new();

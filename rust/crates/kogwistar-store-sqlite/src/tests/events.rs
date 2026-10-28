@@ -40,6 +40,45 @@ fn restored_raw_event_preserves_identity_and_is_idempotent() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn latest_entity_events_are_batched_and_scoped_by_namespace_and_kind() {
+    let (store, path) = store("latest-entity-events");
+    for (namespace, kind, id, event_id, op) in [
+        ("scope", "node", "n1", "n1-v1", "ADD"),
+        ("scope", "edge", "n1", "e-n1-v2", "REPLACE"),
+        ("scope", "node", "n1", "n1-v3", "REPLACE"),
+        ("other", "node", "n1", "other-n1", "ADD"),
+    ] {
+        store
+            .append_raw_entity_event(
+                namespace,
+                NewRawEntityEvent {
+                    event_id: event_id.to_owned(),
+                    entity_kind: kind.to_owned(),
+                    entity_id: id.to_owned(),
+                    op: op.to_owned(),
+                    payload_json: "{}".to_owned(),
+                },
+            )
+            .unwrap();
+    }
+    let latest = store
+        .latest_entity_events("scope", "node", &["n1".to_owned(), "missing".to_owned()])
+        .unwrap();
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest["n1"].seq, 3);
+    assert_eq!(latest["n1"].event_id, "n1-v3");
+    assert!(
+        store
+            .latest_entity_events("scope", "node", &[])
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn global_user_and_scoped_sequences_are_isolated_and_current() {
     let (store, path) = store("sequences");

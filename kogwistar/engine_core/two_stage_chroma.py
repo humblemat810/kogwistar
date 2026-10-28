@@ -415,6 +415,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
         metadata = cast(dict[str, Any], staged.get("metadata") or {})
         metadata["_kogwistar_stage2_ready"] = True
         metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
+        metadata["_kogwistar_source_revision"] = staged_seq
         self._collection_call(
             entity_kind,
             "upsert",
@@ -576,6 +577,9 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 metadata = cast(dict[str, Any], staged.get("metadata") or {})
                 metadata["_kogwistar_stage2_ready"] = True
                 metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
+                metadata["_kogwistar_source_revision"] = _sequence_number(
+                    staged.get("_stage1_authoritative_seq")
+                )
                 self._collection_call(
                     entity_kind,
                     "upsert",

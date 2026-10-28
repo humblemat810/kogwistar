@@ -234,6 +234,11 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
         field_mode="backend", exclude=["embedding"]
     )
     assert engine.backend.rows["n1"]["embedding"] == [len(expected_document), 1.0]
+    assert engine.backend.rows["n1"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == engine.indexing.canonical_entity_revision(
+        entity_kind="node", entity_id="n1"
+    ).revision
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
 
 
@@ -269,6 +274,15 @@ def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
     assert calls == [documents]
     assert engine.backend.rows["n1"]["embedding"] == [1.0, 1.0]
     assert engine.backend.rows["n2"]["embedding"] == [2.0, 1.0]
+    assert [
+        engine.backend.rows[node_id]["metadata"]["_kogwistar_source_revision"]
+        for node_id in ("n1", "n2")
+    ] == [
+        engine.indexing.canonical_entity_revision(
+            entity_kind="node", entity_id=node_id
+        ).revision
+        for node_id in ("n1", "n2")
+    ]
     assert engine.meta_sqlite.list_stage1_node_projections("tenant-a") == []
 
 

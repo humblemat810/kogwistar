@@ -274,6 +274,12 @@ async def test_async_chroma_admission_and_promotion_use_async_adapter(tmp_path):
         promoted = await backend.async_node_get(ids=[node.id for node in nodes])
         assert promoted["ids"] == [node.id for node in nodes]
         assert all(embedding is not None for embedding in promoted["embeddings"])
+        assert [metadata["_kogwistar_source_revision"] for metadata in promoted["metadatas"]] == [
+            engine.indexing.canonical_entity_revision(
+                entity_kind="node", entity_id=node.id
+            ).revision
+            for node in nodes
+        ]
     finally:
         engine.close()
 
@@ -318,6 +324,11 @@ async def test_async_chroma_legacy_job_promotes_with_staged_fingerprint(
             )
         result = await backend.async_call(kind, "get", ids=["legacy"])
         assert result["metadatas"][0]["_kogwistar_source_fingerprint"] == fingerprint
+        assert result["metadatas"][0]["_kogwistar_source_revision"] == (
+            engine.indexing.canonical_entity_revision(
+                entity_kind=kind, entity_id="legacy"
+            ).revision
+        )
         assert engine.meta_sqlite.get_stage1_node_projection(
             engine.namespace, f"{kind}:legacy"
         ) is None
