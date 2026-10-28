@@ -1240,6 +1240,183 @@ impl PostgresRunApplicationService {
         )
     }
 
+    async fn invoke_builtin_tool_syscall(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        let Some(tool_name) = input
+            .args
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_ascii_lowercase)
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "tool_name is required",
+            );
+        };
+
+        let result = match tool_name.as_str() {
+            "list_transcript" => {
+                let Some(conversation_id) = input
+                    .args
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "conversation_id is required for list_transcript",
+                    );
+                };
+                let authorization = match self.authorize_conversation_transcript(request) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let transcript = match self
+                    .conversation_transcript_projection(
+                        request,
+                        InternalConversationTranscriptRequest {
+                            conversation_id: conversation_id.to_owned(),
+                            limit: 10_000,
+                        },
+                        authorization,
+                    )
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let mut result = legacy_receive_message_value(transcript);
+                result
+                    .as_object_mut()
+                    .expect("legacy transcript result is an object")
+                    .insert("tool_name".to_owned(), Value::String(tool_name.clone()));
+                result
+            }
+            "latest_snapshot" => {
+                let Some(conversation_id) = input
+                    .args
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "conversation_id is required for latest_snapshot",
+                    );
+                };
+                let authorization = match self.authorize_context_snapshot(request) {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                let run_id = match context_snapshot_syscall_field(&input.args, "run_id") {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
+                            error,
+                        );
+                    }
+                };
+                let stage = match context_snapshot_syscall_field(&input.args, "stage") {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
+                            error,
+                        );
+                    }
+                };
+                let snapshot = match self
+                    .context_snapshot_projection(
+                        request,
+                        InternalContextSnapshotRequest {
+                            conversation_id: conversation_id.to_owned(),
+                            run_id,
+                            stage,
+                        },
+                        authorization,
+                    )
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(response) => return response,
+                };
+                json!({
+                    "tool_name": tool_name,
+                    "conversation_id": conversation_id,
+                    "snapshot": public_context_snapshot_value(snapshot),
+                })
+            }
+            "capability_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "read_security_scope"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        format!("built-in tool {tool_name:?} requires project_view and read_security_scope"),
+                    );
+                }
+                let state = self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let mut snapshot = capability_snapshot(&request.principal, &state);
+                snapshot
+                    .as_object_mut()
+                    .expect("capability snapshot is an object")
+                    .insert("tool_name".to_owned(), Value::String(tool_name.clone()));
+                snapshot
+            }
+            "resource_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "read_security_scope"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        format!("built-in tool {tool_name:?} requires project_view and read_security_scope"),
+                    );
+                }
+                return effect_error(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "KOGWISTAR_TOOL_UNSUPPORTED",
+                    format!("built-in tool {tool_name:?} has no Rust-equivalent snapshot provider"),
+                );
+            }
+            _ => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_TOOL_NOT_FOUND",
+                    format!("unknown built-in tool: {tool_name}"),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "invoke_tool",
+            json_effect(StatusCode::OK, result),
+        )
+    }
+
     async fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
         let input = match syscall_input(request, op) {
             Ok(input) => input,
@@ -1473,6 +1650,20 @@ impl PostgresRunApplicationService {
                         "KOGWISTAR_INVALID_REQUEST",
                         "conversation_id is required",
                     )
+                }
+            }
+            "invoke_tool" => {
+                if !syscall_allowed_in_namespace(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &[],
+                    "conversation",
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    self.invoke_builtin_tool_syscall(request, &input).await
                 }
             }
             "project_view" => {

@@ -593,6 +593,106 @@
     }
 
     #[tokio::test]
+    async fn invoke_tool_checks_builtin_capabilities_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "invoke_tool_auth_contract",
+        )
+        .unwrap();
+        let make_request = |tool_name: &str, args: Value| {
+            let mut args = args.as_object().cloned().unwrap_or_default();
+            args.insert("tool_name".to_owned(), json!(tool_name));
+            ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": args
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "capabilities": []
+                }),
+            }
+        };
+
+        let transcript_denied = service
+            .execute(make_request("list_transcript", json!({"conversation_id": "c-1"})))
+            .await;
+        assert_eq!(transcript_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&transcript_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+
+        let snapshot_denied = service
+            .execute(make_request("latest_snapshot", json!({"conversation_id": "c-1"})))
+            .await;
+        assert_eq!(snapshot_denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&snapshot_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+
+        let capability_snapshot_denied = service
+            .execute(make_request("capability_snapshot", json!({})))
+            .await;
+        assert_eq!(
+            capability_snapshot_denied.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&capability_snapshot_denied.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    async fn invoke_tool_capability_snapshot_uses_existing_authority_projection() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "invoke_tool_capability_snapshot",
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {"tool_name": "capability_snapshot"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "capabilities": ["project_view", "read_security_scope"]
+                }),
+            })
+            .await;
+
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["op"], "invoke_tool");
+        assert_eq!(payload["result"]["tool_name"], "capability_snapshot");
+        assert_eq!(payload["result"]["current_subject"], "alice");
+        assert!(payload["result"]["specs"].as_array().is_some());
+        assert!(payload["result"]["effective_capabilities"]
+            .as_array()
+            .is_some_and(|capabilities| capabilities
+                .iter()
+                .any(|capability| capability == "project_view")));
+    }
+
+    #[tokio::test]
     async fn context_snapshot_authorization_is_bound_to_request_principal() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
@@ -869,6 +969,46 @@
             "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND"
         );
         assert!(!private_payload.to_string().contains("private snapshot"));
+
+        let invoke_snapshot_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "latest_snapshot",
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "run-1",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(invoke_snapshot_response.status, StatusCode::OK.as_u16());
+        let invoke_snapshot: Value =
+            serde_json::from_slice(&invoke_snapshot_response.body).unwrap();
+        assert_eq!(invoke_snapshot["version"], "v1");
+        assert_eq!(invoke_snapshot["op"], "invoke_tool");
+        assert_eq!(invoke_snapshot["status"], "ok");
+        assert_eq!(
+            invoke_snapshot["result"],
+            json!({
+                "tool_name": "latest_snapshot",
+                "conversation_id": expected["conversation_id"],
+                "snapshot": expected
+            })
+        );
 
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
@@ -1230,6 +1370,44 @@
         assert_eq!(receive_payload["op"], "receive_message");
         assert_eq!(receive_payload["status"], "ok");
         assert_eq!(receive_payload["result"], expected_receive);
+
+        let invoke_transcript_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "list_transcript",
+                        "conversation_id": "conversation-1"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(invoke_transcript_response.status, StatusCode::OK.as_u16());
+        let invoke_transcript: Value =
+            serde_json::from_slice(&invoke_transcript_response.body).unwrap();
+        assert_eq!(invoke_transcript["version"], "v1");
+        assert_eq!(invoke_transcript["op"], "invoke_tool");
+        assert_eq!(invoke_transcript["status"], "ok");
+        assert_eq!(
+            invoke_transcript["result"],
+            json!({
+                "tool_name": "list_transcript",
+                "conversation_id": "conversation-1",
+                "messages": expected_receive["messages"]
+            })
+        );
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
