@@ -29,7 +29,8 @@ if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
     from .engine import GraphKnowledgeEngine
     from .engine_postgres_meta import EnginePostgresMetaStore
-    from .engine_sqlite import EngineSQLite, RustEngineSQLite
+    from .engine_sqlite import EngineSQLite
+    from .rust_meta_sqlite import RustEngineSQLite
     from .rust_postgres_session import RustEnginePostgresMetaStore
     from ..workers.async_index_job_worker import AsyncIndexJobWorker
     from ..workers.index_job_worker import IndexJobWorker
@@ -39,7 +40,7 @@ EntityT = TypeVar("EntityT")
 _logger = logging.getLogger(__name__)
 
 
-def _is_tombstoned(meta: dict | None) -> bool:
+def _is_tombstoned(meta: Mapping[str, object] | None) -> bool:
     meta = meta or {}
     return str(meta.get("lifecycle_status") or "active") == "tombstoned"
 
@@ -162,11 +163,10 @@ class IndexingSubsystem:
 
         metadata_store = self.metadata
         if isinstance(metadata_store, RustEnginePostgresMetaStore):
-            table = (
-                self.engine.backend.nodes.name
-                if entity_kind == "node"
-                else self.engine.backend.edges.name
-            )
+            table_attr = "nodes" if entity_kind == "node" else "edges"
+            table = getattr(getattr(self.engine.backend, table_attr, None), "name", None)
+            if not isinstance(table, str) or not table:
+                raise RuntimeError(f"backend has no table name for {entity_kind} projection")
             records = metadata_store.graph_projection_records(
                 namespace=self.engine.namespace,
                 workspace_id=None,
@@ -196,7 +196,12 @@ class IndexingSubsystem:
                 "state": "missing",
             }
         else:
-            metadata = metadatas[0] if metadatas and isinstance(metadatas[0], dict) else {}
+            metadata_value = metadatas[0] if metadatas else None
+            metadata = (
+                cast(Mapping[str, object], metadata_value)
+                if isinstance(metadata_value, Mapping)
+                else {}
+            )
             source = {
                 "entity_kind": entity_kind,
                 "entity_id": entity_id,
@@ -529,7 +534,7 @@ class IndexingSubsystem:
             ):
                 ns = self.engine.namespace if namespace is None else namespace
                 started = time.perf_counter()
-                reconciled = reconcile_native(
+                reconciled = cast(Callable[..., int], reconcile_native)(
                     limit=max_jobs,
                     lease_seconds=lease_seconds,
                     namespace=ns,
