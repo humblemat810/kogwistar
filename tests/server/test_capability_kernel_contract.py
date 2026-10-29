@@ -668,6 +668,80 @@ def test_submit_turn_for_answer_requires_send_message(monkeypatch, engine_triple
         claims_ctx.reset(token)
 
 
+def test_submit_turn_for_answer_rejects_user_id_not_owned_by_conversation(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["send_message", "spawn_process"],
+            "sub": "authorized-sender",
+        }
+    )
+    try:
+        created = service.create_conversation(user_id="conversation-owner")
+        nodes_before = service._conversation_nodes(created["conversation_id"])
+        with pytest.raises(PermissionError, match="owner of the target conversation"):
+            service.submit_turn_for_answer(
+                conversation_id=created["conversation_id"],
+                user_id="different-user",
+                text="must not be persisted",
+            )
+        assert service._conversation_nodes(created["conversation_id"]) == nodes_before
+        assert (
+            registry.meta_store.list_server_runs(
+                conversation_id=created["conversation_id"], limit=100
+            )
+            == []
+        )
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_submit_turn_for_answer_keeps_authorized_actor_distinct_from_owner(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    monkeypatch.setattr(service._run_execution, "_run_answer", lambda _req: None)
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["send_message", "spawn_process"],
+            "sub": "authorized-sender",
+        }
+    )
+    try:
+        created = service.create_conversation(user_id="conversation-owner")
+        response = service.submit_turn_for_answer(
+            conversation_id=created["conversation_id"],
+            user_id="conversation-owner",
+            text="authorized message",
+        )
+        run = registry.get_run(response["run_id"])
+        assert run is not None
+        assert run["user_id"] == "conversation-owner"
+        assert run["user_turn_node_id"] == response["user_turn_node_id"]
+    finally:
+        claims_ctx.reset(token)
+
+
 def test_submit_workflow_run_requires_spawn_process_and_workflow_run_write(
     monkeypatch, engine_triplet
 ):

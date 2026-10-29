@@ -543,9 +543,16 @@ class ChatRunService:
             ["send_message"],
             approval_message="Sending message requires send_message capability",
         )
+        conversation_owner = self._conversation_owner(conversation_id)
+        if not conversation_owner:
+            raise KeyError(f"Unknown conversation_id: {conversation_id}")
+        if user_id is not None and str(user_id) != conversation_owner:
+            raise PermissionError(
+                "user_id must match the owner of the target conversation"
+            )
         return self._run_execution.submit_turn_for_answer(
             conversation_id=conversation_id,
-            user_id=user_id,
+            user_id=conversation_owner,
             text=text,
             workflow_id=workflow_id,
         )
