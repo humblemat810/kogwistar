@@ -2849,63 +2849,55 @@
                 .iter()
                 .map(|op| op.as_str().unwrap().to_owned())
                 .collect::<std::collections::BTreeSet<_>>();
-            let required_predicates = workflow["required_predicates"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|predicate| predicate.as_str().unwrap().to_owned())
-                .collect::<Vec<_>>();
-            let node_ops = required_ops
-                .iter()
-                .map(|op| (format!("node-{op}"), op.clone()))
-                .collect::<std::collections::BTreeMap<_, _>>();
+            let required_routes = workflow["required_routes"].as_array().unwrap();
             let python_op_version = workflow["python_op_version"].as_str().unwrap();
-            let node_versions = required_ops
+            let nodes = required_ops
                 .iter()
-                .map(|op| (format!("node-{op}"), python_op_version.to_owned()))
-                .collect::<std::collections::BTreeMap<_, _>>();
-            let node_executor_targets = node_ops
-                .iter()
-                .filter(|(_, op)| python_ops.contains(*op))
-                .map(|(node_id, _)| (node_id.clone(), "python-worker".to_owned()))
-                .collect::<std::collections::BTreeMap<_, _>>();
-            let mut routes = vec![kogwistar_runtime::RuntimeStaticRoute {
-                edge_id: "edge-default".to_owned(),
-                source_node_id: "node-start".to_owned(),
-                target_node_id: "node-end".to_owned(),
-                aliases: Vec::new(),
-                join_mask: 0,
-                predicate: None,
-                multiplicity: "one".to_owned(),
-                is_default: true,
-                priority: 100,
-                source_fanout: false,
-            }];
-            routes.extend(required_predicates
+                .map(|op| {
+                    json!({
+                        "id": format!("node-{op}"),
+                        "label": op,
+                        "metadata": {
+                            "entity_type": "workflow_node",
+                            "workflow_id": workflow_id,
+                            "wf_op": op,
+                            "wf_version": python_op_version,
+                            "wf_start": op == "start",
+                            "wf_fanout": false,
+                            "wf_join": false,
+                            "wf_executor_target": "python-worker"
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            let edges = required_routes
                 .iter()
                 .enumerate()
-                .map(|(index, predicate)| kogwistar_runtime::RuntimeStaticRoute {
-                    edge_id: format!("edge-{index}"),
-                    source_node_id: "node-start".to_owned(),
-                    target_node_id: "node-end".to_owned(),
-                    aliases: Vec::new(),
-                    join_mask: 0,
-                    predicate: Some(predicate.clone()),
-                    multiplicity: "one".to_owned(),
-                    is_default: false,
-                    priority: index as i64,
-                    source_fanout: false,
-                }));
-            let plan = RuntimeGraphPlan {
-                start_node_id: "node-start".to_owned(),
-                join_node_ids: Vec::new(),
-                start_join_mask: 0,
-                routes,
-                node_ops: node_ops.clone(),
-                node_versions,
-                node_environment_ids: std::collections::BTreeMap::new(),
-                node_executor_targets: node_executor_targets.clone(),
-            };
+                .map(|(index, route)| {
+                    let relation = if route["predicate"].is_null() {
+                        "wf_next"
+                    } else {
+                        "wf_conditional"
+                    };
+                    json!({
+                        "id": format!("edge-{index}"),
+                        "label": relation,
+                        "source_ids": [format!("node-{}", route["from"].as_str().unwrap())],
+                        "target_ids": [format!("node-{}", route["to"].as_str().unwrap())],
+                        "metadata": {
+                            "entity_type": "workflow_edge",
+                            "workflow_id": workflow_id,
+                            "wf_predicate": route["predicate"],
+                            "wf_priority": route["priority"],
+                            "wf_is_default": route["default"],
+                            "wf_multiplicity": route["multiplicity"]
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            let snapshot = json!({"nodes": nodes, "edges": edges});
+            let plan = runtime_graph_plan_from_snapshot(&snapshot.to_string())
+                .expect("shared Python answer design contract parses as a Rust runtime graph");
             assert!(answer_workflow_plan_is_executable(workflow_id, &plan));
             assert!(answer_workflow_admission_ready(workflow_id, Some(&plan)));
             assert!(!answer_workflow_admission_ready(workflow_id, None));
@@ -2919,11 +2911,40 @@
                 &missing_operation
             ));
 
-            let mut missing_predicate = plan.clone();
-            missing_predicate.routes.pop();
+            let mut altered_route_contract = plan.clone();
+            if let Some(route) = altered_route_contract
+                .routes
+                .iter_mut()
+                .find(|route| route.predicate.is_some())
+            {
+                route.predicate = Some("unknown_predicate".to_owned());
+            } else {
+                altered_route_contract.routes[0].is_default = false;
+            }
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &missing_predicate
+                &altered_route_contract
+            ));
+
+            let mut wrong_route_target = plan.clone();
+            wrong_route_target.routes[0].target_node_id = "node-start".to_owned();
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &wrong_route_target
+            ));
+
+            let mut unexpected_fanout = plan.clone();
+            unexpected_fanout.routes[0].source_fanout = true;
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &unexpected_fanout
+            ));
+
+            let mut unexpected_join = plan.clone();
+            unexpected_join.join_node_ids.push("node-start".to_owned());
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &unexpected_join
             ));
 
             let mut incompatible_operation_version = plan.clone();
@@ -2936,7 +2957,11 @@
             ));
 
             let mut incompatible_executor = plan.clone();
-            if let Some((node_id, _)) = node_ops.iter().find(|(_, op)| python_ops.contains(*op)) {
+            if let Some((node_id, _)) = plan
+                .node_ops
+                .iter()
+                .find(|(_, op)| python_ops.contains(*op))
+            {
                 incompatible_executor
                     .node_executor_targets
                     .insert(node_id.clone(), "rust-native".to_owned());

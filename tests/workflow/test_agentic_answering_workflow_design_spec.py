@@ -48,11 +48,42 @@ def test_answer_designs_match_shared_runtime_admission_contract():
             else build_agentic_answering_workflow_design(workflow_id=workflow_id)
         )
         actual_ops = {str(node.metadata.get("wf_op")) for node in design.nodes}
+        actual_fanout_ops = {
+            str(node.metadata.get("wf_op"))
+            for node in design.nodes
+            if node.metadata.get("wf_fanout") is True
+        }
+        actual_join_ops = {
+            str(node.metadata.get("wf_op"))
+            for node in design.nodes
+            if node.metadata.get("wf_join") is True
+        }
         actual_predicates = {
             str(edge.metadata["wf_predicate"])
             for edge in design.edges
             if edge.metadata.get("wf_predicate")
         }
+        node_ops_by_id = {node.id: str(node.metadata.get("wf_op")) for node in design.nodes}
+        actual_routes = [
+            {
+                "from": node_ops_by_id[edge.source_ids[0]],
+                "to": node_ops_by_id[edge.target_ids[0]],
+                "predicate": edge.metadata.get("wf_predicate"),
+                "default": bool(edge.metadata.get("wf_is_default", False)),
+                "priority": int(edge.metadata.get("wf_priority", 100)),
+                "multiplicity": str(edge.metadata.get("wf_multiplicity", "one")),
+            }
+            for edge in design.edges
+        ]
+        def route_order(route: dict[str, object]) -> tuple[object, ...]:
+            return (
+                route["from"],
+                route["to"],
+                route["priority"],
+                route["predicate"] or "",
+            )
+
+        actual_routes.sort(key=route_order)
         expected = set(expected_ops)
         assert workflows[workflow_id]["required_ops"] == list(expected_ops)
         assert actual_ops == expected
@@ -62,7 +93,16 @@ def test_answer_designs_match_shared_runtime_admission_contract():
         }
         assert all("wf_version" not in edge.metadata for edge in design.edges)
         assert set(workflows[workflow_id]["python_executor_ops"]) == expected
+        assert sorted(workflows[workflow_id]["required_fanout_ops"]) == sorted(
+            actual_fanout_ops
+        )
+        assert sorted(workflows[workflow_id]["required_join_ops"]) == sorted(
+            actual_join_ops
+        )
         assert actual_predicates == set(workflows[workflow_id]["required_predicates"])
+        assert actual_routes == sorted(
+            workflows[workflow_id]["required_routes"], key=route_order
+        )
         assert workflows[workflow_id]["requires_default_route"] is True
         assert any(edge.metadata.get("wf_is_default") for edge in design.edges)
 

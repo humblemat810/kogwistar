@@ -1048,9 +1048,27 @@ fn answer_workflow_plan_is_executable(
         .filter_map(Value::as_str)
         .collect::<std::collections::BTreeSet<_>>();
     let python_op_version = workflow["python_op_version"].as_str();
+    let Some(required_routes) = workflow["required_routes"].as_array() else {
+        return false;
+    };
+    let Some(required_fanout_ops) = workflow["required_fanout_ops"].as_array() else {
+        return false;
+    };
+    let required_fanout_ops = required_fanout_ops
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let Some(required_join_ops) = workflow["required_join_ops"].as_array() else {
+        return false;
+    };
+    let required_join_ops = required_join_ops
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
     if required_ops.is_empty()
         || python_executor_ops != required_ops
         || python_op_version.is_none()
+        || required_routes.is_empty()
     {
         return false;
     }
@@ -1067,12 +1085,71 @@ fn answer_workflow_plan_is_executable(
         .iter()
         .filter_map(|route| route.predicate.as_deref())
         .collect::<std::collections::BTreeSet<_>>();
+    let mut plan_fanout_ops = std::collections::BTreeSet::new();
+    for route in plan.routes.iter().filter(|route| route.source_fanout) {
+        let Some(source_op) = plan.node_ops.get(&route.source_node_id) else {
+            return false;
+        };
+        plan_fanout_ops.insert(source_op.as_str());
+    }
+    let plan_join_ops = plan
+        .join_node_ids
+        .iter()
+        .filter_map(|node_id| plan.node_ops.get(node_id).map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
     let requires_default_route = workflow["requires_default_route"].as_bool() == Some(true);
+    let mut expected_route_semantics = Vec::with_capacity(required_routes.len());
+    for route in required_routes {
+        let (Some(source), Some(target), Some(is_default), Some(priority), Some(multiplicity)) = (
+            route["from"].as_str(),
+            route["to"].as_str(),
+            route["default"].as_bool(),
+            route["priority"].as_i64(),
+            route["multiplicity"].as_str(),
+        ) else {
+            return false;
+        };
+        let predicate = match &route["predicate"] {
+            Value::Null => None,
+            Value::String(value) if !value.is_empty() => Some(value.clone()),
+            _ => return false,
+        };
+        expected_route_semantics.push((
+            source.to_owned(),
+            target.to_owned(),
+            predicate,
+            is_default,
+            priority,
+            multiplicity.to_owned(),
+        ));
+    }
+    let mut actual_route_semantics = Vec::with_capacity(plan.routes.len());
+    for route in &plan.routes {
+        let (Some(source), Some(target)) = (
+            plan.node_ops.get(&route.source_node_id),
+            plan.node_ops.get(&route.target_node_id),
+        ) else {
+            return false;
+        };
+        actual_route_semantics.push((
+            source.clone(),
+            target.clone(),
+            route.predicate.clone(),
+            route.is_default,
+            route.priority,
+            route.multiplicity.clone(),
+        ));
+    }
+    expected_route_semantics.sort();
+    actual_route_semantics.sort();
     if start_op != "start"
         || plan.node_ops.len() != required_ops.len()
         || plan.node_versions.len() != required_ops.len()
         || plan_ops != required_ops
         || plan_predicates != required_predicates
+        || plan_fanout_ops != required_fanout_ops
+        || plan_join_ops != required_join_ops
+        || actual_route_semantics != expected_route_semantics
         || (requires_default_route && !plan.routes.iter().any(|route| route.is_default))
     {
         return false;
