@@ -808,6 +808,27 @@ def test_aa_select_used_evidence_writes_used_node_ids_subset():
     assert state.get("used_node_ids") == ["n1", "n2"]
 
 
+def test_bm25_selector_matches_shared_rust_contract_fixture():
+    from kogwistar.conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-bm25-selection-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    state = fixture["state"]
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+    agent.config = AgentConfig(max_used=state["max_used"])
+
+    selection = agent._select_used_evidence_bm25(
+        question=state["question"], candidates=state["candidates"]
+    )
+
+    assert selection.model_dump() == fixture["expected"]["selection"]
+
+
 def test_aa_materialize_evidence_pack_writes_digest_and_runtime_pack():
     agent = _StubAgent()
     ce = _StubConversationEngine(last_user_text="Q")

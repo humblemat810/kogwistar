@@ -374,28 +374,17 @@ mod tests {
     #[test]
     fn bm25_evidence_selection_matches_python_overlap_order_and_limit() {
         let registry = crate::native_answer_persist::registry().unwrap();
-        let mut request = request(json!({
-            "evidence_selector": "bm25",
-            "question": "Explain graph vector retrieval none",
-            "max_used": 2,
-            "candidates": [
-                {"id": "node-first", "label": "Graph query", "summary": "vector access"},
-                {"id": "node-best", "label": "retrieval", "summary": "query vector graph"},
-                {"id": "node-irrelevant", "label": "unrelated", "summary": "nothing"},
-                {"id": "node-tied", "label": "Graph", "summary": "vector"},
-                {"id": "node-missing-fields"}
-            ]
-        }));
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-bm25-selection-v1.json"
+        ))
+        .unwrap();
+        let mut request = request(fixture["state"].clone());
         request.operation = "aa_select_used_evidence".to_owned();
         let effect = execute_native_step_with_registry(&request, &registry).unwrap();
         let result = effect.result.unwrap();
         assert_eq!(
             result["final_state"]["selection"],
-            json!({
-                "used_node_ids": ["node-best", "node-first"],
-                "used_edge_ids": [],
-                "reasoning": "bm25_fallback_token_overlap"
-            })
+            fixture["expected"]["selection"]
         );
         assert_eq!(
             result["final_state"]["op_log"],
