@@ -2231,9 +2231,11 @@ impl PostgresRunApplicationService {
                 .unwrap_or_else(|| principal_subject(&request.principal)),
         };
         let mut initial_state = serde_json::Map::new();
+        initial_state.insert("conversation_id".to_owned(), json!(conversation_id));
         initial_state.insert("user_text".to_owned(), json!(text));
         initial_state.insert("turn_node_id".to_owned(), json!(turn_id));
         initial_state.insert("user_id".to_owned(), json!(owner_id));
+        initial_state.insert("max_retrieval_level".to_owned(), json!(4));
         let nested = ApiEffectRequest {
             contract_version: request.contract_version,
             method: "POST".to_owned(),
@@ -2680,11 +2682,34 @@ impl PostgresRunApplicationService {
                     })
                     .await?;
                     if let Some(admission) = conversation_admission.as_ref() {
+                        let graph_mutations = admission
+                            .mutations
+                            .iter()
+                            .map(|(mutation, _)| mutation.clone())
+                            .collect::<Vec<_>>();
+                        let (acl_mutations, acl_index_jobs) =
+                            resolve_default_acl_graph_effects(
+                                uow,
+                                &admission.scope,
+                                &graph_mutations,
+                                "conversation",
+                                &admission.owner_id,
+                                admission.acl_principal.security_scope.as_deref(),
+                                &run_id,
+                            )
+                            .await?;
                         for (mutation, envelope) in &admission.mutations {
                             kogwistar_store::validate_typed_graph_mutation(mutation, envelope)?;
                             uow.apply_graph_mutation(mutation.clone()).await?;
                         }
-                        for job in &admission.index_jobs {
+                        for mutation in acl_mutations {
+                            uow.apply_graph_mutation(mutation).await?;
+                        }
+                        for job in admission
+                            .index_jobs
+                            .iter()
+                            .chain(acl_index_jobs.iter())
+                        {
                             uow.enqueue_index_job(job.clone()).await?;
                         }
                     }

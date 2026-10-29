@@ -4872,7 +4872,7 @@
         let chat_address = listener.local_addr().unwrap();
         let chat_server = tokio::spawn(async move {
             let (mut stream, _) =
-                tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept())
+                tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
                     .await
                     .unwrap()
                     .unwrap();
@@ -5508,12 +5508,6 @@
         assert_eq!(answer["status"], "queued");
         let answer_run_id = answer["run_id"].as_str().unwrap();
         let answer_turn_id = answer["user_turn_node_id"].as_str().unwrap();
-        assert!(service
-            .store
-            .get_server_run(answer_run_id)
-            .await
-            .unwrap()
-            .is_some());
         let answer_turn = service
             .store
             .graph_projection_records(GraphProjectionRead {
@@ -5529,15 +5523,73 @@
             })
             .await
             .unwrap();
-        assert_eq!(answer_turn.len(), 1);
+        assert_eq!(answer_turn.len(), 1, "admitted user turn must be visible");
+        let answer_turn_document: Value = serde_json::from_str(
+            answer_turn[0].document.as_deref().expect("turn has a document"),
+        )
+        .unwrap();
+        assert_eq!(answer_turn_document["conversation_id"], "rust-only-rest-create-e2e");
+        assert_eq!(answer_turn_document["role"], "user");
         assert_eq!(
             answer_turn[0].metadata.get("entity_type").and_then(Value::as_str),
             Some("conversation_turn")
         );
-        assert_eq!(
-            answer_turn[0].metadata.get("role").and_then(Value::as_str),
-            Some("user")
+        let acl_scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let acl_target_id = answer_turn_id.to_owned();
+        let conversation_acl_records = service
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    uow.graph_acl_records_for_entities(
+                        &acl_scope,
+                        "conversation",
+                        &[acl_target_id],
+                    )
+                    .await
+                })
+            })
+            .await
+            .unwrap();
+        let acl_grains = conversation_acl_records
+            .iter()
+            .filter_map(|record| record.metadata.get("acl_target_grain").and_then(Value::as_str))
+            .collect::<BTreeSet<_>>();
+        assert!(
+            ["node", "grounding", "span"]
+                .into_iter()
+                .all(|grain| acl_grains.contains(grain)),
+            "conversation admission must persist node and source-span ACLs: {conversation_acl_records:#?}"
         );
+        assert!(conversation_acl_records.iter().all(|record| {
+            record.metadata.get("owner_id").and_then(Value::as_str)
+                == Some("conversation-owner")
+                && record.metadata.get("acl_mode").and_then(Value::as_str) == Some("private")
+        }));
+        let mut admitted_run = None;
+        for _ in 0..300 {
+            admitted_run = service.store.get_server_run(answer_run_id).await.unwrap();
+            if admitted_run
+                .as_ref()
+                .is_some_and(|run| matches!(run.status.as_str(), "succeeded" | "failed"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let admitted_run = admitted_run.expect("answer admission creates a durable run");
+        let debug_runtime = service
+            .store
+            .read_recorded_runtime_state(
+                answer_run_id,
+                "debug.rag.v1",
+                "rust-only-rest-create-e2e",
+            )
+            .await
+            .unwrap();
         let answer_lanes = service
             .store
             .list_projected_lane_messages(LaneMessageFilter {
@@ -5547,9 +5599,54 @@
             })
             .await
             .unwrap();
-        assert_eq!(answer_lanes.len(), 1);
-        assert_eq!(answer_lanes[0].msg_type, "workflow.run.execute");
-        assert_eq!(answer_lanes[0].status, "pending");
+        assert_eq!(
+            admitted_run.status,
+            "succeeded",
+            "REST-admitted debug RAG run must complete through the Rust-native scheduler; run={admitted_run:#?}, runtime={debug_runtime:#?}, lanes={answer_lanes:#?}, turn_document={answer_turn_document:#?}, turn_metadata={:#?}, acl_records={conversation_acl_records:#?}", answer_turn[0].metadata
+        );
+        let debug_runtime = debug_runtime
+            .expect("completed answer run has durable runtime state");
+        assert_eq!(
+            debug_runtime.state["conversation_id"],
+            "rust-only-rest-create-e2e"
+        );
+        assert_eq!(debug_runtime.state["max_retrieval_level"], 4);
+        assert_eq!(debug_runtime.state["done"], true);
+        assert_eq!(debug_runtime.state["answer"]["mode"], "debug_rag");
+        let assistant_turn_id = debug_runtime.state["agentic_answering_result"]["assistant_turn_node_id"]
+            .as_str()
+            .expect("completed debug RAG run records its assistant turn ID")
+            .to_owned();
+        let assistant_turn = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "conversation".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![assistant_turn_id]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(assistant_turn.len(), 1, "assistant response must be durable");
+        assert_eq!(
+            assistant_turn[0].metadata.get("entity_type").and_then(Value::as_str),
+            Some("assistant_turn")
+        );
+        assert_eq!(
+            answer_turn[0].metadata.get("entity_type").and_then(Value::as_str),
+            Some("conversation_turn")
+        );
+        assert_eq!(
+            answer_turn[0].metadata.get("role").and_then(Value::as_str),
+            Some("user")
+        );
+        assert!(answer_lanes.iter().any(|lane| lane.msg_type == "workflow.run.execute"));
+        assert!(answer_lanes.iter().all(|lane| lane.status == "completed"));
         let spoofed_create = client
             .post(format!("{base_url}/api/conversations"))
             .bearer_auth(&conversation_token)
