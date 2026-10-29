@@ -675,6 +675,11 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
             source_edge_ids=[],
             target_edge_ids=[],
         )
+        edge_rejected = False
+        for hook in getattr(ce, "pre_add_edge_hooks", ()) or ():
+            if bool(hook(edge)):
+                edge_rejected = True
+                break
         document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         embedding = None
         embedder = getattr(getattr(ce, "embed", None), "iterative_defensive_emb", None)
@@ -689,9 +694,10 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
                 "Rust worker graph effects require a prepared edge embedding"
             )
         edge.embedding = embedding
-        worker_effect_batch = _worker_graph_mutation_batch_for_entity(
-            ctx, ce, edge, entity_kind="edge"
-        )
+        if not edge_rejected:
+            worker_effect_batch = _worker_graph_mutation_batch_for_entity(
+                ctx, ce, edge, entity_kind="edge"
+            )
     else:
         worker_effect_batch = None
         add_link_to_new_turn(
@@ -720,8 +726,9 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     """Link user turn -> assistant response turn via next_turn edge."""
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
+    rust_worker_effects = deps.get("_rust_worker_effects") is True
     add_link_to_new_turn = deps.get("add_link_to_new_turn")
-    if not callable(add_link_to_new_turn):
+    if not rust_worker_effects and not callable(add_link_to_new_turn):
         raise RuntimeError(
             "deps['add_link_to_new_turn'] must be callable for link_assistant_turn"
         )
@@ -771,24 +778,71 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
         "conversation_edge",
     )
 
-    add_link_to_new_turn(
-        edge_id,
-        resp_turn,
-        user_turn,
-        conversation_id,
-        span=span,
-        prev_turn_meta_summary=mts,
-    )
+    worker_effect_batch = None
+    if rust_worker_effects:
+        from kogwistar.engine_core.models import Grounding, Span
+
+        provenance_span = span or Span.from_dummy_for_conversation()
+        edge = ConversationEdge(
+            id=edge_id,
+            source_ids=[user_turn.id],
+            target_ids=[resp_turn.id],
+            relation="next_turn",
+            label="next_turn",
+            type="relationship",
+            summary="Sequential flow",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=[provenance_span])],
+            domain_id=None,
+            canonical_entity_id=None,
+            properties={"entity_type": "conversation_edge"},
+            embedding=None,
+            metadata={
+                "relation": "next_turn",
+                "target_id": resp_turn.id,
+                "char_distance_from_last_summary": (
+                    mts.prev_node_char_distance_from_last_summary
+                ),
+                "turn_distance_from_last_summary": (
+                    mts.prev_node_distance_from_last_summary
+                ),
+                "tail_turn_index": mts.tail_turn_index,
+                "causal_type": "chain",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+        edge_rejected = False
+        for hook in getattr(ce, "pre_add_edge_hooks", ()) or ():
+            if bool(hook(edge)):
+                edge_rejected = True
+                break
+        if not edge_rejected:
+            worker_effect_batch = _worker_graph_mutation_batch_for_entity(
+                ctx, ce, edge, entity_kind="edge"
+            )
+    else:
+        add_link_to_new_turn(
+            edge_id,
+            resp_turn,
+            user_turn,
+            conversation_id,
+            span=span,
+            prev_turn_meta_summary=mts,
+        )
 
     with ctx.state_write as state:
         _append_op_log(state, "link_assistant_turn")
 
-    return RunSuccess(
-        conversation_node_id=edge_id,
-        state_update=[
+    result_values: dict[str, object] = {
+        "conversation_node_id": edge_id,
+        "state_update": [
             ("u", {"assistant_turn_edge_id": edge_id, "turn_index": turn_index})
         ],
-    )
+    }
+    if worker_effect_batch is not None:
+        result_values["graph_mutation_batch"] = worker_effect_batch
+    return RunSuccess(**result_values)
 
 
 @default_resolver.register("context_snapshot")

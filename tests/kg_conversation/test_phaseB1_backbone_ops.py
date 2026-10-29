@@ -537,6 +537,105 @@ def test_link_assistant_turn_creates_next_turn_edge():
     assert expected_edge_id in ce.edges
 
 
+def test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks():
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.graph_mutation_contract import (
+        GraphMutationBatchPayload,
+    )
+    from kogwistar._rust_bridge import validate_graph_model_family
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.engine_core.utils.refs import edge_doc_and_meta
+
+    class WorkerWrite(_WriteShim):
+        def edge_doc_and_meta(self, edge):
+            document, metadata = edge_doc_and_meta(edge)
+            return document, {**metadata, "namespace": "conv:c1"}
+
+        def add_edge(self, *_args, **_kwargs):
+            pytest.fail("Rust worker resolver must return an edge effect, not write")
+
+    ce = FakeConversationEngine()
+    ce.write = WorkerWrite(ce)
+    ce.namespace = "conv:c1"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend = SimpleNamespace(
+        edges=SimpleNamespace(name="gke_edges"), embedding_dim=2
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: (
+            '{"source_fingerprint":"stable-assistant-edge"}'
+        )
+    )
+    ce.pre_add_edge_hooks = [
+        lambda edge: edge.metadata.update({"prepared_by_hook": True})
+    ]
+    for node_id, role in (("user1", "user"), ("assist1", "assistant")):
+        ce.nodes[node_id] = ConversationNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            summary=node_id,
+            doc_id=f"conv:c1#{node_id}",
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={"entity_type": "conversation_turn", "level_from_root": 0},
+            role=role,
+            turn_index=0,
+            conversation_id="c1",
+            user_id="u1",
+            properties={},
+            embedding=[0.0, 0.1],
+        )
+
+    state = {
+        "user_id": "u1",
+        "conversation_id": "c1",
+        "turn_node_id": "user1",
+        "turn_index": 7,
+        "self_span": Span.from_dummy_for_conversation().model_dump(
+            field_mode="backend", dump_format="json"
+        ),
+        "answer": {"response_node_id": "assist1"},
+        "_deps": {
+            "conversation_engine": ce,
+            "_rust_worker_effects": True,
+            "add_link_to_new_turn": lambda *_args, **_kwargs: pytest.fail(
+                "Rust worker path must not call the Python graph writer"
+            ),
+            "prev_turn_meta_summary": SimpleNamespace(
+                prev_node_char_distance_from_last_summary=8,
+                prev_node_distance_from_last_summary=2,
+                tail_turn_index=7,
+            ),
+        },
+    }
+    ctx = FakeStepContext(state)
+    ctx.idempotency_key = "lane-link-assistant-7"
+    result = default_resolver.handlers["link_assistant_turn"](ctx)
+
+    assert isinstance(result, RunSuccess)
+    assert ce.edges == {}
+    batch = GraphMutationBatchPayload.model_validate(result.graph_mutation_batch)
+    assert len(batch.mutations) == 1
+    mutation = batch.mutations[0]
+    validate_graph_model_family(mutation.model_envelope)
+    assert mutation.entity_kind == "edge"
+    assert mutation.payload["metadata"]["prepared_by_hook"] is True
+    assert mutation.payload["source_ids"] == ["user1"]
+    assert mutation.payload["target_ids"] == ["assist1"]
+    assert {job.index_kind for job in batch.index_jobs} == {
+        "edge_refs",
+        "edge_endpoints",
+    }
+
+    ce.pre_add_edge_hooks = [lambda _edge: True]
+    rejected = default_resolver.handlers["link_assistant_turn"](ctx)
+    assert isinstance(rejected, RunSuccess)
+    assert "graph_mutation_batch" not in rejected.model_dump()
+
+
 def test_link_assistant_turn_falls_back_to_agentic_answering_result():
     ce = FakeConversationEngine()
 
