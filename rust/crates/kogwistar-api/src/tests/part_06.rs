@@ -4748,6 +4748,8 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; full Rust-native answer workflow against disposable PostgreSQL"]
     async fn postgres_agentic_answer_workflow_executes_durably_without_python_worker() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
@@ -5068,22 +5070,64 @@
             )
             .await
             .unwrap();
-        let submit = service.execute(ApiEffectRequest {
-                contract_version:1, method:"POST".to_owned(), path_and_query:"/api/workflow/runs".to_owned(),
-                body:serde_json::to_vec(&json!({
-                    "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
-                    "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                    "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                        "turn_index":0,"evidence_selector":"bm25","max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
-                })).unwrap(),
-                principal:json!({"user_id":"alice","actor_id":"alice","sub":"alice","role":"rw","ns":"alpha","storage_ns":"alpha",
-                    "capabilities":["workflow.run.write","read_graph","write_graph"]}),
-            }).await;
+        let http_secret = "rust-only-answer-http-secret";
+        let http_auth = AuthConfig {
+            mode: "jwt".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(http_secret.to_owned()),
+            ..AuthConfig::default()
+        };
+        let http_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["rw".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: http_auth,
+            },
+            Arc::new(service.clone()),
+        );
+        let now_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
+                "ns":"alpha","storage_ns":"alpha",
+                "capabilities":["workflow.run.write","read_graph","write_graph"],
+                "exp": now_seconds + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+        )
+        .unwrap();
+        let submit = http_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({
+                            "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
+                            "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
+                            "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
+                                "turn_index":0,"evidence_selector":"bm25","max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(
-            submit.status,
+            submit.status(),
             StatusCode::ACCEPTED.as_u16(),
             "{}",
-            String::from_utf8_lossy(&submit.body)
+            String::from_utf8_lossy(
+                &to_bytes(submit.into_body(), 1_048_576).await.unwrap()
+            )
         );
         let mut terminal_status = String::new();
         let mut worker_error = None;
