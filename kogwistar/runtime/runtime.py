@@ -601,7 +601,7 @@ class WorkflowRuntime(
                     run_id=effective_run_id,
                     token_id=effective_run_id,
                     step_seq=0,
-                    node_id=start_node_id,
+                    node_id="run",
                     attempt=1,
                     conversation_id=effective_conversation_id,
                     turn_node_id=effective_turn_node_id,

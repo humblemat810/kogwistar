@@ -311,6 +311,11 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         for event in trace_capture.events
         if event["type"] == "step_attempt_completed"
     ]
+    run_started = next(
+        event
+        for event in trace_capture.events
+        if event["type"] == "workflow_run_started"
+    )
     assert [event["node_id"] for event in completed_steps] == expected_steps
     assert all(event["run_id"] == "python-shared-increment-contract" for event in completed_steps)
     assert [event["step_seq"] for event in completed_steps] == contract[
@@ -320,6 +325,10 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         "ok",
         "ok",
     ]
+    assert run_started["parent_span_id"] == (
+        "stp:python-shared-increment-contract:python-shared-increment-contract:0:1:run"
+    )
+    assert run_started["parent_span_id"] != completed_steps[0]["span_id"]
 
 
 def test_sync_runtime_step_context_and_result_contract():
