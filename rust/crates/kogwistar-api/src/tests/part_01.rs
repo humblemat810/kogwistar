@@ -3004,6 +3004,22 @@
                     &native_operations
                 ));
 
+                let selector_node = plan
+                    .node_ops
+                    .iter()
+                    .find(|(_, op)| op.as_str() == "aa_select_used_evidence")
+                    .unwrap()
+                    .0;
+                let mut native_bm25_plan = plan.clone();
+                native_bm25_plan
+                    .node_executor_targets
+                    .insert(selector_node.clone(), "rust-native".to_owned());
+                assert!(answer_workflow_plan_is_executable(
+                    workflow_id,
+                    &native_bm25_plan,
+                    &native_operations
+                ));
+
                 let mut rust_only_plan = plan.clone();
                 for node_id in rust_only_plan.node_ops.keys().cloned().collect::<Vec<_>>() {
                     rust_only_plan
