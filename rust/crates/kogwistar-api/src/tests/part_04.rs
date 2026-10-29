@@ -1434,7 +1434,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let chroma = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..5 {
+            for _ in 0..6 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1586,6 +1586,55 @@
                 max_retries: 3,
             })
             .unwrap();
+        let second_id = "worker-batch-node";
+        let mut second_payload = entity_payload.clone();
+        second_payload["id"] = json!(second_id);
+        let second_document_payload = {
+            let mut value = second_payload.clone();
+            value.as_object_mut().unwrap().remove("embedding");
+            value.as_object_mut().unwrap().remove("metadata");
+            value
+        };
+        let second_document =
+            kogwistar_contracts::canonical_json(&second_document_payload, false);
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "worker-batch-node-add".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: second_id.to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: second_payload.to_string(),
+                },
+            )
+            .unwrap();
+        let second_revision = sqlite_canonical_entity_revision(
+            &service.store,
+            namespace,
+            "node",
+            second_id,
+        )
+        .unwrap()
+        .unwrap();
+        let second_job_payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(
+                &second_revision,
+            );
+        service
+            .store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "worker-batch-node-embedding".to_owned(),
+                namespace: namespace.to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: second_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some(second_job_payload),
+                max_retries: 3,
+            })
+            .unwrap();
         service
             .store
             .enqueue_index_job(NewIndexJob {
@@ -1634,19 +1683,22 @@
         );
 
         let summary = service
-            .run_embedding_projection_jobs_once(1, 30, Some(namespace))
+            .run_embedding_projection_jobs_once(2, 30, Some(namespace))
             .await
             .unwrap();
-        assert_eq!(summary.claimed, 1);
-        assert_eq!(summary.projected, 1);
+        assert_eq!(summary.claimed, 2);
+        assert_eq!(summary.projected, 2);
         assert!(service
             .store
             .get_stage1_node_projection(namespace, &format!("node:{entity_id}"))
             .unwrap()
             .is_none());
+        let mut batches = calls.lock().unwrap().clone();
+        assert_eq!(batches.len(), 1);
+        batches[0].sort();
         assert_eq!(
-            calls.lock().unwrap().as_slice(),
-            &[vec![document.to_owned()]]
+            batches[0],
+            vec![document.to_owned(), second_document.clone()]
         );
         let jobs = service
             .store
@@ -1661,22 +1713,40 @@
         );
         assert_eq!(
             jobs.iter()
+                .find(|job| job.job_id == "worker-batch-node-embedding")
+                .unwrap()
+                .status,
+            "DONE"
+        );
+        assert_eq!(
+            jobs.iter()
                 .find(|job| job.job_id == "worker-node-refs")
                 .unwrap()
                 .status,
             "PENDING"
         );
         let requests = chroma.await.unwrap();
-        let (upsert_path, upsert) = requests
+        let upserts = requests
             .iter()
-            .find(|(line, _)| line.contains("/upsert"))
-            .expect("the worker writes the embedded record to Chroma");
-        assert!(upsert_path.contains("worker-nodes"));
-        assert_eq!(upsert["ids"], json!([entity_id]));
-        assert_eq!(upsert["documents"], json!([document]));
-        assert_eq!(upsert["embeddings"][0], json!([0.6, 0.8]));
+            .filter(|(line, _)| line.contains("/upsert"))
+            .collect::<Vec<_>>();
+        assert_eq!(upserts.len(), 2);
+        for (upsert_path, upsert) in &upserts {
+            assert!(upsert_path.contains("worker-nodes"));
+            assert_eq!(upsert["embeddings"][0], json!([0.6, 0.8]));
+        }
+        let mut projected_ids = upserts
+            .iter()
+            .filter_map(|(_, body)| body["ids"][0].as_str())
+            .collect::<Vec<_>>();
+        projected_ids.sort();
+        assert_eq!(projected_ids, vec![entity_id, second_id]);
+        let primary_upsert = upserts
+            .iter()
+            .find(|(_, body)| body["ids"][0] == entity_id)
+            .expect("the first source record is projected");
         let metadata: Value = serde_json::from_str(
-            upsert["metadatas"][0]["_kogwistar_original_metadata"]
+            primary_upsert.1["metadatas"][0]["_kogwistar_original_metadata"]
                 .as_str()
                 .unwrap(),
         )
@@ -1757,7 +1827,10 @@
         assert_eq!(stale_summary.claimed, 1);
         assert_eq!(stale_summary.projected, 0);
         assert_eq!(stale_summary.retried, 1);
-        assert_eq!(calls.lock().unwrap().as_slice(), &[vec![document.to_owned()]]);
+        let mut provider_batches = calls.lock().unwrap().clone();
+        assert_eq!(provider_batches.len(), 1);
+        provider_batches[0].sort();
+        assert_eq!(provider_batches[0], vec![document.to_owned(), second_document]);
         let stale_job = service
             .store
             .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
@@ -2783,6 +2856,9 @@
         assert_eq!(failed_projection.claimed, 2);
         assert_eq!(failed_projection.projected, 1);
         assert_eq!(failed_projection.retried, 1);
+        let provider_batches = calls.lock().unwrap().clone();
+        assert_eq!(provider_batches.len(), 1);
+        assert_eq!(provider_batches[0].len(), 2);
         let mut provider_texts = calls
             .lock()
             .unwrap()
@@ -2851,6 +2927,7 @@
         .expect("inline worker completes the recovered embedding job");
         let _ = worker_shutdown.send(());
         worker.await.unwrap();
+        assert_eq!(calls.lock().unwrap().len(), 1);
         let mut provider_texts = calls
             .lock()
             .unwrap()

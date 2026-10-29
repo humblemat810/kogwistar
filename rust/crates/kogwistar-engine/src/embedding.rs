@@ -281,7 +281,8 @@ pub enum EmbeddingError {
 #[derive(Clone)]
 pub struct OllamaEmbeddingProvider {
     client: Client,
-    endpoint: Url,
+    batch_endpoint: Url,
+    legacy_endpoint: Url,
     profile: EmbeddingProfile,
 }
 
@@ -320,6 +321,8 @@ impl OllamaEmbeddingProvider {
         endpoint.set_query(None);
         endpoint.set_fragment(None);
         let base_path = endpoint.path().trim_end_matches('/');
+        let mut batch_endpoint = endpoint.clone();
+        batch_endpoint.set_path(&format!("{base_path}/api/embed"));
         endpoint.set_path(&format!("{base_path}/api/embeddings"));
         let client = Client::builder()
             .timeout(request_timeout)
@@ -327,7 +330,8 @@ impl OllamaEmbeddingProvider {
             .map_err(|error| EmbeddingError::Request(error.to_string()))?;
         Ok(Self {
             client,
-            endpoint,
+            batch_endpoint,
+            legacy_endpoint: endpoint,
             profile,
         })
     }
@@ -340,42 +344,103 @@ impl EmbeddingProvider for OllamaEmbeddingProvider {
 
     fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingFuture<'a> {
         Box::pin(async move {
-            let mut embeddings = Vec::with_capacity(texts.len());
-            for text in texts {
-                let response = self
-                    .client
-                    .post(self.endpoint.clone())
-                    .json(&json!({"model": self.profile.model, "prompt": text}))
-                    .send()
-                    .await
-                    .map_err(|error| EmbeddingError::Request(error.without_url().to_string()))?
-                    .error_for_status()
-                    .map_err(|error| EmbeddingError::Request(error.without_url().to_string()))?;
+            if texts.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let response = self
+                .client
+                .post(self.batch_endpoint.clone())
+                .json(&json!({"model": self.profile.model, "input": texts}))
+                .send()
+                .await
+                .map_err(|error| EmbeddingError::Request(error.without_url().to_string()))?;
+
+            let vectors = if response.status().is_success() {
                 let payload: Value = response.json().await.map_err(|error| {
                     EmbeddingError::InvalidResponse(error.without_url().to_string())
                 })?;
-                let vector = payload
-                    .get("embedding")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| {
-                        EmbeddingError::InvalidResponse(
-                            "response is missing embedding array".to_owned(),
-                        )
-                    })?
-                    .iter()
-                    .map(|value| {
-                        value.as_f64().ok_or_else(|| {
-                            EmbeddingError::InvalidResponse(
-                                "embedding values must be finite numbers".to_owned(),
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                embeddings.push(vector);
-            }
-            normalize_embeddings(embeddings, texts.len(), self.profile.dimension)
+                parse_embedding_vectors(&payload, "embeddings")?
+            } else if matches!(response.status().as_u16(), 404 | 405) {
+                let mut vectors = Vec::with_capacity(texts.len());
+                for text in texts {
+                    let response = self
+                        .client
+                        .post(self.legacy_endpoint.clone())
+                        .json(&json!({"model": self.profile.model, "prompt": text}))
+                        .send()
+                        .await
+                        .map_err(|error| EmbeddingError::Request(error.without_url().to_string()))?
+                        .error_for_status()
+                        .map_err(|error| {
+                            EmbeddingError::Request(error.without_url().to_string())
+                        })?;
+                    let payload: Value = response.json().await.map_err(|error| {
+                        EmbeddingError::InvalidResponse(error.without_url().to_string())
+                    })?;
+                    vectors.push(parse_embedding_vector(&payload, "embedding")?);
+                }
+                vectors
+            } else {
+                return Err(EmbeddingError::Request(
+                    response
+                        .error_for_status()
+                        .expect_err("non-success status must be an error")
+                        .without_url()
+                        .to_string(),
+                ));
+            };
+
+            normalize_embeddings(vectors, texts.len(), self.profile.dimension)
         })
     }
+}
+
+fn parse_embedding_vector(payload: &Value, field: &str) -> Result<Vec<f64>, EmbeddingError> {
+    payload
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            EmbeddingError::InvalidResponse(format!("response is missing {field} array"))
+        })?
+        .iter()
+        .map(|value| {
+            value.as_f64().ok_or_else(|| {
+                EmbeddingError::InvalidResponse(
+                    "embedding values must be finite numbers".to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn parse_embedding_vectors(payload: &Value, field: &str) -> Result<Vec<Vec<f64>>, EmbeddingError> {
+    payload
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            EmbeddingError::InvalidResponse(format!("response is missing {field} array"))
+        })?
+        .iter()
+        .map(|value| {
+            value
+                .as_array()
+                .ok_or_else(|| {
+                    EmbeddingError::InvalidResponse(
+                        "each embedding must be an array of finite numbers".to_owned(),
+                    )
+                })?
+                .iter()
+                .map(|number| {
+                    number.as_f64().ok_or_else(|| {
+                        EmbeddingError::InvalidResponse(
+                            "embedding values must be finite numbers".to_owned(),
+                        )
+                    })
+                })
+                .collect()
+        })
+        .collect()
 }
 
 pub fn normalize_embeddings(
@@ -561,16 +626,72 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for expected_prompt in ["three-four", "zero"] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request_body(&mut stream).await;
+            assert_eq!(request["model"], "all-minilm:l6-v2");
+            assert_eq!(request["input"], json!(["three-four", "zero"]));
+            let body = serde_json::to_vec(&json!({
+                "embeddings": [[3.0, 4.0], [0.0, 0.0]]
+            }))
+            .unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+
+        let profile = EmbeddingProfile {
+            provider: "ollama".to_owned(),
+            model: "all-minilm:l6-v2".to_owned(),
+            dimension: 2,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        };
+        let provider = OllamaEmbeddingProvider::new(
+            profile,
+            &format!("http://{address}/"),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let texts = vec!["three-four".to_owned(), "zero".to_owned()];
+        let result = provider.embed(&texts).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(result[0], vec![0.6, 0.8]);
+        assert_eq!(result[1], vec![0.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn ollama_provider_falls_back_to_legacy_endpoint_only_when_batch_route_is_missing() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = read_request_body(&mut stream).await;
+            assert_eq!(request["input"], json!(["first", "second"]));
+            let body = b"{}";
+            let response = format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+
+            for (prompt, embedding) in [("first", vec![3.0, 4.0]), ("second", vec![0.0, 0.0])] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let request = read_request_body(&mut stream).await;
-                assert_eq!(request["model"], "all-minilm:l6-v2");
-                assert_eq!(request["prompt"], expected_prompt);
-                let embedding = if expected_prompt == "zero" {
-                    vec![0.0, 0.0]
-                } else {
-                    vec![3.0, 4.0]
-                };
+                assert_eq!(request["prompt"], prompt);
                 let body = serde_json::to_vec(&json!({"embedding": embedding})).unwrap();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -602,10 +723,12 @@ mod tests {
             Duration::from_secs(5),
         )
         .unwrap();
-        let texts = vec!["three-four".to_owned(), "zero".to_owned()];
-        let result = provider.embed(&texts).await.unwrap();
+
+        let vectors = provider
+            .embed(&["first".to_owned(), "second".to_owned()])
+            .await
+            .unwrap();
         server.await.unwrap();
-        assert_eq!(result[0], vec![0.6, 0.8]);
-        assert_eq!(result[1], vec![0.0, 0.0]);
+        assert_eq!(vectors, vec![vec![0.6, 0.8], vec![0.0, 0.0]]);
     }
 }

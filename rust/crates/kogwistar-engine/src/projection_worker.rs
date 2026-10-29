@@ -5,13 +5,14 @@
 //! the idempotent upsert/delete succeeds. This lets a retry reuse the accepted
 //! result after a crash between admission and projection.
 
-use crate::worker_lease::with_lease_renewal;
+use crate::worker_lease::{with_batch_lease_renewal, with_lease_renewal};
 use kogwistar_store::{
     GraphProjectionWriteStore, GraphRecord, IndexJob, IndexJobClaimFilter, IndexJobProviderInput,
     IndexJobWriteStore, ProjectionWriteOutcome, StoreError, StoreResult,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 
 const ACTION_VERSION: i64 = 1;
@@ -237,7 +238,7 @@ pub async fn run_graph_projection_jobs_once<Q, G, F, Fut>(
     limit: usize,
     lease_seconds: i64,
     namespace: Option<&str>,
-    provider: F,
+    mut provider: F,
 ) -> StoreResult<ProjectionWorkerSummary>
 where
     Q: IndexJobWriteStore,
@@ -252,7 +253,22 @@ where
         lease_seconds,
         namespace,
         None,
-        provider,
+        move |jobs| {
+            let calls = jobs
+                .into_iter()
+                .map(|job| {
+                    let job_id = job.job_id.clone();
+                    (job_id, provider(job))
+                })
+                .collect::<Vec<_>>();
+            async move {
+                let mut results = Vec::with_capacity(calls.len());
+                for (job_id, call) in calls {
+                    results.push((job_id, call.await));
+                }
+                Ok(results)
+            }
+        },
     )
     .await
 }
@@ -280,7 +296,57 @@ where
         lease_seconds,
         namespace,
         None,
-        move |job| provider(IndexJobProviderInput::from(&job)),
+        move |jobs| {
+            let calls = jobs
+                .into_iter()
+                .map(|job| {
+                    let input = IndexJobProviderInput::from(&job);
+                    let job_id = input.job_id.clone();
+                    (job_id, provider(input))
+                })
+                .collect::<Vec<_>>();
+            async move {
+                let mut results = Vec::with_capacity(calls.len());
+                for (job_id, call) in calls {
+                    results.push((job_id, call.await));
+                }
+                Ok(results)
+            }
+        },
+    )
+    .await
+}
+
+/// Safe batch provider boundary for a namespace-scoped claim. Existing
+/// single-item provider APIs remain available for source compatibility.
+pub async fn run_graph_projection_jobs_once_with_batch_provider_input<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    mut provider: F,
+) -> StoreResult<ProjectionWorkerSummary>
+where
+    Q: IndexJobWriteStore,
+    G: GraphProjectionWriteStore,
+    F: FnMut(Vec<IndexJobProviderInput>) -> Fut,
+    Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
+{
+    run_graph_projection_jobs_once_inner(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        namespace,
+        None,
+        move |jobs| {
+            let inputs = jobs
+                .iter()
+                .map(IndexJobProviderInput::from)
+                .collect::<Vec<_>>();
+            provider(inputs)
+        },
     )
     .await
 }
@@ -302,6 +368,49 @@ where
     F: FnMut(IndexJobProviderInput) -> Fut,
     Fut: Future<Output = StoreResult<GraphRecord>>,
 {
+    run_graph_projection_jobs_once_filtered_with_batch_provider_input(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        filter,
+        move |inputs| {
+            let calls = inputs
+                .into_iter()
+                .map(|input| {
+                    let job_id = input.job_id.clone();
+                    (job_id, provider(input))
+                })
+                .collect::<Vec<_>>();
+            async move {
+                let mut results = Vec::with_capacity(calls.len());
+                for (job_id, call) in calls {
+                    results.push((job_id, call.await));
+                }
+                Ok(results)
+            }
+        },
+    )
+    .await
+}
+
+/// Safe batch provider boundary for compatible projection work. Queue claims
+/// remain owned by this worker; each returned record is still accepted,
+/// projected, retried, and acknowledged independently.
+pub async fn run_graph_projection_jobs_once_filtered_with_batch_provider_input<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    filter: IndexJobClaimFilter,
+    mut provider: F,
+) -> StoreResult<ProjectionWorkerSummary>
+where
+    Q: IndexJobWriteStore,
+    G: GraphProjectionWriteStore,
+    F: FnMut(Vec<IndexJobProviderInput>) -> Fut,
+    Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
+{
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
@@ -309,7 +418,13 @@ where
         lease_seconds,
         None,
         Some(filter),
-        move |job| provider(IndexJobProviderInput::from(&job)),
+        move |jobs| {
+            let inputs = jobs
+                .iter()
+                .map(IndexJobProviderInput::from)
+                .collect::<Vec<_>>();
+            provider(inputs)
+        },
     )
     .await
 }
@@ -326,8 +441,8 @@ async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
 where
     Q: IndexJobWriteStore,
     G: GraphProjectionWriteStore,
-    F: FnMut(IndexJob) -> Fut,
-    Fut: Future<Output = StoreResult<GraphRecord>>,
+    F: FnMut(Vec<IndexJob>) -> Fut,
+    Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
 {
     let jobs = if let Some(filter) = claim_filter {
         queue
@@ -343,10 +458,90 @@ where
         ..ProjectionWorkerSummary::default()
     };
 
+    let mut provider_groups: Vec<Vec<IndexJob>> = Vec::new();
+    for job in &jobs {
+        if job.accepted_result_json.is_some()
+            || job.op.eq_ignore_ascii_case("DELETE")
+            || !matches!(
+                job.op.to_ascii_uppercase().as_str(),
+                "UPSERT" | "ADD" | "REPLACE"
+            )
+        {
+            continue;
+        }
+        if let Some(group) = provider_groups
+            .iter_mut()
+            .find(|group| group[0].namespace == job.namespace)
+        {
+            group.push(job.clone());
+        } else {
+            provider_groups.push(vec![job.clone()]);
+        }
+    }
+
+    let mut provider_results = HashMap::new();
+    let mut batch_claims_lost = HashSet::new();
+    for group in provider_groups {
+        let claims = group
+            .iter()
+            .filter_map(|job| {
+                job.claim_token
+                    .as_deref()
+                    .map(|token| (job.job_id.as_str(), token))
+            })
+            .collect::<Vec<_>>();
+        if claims.len() != group.len() {
+            return Err(backend_error("claimed index job has no claim token"));
+        }
+        let (batch_result, lost) =
+            with_batch_lease_renewal(queue, &claims, lease_seconds, provider(group.clone()))
+                .await?;
+        batch_claims_lost.extend(lost);
+
+        let expected = group
+            .iter()
+            .map(|job| job.job_id.as_str())
+            .collect::<HashSet<_>>();
+        match batch_result {
+            Ok(results) => {
+                let mut seen = HashSet::new();
+                let mut by_id = HashMap::with_capacity(results.len());
+                let invalid_identity = results.iter().any(|(job_id, _)| {
+                    !expected.contains(job_id.as_str()) || !seen.insert(job_id.as_str())
+                });
+                if invalid_identity || seen != expected {
+                    for job in group {
+                        provider_results.insert(
+                            job.job_id,
+                            Err(backend_error(
+                                "batch provider returned missing, duplicate, or unknown job identities",
+                            )),
+                        );
+                    }
+                } else {
+                    for (job_id, result) in results {
+                        by_id.insert(job_id, result);
+                    }
+                    provider_results.extend(by_id);
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                for job in group {
+                    provider_results.insert(job.job_id, Err(backend_error(message.clone())));
+                }
+            }
+        }
+    }
+
     for job in jobs {
         let Some(claim_token) = job.claim_token.as_deref() else {
             return Err(backend_error("claimed index job has no claim token"));
         };
+        if batch_claims_lost.contains(&job.job_id) {
+            summary.claim_lost += 1;
+            continue;
+        }
         let is_replay = job.accepted_result_json.is_some();
         let (action_json, accepted_digest) = if let Some(existing) =
             job.accepted_result_json.as_deref()
@@ -362,23 +557,22 @@ where
                 job.op.to_ascii_uppercase().as_str(),
                 "UPSERT" | "ADD" | "REPLACE"
             ) {
-                match with_lease_renewal(
-                    queue,
-                    &job.job_id,
-                    claim_token,
-                    lease_seconds,
-                    provider(job.clone()),
-                )
-                .await?
-                {
-                    None => {
-                        summary.claim_lost += 1;
-                        continue;
-                    }
+                match provider_results.remove(&job.job_id) {
                     Some(Ok(record)) => Some(record),
                     Some(Err(error)) => {
                         retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary)
                             .await?;
+                        continue;
+                    }
+                    None => {
+                        retry_or_fail(
+                            queue,
+                            &job,
+                            claim_token,
+                            "batch provider omitted a claimed upsert job",
+                            &mut summary,
+                        )
+                        .await?;
                         continue;
                     }
                 }
@@ -593,12 +787,133 @@ mod tests {
             .unwrap();
     }
 
+    async fn enqueue_named(queue: &InMemoryStore, job_id: &str, entity_id: &str) {
+        queue
+            .enqueue_index_job(NewIndexJob {
+                job_id: job_id.to_owned(),
+                namespace: "workspace".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .await
+            .unwrap();
+    }
+
     fn candidate() -> GraphRecord {
         let mut record = GraphRecord::new("node-1");
         record.document = Some("current node".to_owned());
         record.metadata.insert("kind".to_owned(), json!("node"));
         record.embedding = Some(vec![0.25, 0.75]);
         record
+    }
+
+    #[tokio::test]
+    async fn compatible_jobs_share_provider_batch_but_keep_independent_outcomes() {
+        let queue = InMemoryStore::new();
+        enqueue_named(&queue, "job-1", "node-1").await;
+        enqueue_named(&queue, "job-2", "node-2").await;
+        let graph = InMemoryStore::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let calls = provider_calls.clone();
+
+        let summary = run_graph_projection_jobs_once_with_batch_provider_input(
+            &queue,
+            &graph,
+            2,
+            30,
+            Some("workspace"),
+            move |inputs| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    assert_eq!(inputs.len(), 2);
+                    assert!(inputs.iter().all(|input| input.namespace == "workspace"));
+                    Ok(inputs
+                        .into_iter()
+                        .map(|input| {
+                            let mut record = GraphRecord::new(input.entity_id.clone());
+                            record.document = Some(format!("document for {}", input.entity_id));
+                            record.embedding = Some(vec![0.25, 0.75]);
+                            (input.job_id, Ok(record))
+                        })
+                        .collect())
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(summary.claimed, 2);
+        assert_eq!(summary.projected, 2);
+        assert_eq!(summary.retried, 0);
+        let done = queue
+            .index_jobs(Some("workspace"), Some("DONE"), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(done.len(), 2);
+        for id in ["node-1", "node-2"] {
+            assert!(graph.graph_record("workspace", id).await.unwrap().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_provider_failure_isolated_to_its_job() {
+        let queue = InMemoryStore::new();
+        enqueue_named(&queue, "job-1", "node-1").await;
+        enqueue_named(&queue, "job-2", "node-2").await;
+        let graph = InMemoryStore::new();
+
+        let summary = run_graph_projection_jobs_once_with_batch_provider_input(
+            &queue,
+            &graph,
+            2,
+            30,
+            Some("workspace"),
+            move |inputs| async move {
+                Ok(inputs
+                    .into_iter()
+                    .map(|input| {
+                        if input.entity_id == "node-2" {
+                            (
+                                input.job_id,
+                                Err(StoreError::Backend {
+                                    backend: "test-provider".to_owned(),
+                                    message: "one document failed".to_owned(),
+                                }),
+                            )
+                        } else {
+                            let mut record = GraphRecord::new(input.entity_id.clone());
+                            record.document = Some("good document".to_owned());
+                            record.embedding = Some(vec![0.25, 0.75]);
+                            (input.job_id, Ok(record))
+                        }
+                    })
+                    .collect())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.projected, 1);
+        assert_eq!(summary.retried, 1);
+        assert!(
+            graph
+                .graph_record("workspace", "node-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            graph
+                .graph_record("workspace", "node-2")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

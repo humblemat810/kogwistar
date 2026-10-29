@@ -1450,16 +1450,21 @@ impl SqliteRunApplicationService {
             namespace: namespace.map(str::to_owned),
             index_kinds: vec!["node_embedding".to_owned()],
         };
-        let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
+        let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_batch_provider_input(
             &self.store,
             &projection_store,
             limit,
             lease_seconds,
             index_filter,
-            move |input| {
+            move |inputs| {
                 let store = store.clone();
                 let provider = provider.clone();
                 async move {
+                    let mut results = Vec::with_capacity(inputs.len());
+                    let mut prepared = Vec::new();
+                    for input in inputs {
+                        let job_id = input.job_id.clone();
+                        let prepared_input = async {
                     if input.schema_version != 1
                         || input.index_kind != "node_embedding"
                         || !matches!(input.entity_kind.as_str(), "node" | "edge")
@@ -1608,7 +1613,7 @@ impl SqliteRunApplicationService {
                             message: "SQLite Stage-1 document is missing".to_owned(),
                         })?
                         .to_owned();
-                    let mut metadata = stage1
+                    let metadata = stage1
                         .payload
                         .get("metadata")
                         .and_then(Value::as_object)
@@ -1617,41 +1622,75 @@ impl SqliteRunApplicationService {
                             backend: "sqlite-chroma-projection".to_owned(),
                             message: "SQLite Stage-1 metadata is malformed".to_owned(),
                         })?;
-                    let vectors = provider
-                        .embed(std::slice::from_ref(&document))
-                        .await
-                        .map_err(|_| StoreError::Backend {
-                            backend: "sqlite-chroma-projection".to_owned(),
-                            message: "embedding provider failed".to_owned(),
-                        })?;
-                    if vectors.len() != 1
-                        || vectors[0].len() != provider.profile().dimension
-                        || vectors[0].iter().any(|value| !value.is_finite())
+                    Ok((input.entity_id, document, metadata, current.revision, current_fingerprint))
+                        }
+                        .await;
+                        match prepared_input {
+                            Ok(prepared_input) => prepared.push((job_id, prepared_input)),
+                            Err(error) => results.push((job_id, Err(error))),
+                        }
+                    }
+
+                    if prepared.is_empty() {
+                        return Ok(results);
+                    }
+                    let documents = prepared
+                        .iter()
+                        .map(|(_, (_, document, _, _, _))| document.clone())
+                        .collect::<Vec<_>>();
+                    let vectors = match provider.embed(&documents).await {
+                        Ok(vectors) if vectors.len() == prepared.len() => vectors,
+                        Ok(_) => {
+                            let message = "embedding provider returned wrong batch length";
+                            results.extend(prepared.into_iter().map(|(id, _)| (id, Err(StoreError::Backend {
+                                backend: "sqlite-chroma-projection".to_owned(),
+                                message: message.to_owned(),
+                            }))));
+                            return Ok(results);
+                        }
+                        Err(_) => {
+                            let message = "embedding provider failed";
+                            results.extend(prepared.into_iter().map(|(id, _)| (id, Err(StoreError::Backend {
+                                backend: "sqlite-chroma-projection".to_owned(),
+                                message: message.to_owned(),
+                            }))));
+                            return Ok(results);
+                        }
+                    };
+                    for ((job_id, (entity_id, document, mut metadata, revision, fingerprint)), vector) in
+                        prepared.into_iter().zip(vectors)
                     {
-                        return Err(StoreError::Backend {
-                            backend: "sqlite-chroma-projection".to_owned(),
-                            message: "embedding provider returned an invalid vector".to_owned(),
-                        });
-                    }
-                    let embedding = vectors[0].iter().map(|value| *value as f32).collect::<Vec<_>>();
-                    if embedding.iter().any(|value| !value.is_finite()) {
-                        return Err(StoreError::NonFiniteVector);
-                    }
+                        if vector.len() != provider.profile().dimension
+                            || vector.iter().any(|value| !value.is_finite())
+                        {
+                            results.push((job_id, Err(StoreError::Backend {
+                                backend: "sqlite-chroma-projection".to_owned(),
+                                message: "embedding provider returned an invalid vector".to_owned(),
+                            })));
+                            continue;
+                        }
+                        let embedding = vector.iter().map(|value| *value as f32).collect::<Vec<_>>();
+                        if embedding.iter().any(|value| !value.is_finite()) {
+                            results.push((job_id, Err(StoreError::NonFiniteVector)));
+                            continue;
+                        }
                     metadata.insert("_kogwistar_stage2_ready".to_owned(), Value::Bool(true));
                     metadata.insert(
                         "_kogwistar_source_revision".to_owned(),
-                        Value::from(current.revision),
+                        Value::from(revision),
                     );
                     metadata.insert(
                         "_kogwistar_source_fingerprint".to_owned(),
-                        Value::String(current_fingerprint),
+                        Value::String(fingerprint),
                     );
-                    Ok(GraphRecord {
-                        id: input.entity_id,
+                        results.push((job_id, Ok(GraphRecord {
+                        id: entity_id,
                         document: Some(document),
                         metadata,
                         embedding: Some(embedding),
-                    })
+                        })));
+                    }
+                    Ok(results)
                 }
             },
         )

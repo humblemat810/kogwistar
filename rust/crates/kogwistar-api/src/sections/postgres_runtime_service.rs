@@ -1315,86 +1315,122 @@ impl PostgresRunApplicationService {
             namespace: namespace.map(str::to_owned),
             index_kinds: vec!["node_embedding".to_owned()],
         };
-        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_batch_provider_input(
             &self.store,
             &self.store,
             limit,
             lease_seconds,
             index_filter,
-            move |input| {
+            move |inputs| {
                 let provider = provider.clone();
                 let store = store.clone();
                 async move {
-                    if input.schema_version != 1
-                        || input.index_kind != "node_embedding"
-                        || !matches!(input.entity_kind.as_str(), "node" | "edge")
-                    {
-                        return Err(kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "unsupported embedding job contract".to_owned(),
-                        });
-                    }
-                    let table = kogwistar_store::graph_projection_table(&input.entity_kind)?;
-                    let mut records = store
-                        .graph_projection_records(GraphProjectionRead {
-                            scope: GraphScope {
-                                namespace: input.namespace.clone(),
-                                workspace_id: None,
-                                graph_space: None,
-                            },
-                            table: table.to_owned(),
-                            ids: Some(vec![input.entity_id.clone()]),
-                            metadata: MetadataFilter::default(),
-                            limit: 1,
-                        })
-                        .await
-                        .map_err(|_| kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "canonical graph projection read failed".to_owned(),
-                        })?;
-                    let Some(mut record) = records.pop() else {
-                        return Err(kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "canonical graph projection is missing".to_owned(),
-                        });
-                    };
-                    if record.id != input.entity_id {
-                        return Err(kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "canonical graph projection identity mismatch".to_owned(),
-                        });
-                    }
-                    let document = record.document.clone().ok_or_else(|| {
-                        kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "canonical graph document is missing".to_owned(),
+                    let mut results = Vec::with_capacity(inputs.len());
+                    let mut prepared = Vec::new();
+                    for input in inputs {
+                        let job_id = input.job_id.clone();
+                        let result = async {
+                            if input.schema_version != 1
+                                || input.index_kind != "node_embedding"
+                                || !matches!(input.entity_kind.as_str(), "node" | "edge")
+                            {
+                                return Err(kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "unsupported embedding job contract".to_owned(),
+                                });
+                            }
+                            let table = kogwistar_store::graph_projection_table(&input.entity_kind)?;
+                            let mut records = store
+                                .graph_projection_records(GraphProjectionRead {
+                                    scope: GraphScope {
+                                        namespace: input.namespace.clone(),
+                                        workspace_id: None,
+                                        graph_space: None,
+                                    },
+                                    table: table.to_owned(),
+                                    ids: Some(vec![input.entity_id.clone()]),
+                                    metadata: MetadataFilter::default(),
+                                    limit: 1,
+                                })
+                                .await
+                                .map_err(|_| kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "canonical graph projection read failed".to_owned(),
+                                })?;
+                            let Some(record) = records.pop() else {
+                                return Err(kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "canonical graph projection is missing".to_owned(),
+                                });
+                            };
+                            if record.id != input.entity_id {
+                                return Err(kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "canonical graph projection identity mismatch".to_owned(),
+                                });
+                            }
+                            let document = record.document.clone().ok_or_else(|| {
+                                kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "canonical graph document is missing".to_owned(),
+                                }
+                            })?;
+                            Ok((record, document))
                         }
-                    })?;
-                    let vectors = provider
-                        .embed(std::slice::from_ref(&document))
-                        .await
-                        .map_err(|_| kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "embedding provider request failed".to_owned(),
-                        })?;
-                    if vectors.len() != 1
-                        || vectors[0].len() != provider.profile().dimension
-                        || vectors[0].iter().any(|value| !value.is_finite())
-                    {
-                        return Err(kogwistar_store::StoreError::Backend {
-                            backend: "postgres-embedding-worker".to_owned(),
-                            message: "embedding provider returned an invalid vector".to_owned(),
-                        });
+                        .await;
+                        match result {
+                            Ok((record, document)) => prepared.push((job_id, record, document)),
+                            Err(error) => results.push((job_id, Err(error))),
+                        }
                     }
-                    let vector = vectors[0]
+
+                    if prepared.is_empty() {
+                        return Ok(results);
+                    }
+                    let documents = prepared
                         .iter()
-                        .map(|value| *value as f32)
+                        .map(|(_, _, document)| document.clone())
                         .collect::<Vec<_>>();
-                    if vector.iter().any(|value| !value.is_finite()) {
-                        return Err(kogwistar_store::StoreError::NonFiniteVector);
+                    let vectors = match provider.embed(&documents).await {
+                        Ok(vectors) if vectors.len() == prepared.len() => vectors,
+                        Ok(_) => {
+                            results.extend(prepared.into_iter().map(|(id, _, _)| {
+                                (id, Err(kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "embedding provider returned wrong batch length".to_owned(),
+                                }))
+                            }));
+                            return Ok(results);
+                        }
+                        Err(_) => {
+                            results.extend(prepared.into_iter().map(|(id, _, _)| {
+                                (id, Err(kogwistar_store::StoreError::Backend {
+                                    backend: "postgres-embedding-worker".to_owned(),
+                                    message: "embedding provider request failed".to_owned(),
+                                }))
+                            }));
+                            return Ok(results);
+                        }
+                    };
+                    for ((job_id, mut record, _), vector) in prepared.into_iter().zip(vectors) {
+                        if vector.len() != provider.profile().dimension
+                            || vector.iter().any(|value| !value.is_finite())
+                        {
+                            results.push((job_id, Err(kogwistar_store::StoreError::Backend {
+                                backend: "postgres-embedding-worker".to_owned(),
+                                message: "embedding provider returned an invalid vector".to_owned(),
+                            })));
+                            continue;
+                        }
+                        let vector = vector.iter().map(|value| *value as f32).collect::<Vec<_>>();
+                        if vector.iter().any(|value| !value.is_finite()) {
+                            results.push((job_id, Err(kogwistar_store::StoreError::NonFiniteVector)));
+                            continue;
+                        }
+                        record.embedding = Some(vector);
+                        results.push((job_id, Ok(record)));
                     }
-                    record.embedding = Some(vector);
-                    Ok(record)
+                    Ok(results)
                 }
             },
         )
