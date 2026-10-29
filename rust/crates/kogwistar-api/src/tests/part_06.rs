@@ -5432,6 +5432,38 @@
             lanes.iter().all(|lane| lane.recipient_id != "python-worker"),
             "Rust-only workflow must not hand a step to a Python worker"
         );
+        let durable_events = service
+            .store
+            .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
+            .await
+            .unwrap();
+        let native_traces = durable_events
+            .iter()
+            .filter(|event| event.event_type == "workflow.trace.v1")
+            .filter_map(|event| serde_json::from_str::<Value>(&event.payload_json).ok())
+            .filter(|event| event["trace"]["executor_target"] == "rust-native")
+            .collect::<Vec<_>>();
+        assert!(!native_traces.is_empty(), "native execution traces must be durable");
+        for event in native_traces {
+            let trace = &event["trace"];
+            let token_id = trace["token_id"].as_str().unwrap();
+            let step_seq = trace["step_seq"].as_i64().unwrap();
+            let node_id = trace["node_id"].as_str().unwrap();
+            let attempt = trace["attempt"].as_u64().unwrap();
+            assert_eq!(event["run_id"], "rust-only-answer-e2e");
+            assert_eq!(trace["run_id"], event["run_id"]);
+            assert_eq!(trace["trace_id"], event["run_id"]);
+            assert_eq!(event["step_id"], node_id);
+            assert_eq!(event["token_id"], token_id);
+            assert_eq!(
+                trace["span_id"],
+                format!("stp:rust-only-answer-e2e:{token_id}:{step_seq}:{attempt}:{node_id}")
+            );
+            assert_eq!(
+                trace["parent_span_id"],
+                format!("tok:rust-only-answer-e2e:{token_id}")
+            );
+        }
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
