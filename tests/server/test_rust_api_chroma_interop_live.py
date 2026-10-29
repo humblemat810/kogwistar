@@ -135,6 +135,7 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
 
         import kogwistar.engine_core.engine as engine_module
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
+        from kogwistar.graph_query import GraphQuery
         from kogwistar.server.auth_middleware import claims_ctx
         from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
@@ -224,6 +225,9 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 metadata.get("acl_truth_graph") == "knowledge"
                 for metadata in projected_acl["metadatas"]
             ), projected_acl
+            python_graph = GraphQuery(writer)
+            python_node_neighbors = python_graph.neighbors(source_id)
+            python_edge_neighbors = python_graph.neighbors(edge_id)
         finally:
             claims_ctx.reset(owner_token)
             writer.close()
@@ -270,8 +274,23 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 namespace=namespace,
                 source_id=source_id,
             )
+            assert initial["nodes"] == sorted(python_node_neighbors["nodes"]), initial
+            assert initial["edges"] == sorted(python_node_neighbors["edges"]), initial
             assert initial["nodes"] == [target_id], initial
             assert initial["edges"] == [edge_id], initial
+            rust_edge_neighbors = _rust_neighbors(
+                base=rust_base,
+                secret=rust_secret,
+                namespace=namespace,
+                source_id=edge_id,
+            )
+            assert rust_edge_neighbors["nodes"] == sorted(
+                python_edge_neighbors["nodes"]
+            ), rust_edge_neighbors
+            assert rust_edge_neighbors["edges"] == sorted(
+                python_edge_neighbors["edges"]
+            ), rust_edge_neighbors
+            assert rust_edge_neighbors["nodes"] == sorted([source_id, target_id])
         finally:
             stop(rust_process)
 
