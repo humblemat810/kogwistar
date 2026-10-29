@@ -25,6 +25,32 @@ pub(super) fn claim_index_jobs(
     lease_seconds: i64,
     namespace: Option<&str>,
 ) -> SqliteStoreResult<Vec<IndexJob>> {
+    claim_index_jobs_inner(conn, limit, lease_seconds, namespace, None)
+}
+
+pub(super) fn claim_index_jobs_filtered(
+    conn: &Connection,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    index_kinds: &[String],
+) -> SqliteStoreResult<Vec<IndexJob>> {
+    if index_kinds.is_empty() || index_kinds.iter().any(|kind| kind.trim().is_empty()) {
+        return Err(SqliteStoreError::Store(StoreError::Backend {
+            backend: "index-job-queue".to_owned(),
+            message: "filtered index-job claim requires non-empty index kinds".to_owned(),
+        }));
+    }
+    claim_index_jobs_inner(conn, limit, lease_seconds, namespace, Some(index_kinds))
+}
+
+fn claim_index_jobs_inner(
+    conn: &Connection,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    index_kinds: Option<&[String]>,
+) -> SqliteStoreResult<Vec<IndexJob>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -36,38 +62,46 @@ pub(super) fn claim_index_jobs(
         std::process::id(),
         NEXT_CLAIM_TOKEN.fetch_add(1, Ordering::Relaxed)
     );
-    let namespace_sql = if namespace.is_some() {
-        "AND namespace=?3"
-    } else {
-        ""
-    };
+    let mut parameter_index = 4;
+    let namespace_sql = namespace.map(|_| {
+        parameter_index += 1;
+        format!("AND namespace=?{parameter_index}")
+    });
+    let kinds_sql = index_kinds.map(|kinds| {
+        let placeholders = kinds
+            .iter()
+            .map(|_| {
+                parameter_index += 1;
+                format!("?{parameter_index}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("AND index_kind IN ({placeholders})")
+    });
     let sql = format!(
-        "WITH candidates AS (SELECT job_id FROM index_jobs WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?1)) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?1)) {namespace_sql} ORDER BY created_at ASC,job_id ASC LIMIT ?2) UPDATE index_jobs SET status='DOING',lease_until=?4,claim_token=?5,updated_at=?1 WHERE job_id IN (SELECT job_id FROM candidates) RETURNING job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token,accepted_result_json,accepted_result_sha256,accepted_at"
+        "WITH candidates AS (SELECT job_id FROM index_jobs WHERE ((status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?1)) OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?1)) {} {} ORDER BY created_at ASC,job_id ASC LIMIT ?2) UPDATE index_jobs SET status='DOING',lease_until=?3,claim_token=?4,updated_at=?1 WHERE job_id IN (SELECT job_id FROM candidates) RETURNING job_id,namespace,entity_kind,entity_id,index_kind,coalesce_key,op,status,lease_until,next_run_at,max_retries,retry_count,last_error,payload_json,created_at,updated_at,claim_token,accepted_result_json,accepted_result_sha256,accepted_at",
+        namespace_sql.as_deref().unwrap_or_default(),
+        kinds_sql.as_deref().unwrap_or_default(),
     );
+    let mut values = vec![
+        rusqlite::types::Value::Integer(now),
+        rusqlite::types::Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)),
+        rusqlite::types::Value::Integer(lease_until),
+        rusqlite::types::Value::Text(token),
+    ];
+    if let Some(namespace) = namespace {
+        values.push(rusqlite::types::Value::Text(namespace.to_owned()));
+    }
+    if let Some(index_kinds) = index_kinds {
+        values.extend(
+            index_kinds
+                .iter()
+                .cloned()
+                .map(rusqlite::types::Value::Text),
+        );
+    }
     let mut statement = conn.prepare(&sql)?;
-    let rows = if let Some(namespace) = namespace {
-        statement.query_map(
-            params![
-                now,
-                i64::try_from(limit).unwrap_or(i64::MAX),
-                namespace,
-                lease_until,
-                token
-            ],
-            index_job_from_row,
-        )?
-    } else {
-        statement.query_map(
-            params![
-                now,
-                i64::try_from(limit).unwrap_or(i64::MAX),
-                Option::<String>::None,
-                lease_until,
-                token
-            ],
-            index_job_from_row,
-        )?
-    };
+    let rows = statement.query_map(params_from_iter(values), index_job_from_row)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 

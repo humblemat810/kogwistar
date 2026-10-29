@@ -16,18 +16,21 @@ use kogwistar_runtime::{
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AuthIdentityStore, AuthUser, EntityEvent,
     EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
-    EventReadStore, EventWriteStore, ExternalIdentity, IndexJob, IndexJobReadStore,
-    IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore,
-    LaneMessageWriteStore, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
-    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
-    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
-    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
-    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
+    EventReadStore, EventWriteStore, ExternalIdentity, IndexJob, IndexJobClaimFilter,
+    IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
+    LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
+    NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage,
+    ProjectionReadStore, ProjectionWriteStore, RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor,
+    ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore,
+    ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, WorkflowDesignDelta,
+    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace,
+    runtime_projection_write, runtime_status_namespace, validate_entity_rebuild_request,
+    validate_entity_recovery_request,
 };
-use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, params_from_iter,
+};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CStr;

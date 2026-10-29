@@ -26,6 +26,21 @@ impl SqliteUnitOfWork<'_> {
     ) -> SqliteStoreResult<Vec<IndexJob>> {
         claim_index_jobs(self.transaction, limit, lease_seconds, namespace)
     }
+    pub fn claim_index_jobs_filtered(
+        &mut self,
+        limit: usize,
+        lease_seconds: i64,
+        namespace: Option<&str>,
+        index_kinds: &[String],
+    ) -> SqliteStoreResult<Vec<IndexJob>> {
+        claim_index_jobs_filtered(
+            self.transaction,
+            limit,
+            lease_seconds,
+            namespace,
+            index_kinds,
+        )
+    }
     pub fn mark_index_job_done(
         &mut self,
         job_id: &str,

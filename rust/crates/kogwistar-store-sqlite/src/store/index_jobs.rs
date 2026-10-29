@@ -12,6 +12,21 @@ impl SqliteStore {
     ) -> SqliteStoreResult<Vec<IndexJob>> {
         self.immediate_transaction(|uow| uow.claim_index_jobs(limit, lease_seconds, namespace))
     }
+    pub fn claim_index_jobs_filtered(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        filter: IndexJobClaimFilter,
+    ) -> SqliteStoreResult<Vec<IndexJob>> {
+        self.immediate_transaction(|uow| {
+            uow.claim_index_jobs_filtered(
+                limit,
+                lease_seconds,
+                filter.namespace.as_deref(),
+                &filter.index_kinds,
+            )
+        })
+    }
     pub fn mark_index_job_done(
         &self,
         job_id: &str,

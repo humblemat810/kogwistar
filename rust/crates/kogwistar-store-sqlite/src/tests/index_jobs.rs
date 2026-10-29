@@ -87,3 +87,77 @@ fn accepted_index_job_result_is_first_live_claim_wins() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn filtered_claim_is_atomic_scoped_and_leaves_other_job_kinds_pending() {
+    let (store, path) = store("filtered-index-claim");
+    for (job_id, namespace, index_kind) in [
+        ("embedding-a", "tenant-a", "node_embedding"),
+        ("metadata-a", "tenant-a", "node_refs"),
+        ("embedding-b", "tenant-b", "node_embedding"),
+    ] {
+        store
+            .enqueue_index_job(NewIndexJob {
+                job_id: job_id.to_owned(),
+                namespace: namespace.to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: job_id.to_owned(),
+                index_kind: index_kind.to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .unwrap();
+    }
+
+    let claims = block_on(IndexJobWriteStore::claim_index_jobs_filtered(
+        &store,
+        10,
+        30,
+        IndexJobClaimFilter {
+            namespace: Some("tenant-a".to_owned()),
+            index_kinds: vec!["node_embedding".to_owned()],
+        },
+    ))
+    .unwrap();
+    assert_eq!(
+        claims
+            .iter()
+            .map(|job| job.job_id.as_str())
+            .collect::<Vec<_>>(),
+        ["embedding-a"]
+    );
+
+    let pending = store
+        .list_index_jobs(Some("tenant-a"), Some("PENDING"), None, None, None, 10)
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].job_id, "metadata-a");
+
+    let unfiltered_other_kind = store.claim_index_jobs(10, 30, Some("tenant-a")).unwrap();
+    assert_eq!(unfiltered_other_kind.len(), 1);
+    assert_eq!(unfiltered_other_kind[0].job_id, "metadata-a");
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn filtered_claim_rejects_empty_or_blank_index_kinds() {
+    let (store, path) = store("filtered-index-claim-invalid");
+    for index_kinds in [Vec::new(), vec!["  ".to_owned()]] {
+        assert!(
+            store
+                .claim_index_jobs_filtered(
+                    1,
+                    30,
+                    IndexJobClaimFilter {
+                        namespace: None,
+                        index_kinds,
+                    },
+                )
+                .is_err()
+        );
+    }
+    drop(store);
+    fs::remove_file(path).unwrap();
+}

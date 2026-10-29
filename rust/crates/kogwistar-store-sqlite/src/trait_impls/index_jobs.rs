@@ -26,6 +26,15 @@ impl IndexJobWriteStore for SqliteStore {
     ) -> StoreResult<Vec<IndexJob>> {
         SqliteStore::claim_index_jobs(self, limit, lease_seconds, namespace).map_err(trait_error)
     }
+    async fn claim_index_jobs_filtered(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        filter: IndexJobClaimFilter,
+    ) -> StoreResult<Vec<IndexJob>> {
+        SqliteStore::claim_index_jobs_filtered(self, limit, lease_seconds, filter)
+            .map_err(trait_error)
+    }
     async fn mark_index_job_done(
         &self,
         job_id: &str,

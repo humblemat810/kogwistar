@@ -1,7 +1,8 @@
 //! Behavior and compile-time contracts for independently selected stores.
 
 use kogwistar_store::{
-    GraphRecord, GraphWriteStore, IndexJobReadStore, IndexJobWriteStore, NewIndexJob,
+    GraphRecord, GraphWriteStore, IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore,
+    NewIndexJob,
 };
 use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
 use kogwistar_store_memory::InMemoryStore;
@@ -238,6 +239,18 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
             max_retries: 3,
         })
         .expect("enqueue durable projection job in SQLite");
+    queue
+        .enqueue_index_job(NewIndexJob {
+            job_id: "job-sqlite-metadata".to_owned(),
+            namespace: "workspace-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-2".to_owned(),
+            index_kind: "node_refs".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .expect("enqueue unrelated metadata job");
 
     let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![503, 200]).await;
     let graph = ChromaGraphStore::connect_entity_collections(
@@ -257,12 +270,15 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
     let provider_calls = Arc::new(AtomicUsize::new(0));
     let first_provider_calls = Arc::clone(&provider_calls);
     let first_summary =
-        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
             &queue,
             &graph,
             1,
             30,
-            Some("workspace-a"),
+            IndexJobClaimFilter {
+                namespace: Some("workspace-a".to_owned()),
+                index_kinds: vec!["node_embedding".to_owned()],
+            },
             move |input| {
                 first_provider_calls.fetch_add(1, Ordering::SeqCst);
                 async move {
@@ -284,12 +300,15 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
     std::thread::sleep(Duration::from_millis(1_100));
     let retry_provider_calls = Arc::clone(&provider_calls);
     let retry_summary =
-        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
             &queue,
             &graph,
             1,
             30,
-            Some("workspace-a"),
+            IndexJobClaimFilter {
+                namespace: Some("workspace-a".to_owned()),
+                index_kinds: vec!["node_embedding".to_owned()],
+            },
             move |_input| {
                 retry_provider_calls.fetch_add(1, Ordering::SeqCst);
                 async {
@@ -316,6 +335,18 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
         .await
         .expect("read completed SQLite queue item");
     assert_eq!(completed.len(), 1);
+    let unrelated_pending = queue
+        .index_jobs(
+            Some("workspace-a"),
+            Some("PENDING"),
+            Some("node"),
+            Some("node-2"),
+            Some("node_refs"),
+            10,
+        )
+        .await
+        .expect("read unrelated metadata job");
+    assert_eq!(unrelated_pending.len(), 1);
 
     let requests = server.await.expect("fake Chroma server");
     assert_eq!(requests.len(), 4);
