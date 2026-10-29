@@ -1569,25 +1569,76 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        let (embedding, embedding_dim) = if let Some(provider) = &self.embedding_provider {
+            let profile = provider.profile();
+            if let Err(error) = profile.validate() {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    error.to_string(),
+                );
+            }
+            let texts = [document.clone()];
+            let vectors = match provider.embed(&texts).await {
+                Ok(vectors) if vectors.len() == 1 => vectors,
+                Ok(_) => {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_EMBEDDING_FAILED",
+                        "embedding provider returned an unexpected vector count",
+                    );
+                }
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_EMBEDDING_FAILED",
+                        "embedding provider failed",
+                    );
+                }
+            };
+            let vector = &vectors[0];
+            if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider returned an invalid vector",
+                );
+            }
+            let vector = vector.iter().map(|value| *value as f32).collect::<Vec<_>>();
+            if vector.iter().any(|value| !value.is_finite()) {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider returned an invalid vector",
+                );
+            }
+            (Some(vector), profile.dimension)
+        } else {
+            (None, 0)
+        };
         let event_id = kogwistar_contracts::stable_id(
             "conversation.create.event",
             &[conversation_id.clone(), start_id.clone()],
         )
         .to_string();
+        let mut event_payload = payload.clone();
+        if let Some(object) = event_payload.as_object_mut() {
+            object.remove("embedding");
+        }
         let mutation = GraphMutation {
             scope: scope.clone(),
             table: "gke_nodes".to_owned(),
             entity_kind: "node".to_owned(),
             event_id: event_id.clone(),
             op: "ADD".to_owned(),
-            payload,
+            payload: event_payload,
             record: GraphRecord {
                 id: start_id.clone(),
                 document: Some(document),
                 metadata: record_metadata,
-                embedding: None,
+                embedding,
             },
-            embedding_dim: 0,
+            embedding_dim,
         };
         let owner_id = user_id.to_ascii_lowercase();
         let security_scope = security_scope_value(&request.principal)
