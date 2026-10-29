@@ -5437,6 +5437,17 @@
             .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
             .await
             .unwrap();
+        let durable_run = run.as_ref().expect("completed run remains durable");
+        assert_eq!(durable_run.user_id.as_deref(), Some("alice"));
+        let admission_event = durable_events
+            .iter()
+            .find(|event| event.event_type == "run.created")
+            .expect("run admission owner binding remains durable");
+        let admission_payload: Value =
+            serde_json::from_str(&admission_event.payload_json).unwrap();
+        assert_eq!(admission_payload["run_id"], durable_run.run_id);
+        assert_eq!(admission_payload["runtime_owner_binding"]["version"], 1);
+        assert_eq!(admission_payload["runtime_owner_binding"]["user_id"], "alice");
         let native_traces = durable_events
             .iter()
             .filter(|event| event.event_type == "workflow.trace.v1")
@@ -5451,6 +5462,7 @@
             let node_id = trace["node_id"].as_str().unwrap();
             let attempt = trace["attempt"].as_u64().unwrap();
             assert_eq!(event["run_id"], "rust-only-answer-e2e");
+            assert_eq!(event["run_id"], durable_run.run_id);
             assert_eq!(trace["run_id"], event["run_id"]);
             assert_eq!(trace["trace_id"], event["run_id"]);
             assert_eq!(event["step_id"], node_id);
