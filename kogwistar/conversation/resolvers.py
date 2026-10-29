@@ -374,11 +374,15 @@ def _get_prev_turn_meta_summary_from_state_or_deps(
     """
     deps = _deps(ctx)
     mts = deps.get("prev_turn_meta_summary")
-    if mts is not None:
+    if mts is not None and deps.get("_rust_worker_effects") is not True:
         return cast(MetaFromLastSummary, mts)
     d = _state(ctx).get("prev_turn_meta_summary") or {}
 
-    values = dict(d) if isinstance(d, dict) else {}
+    if not isinstance(d, dict):
+        if mts is not None:
+            return cast(MetaFromLastSummary, mts)
+        d = {}
+    values = dict(d)
     def _int_value(value: object) -> int:
         return value if type(value) is int else 0
 
@@ -391,6 +395,18 @@ def _get_prev_turn_meta_summary_from_state_or_deps(
         ),
         tail_turn_index=_int_value(values.get("tail_turn_index", 0)),
     )
+
+
+def _meta_summary_payload(value: MetaFromLastSummary) -> dict[str, int]:
+    return {
+        "prev_node_char_distance_from_last_summary": int(
+            value.prev_node_char_distance_from_last_summary
+        ),
+        "prev_node_distance_from_last_summary": int(
+            value.prev_node_distance_from_last_summary
+        ),
+        "tail_turn_index": int(value.tail_turn_index),
+    }
 
 
 def _memory_result_from_state(state: ConversationState) -> MemoryRetrievalResult | None:
@@ -1506,18 +1522,24 @@ def _aa_prepare(ctx: StepContext) -> StepRunResult:
     materialize_depth = str(
         sv.get("materialize_depth") or agent.config.materialize_depth
     )
+    prepare_update: dict[str, object] = {
+        "run_id": run_id,
+        "run_node_id": run_node_id,
+        "run_step_seq": run_step_seq,
+        "attempt_seq": attempt_seq,
+        "iter_idx": iter_idx,
+        "max_candidates": max_candidates,
+        "materialize_depth": materialize_depth,
+    }
+    initial_meta_summary = deps.get("prev_turn_meta_summary")
+    if isinstance(initial_meta_summary, MetaFromLastSummary):
+        prepare_update["prev_turn_meta_summary"] = _meta_summary_payload(
+            initial_meta_summary
+        )
     state_update: list[StateUpdate] = [
         (
             "u",
-            {
-                "run_id": run_id,
-                "run_node_id": run_node_id,
-                "run_step_seq": run_step_seq,
-                "attempt_seq": attempt_seq,
-                "iter_idx": iter_idx,
-                "max_candidates": max_candidates,
-                "materialize_depth": materialize_depth,
-            },
+            prepare_update,
         ),
         ("a", {"op_log": "aa_prepare"}),
     ]
@@ -2033,25 +2055,103 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
     run_node_id = str(sv.get("run_node_id") or "")
     used_node_ids = list(sv.get("used_node_ids") or [])
     deps = _deps(ctx)
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    if prev_turn_meta_summary is None:
-        raise Exception("prev_turn_meta_summary missing from dependency")
+    prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
     projected: list[str] = []
+    worker_entities: list[
+        tuple[ConversationNode | ConversationEdge, Literal["node", "edge"]]
+    ] = []
+    prepared_by_kg_id: dict[
+        str, tuple[str, ConversationNode | None, ConversationEdge | None]
+    ] = {}
+    edge_hooks = tuple(
+        getattr(deps["conversation_engine"], "pre_add_edge_hooks", ()) or ()
+    )
     for kid in used_node_ids:
-        pid = agent._project_kg_node(
-            conversation_id=conversation_id,
-            run_node_id=run_node_id,
-            kg_node_id=kid,
-            provenance_span=Span.from_dummy_for_conversation(),
-            prev_turn_meta_summary=prev_turn_meta_summary,
-        )
+        kg_node_id = str(kid)
+        if deps.get("_rust_worker_effects") is True:
+            prepared = prepared_by_kg_id.get(kg_node_id)
+            if prepared is None:
+                prepared = agent._prepare_kg_node_projection(
+                    conversation_id=conversation_id,
+                    run_node_id=run_node_id,
+                    kg_node_id=kg_node_id,
+                    provenance_span=Span.from_dummy_for_conversation(),
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                )
+                pid, node, edge = prepared
+                if node is not None and edge is not None and edge_hooks:
+                    raise RuntimeError(
+                        "Rust worker pointer batch cannot preserve edge hooks "
+                        "that may observe the preceding Python node write"
+                    )
+                if node is not None:
+                    for hook in getattr(
+                        deps["conversation_engine"], "pre_add_node_hooks", ()
+                    ):
+                        hook(node)
+                    worker_entities.append((node, "node"))
+                if edge is not None:
+                    if node is None:
+                        for hook in edge_hooks:
+                            if bool(hook(edge)):
+                                edge = None
+                                break
+                    if edge is not None:
+                        worker_entities.append((edge, "edge"))
+                prepared_by_kg_id[kg_node_id] = (pid, node, edge)
+            pid = prepared[0]
+        else:
+            pid = agent._project_kg_node(
+                conversation_id=conversation_id,
+                run_node_id=run_node_id,
+                kg_node_id=kg_node_id,
+                provenance_span=Span.from_dummy_for_conversation(),
+                prev_turn_meta_summary=prev_turn_meta_summary,
+            )
         projected.append(pid)
 
     state_update: list[StateUpdate] = [
-        ("u", {"projected_pointer_ids": projected}),
+        (
+            "u",
+            {
+                "projected_pointer_ids": projected,
+                "prev_turn_meta_summary": _meta_summary_payload(
+                    prev_turn_meta_summary
+                ),
+            },
+        ),
         ("a", {"op_log": f"aa_project_pointers:{len(projected)}"}),
     ]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    result_values: dict[str, object] = {"state_update": state_update}
+    if worker_entities:
+        from kogwistar.engine_core.graph_mutation_contract import (
+            GraphMutationBatchPayload,
+            validate_graph_mutation_batch,
+        )
+
+        mutations = []
+        index_jobs = []
+        for entity, entity_kind in worker_entities:
+            single = validate_graph_mutation_batch(
+                _worker_graph_mutation_batch_for_entity(
+                    ctx,
+                    deps["conversation_engine"],
+                    entity,
+                    entity_kind=entity_kind,
+                )
+            )
+            mutations.extend(single.mutations)
+            index_jobs.extend(single.index_jobs)
+        batch = GraphMutationBatchPayload(
+            contract_version=1,
+            atomic=True,
+            mutations=mutations,
+            index_jobs=index_jobs,
+        )
+        result_values["graph_mutation_batch"] = cast(
+            dict[str, JsonValue], batch.model_dump(mode="json")
+        )
+    return RunSuccess(conversation_node_id=None, **result_values)
 
 
 @default_resolver.register("aa_debug_select_top_candidates")

@@ -210,6 +210,62 @@ class _StubAgent:
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         return f"run:{conversation_id}:{run_id}"
 
+    def _prepare_kg_node_projection(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        kg_node_id: str,
+        provenance_span: Span,
+        prev_turn_meta_summary: Any,
+    ):
+        from kogwistar.conversation.models import ConversationEdge, ConversationNode
+        from kogwistar.engine_core.models import Grounding
+
+        pointer_node_id = f"pointer:{conversation_id}:{kg_node_id}"
+        pointer_node = ConversationNode(
+            id=pointer_node_id,
+            label=f"Ref {kg_node_id}",
+            type="entity",
+            summary="source summary",
+            conversation_id=conversation_id,
+            role="system",
+            mentions=[Grounding(spans=[provenance_span])],
+            properties={"entity_type": "knowledge_reference"},
+            metadata={
+                "entity_type": "knowledge_reference",
+                "level_from_root": 0,
+            },
+        )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+            pointer_node.summary
+        )
+        usage_edge = ConversationEdge(
+            id=f"used:{run_node_id}:{pointer_node_id}",
+            source_ids=[run_node_id],
+            target_ids=[pointer_node_id],
+            relation="used_evidence",
+            label="used_evidence",
+            type="relationship",
+            summary="Agent used this evidence",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=[provenance_span])],
+            properties={"entity_type": "conversation_edge"},
+            metadata={
+                "char_distance_from_last_summary": (
+                    prev_turn_meta_summary.prev_node_char_distance_from_last_summary
+                ),
+                "turn_distance_from_last_summary": (
+                    prev_turn_meta_summary.prev_node_distance_from_last_summary
+                ),
+                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+        return pointer_node_id, pointer_node, usage_edge
+
     def _get_last_user_text(self, messages: Any) -> str:
         for m in reversed(messages or []):
             if getattr(m, "role", None) == "user":
@@ -382,6 +438,7 @@ def test_aa_prepare_sets_run_identity():
 
 
 def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_write():
+    from kogwistar.conversation.models import MetaFromLastSummary
     from kogwistar.engine_core.graph_mutation_contract import (
         validate_graph_mutation_batch,
     )
@@ -412,6 +469,7 @@ def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_wri
     ]
     state = _mk_state(agent=agent, conv_engine=ce)
     state["_deps"]["_rust_worker_effects"] = True
+    state["_deps"]["prev_turn_meta_summary"] = MetaFromLastSummary(4, 2, 1)
 
     result = _run_op(
         "aa_prepare", state, idempotency_key="stable-worker-message-id"
@@ -425,6 +483,99 @@ def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_wri
     assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
     assert len(batch.index_jobs) == 2
     assert {job.index_kind for job in batch.index_jobs} == {"node_docs", "node_refs"}
+    update = next(item[1] for item in result.state_update if item[0] == "u")
+    assert update["prev_turn_meta_summary"] == {
+        "prev_node_char_distance_from_last_summary": 4,
+        "prev_node_distance_from_last_summary": 2,
+        "tail_turn_index": 1,
+    }
+
+
+def test_aa_project_pointers_batches_pointer_and_usage_edge_once_for_rust_worker():
+    from kogwistar.conversation.models import MetaFromLastSummary
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.nodes = SimpleNamespace(name="gke_nodes")
+    ce.backend.edges = SimpleNamespace(name="gke_edges")
+    ce.backend.embedding_dim = 3
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {"entity_type": "knowledge_reference", "namespace": "conversation"},
+        ),
+        edge_doc_and_meta=lambda edge: (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {
+                **edge.metadata,
+                "entity_type": "conversation_edge",
+                "namespace": "conversation",
+            },
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker pointer projection must return graph effects"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker pointer projection must return graph effects"
+        ),
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"hook_prepared": True})
+    ]
+    ce.pre_add_edge_hooks = []
+    meta_summary = MetaFromLastSummary(0, 0)
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state.update(
+        {
+            "conversation_id": "conversation-1",
+            "run_node_id": "run-1",
+            "used_node_ids": ["kg-1", "kg-1"],
+            "prev_turn_meta_summary": {
+                "prev_node_char_distance_from_last_summary": 0,
+                "prev_node_distance_from_last_summary": 0,
+                "tail_turn_index": 0,
+            },
+        }
+    )
+    state["_deps"]["_rust_worker_effects"] = True
+    state["_deps"]["prev_turn_meta_summary"] = meta_summary
+
+    result = _run_op(
+        "aa_project_pointers", state, idempotency_key="stable-worker-message-id"
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert len(batch.index_jobs) == 4
+    assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
+    edge_meta = batch.mutations[1].record.metadata
+    assert edge_meta["char_distance_from_last_summary"] == len("source summary")
+    summary_updates = [
+        update[1]
+        for update in result.state_update or []
+        if update[0] == "u" and "prev_turn_meta_summary" in update[1]
+    ]
+    assert summary_updates[-1]["prev_turn_meta_summary"][
+        "prev_node_distance_from_last_summary"
+    ] == 1
+    ce.pre_add_edge_hooks = [lambda _edge: False]
+    unsupported = _run_op(
+        "aa_project_pointers", state, idempotency_key="stable-worker-message-id"
+    )
+    assert isinstance(unsupported, RunFailure)
+    assert any("cannot preserve edge hooks" in error for error in unsupported.errors)
 
 
 def test_aa_get_view_and_question_populates_question_and_system_prompt():

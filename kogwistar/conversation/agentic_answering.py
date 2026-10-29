@@ -1560,7 +1560,7 @@ class AgenticAnsweringAgent:
                 f"{int(run_step_seq)}::{int(attempt_seq)}"
             )
 
-    def _project_kg_node(
+    def _prepare_kg_node_projection(
         self,
         *,
         # target_namespace: str, # kg, conv, wisdom
@@ -1569,8 +1569,8 @@ class AgenticAnsweringAgent:
         kg_node_id: str,
         provenance_span: Span,
         prev_turn_meta_summary: MetaFromLastSummary,
-    ) -> str:
-        """Projects a Knowledge Graph (KG) node into the conversation canvas.
+    ) -> tuple[str, ConversationNode | None, ConversationEdge | None]:
+        """Prepare a knowledge pointer and its run-to-evidence edge.
         
         ### Projections and Idempotency:
         In this system, we don't move nodes between graphs. Instead, we create a
@@ -1591,7 +1591,8 @@ class AgenticAnsweringAgent:
             target_id=kg_node_id,
         )
 
-        # If exists, still ensure run->evidence edge exists (idempotent)
+        node: ConversationNode | None = None
+        # If the pointer exists, still ensure its run->evidence edge exists.
         existing = _engine_get_nodes(self.conversation_engine, ids=[pid], include=[])
         if not _has_result_items(existing):
             kg = _engine_get_nodes(self.knowledge_engine, ids=[kg_node_id], include=["metadatas"])
@@ -1646,11 +1647,11 @@ class AgenticAnsweringAgent:
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 str(meta.get("summary"))
             )
-            self.conversation_engine.write.add_node(node)
 
         # Link run -> evidence
         eid = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=pid)
         ex_edge = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
+        edge: ConversationEdge | None = None
         if not _has_result_items(ex_edge):
             edge = ConversationEdge(
                 id=eid,
@@ -1674,6 +1675,28 @@ class AgenticAnsweringAgent:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
+        return pid, node, edge
+
+    def _project_kg_node(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        kg_node_id: str,
+        provenance_span: Span,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> str:
+        """Persist a knowledge pointer and its run-to-evidence edge."""
+        pid, node, edge = self._prepare_kg_node_projection(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            kg_node_id=kg_node_id,
+            provenance_span=provenance_span,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        if node is not None:
+            self.conversation_engine.write.add_node(node)
+        if edge is not None:
             self.conversation_engine.write.add_edge(edge)
         return pid
 
