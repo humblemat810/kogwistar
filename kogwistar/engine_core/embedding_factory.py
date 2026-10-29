@@ -41,6 +41,12 @@ class OllamaEmbeddingResponseLike(Protocol):
 
     embedding: Sequence[float]
 
+
+class OllamaEmbedResponseLike(Protocol):
+    """Batch response returned by the current Ollama embedding endpoint."""
+
+    embeddings: Sequence[Sequence[float]]
+
 # ---------------------------------------------------------------------------
 # Shared normalisation helper
 # ---------------------------------------------------------------------------
@@ -114,13 +120,39 @@ class OllamaEmbeddingFunction(EmbeddingFunctionLike):
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         import ollama  # pyright: ignore[reportMissingImports]
 
-        raw: list[list[float]] = []
-        for p in documents_or_texts:
-            out = cast(
-                OllamaEmbeddingResponseLike,
-                ollama.embeddings(model=self.model_name, prompt=p),
+        if not documents_or_texts:
+            return []
+
+        try:
+            response = cast(
+                OllamaEmbedResponseLike,
+                ollama.embed(model=self.model_name, input=list(documents_or_texts)),
             )
-            raw.append(normalize_embedding_vector(out.embedding, allow_none=False) or [])
+        except ollama.ResponseError as exc:
+            if exc.status_code not in {404, 405}:
+                raise
+            raw = []
+            for text in documents_or_texts:
+                legacy_response = cast(
+                    OllamaEmbeddingResponseLike,
+                    ollama.embeddings(model=self.model_name, prompt=text),
+                )
+                raw.append(
+                    normalize_embedding_vector(
+                        legacy_response.embedding, allow_none=False
+                    )
+                    or []
+                )
+        else:
+            raw = [
+                normalize_embedding_vector(vector, allow_none=False) or []
+                for vector in response.embeddings
+            ]
+        if len(raw) != len(documents_or_texts):
+            raise ValueError(
+                "Ollama returned "
+                f"{len(raw)} vectors for {len(documents_or_texts)} inputs"
+            )
         return _l2_normalize(raw)
 
 
