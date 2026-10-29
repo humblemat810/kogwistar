@@ -69,6 +69,33 @@ def test_runtime_attestation_payload_round_trips_as_optional_shared_contract(
     assert events[0]["event_type"] == "run.created"
     assert events[0]["payload"] == payload
 
+    trace_context = json.loads(
+        (root / "contracts" / "golden" / "runtime-trace-context-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    trace_payload = {
+        "run_id": "run-attestation",
+        "step_id": trace_context["context"]["node_id"],
+        "token_id": trace_context["context"]["token_id"],
+        "trace": {
+            "event": "runtime.native.step.completed",
+            **trace_context["expected"],
+        },
+    }
+    _rust(
+        python.db_path,
+        {
+            "kind": "append_server_run_event",
+            "run_id": "run-attestation",
+            "event_type": "workflow.trace.v1",
+            "payload_json": json.dumps(trace_payload),
+        },
+    )
+    trace_event = python.list_server_run_events("run-attestation")[1]
+    assert trace_event["event_type"] == "workflow.trace.v1"
+    assert trace_event["payload"] == trace_payload
+
     legacy_payload = {"run_id": "run-legacy"}
     python.create_server_run(
         run_id="run-legacy",
