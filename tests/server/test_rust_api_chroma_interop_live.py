@@ -68,8 +68,13 @@ def _wait_for_http_process(
     raise AssertionError(f"{label} did not become ready at {endpoint}")
 
 
-def _rust_neighbors(
-    *, base: str, secret: str, namespace: str, source_id: str
+def _rust_graph_tool(
+    *,
+    base: str,
+    secret: str,
+    namespace: str,
+    tool_name: str,
+    arguments: dict[str, object],
 ) -> dict[str, object]:
     now = int(time.time())
     claims = {
@@ -81,13 +86,23 @@ def _rust_neighbors(
         "exp": now + 300,
     }
     response = httpx.post(
-        f"{base}/internal/graph/neighbors",
+        f"{base}/mcp",
         headers={"Authorization": f"Bearer {_token(secret, claims)}"},
-        json={"rid": source_id, "truth_graph": "knowledge"},
+        json={
+            "jsonrpc": "2.0",
+            "id": f"interop-{tool_name}-{uuid.uuid4().hex}",
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments},
+        },
         timeout=10,
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    payload = response.json()
+    result = payload.get("result")
+    assert isinstance(result, dict), payload
+    assert result.get("implementation_authority") == "rust", result
+    assert result.get("seam_crossings") == [], result
+    return result
 
 
 @pytest.mark.manual
@@ -181,6 +196,7 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 build_entity_node(
                     node_id=source_id,
                     doc_id="interop-doc",
+                    label="Source concept",
                     metadata={"visibility": "public"},
                 )
             )
@@ -188,6 +204,7 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 build_entity_node(
                     node_id=target_id,
                     doc_id="interop-doc",
+                    label="Target concept",
                     metadata={"visibility": "public"},
                 )
             )
@@ -228,6 +245,13 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
             python_graph = GraphQuery(writer)
             python_node_neighbors = python_graph.neighbors(source_id)
             python_edge_neighbors = python_graph.neighbors(edge_id)
+            python_find_edges = python_graph.find_edges(
+                relation="related_to",
+                src_label_contains="source",
+                tgt_label_contains="target",
+            )
+            python_path = python_graph.shortest_path(source_id, target_id)
+            python_layers = python_graph.k_hop([source_id], k=1)
         finally:
             claims_ctx.reset(owner_token)
             writer.close()
@@ -268,21 +292,23 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
 
         rust_process, rust_base, rust_secret = start_rust_server()
         try:
-            initial = _rust_neighbors(
+            initial = _rust_graph_tool(
                 base=rust_base,
                 secret=rust_secret,
                 namespace=namespace,
-                source_id=source_id,
+                tool_name="kg_neighbors",
+                arguments={"rid": source_id},
             )
             assert initial["nodes"] == sorted(python_node_neighbors["nodes"]), initial
             assert initial["edges"] == sorted(python_node_neighbors["edges"]), initial
             assert initial["nodes"] == [target_id], initial
             assert initial["edges"] == [edge_id], initial
-            rust_edge_neighbors = _rust_neighbors(
+            rust_edge_neighbors = _rust_graph_tool(
                 base=rust_base,
                 secret=rust_secret,
                 namespace=namespace,
-                source_id=edge_id,
+                tool_name="kg_neighbors",
+                arguments={"rid": edge_id},
             )
             assert rust_edge_neighbors["nodes"] == sorted(
                 python_edge_neighbors["nodes"]
@@ -291,6 +317,43 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 python_edge_neighbors["edges"]
             ), rust_edge_neighbors
             assert rust_edge_neighbors["nodes"] == sorted([source_id, target_id])
+            rust_find_edges = _rust_graph_tool(
+                base=rust_base,
+                secret=rust_secret,
+                namespace=namespace,
+                tool_name="kg_find_edges",
+                arguments={
+                    "relation": "related_to",
+                    "src_label_contains": "source",
+                    "tgt_label_contains": "target",
+                },
+            )
+            assert rust_find_edges["edges"] == python_find_edges == [edge_id]
+            rust_path = _rust_graph_tool(
+                base=rust_base,
+                secret=rust_secret,
+                namespace=namespace,
+                tool_name="kg_shortest_path",
+                arguments={
+                    "src_id": source_id,
+                    "dst_id": target_id,
+                    "max_depth": 8,
+                },
+            )
+            assert rust_path["path"] == python_path == [source_id, edge_id, target_id]
+            rust_layers = _rust_graph_tool(
+                base=rust_base,
+                secret=rust_secret,
+                namespace=namespace,
+                tool_name="kg_k_hop",
+                arguments={"start_ids": [source_id], "k": 1},
+            )
+            assert rust_layers["layers"] == [
+                {
+                    "nodes": sorted(python_layers[0]["nodes"]),
+                    "edges": sorted(python_layers[0]["edges"]),
+                }
+            ]
         finally:
             stop(rust_process)
 
@@ -324,11 +387,12 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
 
         rust_process, rust_base, rust_secret = start_rust_server()
         try:
-            after_tombstone = _rust_neighbors(
+            after_tombstone = _rust_graph_tool(
                 base=rust_base,
                 secret=rust_secret,
                 namespace=namespace,
-                source_id=source_id,
+                tool_name="kg_neighbors",
+                arguments={"rid": source_id},
             )
             assert after_tombstone["nodes"] == [], after_tombstone
             assert after_tombstone["edges"] == [], after_tombstone
