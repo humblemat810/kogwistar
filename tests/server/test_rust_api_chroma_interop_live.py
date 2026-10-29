@@ -169,7 +169,9 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
         data_path = tmp_path / "shared-meta"
         source_id = f"{namespace}-source"
         target_id = f"{namespace}-target"
+        private_target_id = f"{namespace}-private-target"
         edge_id = f"{namespace}-edge"
+        private_endpoint_edge_id = f"{namespace}-private-endpoint-edge"
         owner = {
             "agent_id": "interop-owner",
             "sub": "interop-owner",
@@ -208,6 +210,17 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                     metadata={"visibility": "public"},
                 )
             )
+            writer.write.add_node(
+                build_entity_node(
+                    node_id=private_target_id,
+                    doc_id="interop-doc",
+                    label="Target secret concept",
+                    metadata={
+                        "visibility": "private",
+                        "owner_agent_id": owner["agent_id"],
+                    },
+                )
+            )
             writer.write.add_edge(
                 build_relationship_edge(
                     edge_id=edge_id,
@@ -217,18 +230,32 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                     metadata={"visibility": "public"},
                 )
             )
+            writer.write.add_edge(
+                build_relationship_edge(
+                    edge_id=private_endpoint_edge_id,
+                    src=source_id,
+                    tgt=private_target_id,
+                    doc_id="interop-doc",
+                    relation="related_to",
+                    metadata={"visibility": "public"},
+                )
+            )
             worker = writer.indexing.make_index_job_worker(max_jobs_per_tick=20)
             metrics = worker.tick()
             jobs = writer.meta_sqlite.list_index_jobs(namespace=namespace)
-            assert metrics.done >= 3, [
+            assert metrics.done >= 5, [
                 (job.entity_kind, job.entity_id, job.index_kind, job.status, job.last_error)
                 for job in jobs
             ]
             assert writer.meta_sqlite.get_stage1_node_projection(namespace, source_id) is None
             projected_nodes = writer.backend.node_get(
-                ids=[source_id, target_id], include=["metadatas"]
+                ids=[source_id, target_id, private_target_id], include=["metadatas"]
             )
-            assert set(projected_nodes["ids"]) == {source_id, target_id}, projected_nodes
+            assert set(projected_nodes["ids"]) == {
+                source_id,
+                target_id,
+                private_target_id,
+            }, projected_nodes
             assert all(
                 metadata.get("_kogwistar_stage2_ready") is True
                 and metadata.get("namespace") == namespace
@@ -243,15 +270,35 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 for metadata in projected_acl["metadatas"]
             ), projected_acl
             python_graph = GraphQuery(writer)
-            python_node_neighbors = python_graph.neighbors(source_id)
-            python_edge_neighbors = python_graph.neighbors(edge_id)
-            python_find_edges = python_graph.find_edges(
-                relation="related_to",
-                src_label_contains="source",
-                tgt_label_contains="target",
-            )
-            python_path = python_graph.shortest_path(source_id, target_id)
-            python_layers = python_graph.k_hop([source_id], k=1)
+            reader_claims = {
+                "sub": "interop-reader",
+                "role": "ro",
+                "roles": ["reader"],
+                "ns": ["knowledge"],
+                "storage_ns": namespace,
+                "capabilities": ["read_graph"],
+            }
+            reader_token = claims_ctx.set(reader_claims)
+            try:
+                python_node_neighbors = python_graph.neighbors(source_id)
+                python_edge_neighbors = python_graph.neighbors(edge_id)
+                python_private_edge_neighbors = python_graph.neighbors(
+                    private_endpoint_edge_id
+                )
+                python_find_edges = python_graph.find_edges(
+                    relation="related_to",
+                    src_label_contains="source",
+                    tgt_label_contains="target",
+                )
+                python_path = python_graph.shortest_path(source_id, target_id)
+                python_private_path = python_graph.shortest_path(
+                    source_id, private_target_id
+                )
+                python_layers = python_graph.k_hop([source_id], k=1)
+                assert not writer.read.get_nodes(ids=[private_target_id])
+                assert not writer.read.get_edges(ids=[private_endpoint_edge_id])
+            finally:
+                claims_ctx.reset(reader_token)
         finally:
             claims_ctx.reset(owner_token)
             writer.close()
@@ -303,6 +350,7 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
             assert initial["edges"] == sorted(python_node_neighbors["edges"]), initial
             assert initial["nodes"] == [target_id], initial
             assert initial["edges"] == [edge_id], initial
+            assert private_endpoint_edge_id not in initial["edges"], initial
             rust_edge_neighbors = _rust_graph_tool(
                 base=rust_base,
                 secret=rust_secret,
@@ -317,6 +365,21 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 python_edge_neighbors["edges"]
             ), rust_edge_neighbors
             assert rust_edge_neighbors["nodes"] == sorted([source_id, target_id])
+            rust_private_edge_neighbors = _rust_graph_tool(
+                base=rust_base,
+                secret=rust_secret,
+                namespace=namespace,
+                tool_name="kg_neighbors",
+                arguments={"rid": private_endpoint_edge_id},
+            )
+            assert rust_private_edge_neighbors["nodes"] == sorted(
+                python_private_edge_neighbors["nodes"]
+            ), rust_private_edge_neighbors
+            assert rust_private_edge_neighbors["edges"] == sorted(
+                python_private_edge_neighbors["edges"]
+            ), rust_private_edge_neighbors
+            assert rust_private_edge_neighbors["nodes"] == []
+            assert rust_private_edge_neighbors["edges"] == []
             rust_find_edges = _rust_graph_tool(
                 base=rust_base,
                 secret=rust_secret,
@@ -341,6 +404,18 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                 },
             )
             assert rust_path["path"] == python_path == [source_id, edge_id, target_id]
+            rust_private_path = _rust_graph_tool(
+                base=rust_base,
+                secret=rust_secret,
+                namespace=namespace,
+                tool_name="kg_shortest_path",
+                arguments={
+                    "src_id": source_id,
+                    "dst_id": private_target_id,
+                    "max_depth": 8,
+                },
+            )
+            assert rust_private_path["path"] == python_private_path == []
             rust_layers = _rust_graph_tool(
                 base=rust_base,
                 secret=rust_secret,
