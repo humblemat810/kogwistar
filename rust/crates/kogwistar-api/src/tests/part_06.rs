@@ -4999,6 +4999,11 @@
         let snapshot_fields = resource_snapshot["result"]["snapshot"].as_object().unwrap();
         assert!(snapshot_fields["storage_usage_bytes"].is_u64());
         assert_eq!(
+            snapshot_fields["storage_usage_bytes"],
+            json!(configured_storage_usage_bytes()),
+            "the live MCP projection must use the configured persistence directories"
+        );
+        assert_eq!(
             snapshot_fields
                 .keys()
                 .map(String::as_str)
