@@ -995,6 +995,89 @@
     }
 
     #[test]
+    fn native_claim_attempt_is_internal_and_matches_trace_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-trace-context-v1.json"
+        )))
+        .unwrap();
+        let context = &fixture["context"];
+        let payload = json!({
+            "contract_version": 1,
+            "kind": "workflow.step.execute",
+            "worker_protocol": "sync-v1",
+            "run_id": context["run_id"],
+            "workflow_id": "workflow",
+            "conversation_id": "conversation",
+            "turn_node_id": null,
+            "node_id": context["node_id"],
+            "op": "noop",
+            "executor_target": kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+            "op_version": "v1",
+            "runtime_routes": [],
+            "join_mask": 0,
+            "token_id": context["token_id"],
+            "parent_token_id": null,
+            "step_seq": context["step_seq"],
+            "expected_event_seq": 0,
+            "state": {},
+            "resume_effect": null
+        });
+        let lane = ProjectedLaneMessage {
+            message_id: "message".to_owned(),
+            namespace: "namespace".to_owned(),
+            purpose: "runtime".to_owned(),
+            inbox_id: "inbox".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            recipient_id: "worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "claimed".to_owned(),
+            seq: 1,
+            conversation_seq: 1,
+            claimed_by: Some("worker".to_owned()),
+            lease_until: None,
+            retry_count: 1,
+            created_at: 0,
+            available_at: 0,
+            run_id: Some("run-42".to_owned()),
+            step_id: Some("parse".to_owned()),
+            correlation_id: Some("correlation".to_owned()),
+            payload_json: None,
+            error_json: None,
+            prev_message_id: None,
+            next_message_id: None,
+            inbox_tail_message_id: None,
+            conversation_tail_message_id: None,
+        };
+        let work = runtime_claimed_work(
+            lane,
+            "rust-native-worker",
+            "run-42".to_owned(),
+            payload,
+            0,
+        );
+        let worker_wire = serde_json::to_value(&work).unwrap();
+        assert!(worker_wire.get("attempt_number").is_none());
+
+        let (handoff, request) = native_request_for_claimed_work(&work).unwrap();
+        assert_eq!(request.ephemeral_context["_trace_attempt"], context["attempt"]);
+        let effect = kogwistar_runtime::execute_native_step(&request).unwrap();
+        assert_eq!(effect.trace_events[0]["event"], "runtime.native.step.completed");
+        for (field, expected) in fixture["expected"].as_object().unwrap() {
+            assert_eq!(&effect.trace_events[0][field], expected, "field {field}");
+        }
+        let failed = failed_native_result(handoff, &request, "TEST_FAILURE", "test failure");
+        for (field, expected) in fixture["expected"].as_object().unwrap() {
+            assert_eq!(
+                &failed.effect.as_ref().unwrap().trace_events[0][field],
+                expected,
+                "failed trace field {field}"
+            );
+        }
+    }
+
+    #[test]
     fn runtime_wire_dtos_reject_unknown_root_and_nested_fields() {
         let vectors: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

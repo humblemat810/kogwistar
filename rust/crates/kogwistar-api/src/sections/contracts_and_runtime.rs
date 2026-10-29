@@ -740,7 +740,11 @@ fn native_request_for_claimed_work(
             .clone()
             .ok_or_else(|| "claimed native work is missing correlation_id".to_owned())?,
     };
-    let native_request = native_step_request_from_payload(&handoff, work.payload.clone())?;
+    let mut native_request = native_step_request_from_payload(&handoff, work.payload.clone())?;
+    native_request.ephemeral_context.insert(
+        "_trace_attempt".to_owned(),
+        Value::from(work.attempt_number),
+    );
     Ok((handoff, native_request))
 }
 
@@ -780,6 +784,9 @@ fn failed_native_result(
         "step_seq": request.step_seq,
         "error_code": code,
     });
+    if let Some(fields) = trace.as_object_mut() {
+        fields.extend(kogwistar_runtime::native_trace_context_fields(request));
+    }
     attach_rust_native_seam_attestation(&mut trace);
     RuntimeWorkerResultRequest {
         handoff,
@@ -1776,6 +1783,8 @@ struct RuntimeClaimedWork {
     lease_until: Option<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     worker_effect_capabilities: Vec<String>,
+    #[serde(skip)]
+    attempt_number: u64,
 }
 
 fn runtime_claimed_work(
@@ -1795,6 +1804,7 @@ fn runtime_claimed_work(
         expected_event_seq,
         lease_until: lane.lease_until,
         worker_effect_capabilities: Vec::new(),
+        attempt_number: lane.retry_count.max(0).saturating_add(1) as u64,
     }
 }
 

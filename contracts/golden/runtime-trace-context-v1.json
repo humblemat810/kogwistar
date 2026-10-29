@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "context": {
+    "run_id": "run-42",
+    "token_id": "token-7",
+    "step_seq": 3,
+    "node_id": "parse",
+    "attempt": 2
+  },
+  "expected": {
+    "trace_id": "run-42",
+    "span_id": "stp:run-42:token-7:3:2:parse",
+    "parent_span_id": "tok:run-42:token-7",
+    "attempt": 2
+  }
+}

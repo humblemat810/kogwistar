@@ -176,6 +176,37 @@
     }
 
     #[test]
+    fn native_trace_context_matches_shared_python_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/runtime-trace-context-v1.json"
+        ))
+        .unwrap();
+        let context = &fixture["context"];
+        let mut ephemeral_context = Map::new();
+        ephemeral_context.insert("_trace_attempt".to_owned(), context["attempt"].clone());
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: context["run_id"].as_str().unwrap().to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: context["node_id"].as_str().unwrap().to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: context["token_id"].as_str().unwrap().to_owned(),
+            parent_token_id: None,
+            step_seq: context["step_seq"].as_i64().unwrap(),
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context,
+        };
+        let effect = execute_native_step(&request).unwrap();
+        for (field, expected) in fixture["expected"].as_object().unwrap() {
+            assert_eq!(&effect.trace_events[0][field], expected, "field {field}");
+        }
+    }
+
+    #[test]
     fn native_routed_operation_selects_only_frozen_successors() {
         let mut registry = NativeOperationRegistry::default();
         registry

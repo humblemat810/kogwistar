@@ -170,6 +170,36 @@ pub struct RuntimeNativeStepRequest {
     pub ephemeral_context: Map<String, Value>,
 }
 
+pub fn native_trace_context_fields(request: &RuntimeNativeStepRequest) -> Map<String, Value> {
+    let attempt = request
+        .ephemeral_context
+        .get("_trace_attempt")
+        .and_then(Value::as_u64)
+        .filter(|attempt| *attempt > 0)
+        .unwrap_or(1);
+    Map::from_iter([
+        ("trace_id".to_owned(), Value::String(request.run_id.clone())),
+        (
+            "span_id".to_owned(),
+            Value::String(format!(
+                "stp:{}:{}:{}:{}:{}",
+                request.run_id, request.token_id, request.step_seq, attempt, request.node_id
+            )),
+        ),
+        (
+            "parent_span_id".to_owned(),
+            Value::String(format!("tok:{}:{}", request.run_id, request.token_id)),
+        ),
+        ("attempt".to_owned(), Value::from(attempt)),
+    ])
+}
+
+fn attach_native_trace_context(trace: &mut Value, request: &RuntimeNativeStepRequest) {
+    if let Some(fields) = trace.as_object_mut() {
+        fields.extend(native_trace_context_fields(request));
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RuntimeNativeExecutionError {
     #[error("native executor target must be {expected:?}, got {got:?}")]
@@ -612,6 +642,7 @@ pub fn execute_native_step_with_registry(
                 "parent_token_id": request.parent_token_id,
                 "step_seq": request.step_seq,
             });
+            attach_native_trace_context(&mut trace, request);
             attach_rust_native_executor_attestation(&mut trace);
             trace
         }],
