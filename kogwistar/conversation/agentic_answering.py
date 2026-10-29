@@ -1472,14 +1472,16 @@ class AgenticAnsweringAgent:
         }
         return out_model.model_validate(payload)
 
-    def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
+    def _prepare_run_anchor(
+        self, *, conversation_id: str, run_id: str
+    ) -> tuple[str, ConversationNode | None]:
         scope = f"conv:{conversation_id}"
         rid = pointer_id(
             scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id
         )
         existing = _engine_get_nodes(self.conversation_engine, ids=[rid], include=[])
         if _has_result_items(existing):
-            return rid
+            return rid, None
 
         sp = Span.from_dummy_for_conversation()
         node = ConversationNode(
@@ -1500,7 +1502,14 @@ class AgenticAnsweringAgent:
             domain_id=None,
             canonical_entity_id=None,
         )
-        self.conversation_engine.write.add_node(node)
+        return rid, node
+
+    def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
+        rid, node = self._prepare_run_anchor(
+            conversation_id=conversation_id, run_id=run_id
+        )
+        if node is not None:
+            self.conversation_engine.write.add_node(node)
         return rid
 
     def _persist_context_snapshot(

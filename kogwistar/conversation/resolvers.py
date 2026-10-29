@@ -218,7 +218,16 @@ def _worker_graph_mutation_batch_for_entity(
         raise RuntimeError("Rust worker graph effects require a PostgreSQL graph backend")
     embedding = getattr(entity, "embedding", None)
     if not isinstance(embedding, list) or not embedding:
-        raise RuntimeError("Rust worker graph effects require a prepared embedding")
+        embed_component = getattr(engine, "embed", None)
+        embedder = getattr(embed_component, "iterative_defensive_emb", None)
+        if not callable(embedder):
+            embedder = getattr(engine, "iterative_defensive_emb", None)
+        if not callable(embedder):
+            embedder = getattr(engine, "_iterative_defensive_emb", None)
+        if not callable(embedder):
+            raise RuntimeError("Rust worker graph effects require an embedding provider")
+        embedding = normalize_embedding_vector(embedder(str(document)), allow_none=False)
+        entity.embedding = embedding
 
     envelope = build_graph_model_envelope(entity, field_mode="backend")
     payload = envelope["payload"]
@@ -1458,15 +1467,34 @@ def _end(ctx: StepContext) -> StepRunResult:
 def _aa_prepare(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     sv = _state(ctx)
+    deps = _deps(ctx)
     conversation_id = str(sv["conversation_id"])
 
     # Keep these aligned with agentic_answering.answer() defaults.
     run_id = str(sv.get("run_id") or f"run_{int(time.time() * 1000)}")
 
-    # Create run anchor in canvas.
-    run_node_id = agent._ensure_run_anchor(
-        conversation_id=conversation_id, run_id=run_id
-    )
+    # Rust workers return graph effects to the owning transaction instead of
+    # writing through the Python graph connection inside the callback.
+    run_anchor_batch: dict[str, JsonValue] | None = None
+    if deps.get("_rust_worker_effects") is True:
+        run_node_id, run_node = agent._prepare_run_anchor(
+            conversation_id=conversation_id, run_id=run_id
+        )
+        if run_node is not None:
+            # Match WriteSubsystem.add_node() preparation before handing the
+            # graph mutation to Rust's PostgreSQL transaction owner.
+            for hook in getattr(deps["conversation_engine"], "pre_add_node_hooks", ()):
+                hook(run_node)
+            run_anchor_batch = _worker_graph_mutation_batch_for_entity(
+                ctx,
+                deps["conversation_engine"],
+                run_node,
+                entity_kind="node",
+            )
+    else:
+        run_node_id = agent._ensure_run_anchor(
+            conversation_id=conversation_id, run_id=run_id
+        )
 
     # Step identity counters.
     run_step_seq = int(sv.get("run_step_seq") or 0)
@@ -1493,7 +1521,13 @@ def _aa_prepare(ctx: StepContext) -> StepRunResult:
         ),
         ("a", {"op_log": "aa_prepare"}),
     ]
-    return RunSuccess(conversation_node_id=run_node_id, state_update=state_update)
+    result_values: dict[str, object] = {
+        "conversation_node_id": run_node_id,
+        "state_update": state_update,
+    }
+    if run_anchor_batch is not None:
+        result_values["graph_mutation_batch"] = run_anchor_batch
+    return RunSuccess(**result_values)
 
 
 @default_resolver.register("aa_get_view_and_question")

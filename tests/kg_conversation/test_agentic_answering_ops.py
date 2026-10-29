@@ -38,6 +38,7 @@ class _FakeStepContext:
     """
 
     state: dict[str, Any]
+    idempotency_key: str | None = None
 
     @property
     def state_view(self) -> dict[str, Any]:
@@ -185,6 +186,27 @@ class _StubAgent:
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         self._project_calls: list[str] = []
 
+    def _prepare_run_anchor(self, *, conversation_id: str, run_id: str):
+        from kogwistar.conversation.models import ConversationNode
+        from kogwistar.engine_core.models import Grounding
+
+        node_id = f"run:{conversation_id}:{run_id}"
+        return node_id, ConversationNode(
+            id=node_id,
+            label=f"Agent Run {run_id}",
+            type="entity",
+            summary=f"Agent run anchor {run_id}",
+            conversation_id=conversation_id,
+            role="system",
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            properties={"run_id": run_id, "entity_type": "agent_run"},
+            metadata={
+                "entity_type": "agent_run",
+                "level_from_root": 0,
+                "in_conversation_chain": False,
+            },
+        )
+
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         return f"run:{conversation_id}:{run_id}"
 
@@ -325,8 +347,8 @@ def _mk_state(
     }
 
 
-def _run_op(op: str, state: dict[str, Any]):
-    ctx = _FakeStepContext(state)
+def _run_op(op: str, state: dict[str, Any], *, idempotency_key: str | None = None):
+    ctx = _FakeStepContext(state, idempotency_key=idempotency_key)
     fn = default_resolver.resolve(op)
     res = fn(ctx)
     assert isinstance(res, (RunSuccess, RunFailure))
@@ -357,6 +379,52 @@ def test_aa_prepare_sets_run_identity():
     assert isinstance(res, RunSuccess)
     assert state.get("run_id")
     assert state.get("run_node_id")
+
+
+def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_write():
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.nodes = SimpleNamespace(name="gke_nodes")
+    ce.backend.embedding_dim = 3
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {"entity_type": "agent_run", "namespace": "conversation"},
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker callback must return graph effects instead of writing directly"
+        ),
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"hook_prepared": True})
+    ]
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state["_deps"]["_rust_worker_effects"] = True
+
+    result = _run_op(
+        "aa_prepare", state, idempotency_key="stable-worker-message-id"
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert len(batch.mutations) == 1
+    assert batch.mutations[0].record.id == state["run_node_id"]
+    assert batch.mutations[0].op == "ADD"
+    assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
+    assert len(batch.index_jobs) == 2
+    assert {job.index_kind for job in batch.index_jobs} == {"node_docs", "node_refs"}
 
 
 def test_aa_get_view_and_question_populates_question_and_system_prompt():
