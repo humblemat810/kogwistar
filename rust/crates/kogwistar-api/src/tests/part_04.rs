@@ -2716,13 +2716,30 @@
     async fn postgres_embedding_worker_uses_configured_provider_and_leaves_other_jobs_pending() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let batch_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/two-stage-embedding-batch-v1.json"
+        )))
+        .unwrap();
+        let expected_embedding = batch_contract["expected_embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap())
+            .collect::<Vec<_>>();
+        let expected_stored_embedding = expected_embedding
+            .iter()
+            .map(|value| *value as f32)
+            .collect::<Vec<_>>();
+        let batch_size = batch_contract["batch_size"].as_u64().unwrap() as usize;
+        let embedding_dimension = batch_contract["embedding_dimension"].as_u64().unwrap() as usize;
         let schema = format!("rust_embedding_worker_{}", uuid::Uuid::new_v4().simple());
         let calls = Arc::new(Mutex::new(Vec::new()));
         let provider = Arc::new(FixedEmbeddingProvider {
             profile: kogwistar_engine::embedding::EmbeddingProfile {
                 provider: "test".to_owned(),
                 model: "fixed-v1".to_owned(),
-                dimension: 2,
+                dimension: embedding_dimension,
                 similarity_metric: "cosine".to_owned(),
                 endpoint_fingerprint: None,
                 max_sequence_length: None,
@@ -2734,7 +2751,7 @@
                 preprocessing_fingerprint: None,
                 max_image_patches: None,
             },
-            vector: vec![0.6, 0.8],
+            vector: expected_embedding.clone(),
             calls: calls.clone(),
             fail: None,
         });
@@ -2744,7 +2761,10 @@
         service.ensure_schema().await.unwrap();
         service
             .store
-            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .create_graph_schema(
+                embedding_dimension,
+                kogwistar_store_postgres::GraphTableNames::default(),
+            )
             .await
             .unwrap();
 
@@ -2769,7 +2789,7 @@
                     metadata: Default::default(),
                     embedding: None,
                 },
-                embedding_dim: 2,
+                embedding_dim: embedding_dimension,
             })
             .await
             .unwrap();
@@ -2799,7 +2819,7 @@
                     metadata: Default::default(),
                     embedding: None,
                 },
-                embedding_dim: 2,
+                embedding_dim: embedding_dimension,
             })
             .await
             .unwrap();
@@ -2858,7 +2878,7 @@
         assert_eq!(failed_projection.retried, 1);
         let provider_batches = calls.lock().unwrap().clone();
         assert_eq!(provider_batches.len(), 1);
-        assert_eq!(provider_batches[0].len(), 2);
+        assert_eq!(provider_batches[0].len(), batch_size);
         let mut provider_texts = calls
             .lock()
             .unwrap()
@@ -2959,7 +2979,10 @@
             })
             .await
             .unwrap();
-        assert_eq!(projection[0].embedding, Some(vec![0.6, 0.8]));
+        assert_eq!(
+            projection[0].embedding,
+            Some(expected_stored_embedding.clone())
+        );
         let edge_projection = service
             .store
             .graph_projection_records(GraphProjectionRead {
@@ -2975,7 +2998,7 @@
             })
             .await
             .unwrap();
-        assert_eq!(edge_projection[0].embedding, Some(vec![0.6, 0.8]));
+        assert_eq!(edge_projection[0].embedding, Some(expected_stored_embedding));
         assert_eq!(jobs.iter().filter(|job| job.status == "DONE").count(), 2);
         assert_eq!(jobs.iter().filter(|job| job.status == "PENDING").count(), 1);
 

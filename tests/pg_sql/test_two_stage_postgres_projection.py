@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -758,6 +759,16 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
     sa_engine, pg_schema, monkeypatch
 ) -> None:
     _require_postgres(sa_engine, pg_schema)
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "two-stage-embedding-batch-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected_embedding = contract["expected_embedding"]
+    assert len(expected_embedding) == contract["embedding_dimension"]
     engine = _engine(sa_engine, pg_schema)
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
     engine.write.add_node(build_entity_node(node_id="n2", doc_id="d2", embedding=None))
@@ -766,7 +777,7 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
 
     def batch_embed(documents):
         embedding_calls.append(list(documents))
-        return [[1.0, 0.0, 0.0] for _ in documents]
+        return [expected_embedding for _ in documents]
 
     monkeypatch.setattr(engine, "_ef", batch_embed)
     outcomes = engine.two_stage_projection_adapter.apply_embedding_jobs_batch(
@@ -774,13 +785,12 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
     )
 
     assert len(embedding_calls) == 1
-    assert len(embedding_calls[0]) == 2
+    assert len(embedding_calls[0]) == contract["batch_size"]
     assert set(outcomes) == {job.job_id for job in jobs if job.index_kind == "node_embedding"}
     assert all(value is None for value in outcomes.values())
-    assert engine.backend.node_get(ids=["n1", "n2"], include=["embeddings"])["ids"] == [
-        "n1",
-        "n2",
-    ]
+    promoted = engine.backend.node_get(ids=["n1", "n2"], include=["embeddings"])
+    assert promoted["ids"] == ["n1", "n2"]
+    assert promoted["embeddings"] == [expected_embedding, expected_embedding]
 
 
 @pytest.mark.asyncio

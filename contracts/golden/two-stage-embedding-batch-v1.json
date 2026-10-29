@@ -1,0 +1,6 @@
+{
+  "contract_version": 1,
+  "batch_size": 2,
+  "embedding_dimension": 3,
+  "expected_embedding": [0.6, 0.8, 0.0]
+}
