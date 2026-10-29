@@ -13,6 +13,7 @@ pub(crate) fn registry() -> Result<NativeOperationRegistry, NativeOperationRegis
     crate::native_answer_materialize::register(&mut registry)?;
     crate::native_answer_project::register(&mut registry)?;
     crate::native_answer_link::register(&mut registry)?;
+    crate::native_answer_view::register(&mut registry)?;
     registry.register_graph_v2("aa_persist_response", "v1", execute_persist_response)?;
     Ok(registry)
 }

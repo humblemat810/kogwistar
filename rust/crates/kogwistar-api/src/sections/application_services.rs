@@ -134,7 +134,57 @@ impl PostgresRunApplicationService {
             Ok(None) => {}
             Err(response) => return response,
         }
-        let result = if native_request.operation == "aa_retrieve_candidates" {
+        let result = if native_request.operation == "aa_get_view_and_question" {
+            match self
+                .native_answer_view_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(view) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_answer_view".to_owned(), view);
+                    match native_result_from_request(
+                        handoff.clone(),
+                        native_request.clone(),
+                        &self.native_operations,
+                    ) {
+                        Ok(result) => result,
+                        Err(_) => failed_native_result(
+                            handoff,
+                            &native_request,
+                            "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                            "native answer-view construction rejected its bounded input",
+                        ),
+                    }
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native answer view requires the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "native answer view requires the run owner's current read_graph capability and admitted scope",
+                ),
+                Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_ANSWER_VIEW_REJECTED",
+                    "native answer view requires an active user turn in the admitted conversation",
+                ),
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_ANSWER_VIEW_UNAVAILABLE",
+                        "native answer-view storage is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        } else if native_request.operation == "aa_retrieve_candidates" {
             match self
                 .native_candidate_context(&native_request, Some(&request.principal))
                 .await
@@ -374,7 +424,46 @@ impl ApplicationService for PostgresRunApplicationService {
                 return Ok(false);
             };
             let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
-            let mut result = if native_request.operation == "aa_retrieve_candidates" {
+            let mut result = if native_request.operation == "aa_get_view_and_question" {
+                match self.native_answer_view_context(&native_request, None).await {
+                    Ok(view) => {
+                        native_request
+                            .ephemeral_context
+                            .insert("authorized_answer_view".to_owned(), view);
+                        match native_result_from_request(
+                            handoff.clone(),
+                            native_request.clone(),
+                            &self.native_operations,
+                        ) {
+                            Ok(result) => result,
+                            Err(_) => failed_native_result(
+                                handoff,
+                                &native_request,
+                                "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                                "native answer-view construction rejected its bounded input",
+                            ),
+                        }
+                    }
+                    Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "native answer view requires the run owner's current read_graph capability and admitted scope",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_ANSWER_VIEW_REJECTED",
+                        "native answer view requires an active user turn in the admitted conversation",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                        return Err("native answer-view storage is temporarily unavailable".to_owned());
+                    }
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
+                        "inline native execution has no external caller principal"
+                    ),
+                }
+            } else if native_request.operation == "aa_retrieve_candidates" {
                 match self.native_candidate_context(&native_request, None).await {
                     Ok(records) => {
                         native_request

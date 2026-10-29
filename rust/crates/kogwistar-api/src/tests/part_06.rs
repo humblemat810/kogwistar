@@ -711,7 +711,18 @@
                     payload: json!({"id": id}),
                     record: GraphRecord {
                         id: id.to_owned(),
-                        document: Some(id.to_owned()),
+                        document: Some(
+                            json!({
+                                "summary": if role == "user" { "What is the Rust-native path?" } else { "Native answer." },
+                                "metadata": {
+                                    "entity_type": entity_type,
+                                    "conversation_id": "conv-native-assistant-link",
+                                    "role": role,
+                                    "lifecycle_status": "active"
+                                }
+                            })
+                            .to_string(),
+                        ),
                         metadata: serde_json::Map::from_iter([
                             ("entity_type".to_owned(), json!(entity_type)),
                             ("conversation_id".to_owned(), json!("conv-native-assistant-link")),
@@ -756,6 +767,81 @@
                 .await
                 .unwrap();
         }
+        let view_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "run_id": "native-answer-view-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-assistant-link",
+                "turn_node_id": "native-user-turn",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/aa_get_view_and_question"},
+                "initial_state": {
+                    "conversation_id": "conv-native-assistant-link",
+                    "user_id": "alice",
+                    "turn_node_id": "native-user-turn"
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(view_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let view_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "run_id": "native-answer-view-run",
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(view_claim.status(), StatusCode::OK);
+        let view_work = view_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let view_execution = json!({
+            "handoff": {
+                "message_id": view_work["message_id"],
+                "claimed_by": view_work["claimed_by"],
+                "run_id": view_work["run_id"],
+                "step_id": view_work["step_id"],
+                "correlation_id": view_work["correlation_id"]
+            },
+            "payload": view_work["payload"]
+        });
+        let view_result = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&owner_read)
+            .json(&view_execution)
+            .send()
+            .await
+            .unwrap();
+        let view_status = view_result.status();
+        let view_body = view_result.text().await.unwrap();
+        assert_eq!(view_status, StatusCode::OK, "{view_body}");
+        let view_state = service
+            .store
+            .read_recorded_runtime_state(
+                "native-answer-view-run",
+                "wf",
+                "conv-native-assistant-link",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            view_state.state.get("question").and_then(Value::as_str),
+            Some("What is the Rust-native path?")
+        );
+        assert_eq!(
+            view_state.state.get("system_prompt").and_then(Value::as_str),
+            Some("You are a helpful assistant. Answer the user using the conversation and any provided evidence.")
+        );
+
         let link_submit = client
             .post(format!("{base}/api/workflow/runs"))
             .bearer_auth(&owner_read)

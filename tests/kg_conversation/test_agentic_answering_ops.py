@@ -773,17 +773,24 @@ def test_aa_persist_response_batches_stable_turn_and_generated_edge_for_rust_wor
 
 
 def test_aa_get_view_and_question_populates_question_and_system_prompt():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-view-operation-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     agent = _StubAgent()
-    ce = _StubConversationEngine(last_user_text="What is X?")
+    ce = _StubConversationEngine(last_user_text=fixture["input"]["summary"])
     state = _mk_state(agent=agent, conv_engine=ce)
     _run_op("aa_prepare", state)
     res = _run_op("aa_get_view_and_question", state)
     assert isinstance(res, RunSuccess)
     assert (
         state["system_prompt"]
-        == "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
+        == fixture["expected"]["system_prompt"]
     )
-    assert state["question"] == "What is X?"
+    assert state["question"] == fixture["expected"]["question"]
 
 
 def test_aa_retrieve_candidates_populates_candidates_list():

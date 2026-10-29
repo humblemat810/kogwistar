@@ -504,6 +504,121 @@ impl PostgresRunApplicationService {
         Ok(principal)
     }
 
+    async fn native_answer_view_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let principal = self.native_read_principal(request, caller).await?;
+        let turn_id = request
+            .turn_node_id
+            .as_deref()
+            .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str))
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        if request
+            .state
+            .get("turn_node_id")
+            .and_then(Value::as_str)
+            .is_some_and(|state_turn_id| state_turn_id != turn_id)
+        {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let scope_claims = security_scope_value(&principal);
+        let scope = GraphScope {
+            namespace: scope_claims["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: principal
+                .get("workspace_id")
+                .or_else(|| principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let acl_principal = graph_acl_principal_from_claims(
+            &principal,
+            scope_claims["security_scope"].as_str(),
+        );
+        let conversation_id = request.conversation_id.clone();
+        let turn_id = turn_id.to_owned();
+        self.store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let read = GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: "gke_nodes".to_owned(),
+                        ids: Some(vec![turn_id.clone()]),
+                        metadata: MetadataFilter::default(),
+                        limit: 1,
+                    };
+                    let nodes = uow.graph_projection_records(read).await?;
+                    let ids = nodes
+                        .iter()
+                        .map(|record| record.id.clone())
+                        .collect::<Vec<_>>();
+                    let acl_records = uow
+                        .graph_acl_records_for_entities(&scope, "conversation", &ids)
+                        .await?;
+                    let mut acl_index = GraphAclIndex::default();
+                    acl_index.extend_from_records(&acl_records, "conversation");
+                    let (visible, _) = graph_records_visible_by_acl_with_index(
+                        &nodes,
+                        &[],
+                        &acl_index,
+                        &acl_principal,
+                    );
+                    let Some(record) = visible.iter().find(|record| record.id == turn_id) else {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    };
+                    let Some(document) = record
+                        .document
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                    else {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    };
+                    let document_metadata = document.get("metadata").and_then(Value::as_object);
+                    let field = |key: &str| {
+                        document
+                            .get(key)
+                            .or_else(|| document_metadata.and_then(|metadata| metadata.get(key)))
+                            .or_else(|| record.metadata.get(key))
+                    };
+                    if field("entity_type").and_then(Value::as_str) != Some("conversation_turn")
+                        || field("conversation_id").and_then(Value::as_str)
+                            != Some(conversation_id.as_str())
+                        || field("role").and_then(Value::as_str) != Some("user")
+                        || matches!(
+                            field("lifecycle_status").and_then(Value::as_str),
+                            Some("tombstoned" | "deleted")
+                        )
+                    {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    }
+                    Ok(Ok(json!({
+                        "turn": {
+                            "id": record.id,
+                            "document": record.document,
+                            "metadata": record.metadata
+                        }
+                    })))
+                })
+            })
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?
+            .map_err(|error| match error {
+                NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
+                NativeEvidenceRecordError::Unavailable => {
+                    NativeEvidenceContextError::GraphReadUnavailable
+                }
+            })
+    }
+
     async fn native_candidate_context(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,

@@ -59,6 +59,7 @@ mod native_answer_persist;
 mod native_answer_prepare;
 mod native_answer_project;
 mod native_answer_state;
+mod native_answer_view;
 mod native_memory_pin;
 mod runtime_contract;
 pub use cutover::{
