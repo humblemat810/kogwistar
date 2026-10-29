@@ -266,7 +266,9 @@ class RustStepResolverAdapter:
             dependencies = self.dependency_provider(work)
             if not isinstance(dependencies, Mapping):
                 raise RustWorkerError("dependency_provider must return a mapping")
-            state["_deps"] = dependencies
+            local_dependencies = dict(dependencies)
+            local_dependencies["_rust_worker_effects"] = True
+            state["_deps"] = local_dependencies
         return state
 
     @property

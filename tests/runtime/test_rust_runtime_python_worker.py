@@ -214,6 +214,17 @@ def test_python_worker_journals_declarative_graph_batch_only_when_server_adverti
         RustRuntimeWorker._result_envelope(unsupported_work, effect)
 
 
+def test_rust_worker_marks_local_dependencies_for_effect_only_execution() -> None:
+    adapter = RustStepResolverAdapter(
+        MappingStepResolver(),
+        dependency_provider=lambda _work: {"service": object()},
+    )
+    local_state = adapter._runtime_state(_adapter_work(), {"durable": True})
+    assert local_state["durable"] is True
+    assert local_state["_deps"]["_rust_worker_effects"] is True
+    assert "_rust_worker_effects" not in local_state
+
+
 def test_python_worker_omitted_operation_version_preserves_v1_effect() -> None:
     fixture = json.loads(
         (

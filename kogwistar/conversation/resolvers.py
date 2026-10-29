@@ -41,10 +41,11 @@ if TYPE_CHECKING:
 
 import os
 import time
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from typing import TYPE_CHECKING, Any
 
 from kogwistar.json_types import JsonValue
+from kogwistar.id_provider import stable_id
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 
@@ -75,7 +76,7 @@ class ConversationState(TypedDict):
     turn_node_id: str
     embedding: list[float]
     turn_index: int
-    self_span: Span
+    self_span: Span | dict[str, JsonValue]
     mem_id: str
     role: NotRequired[str]
     turn_id: NotRequired[str]
@@ -154,6 +155,126 @@ def _deps(ctx: StepContext) -> dict[str, Any]:
             "StepContext.state['_deps'] must be a dict of injected dependencies"
         )
     return deps
+
+
+def _span_from_state(value: object) -> Span:
+    """Restore the typed span after JSON-only worker state transport."""
+    if isinstance(value, Span):
+        return value
+    if isinstance(value, Mapping):
+        return Span.model_validate(value)
+    raise RuntimeError("conversation workflow state is missing a valid self_span")
+
+
+def _worker_graph_mutation_batch_for_node(
+    ctx: StepContext,
+    engine: object,
+    node: ConversationNode,
+) -> dict[str, JsonValue]:
+    """Build the existing atomic Rust worker effect for one conversation node."""
+    from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
+    from kogwistar.engine_core.graph_mutation_contract import (
+        GraphMutationBatchPayload,
+        IndexJobIntentPayload,
+    )
+
+    if getattr(engine, "persistence_mode", "single_stage") != "single_stage":
+        raise RuntimeError(
+            "Rust worker graph effects currently require single_stage persistence"
+        )
+    if not getattr(engine, "_phase1_enable_index_jobs", False):
+        raise RuntimeError(
+            "Rust worker graph effects require durable index-job intents"
+        )
+    if getattr(engine, "_disable_event_log", False):
+        raise RuntimeError("Rust worker graph effects require canonical graph events")
+    idempotency_key = str(getattr(ctx, "idempotency_key", "") or "").strip()
+    if not idempotency_key:
+        raise RuntimeError("Rust worker graph effects require a stable message ID")
+
+    namespace = str(getattr(engine, "namespace", "") or "").strip()
+    if not namespace:
+        raise RuntimeError("Rust worker graph effects require an engine namespace")
+    write = getattr(engine, "write", None)
+    if write is None or not callable(getattr(write, "node_doc_and_meta", None)):
+        raise RuntimeError("Rust worker graph effects require the graph write projection")
+    document, raw_metadata = write.node_doc_and_meta(node)
+    metadata = dict(raw_metadata)
+    metadata["_class_name"] = type(node).__name__
+
+    backend = getattr(engine, "backend", None)
+    nodes_collection = getattr(backend, "nodes", None)
+    table = getattr(nodes_collection, "name", None)
+    embedding_dim = getattr(backend, "embedding_dim", None)
+    if table != "gke_nodes" or type(embedding_dim) is not int or embedding_dim < 0:
+        raise RuntimeError("Rust worker graph effects require a PostgreSQL graph backend")
+    embedding = getattr(node, "embedding", None)
+    if embedding is None:
+        raise RuntimeError("Rust worker graph effects require the prepared node embedding")
+
+    envelope = build_graph_model_envelope(node, field_mode="backend")
+    payload = envelope["payload"]
+    entity_id = node.safe_get_id()
+    event_id = str(stable_id("runtime.worker.graph_event", idempotency_key, entity_id))
+    indexing = getattr(engine, "indexing", None)
+    source_payload_builder = getattr(indexing, "canonical_source_payload_for_projection", None)
+    if not callable(source_payload_builder):
+        raise RuntimeError("Rust worker graph effects require canonical index payloads")
+    source_payload_json = source_payload_builder(
+        entity_kind="node",
+        entity_id=entity_id,
+        document=str(document),
+        metadata=metadata,
+    )
+    index_jobs = [
+        IndexJobIntentPayload(
+            job_id=str(
+                stable_id(
+                    "runtime.worker.index_job",
+                    idempotency_key,
+                    entity_id,
+                    index_kind,
+                )
+            ),
+            namespace=namespace,
+            entity_kind="node",
+            entity_id=entity_id,
+            index_kind=index_kind,
+            op="UPSERT",
+            payload_json=source_payload_json,
+        )
+        for index_kind in ("node_docs", "node_refs")
+    ]
+    batch = GraphMutationBatchPayload.model_validate(
+        {
+            "contract_version": 1,
+            "atomic": True,
+            "mutations": [
+                {
+                    "scope": {
+                        "namespace": namespace,
+                        "workspace_id": metadata.get("workspace_id"),
+                        "graph_space": metadata.get("graph_space"),
+                    },
+                    "table": table,
+                    "entity_kind": "node",
+                    "event_id": event_id,
+                    "op": "ADD",
+                    "payload": payload,
+                    "record": {
+                        "id": entity_id,
+                        "document": str(document),
+                        "metadata": metadata,
+                        "embedding": [float(value) for value in embedding],
+                    },
+                    "embedding_dim": embedding_dim,
+                    "model_envelope": envelope,
+                }
+            ],
+            "index_jobs": [job.model_dump(mode="json") for job in index_jobs],
+        }
+    )
+    return cast(dict[str, JsonValue], batch.model_dump(mode="json"))
 
 
 def _append_op_log(state: object, entry: str) -> None:
@@ -382,7 +503,11 @@ def _add_user_turn(ctx: StepContext) -> StepRunResult:
     except Exception:
         pass
 
-    ce.write.add_node(node)
+    worker_effect_batch = None
+    if deps.get("_rust_worker_effects") is True:
+        worker_effect_batch = _worker_graph_mutation_batch_for_node(ctx, ce, node)
+    else:
+        ce.write.add_node(node)
 
     # advance legacy distances (mirror orchestrator) if mts is mutable
 
@@ -408,17 +533,26 @@ def _add_user_turn(ctx: StepContext) -> StepRunResult:
     except Exception:
         mts_json = None
 
+    state_span: object = span
+    if worker_effect_batch is not None:
+        state_span = span.model_dump(dump_format="json")
     upd = {
         "turn_node_id": node_id,
         "turn_index": turn_index,
-        "self_span": span,
+        "self_span": state_span,
     }
     if embedding is not None:
         upd["embedding"] = embedding
     if mts_json is not None:
         upd["prev_turn_meta_summary"] = mts_json
     upd["turn_index"] = turn_index
-    return RunSuccess(conversation_node_id=node_id, state_update=[("u", upd)])
+    result_values: dict[str, object] = {
+        "conversation_node_id": node_id,
+        "state_update": [("u", upd)],
+    }
+    if worker_effect_batch is not None:
+        result_values["graph_mutation_batch"] = worker_effect_batch
+    return RunSuccess(**result_values)
 
 
 @default_resolver.register("link_prev_turn")
@@ -445,7 +579,8 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     conversation_id = str(sv["conversation_id"])
     user_id = str(sv["user_id"])
     turn_index = int(sv.get("turn_index") or 0)
-    span = sv.get("self_span")
+    span_value = sv.get("self_span")
+    span = _span_from_state(span_value) if span_value is not None else None
 
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
@@ -520,7 +655,8 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     conversation_id = str(sv["conversation_id"])
     user_id = str(sv["user_id"])
     turn_index = int(sv.get("turn_index") or 0)
-    span = sv.get("self_span")
+    span_value = sv.get("self_span")
+    span = _span_from_state(span_value) if span_value is not None else None
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
@@ -786,7 +922,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
             turn_node_id=state["turn_node_id"],
             mem_id=state["mem_id"],
             turn_index=state["turn_index"],
-            self_span=state["self_span"],
+            self_span=_span_from_state(state.get("self_span")),
             selected_memory=selected_memory,
             memory_context_text=memory_context_text,
             prev_turn_meta_summary=prev_turn_meta_summary,
@@ -840,7 +976,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
             conversation_id=state["conversation_id"],
             turn_node_id=state["turn_node_id"],
             turn_index=state["turn_index"],
-            self_span=state["self_span"],
+            self_span=_span_from_state(state.get("self_span")),
             selected_knowledge=selected,
             prev_turn_meta_summary=prev_turn_meta_summary,
         )

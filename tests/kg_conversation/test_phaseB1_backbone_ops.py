@@ -190,6 +190,106 @@ def test_add_user_turn_creates_deterministic_node_id_and_updates_state():
     assert "embedding" in upd
 
 
+def test_add_user_turn_returns_idempotent_rust_graph_effect_without_direct_write():
+    from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
+    from kogwistar.engine_core.utils.refs import node_doc_and_meta
+    from kogwistar.runtime.rust_worker import RustStepResolverAdapter
+
+    class WorkerWrite(_WriteShim):
+        def node_doc_and_meta(self, node):
+            document, metadata = node_doc_and_meta(node)
+            metadata = dict(metadata)
+            metadata["namespace"] = "conv:c1"
+            return document, metadata
+
+        def add_node(self, *_args, **_kwargs):
+            pytest.fail("Rust worker resolver must return a graph effect, not write")
+
+    class WorkerEngine(FakeConversationEngine):
+        def __init__(self):
+            super().__init__()
+            self.write = WorkerWrite(self)
+            self.namespace = "conv:c1"
+            self.persistence_mode = "single_stage"
+            self._phase1_enable_index_jobs = True
+            self._disable_event_log = False
+            self.backend = type(
+                "Backend",
+                (),
+                {
+                    "nodes": type("Collection", (), {"name": "gke_nodes"})(),
+                    "embedding_dim": 2,
+                },
+            )()
+            self.indexing = type(
+                "Indexing",
+                (),
+                {
+                    "canonical_source_payload_for_projection": lambda _self, **_kwargs: (
+                        '{"source_fingerprint":"stable"}'
+                    ),
+                },
+            )()
+
+    def run_once() -> tuple[dict[str, Any], str]:
+        engine = WorkerEngine()
+        worker = RustStepResolverAdapter(
+            default_resolver,
+            dependency_provider=lambda _work: {"conversation_engine": engine},
+        )
+        effect = worker(
+            {
+                "message_id": "lane-user-turn-7",
+                "run_id": "run-1",
+                "step_id": "add-user",
+                "claimed_by": "worker-1",
+                "correlation_id": "run-1",
+                "worker_effect_capabilities": ["graph_mutation_batch_v1"],
+                "payload": {
+                    "workflow_id": "conversation.answer",
+                    "conversation_id": "c1",
+                    "run_id": "run-1",
+                    "op": "add_user_turn",
+                    "node_id": "add-user",
+                    "op_version": "v1",
+                    "step_seq": 0,
+                    "token_id": "run-1",
+                    "state": {
+                        "user_id": "u1",
+                        "conversation_id": "c1",
+                        "role": "user",
+                        "user_text": "hello",
+                        "turn_index": 7,
+                        "turn_id": "t7",
+                    },
+                },
+            }
+        )
+        assert "graph_mutation_batch" in effect, effect
+        batch = GraphMutationBatchPayload.model_validate(effect["graph_mutation_batch"])
+        assert not engine.nodes
+        state_update = effect["state_update"]
+        turn_update = next(
+            update
+            for _, update in state_update
+            if isinstance(update, dict) and "turn_node_id" in update
+        )
+        node_id = turn_update["turn_node_id"]
+        assert isinstance(turn_update["self_span"], dict)
+        return batch.model_dump(mode="json"), str(node_id)
+
+    first_batch, first_node_id = run_once()
+    second_batch, second_node_id = run_once()
+    assert first_node_id == second_node_id
+    assert first_batch == second_batch
+    assert first_batch["mutations"][0]["payload"]["id"] == first_node_id
+    assert first_batch["mutations"][0]["record"]["embedding"] == [0.0, 0.1]
+    assert {job["index_kind"] for job in first_batch["index_jobs"]} == {
+        "node_docs",
+        "node_refs",
+    }
+
+
 def test_link_prev_turn_creates_next_turn_edge():
     ce = FakeConversationEngine()
 
