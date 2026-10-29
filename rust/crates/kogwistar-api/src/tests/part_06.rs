@@ -1343,30 +1343,42 @@
         drop(fault_client);
         connection_task.await.unwrap().unwrap();
 
-        let make_request = || ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/syscall/v1/send_message".to_owned(),
-            body: serde_json::to_vec(&json!({
+        let make_request = |user_id: Option<&str>| {
+            let mut args = json!({
+                "conversation_id": conversation_id,
+                "text": "A user question",
+                "workflow_id": "send-message-admission-test"
+            });
+            if let Some(user_id) = user_id {
+                args["user_id"] = json!(user_id);
+            }
+            ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                body: serde_json::to_vec(&json!({
                 "version": "v1",
                 "op": "send_message",
-                "args": {
-                    "conversation_id": conversation_id,
-                    "text": "A user question",
-                    "workflow_id": "send-message-admission-test"
-                }
-            }))
-            .unwrap(),
-            principal: json!({
-                "user_id": "request-actor",
-                "sub": "request-actor@example.test",
-                "role": "rw",
-                "ns": "conversation",
-                "storage_ns": "alpha",
-                "capabilities": ["send_message"]
-            }),
+                "args": args
+                }))
+                .unwrap(),
+                principal: json!({
+                    "user_id": "request-actor",
+                    "sub": "request-actor@example.test",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "alpha",
+                    "capabilities": ["send_message"]
+                }),
+            }
         };
-        let rejected = service.execute(make_request()).await;
+        let actor_defaulted = service.execute(make_request(None)).await;
+        assert_eq!(
+            actor_defaulted.status,
+            StatusCode::FORBIDDEN.as_u16(),
+            "an omitted user_id defaults to the authenticated actor, matching Python"
+        );
+        let rejected = service.execute(make_request(Some("conversation-owner"))).await;
         assert!(rejected.status >= 500, "{}", String::from_utf8_lossy(&rejected.body));
         let still_only_root = service
             .store
@@ -1425,7 +1437,9 @@
         drop(cleanup_client);
         connection_task.await.unwrap().unwrap();
 
-        let accepted = service.execute(make_request()).await;
+        let accepted = service
+            .execute(make_request(Some("conversation-owner")))
+            .await;
         assert_eq!(accepted.status, StatusCode::OK.as_u16());
         let response: Value = serde_json::from_slice(&accepted.body).unwrap();
         let run_id = response["result"]["run_id"].as_str().unwrap();

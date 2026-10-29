@@ -662,6 +662,7 @@ impl PostgresRunApplicationService {
         };
         let requested_user_id = match input.args.get("user_id") {
             None | Some(Value::Null) => None,
+            Some(Value::String(requested)) if requested.trim().is_empty() => None,
             Some(Value::String(requested)) => Some(requested.as_str()),
             Some(_) => {
                 return effect_error(
@@ -671,7 +672,10 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        if requested_user_id.is_some_and(|requested| requested != owner_id) {
+        let effective_user_id = requested_user_id.or_else(|| {
+            authenticated_run_owner_id(&request.principal)
+        });
+        if effective_user_id != Some(owner_id.as_str()) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",
