@@ -943,6 +943,118 @@
                 .status,
             "succeeded"
         );
+
+        let prepare_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "run_id": "native-answer-prepare-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-aa-prepare",
+                "start_node_id": "prepare",
+                "node_ops": {"prepare": "rust-native/aa_prepare"},
+                "initial_state": {
+                    "conversation_id": "conv-native-aa-prepare",
+                    "run_id": "agent-run-1"
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(prepare_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let prepare_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "run_id": "native-answer-prepare-run",
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(prepare_claim.status(), StatusCode::OK);
+        let prepare_work = prepare_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let prepare_execution = json!({
+            "handoff": {
+                "message_id": prepare_work["message_id"],
+                "claimed_by": prepare_work["claimed_by"],
+                "run_id": prepare_work["run_id"],
+                "step_id": prepare_work["step_id"],
+                "correlation_id": prepare_work["correlation_id"]
+            },
+            "payload": prepare_work["payload"]
+        });
+        let prepare_response = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&owner)
+            .json(&prepare_execution)
+            .send()
+            .await
+            .unwrap();
+        let prepare_status = prepare_response.status();
+        let prepare_body = prepare_response.text().await.unwrap();
+        assert_eq!(prepare_status, StatusCode::OK, "{prepare_body}");
+        let run_anchor_id = "ptr:7apfcktwl35dka7476tq";
+        let run_anchor = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![run_anchor_id.to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(run_anchor.len(), 1);
+        assert_eq!(run_anchor[0].metadata["_class_name"], "ConversationNode");
+        assert_eq!(run_anchor[0].metadata["entity_type"], "agent_run");
+        let run_anchor_acl = service
+            .store
+            .graph_acl_records_for_entities(
+                &GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                "conversation",
+                &[run_anchor_id.to_owned()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(run_anchor_acl.len(), 3);
+        assert!(run_anchor_acl.iter().all(|record| {
+            record.metadata["acl_mode"] == "private"
+                && record.metadata["owner_id"] == "alice"
+        }));
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message(prepare_work["message_id"].as_str().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            service
+                .store
+                .get_server_run("native-answer-prepare-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
         server.abort();
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let task = tokio::spawn(connection);

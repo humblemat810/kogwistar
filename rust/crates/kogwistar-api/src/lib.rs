@@ -54,6 +54,7 @@ use kogwistar_store_sqlite::{
 
 mod cutover;
 mod native_answer_persist;
+mod native_answer_prepare;
 mod native_memory_pin;
 mod runtime_contract;
 pub use cutover::{

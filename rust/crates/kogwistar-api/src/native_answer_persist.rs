@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub(crate) fn registry() -> Result<NativeOperationRegistry, NativeOperationRegistrationError> {
     let mut registry = crate::native_memory_pin::registry()?;
+    crate::native_answer_prepare::register(&mut registry)?;
     registry.register_graph_v2("aa_persist_response", "v1", execute_persist_response)?;
     Ok(registry)
 }
@@ -54,7 +55,7 @@ fn python_json_string(value: &str) -> String {
     out
 }
 
-fn stable_conversation_id(prefix: &str, fields: &[(&str, &str)]) -> String {
+pub(crate) fn stable_conversation_id(prefix: &str, fields: &[(&str, &str)]) -> String {
     let mut fields = fields.to_vec();
     fields.sort_by_key(|(key, _)| *key);
     let encoded = fields
@@ -111,7 +112,7 @@ fn string_list(state: &Map<String, Value>, field: &str) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-fn span_payload() -> Value {
+pub(crate) fn span_payload() -> Value {
     json!({
         "collection_page_url": "conversation/_conv:_dummy",
         "document_page_url": "conversation/_conv:_dummy",
@@ -133,7 +134,7 @@ fn span_payload() -> Value {
     })
 }
 
-fn model_document_fields(payload: &Value, excluded: &[&str]) -> Map<String, Value> {
+pub(crate) fn model_document_fields(payload: &Value, excluded: &[&str]) -> Map<String, Value> {
     payload
         .as_object()
         .into_iter()
