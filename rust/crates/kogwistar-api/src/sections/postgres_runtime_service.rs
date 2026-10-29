@@ -3501,7 +3501,21 @@ impl PostgresRunApplicationService {
                     }
                 }
             }
-            return operational_effect(&request, path, runs, lanes, events);
+            let service_rows = match self.store.list_named_projections("service_registry").await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            let services = service_rows
+                .into_iter()
+                .map(|row| Value::Object(row.payload))
+                .collect::<Vec<_>>();
+            return operational_effect(&request, path, runs, lanes, events, services);
         }
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);

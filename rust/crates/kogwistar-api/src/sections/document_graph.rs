@@ -457,16 +457,31 @@ fn resource_value(
     })
 }
 
+fn resource_service_value(services: &[Value]) -> Value {
+    let mut by_health = BTreeMap::<String, usize>::new();
+    for service in services {
+        let health = service
+            .get("health_status")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("unknown");
+        *by_health.entry(health.to_owned()).or_default() += 1;
+    }
+    json!({"total_services": services.len(), "by_health": by_health})
+}
+
 fn operational_effect(
     request: &ApiEffectRequest,
     path: &str,
     runs: Vec<ServerRun>,
     lanes: Vec<ProjectedLaneMessage>,
     events: Vec<ServerRunEvent>,
+    services: Vec<Value>,
 ) -> ApiEffectResponse {
     let limit = query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
     let usage = usage_history(&events, limit.max(1));
-    let resources = resource_value(&runs, &lanes, &usage, &events);
+    let mut resources = resource_value(&runs, &lanes, &usage, &events);
+    resources["services"] = resource_service_value(&services);
     match path {
         "/api/workflow/catalog/ops" => json_effect(
             StatusCode::OK,

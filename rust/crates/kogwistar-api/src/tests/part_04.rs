@@ -379,6 +379,19 @@
         assert_eq!(declared["autostart"], true);
         assert_eq!(declared["health_status"], "degraded");
         assert_eq!(declared["heartbeat_ttl_ms"], 1234);
+        let resources = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/resources".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(resources.status, StatusCode::OK.as_u16());
+        let resources: Value = serde_json::from_slice(&resources.body).unwrap();
+        assert_eq!(resources["services"]["total_services"], 1);
+        assert_eq!(resources["services"]["by_health"]["degraded"], 1);
         let triggered = service
             .execute(ApiEffectRequest {
                 contract_version: 1,

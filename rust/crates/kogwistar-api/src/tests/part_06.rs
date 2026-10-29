@@ -4864,6 +4864,36 @@
             .await
             .unwrap();
 
+        let service_declaration = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "service_id":"resource-snapshot-service",
+                    "target_kind":"workflow",
+                    "target_ref":"resource-snapshot-workflow",
+                    "target_config": {
+                        "conversation_id":"resource-snapshot-conversation",
+                        "runtime_kind":"sync",
+                        "user_id":"alice"
+                    },
+                    "enabled":true
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"operator","role":"rw","ns":"workflow",
+                    "capabilities":["service.manage","write_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            service_declaration.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&service_declaration.body)
+        );
+
         let resource_snapshot = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -4889,6 +4919,10 @@
         );
         let resource_snapshot: Value = serde_json::from_slice(&resource_snapshot.body).unwrap();
         assert_eq!(resource_snapshot["result"]["tool_name"], "resource_snapshot");
+        assert_eq!(
+            resource_snapshot["result"]["snapshot"]["services"],
+            json!({"total_services":1,"by_health":{"degraded":1}})
+        );
         let snapshot_fields = resource_snapshot["result"]["snapshot"].as_object().unwrap();
         assert_eq!(
             snapshot_fields

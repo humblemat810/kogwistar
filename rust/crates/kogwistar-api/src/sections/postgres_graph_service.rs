@@ -1613,8 +1613,23 @@ impl PostgresRunApplicationService {
                     Ok(rows) => rows,
                     Err(response) => return response,
                 };
+                let service_rows = match self.store.list_named_projections("service_registry").await {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let services = service_rows
+                    .into_iter()
+                    .map(|row| Value::Object(row.payload))
+                    .collect::<Vec<_>>();
                 let usage = usage_history(&events, 10_000);
                 let mut snapshot = resource_value(&runs, &lanes, &usage, &events);
+                snapshot["services"] = resource_service_value(&services);
                 snapshot
                     .as_object_mut()
                     .expect("resource snapshot is an object")
@@ -1915,10 +1930,31 @@ impl PostgresRunApplicationService {
                             Ok(rows) => rows,
                             Err(response) => return response,
                         };
+                    let service_rows = match self.store.list_named_projections("service_registry").await {
+                        Ok(rows) => rows,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    let services = service_rows
+                        .into_iter()
+                        .map(|row| Value::Object(row.payload))
+                        .collect::<Vec<_>>();
                     syscall_result(
                         &input.version,
                         op,
-                        operational_effect(request, "/api/workflow/resources", runs, lanes, events),
+                        operational_effect(
+                            request,
+                            "/api/workflow/resources",
+                            runs,
+                            lanes,
+                            events,
+                            services,
+                        ),
                     )
                 }
             }
