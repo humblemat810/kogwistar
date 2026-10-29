@@ -628,6 +628,12 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
         dst=out["assistant_turn_node_id"],
     )
     assert gen_eid in conv.edge_collection._rows
+    assert out["assistant_turn_node_id"] == pointer_id(
+        scope=scope,
+        pointer_kind="turn",
+        target_kind="assistant",
+        target_id=out["run_node_id"],
+    )
 
 
 @pytest.mark.ci

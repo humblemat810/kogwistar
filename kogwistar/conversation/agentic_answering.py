@@ -757,6 +757,7 @@ class AgenticAnsweringAgent:
         tail_turn_index = prev_turn_meta_summary.tail_turn_index
         assistant_turn_node_id, assistant_turn_node = self._add_assistant_turn(
             conversation_id=conversation_id,
+            run_node_id=run_node_id,
             content=assistant_text,
             provenance_span=Span.from_dummy_for_conversation(),
             turn_index=tail_turn_index + 1,
@@ -1862,17 +1863,41 @@ class AgenticAnsweringAgent:
         self,
         *,
         conversation_id: str,
+        run_node_id: str,
         content: str,
         provenance_span: Span,
         turn_index: int,
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> tuple[str, ConversationNode]:
-        # Minimal assistant turn node
+        """Persist the assistant turn under an ID stable for this agent run."""
+        nid, node = self._prepare_assistant_turn(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            content=content,
+            provenance_span=provenance_span,
+            turn_index=turn_index,
+        )
+        self.conversation_engine.write.add_node(node)
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.tail_turn_index += 1
+        return nid, node
+
+    def _prepare_assistant_turn(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        content: str,
+        provenance_span: Span,
+        turn_index: int,
+    ) -> tuple[str, ConversationNode]:
+        """Build the assistant turn without choosing a persistence owner."""
         nid = pointer_id(
             scope=f"conv:{conversation_id}",
             pointer_kind="turn",
             target_kind="assistant",
-            target_id=str(int(time.time() * 1000)),
+            target_id=run_node_id,
         )
         emb = normalize_embedding_vector(
             self.conversation_engine.iterative_defensive_emb(content),
@@ -1898,10 +1923,6 @@ class AgenticAnsweringAgent:
             canonical_entity_id=None,
             embedding=emb,
         )
-        self.conversation_engine.write.add_node(node)
-        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
-        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        prev_turn_meta_summary.tail_turn_index += 1
         return nid, node
 
     def _add_link_to_new_turn(
@@ -1968,13 +1989,34 @@ class AgenticAnsweringAgent:
         provenance_span: Span | list[Span],
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> None:
+        edge = self._prepare_run_to_response_edge(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            response_node_id=response_node_id,
+            used_node_ids=used_node_ids,
+            provenance_span=provenance_span,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        if edge is not None:
+            self.conversation_engine.write.add_edge(edge)
+
+    def _prepare_run_to_response_edge(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        response_node_id: str,
+        used_node_ids: list[str],
+        provenance_span: Span | list[Span],
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> ConversationEdge | None:
         scope = f"conv:{conversation_id}"
         eid = edge_id(
             scope=scope, rel="generated", src=run_node_id, dst=response_node_id
         )
         ex = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
         if _has_result_items(ex):
-            return
+            return None
 
         if type(provenance_span) is Span:
             provenance_span_coerced = [provenance_span]
@@ -2010,4 +2052,4 @@ class AgenticAnsweringAgent:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.write.add_edge(edge)
+        return edge

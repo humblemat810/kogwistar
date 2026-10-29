@@ -2266,21 +2266,67 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
     tail_turn_index = int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0)
 
     assistant_text = str(answer.get("text") or "")
-    assistant_turn_node_id, assistant_turn_node = agent._add_assistant_turn(
-        conversation_id=conversation_id,
-        content=assistant_text,
-        provenance_span=Span.from_dummy_for_conversation(),
-        turn_index=tail_turn_index + 1,
-        prev_turn_meta_summary=prev_turn_meta_summary,
-    )
-    agent._link_run_to_response(
-        conversation_id=conversation_id,
-        run_node_id=run_node_id,
-        response_node_id=assistant_turn_node_id,
-        used_node_ids=used_node_ids,
-        provenance_span=Span.from_dummy_for_conversation(),
-        prev_turn_meta_summary=prev_turn_meta_summary,
-    )
+    provenance_span = Span.from_dummy_for_conversation()
+    worker_entities: list[
+        tuple[ConversationNode | ConversationEdge, Literal["node", "edge"]]
+    ] = []
+    if _deps(ctx).get("_rust_worker_effects") is True:
+        assistant_turn_node_id, assistant_turn_node = agent._prepare_assistant_turn(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            content=assistant_text,
+            provenance_span=provenance_span,
+            turn_index=tail_turn_index + 1,
+        )
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+            assistant_text
+        )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.tail_turn_index += 1
+        response_edge = agent._prepare_run_to_response_edge(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            response_node_id=assistant_turn_node_id,
+            used_node_ids=used_node_ids,
+            provenance_span=provenance_span,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        deps = _deps(ctx)
+        edge_hooks = tuple(
+            getattr(deps["conversation_engine"], "pre_add_edge_hooks", ()) or ()
+        )
+        if response_edge is not None and edge_hooks:
+            raise RuntimeError(
+                "Rust worker response batch cannot preserve edge hooks that may "
+                "observe the preceding Python node write"
+            )
+        for hook in getattr(deps["conversation_engine"], "pre_add_node_hooks", ()):
+            hook(assistant_turn_node)
+        worker_entities.append((assistant_turn_node, "node"))
+        if response_edge is not None:
+            for hook in edge_hooks:
+                if bool(hook(response_edge)):
+                    response_edge = None
+                    break
+            if response_edge is not None:
+                worker_entities.append((response_edge, "edge"))
+    else:
+        assistant_turn_node_id, assistant_turn_node = agent._add_assistant_turn(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            content=assistant_text,
+            provenance_span=provenance_span,
+            turn_index=tail_turn_index + 1,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        agent._link_run_to_response(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            response_node_id=assistant_turn_node_id,
+            used_node_ids=used_node_ids,
+            provenance_span=provenance_span,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
     prev_turn_meta_summary.tail_turn_index += 1
     # surface prev_turn_meta_summary as jsonable for downstream callers.
     mts = {
@@ -2318,6 +2364,36 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
         ),
         ("a", {"op_log": "aa_persist_response"}),
     ]
-    return RunSuccess(
-        conversation_node_id=assistant_turn_node_id, state_update=state_update
-    )
+    result_values: dict[str, object] = {
+        "conversation_node_id": assistant_turn_node_id,
+        "state_update": state_update,
+    }
+    if worker_entities:
+        from kogwistar.engine_core.graph_mutation_contract import (
+            GraphMutationBatchPayload,
+            validate_graph_mutation_batch,
+        )
+
+        mutations = []
+        index_jobs = []
+        for entity, entity_kind in worker_entities:
+            single = validate_graph_mutation_batch(
+                _worker_graph_mutation_batch_for_entity(
+                    ctx,
+                    _deps(ctx)["conversation_engine"],
+                    entity,
+                    entity_kind=entity_kind,
+                )
+            )
+            mutations.extend(single.mutations)
+            index_jobs.extend(single.index_jobs)
+        batch = GraphMutationBatchPayload(
+            contract_version=1,
+            atomic=True,
+            mutations=mutations,
+            index_jobs=index_jobs,
+        )
+        result_values["graph_mutation_batch"] = cast(
+            dict[str, JsonValue], batch.model_dump(mode="json")
+        )
+    return RunSuccess(**result_values)

@@ -363,19 +363,103 @@ class _StubAgent:
         self,
         *,
         conversation_id: str,
+        run_node_id: str,
         content: str,
         provenance_span: Span,
         turn_index: int,
         prev_turn_meta_summary,
     ):
+        from kogwistar.conversation.agentic_answering import pointer_id
+
+        assistant_id = pointer_id(
+            scope=f"conv:{conversation_id}",
+            pointer_kind="turn",
+            target_kind="assistant",
+            target_id=run_node_id,
+        )
         return (
-            f"turn:{conversation_id}:{turn_index}",
+            assistant_id,
             SimpleNamespace(
                 model_dump=lambda: {
-                    "id": f"turn:{conversation_id}:{turn_index}",
+                    "id": assistant_id,
                     "content": content,
                 }
             ),
+        )
+
+    def _prepare_assistant_turn(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        content: str,
+        provenance_span: Span,
+        turn_index: int,
+    ):
+        from kogwistar.conversation.models import ConversationNode
+        from kogwistar.conversation.agentic_answering import pointer_id
+        from kogwistar.engine_core.models import Grounding
+
+        assistant_id = pointer_id(
+            scope=f"conv:{conversation_id}",
+            pointer_kind="turn",
+            target_kind="assistant",
+            target_id=run_node_id,
+        )
+        return assistant_id, ConversationNode(
+            id=assistant_id,
+            label="Assistant turn",
+            type="entity",
+            summary=content,
+            conversation_id=conversation_id,
+            role="assistant",
+            turn_index=turn_index,
+            properties={"content": content, "entity_type": "assistant_turn"},
+            mentions=[Grounding(spans=[provenance_span])],
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
+        )
+
+    def _prepare_run_to_response_edge(self, **kwargs):
+        from kogwistar.conversation.models import ConversationEdge
+        from kogwistar.engine_core.models import Grounding
+
+        span = kwargs["provenance_span"]
+        if isinstance(span, list):
+            spans = span
+        else:
+            spans = [span]
+        conversation_id = kwargs["conversation_id"]
+        run_node_id = kwargs["run_node_id"]
+        response_node_id = kwargs["response_node_id"]
+        return ConversationEdge(
+            id=f"generated:{run_node_id}:{response_node_id}",
+            source_ids=[run_node_id],
+            target_ids=[response_node_id],
+            relation="generated",
+            label="generated",
+            type="relationship",
+            summary="Agent run generated assistant response",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=spans)],
+            properties={
+                "entity_type": "conversation_edge",
+                "used_node_ids": kwargs["used_node_ids"],
+            },
+            metadata={
+                "char_distance_from_last_summary": kwargs[
+                    "prev_turn_meta_summary"
+                ].prev_node_char_distance_from_last_summary,
+                "turn_distance_from_last_summary": kwargs[
+                    "prev_turn_meta_summary"
+                ].prev_node_distance_from_last_summary,
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
         )
 
     def _link_run_to_response(self, **kwargs):
@@ -573,6 +657,116 @@ def test_aa_project_pointers_batches_pointer_and_usage_edge_once_for_rust_worker
     ce.pre_add_edge_hooks = [lambda _edge: False]
     unsupported = _run_op(
         "aa_project_pointers", state, idempotency_key="stable-worker-message-id"
+    )
+    assert isinstance(unsupported, RunFailure)
+    assert any("cannot preserve edge hooks" in error for error in unsupported.errors)
+
+
+def test_aa_persist_response_batches_stable_turn_and_generated_edge_for_rust_worker():
+    from kogwistar.conversation.models import MetaFromLastSummary
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.nodes = SimpleNamespace(name="gke_nodes")
+    ce.backend.edges = SimpleNamespace(name="gke_edges")
+    ce.backend.embedding_dim = 3
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+
+    def _node_projection(node):
+        return (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {"entity_type": "assistant_turn", "namespace": "conversation"},
+        )
+
+    def _edge_projection(edge):
+        return (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {
+                **edge.metadata,
+                "entity_type": "conversation_edge",
+                "namespace": "conversation",
+            },
+        )
+
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=_node_projection,
+        edge_doc_and_meta=_edge_projection,
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker response persistence must return graph effects"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker response persistence must return graph effects"
+        ),
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"hook_prepared": True})
+    ]
+    ce.pre_add_edge_hooks = []
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state.update(
+        {
+            "conversation_id": "conversation-1",
+            "run_node_id": "run-1",
+            "answer": {"text": "answer"},
+            "evaluation": {"is_sufficient": True},
+            "used_node_ids": ["kg-1"],
+            "projected_pointer_ids": ["pointer-1"],
+            "prev_turn_meta_summary": {
+                "prev_node_char_distance_from_last_summary": 0,
+                "prev_node_distance_from_last_summary": 0,
+                "tail_turn_index": 0,
+            },
+        }
+    )
+    state["_deps"]["_rust_worker_effects"] = True
+    state["_deps"]["prev_turn_meta_summary"] = MetaFromLastSummary(0, 0)
+
+    result = _run_op(
+        "aa_persist_response", state, idempotency_key="stable-worker-message-id"
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert batch.mutations[0].record.id == result.conversation_node_id
+    from kogwistar.conversation.agentic_answering import pointer_id
+
+    assert result.conversation_node_id == pointer_id(
+        scope="conv:conversation-1",
+        pointer_kind="turn",
+        target_kind="assistant",
+        target_id="run-1",
+    )
+    assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
+    assert batch.mutations[1].payload["relation"] == "generated"
+    assert [job.index_kind for job in batch.index_jobs] == [
+        "node_docs",
+        "node_refs",
+        "edge_refs",
+        "edge_endpoints",
+    ]
+    assert state["agentic_answering_result"]["assistant_turn_node_id"] == (
+        result.conversation_node_id
+    )
+
+    ce.pre_add_edge_hooks = [lambda _edge: False]
+    state["prev_turn_meta_summary"] = {
+        "prev_node_char_distance_from_last_summary": 0,
+        "prev_node_distance_from_last_summary": 0,
+        "tail_turn_index": 0,
+    }
+    unsupported = _run_op(
+        "aa_persist_response", state, idempotency_key="stable-worker-message-id"
     )
     assert isinstance(unsupported, RunFailure)
     assert any("cannot preserve edge hooks" in error for error in unsupported.errors)
