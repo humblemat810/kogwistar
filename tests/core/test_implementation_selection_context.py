@@ -925,7 +925,7 @@ def test_chroma_collection_mutations_cannot_run_from_worker_callback() -> None:
     assert len(calls) == 1
     assert backend.call("node", "get")["ids"] == []  # type: ignore[index]
 
-    expected = "transaction authority cannot be opened from a worker callback"
+    expected = "Chroma collection mutation is not allowed from a worker callback"
     with callback_execution_scope():
         with pytest.raises(RuntimeError, match=expected):
             backend.call("node", "upsert", ids=["blocked"])

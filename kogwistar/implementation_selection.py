@@ -103,6 +103,14 @@ def active_transaction_authority() -> TransactionAuthority | None:
     return _transaction_authority.get()
 
 
+def assert_callback_side_effect_allowed(effect: str) -> None:
+    """Reject direct backend effects from a worker resolver callback."""
+    if _callback_execution_active.get():
+        raise RuntimeError(
+            f"{effect} is not allowed from a worker callback; return an effect for the runtime to apply"
+        )
+
+
 def assert_transaction_entry_allowed() -> None:
     """Reject backend transaction entry from a worker resolver callback."""
     if _callback_execution_active.get():
