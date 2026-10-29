@@ -5617,6 +5617,11 @@
             .as_str()
             .expect("completed debug RAG run records its assistant turn ID")
             .to_owned();
+        assert_eq!(
+            admitted_run.assistant_turn_node_id.as_deref(),
+            Some(assistant_turn_id.as_str()),
+            "completed run registry should expose the durable assistant turn ID"
+        );
         let assistant_turn = service
             .store
             .graph_projection_records(GraphProjectionRead {

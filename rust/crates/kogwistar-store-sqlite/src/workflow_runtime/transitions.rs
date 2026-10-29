@@ -171,12 +171,25 @@ pub(crate) fn apply_recorded_runtime_transition_inner(
         ),
     )?;
     let prior_run = existing_run.as_ref();
+    let assistant_turn_node_id = (reduced.state.status
+        == kogwistar_runtime::RecordedRunStatus::Completed)
+        .then(|| {
+            reduced
+                .state
+                .state
+                .get("agentic_answering_result")
+                .and_then(|result| result.get("assistant_turn_node_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .flatten()
+        .or_else(|| prior_run.and_then(|run| run.assistant_turn_node_id.clone()));
     update_server_run(
         conn,
         &transition.run_id,
         ServerRunUpdate {
             status: reduced.server_status.clone(),
-            assistant_turn_node_id: prior_run.and_then(|run| run.assistant_turn_node_id.clone()),
+            assistant_turn_node_id,
             result_json: reduced
                 .result
                 .as_ref()

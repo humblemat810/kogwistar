@@ -117,6 +117,46 @@ fn runtime_current_state_projection_is_disposable_fresh_and_atomic() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn completed_answer_transition_materializes_assistant_turn_id() {
+    let (store, path) = store("runtime-assistant-turn-id");
+    let start = store
+        .apply_recorded_runtime_transition(runtime_start("run-answer", "start-answer"), false)
+        .unwrap();
+    let mut result_transition =
+        runtime_result("run-answer", "complete-answer", start.event_seq, "answer");
+    result_transition.kind = kogwistar_runtime::RecordedTransitionKind::Complete;
+    result_transition
+        .state_update
+        .push(kogwistar_runtime::RecordedStateUpdate::Pair((
+            "u".to_owned(),
+            Map::from_iter([(
+                "agentic_answering_result".to_owned(),
+                serde_json::json!({"assistant_turn_node_id": "assistant-turn-1"}),
+            )]),
+        )));
+
+    let completed = store
+        .apply_recorded_runtime_transition(result_transition, false)
+        .unwrap();
+    assert_eq!(
+        completed.reduced.state.status,
+        kogwistar_runtime::RecordedRunStatus::Completed
+    );
+    assert_eq!(
+        store
+            .get_server_run("run-answer")
+            .unwrap()
+            .unwrap()
+            .assistant_turn_node_id
+            .as_deref(),
+        Some("assistant-turn-1")
+    );
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
 #[test]
 fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
     let (store, path) = store("runtime-worker-failure");
