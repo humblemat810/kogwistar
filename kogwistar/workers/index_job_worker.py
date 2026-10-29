@@ -76,6 +76,8 @@ class WorkerTickMetrics:
     claim_lost: int = 0
     repaired: int = 0
     repair_scan_failures: int = 0
+    reconciled: int = 0
+    reconciliation_failures: int = 0
     avg_job_duration_s: float | None = None
 
 
@@ -102,6 +104,7 @@ class IndexJobWorker:
         namespace: str | None = None,
         projection_store: ProjectionGraphStore | None = None,
         repair_scan_interval_s: float = 0.0,
+        reconcile_scan_interval_s: float = 0.0,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -112,6 +115,8 @@ class IndexJobWorker:
         self.projection_store = projection_store
         self.repair_scan_interval_s = max(0.0, float(repair_scan_interval_s))
         self._next_repair_scan_at = 0.0
+        self.reconcile_scan_interval_s = max(0.0, float(reconcile_scan_interval_s))
+        self._next_reconcile_scan_at = 0.0
 
     @property
     def _implementation_selection_snapshot(self) -> object:
@@ -145,6 +150,7 @@ class IndexJobWorker:
         ns = self.namespace or getattr(self.engine, "namespace", "default")
         entity_cache: dict[tuple[str, str, str], object] = {}
         self._run_repair_scan(metrics, namespace=ns)
+        self._run_reconciliation_scan(metrics, namespace=ns)
 
         while remaining > 0:
             # IMPORTANT: don't over-claim beyond what we can process this tick.
@@ -270,6 +276,47 @@ class IndexJobWorker:
         except Exception:
             metrics.repair_scan_failures += 1
             _logger.exception("bounded two-stage repair scan failed")
+
+    def _run_reconciliation_scan(
+        self, metrics: WorkerTickMetrics, *, namespace: str
+    ) -> None:
+        if (
+            getattr(self.engine, "persistence_mode", "single_stage") != "two_stage"
+            or self.reconcile_scan_interval_s <= 0
+        ):
+            return
+        now = time.monotonic()
+        if now < self._next_reconcile_scan_at:
+            return
+        self._next_reconcile_scan_at = now + self.reconcile_scan_interval_s
+        adapter = getattr(self.engine, "two_stage_projection_adapter", None)
+        reconcile = getattr(adapter, "reconcile_projection", None)
+        if not callable(reconcile):
+            return
+        # The adapter is scoped to the engine's active graph namespace. Avoid
+        # running a broader scan when a worker was explicitly given another one.
+        engine_namespace = str(getattr(self.engine, "namespace", "default"))
+        if namespace != engine_namespace:
+            metrics.reconciliation_failures += 1
+            _logger.error(
+                "two-stage projection reconciliation skipped: worker namespace "
+                "does not match engine namespace"
+            )
+            return
+        try:
+            result = cast(Callable[[], object], reconcile)()
+            if (
+                isinstance(result, bool)
+                or not isinstance(result, int)
+                or result < 0
+            ):
+                raise TypeError(
+                    "reconcile_projection must return a non-negative integer count"
+                )
+            metrics.reconciled = result
+        except Exception:
+            metrics.reconciliation_failures += 1
+            _logger.exception("two-stage projection reconciliation failed")
 
     @staticmethod
     def _job_value(job: object, name: str) -> object:

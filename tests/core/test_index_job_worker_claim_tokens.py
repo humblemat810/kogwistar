@@ -795,6 +795,99 @@ def test_async_batch_adapter_cannot_mutate_claim_identity_or_ack_token() -> None
     assert second["job_id"] == "job-2" and second["claim_token"] == "claim-2"
 
 
+def test_sync_worker_runs_opt_in_projection_reconciliation_on_its_interval() -> None:
+    class EmptyMeta:
+        def claim_index_jobs(self, **_: object) -> list[object]:
+            return []
+
+    class Reconciler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reconcile_projection(self) -> int:
+            self.calls += 1
+            return 2
+
+    engine = SimpleNamespace(
+        meta_sqlite=EmptyMeta(),
+        namespace="test",
+        persistence_mode="two_stage",
+        _implementation_selection_snapshot=None,
+    )
+    adapter = Reconciler()
+    engine.two_stage_projection_adapter = adapter
+    worker = IndexJobWorker(engine=engine, reconcile_scan_interval_s=60)
+
+    first = worker.tick()
+    second = worker.tick()
+
+    assert first.reconciled == 2
+    assert second.reconciled == 0
+    assert adapter.calls == 1
+    assert first.reconciliation_failures == second.reconciliation_failures == 0
+
+
+def test_sync_worker_reconciliation_is_disabled_by_default_and_scope_fails_closed() -> None:
+    class EmptyMeta:
+        def claim_index_jobs(self, **_: object) -> list[object]:
+            return []
+
+    class Reconciler:
+        calls = 0
+
+        def reconcile_projection(self) -> int:
+            self.calls += 1
+            return 1
+
+    adapter = Reconciler()
+    engine = SimpleNamespace(
+        meta_sqlite=EmptyMeta(),
+        namespace="engine-scope",
+        persistence_mode="two_stage",
+        two_stage_projection_adapter=adapter,
+        _implementation_selection_snapshot=None,
+    )
+    assert IndexJobWorker(engine=engine).tick().reconciled == 0
+
+    metrics = IndexJobWorker(
+        engine=engine,
+        namespace="other-scope",
+        reconcile_scan_interval_s=1,
+    ).tick()
+    assert metrics.reconciled == 0
+    assert metrics.reconciliation_failures == 1
+    assert adapter.calls == 0
+
+
+def test_async_worker_runs_opt_in_projection_reconciliation() -> None:
+    class EmptyMeta:
+        def claim_index_jobs(self, **_: object) -> list[object]:
+            return []
+
+    class Reconciler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def reconcile_projection(self) -> int:
+            self.calls += 1
+            return 3
+
+    adapter = Reconciler()
+    engine = SimpleNamespace(
+        meta_sqlite=EmptyMeta(),
+        namespace="test",
+        persistence_mode="two_stage",
+        async_two_stage_projection_adapter=adapter,
+        _implementation_selection_snapshot=None,
+    )
+    metrics = asyncio.run(
+        AsyncIndexJobWorker(engine=engine, reconcile_scan_interval_s=60).tick()
+    )
+    assert metrics.reconciled == 3
+    assert metrics.reconciliation_failures == 0
+    assert adapter.calls == 1
+
+
 def test_legacy_claim_without_token_keeps_compatibility_call_shape() -> None:
     meta = _Meta(_job(claim_token=None))
     worker = IndexJobWorker(engine=_engine(meta))

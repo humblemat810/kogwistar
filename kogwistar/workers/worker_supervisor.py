@@ -45,6 +45,10 @@ def _main(argv: list[str]) -> int:
         help="Enable bounded repair on one designated worker per namespace; 0 disables it",
     )
     parser.add_argument(
+        "--reconcile-scan-interval-s", type=float, default=0.0,
+        help="Run a full-namespace eventual projection reconciliation on one designated worker per namespace at this interval; use a low frequency, 0 disables it",
+    )
+    parser.add_argument(
         "--pidfile", default="", help="Write worker PID here (for tests/ops)"
     )
     parser.add_argument(
@@ -103,6 +107,8 @@ def _main(argv: list[str]) -> int:
         args.persistence_mode,
         "--repair-scan-interval-s",
         str(args.repair_scan_interval_s),
+        "--reconcile-scan-interval-s",
+        str(args.reconcile_scan_interval_s),
     ]
     if args.phase1_enable_index_jobs:
         worker_args.append("--phase1-enable-index-jobs")

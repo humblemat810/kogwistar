@@ -93,6 +93,9 @@ def build_worker(eng: GraphKnowledgeEngine, args: argparse.Namespace) -> IndexJo
         repair_scan_interval_s=float(
             getattr(args, "repair_scan_interval_s", 0.0)
         ),
+        reconcile_scan_interval_s=float(
+            getattr(args, "reconcile_scan_interval_s", 0.0)
+        ),
     )
 
 
@@ -148,6 +151,12 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=float(os.getenv("GKE_WORKER_REPAIR_SCAN_INTERVAL_S", "0")),
         help="Enable bounded repair on one designated worker per namespace; 0 disables it",
+    )
+    ap.add_argument(
+        "--reconcile-scan-interval-s",
+        type=float,
+        default=float(os.getenv("GKE_WORKER_RECONCILE_SCAN_INTERVAL_S", "0")),
+        help="Run a full-namespace eventual projection reconciliation on one designated worker per namespace at this interval; use a low frequency, 0 disables it",
     )
     ap.add_argument(
         "--tick-interval",

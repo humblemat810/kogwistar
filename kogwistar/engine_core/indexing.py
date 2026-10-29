@@ -790,6 +790,7 @@ class IndexingSubsystem:
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
         repair_scan_interval_s: float = 0.0,
+        reconcile_scan_interval_s: float = 0.0,
     ) -> IndexJobWorker:
         # local import to avoid subsystem importing workers at module import time if you want
         from ..workers.index_job_worker import IndexJobWorker
@@ -802,6 +803,7 @@ class IndexingSubsystem:
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
             repair_scan_interval_s=repair_scan_interval_s,
+            reconcile_scan_interval_s=reconcile_scan_interval_s,
         )
 
     @implementation_selection_bound
@@ -814,6 +816,7 @@ class IndexingSubsystem:
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
         repair_scan_interval_s: float = 0.0,
+        reconcile_scan_interval_s: float = 0.0,
     ) -> AsyncIndexJobWorker:
         """Build async worker without converting async projection calls to sync."""
         from ..workers.async_index_job_worker import AsyncIndexJobWorker
@@ -826,6 +829,7 @@ class IndexingSubsystem:
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
             repair_scan_interval_s=repair_scan_interval_s,
+            reconcile_scan_interval_s=reconcile_scan_interval_s,
         )
 
     @implementation_selection_bound
