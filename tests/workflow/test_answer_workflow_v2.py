@@ -108,6 +108,7 @@ def _ensure_user_turn(
     )
 
 
+@pytest.mark.parametrize("backend_kind", ["fake", "chroma"], indirect=True)
 @pytest.mark.parametrize("question", ["What is chlorophyll?"])
 def test_answer_workflow_v2_runs_end_to_end(
     workflow_engine, conversation_engine, engine, question,

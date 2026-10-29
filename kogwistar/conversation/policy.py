@@ -12,6 +12,7 @@ from kogwistar.engine_core.scoped_seq import (
 )
 from kogwistar.graph_kinds import KIND_CHAT
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.runtime.models import WorkflowRuntimeEdge
 
 from .models import (
     CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION,
@@ -388,7 +389,7 @@ def install_engine_hooks(engine: GraphKnowledgeEngine) -> None:
         return False
 
     def _allow_missing_doc(edge: object) -> bool:
-        return isinstance(edge, ConversationEdge)
+        return isinstance(edge, (ConversationEdge, WorkflowRuntimeEdge))
 
     edge_hooks = getattr(engine, "pre_add_edge_hooks", None)
     if isinstance(edge_hooks, list):
