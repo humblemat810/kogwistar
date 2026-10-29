@@ -882,6 +882,214 @@
             "the atomic edge write should create exactly the edge index intents"
         );
 
+        for (id, entity_type, truth_graph) in [
+            (
+                "native-pointer-source",
+                "knowledge_node",
+                "knowledge",
+            ),
+            (
+                "native-pointer-run-anchor",
+                "agent_run",
+                "conversation",
+            ),
+        ] {
+            let conversation_id = (truth_graph == "conversation")
+                .then_some("conv-native-pointer");
+            service
+                .store
+                .apply_graph_mutation(GraphMutation {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("native-pointer-seed-{id}"),
+                    op: "ADD".to_owned(),
+                    payload: json!({"id":id}),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(format!("document {id}")),
+                        metadata: serde_json::Map::from_iter([
+                            ("entity_type".to_owned(), json!(entity_type)),
+                            ("conversation_id".to_owned(), json!(conversation_id)),
+                            ("label".to_owned(), json!("Pointer source")),
+                            ("summary".to_owned(), json!("Pointer source summary")),
+                            ("type".to_owned(), json!("entity")),
+                            ("canonical_entity_id".to_owned(), Value::Null),
+                            ("lifecycle_status".to_owned(), json!("active")),
+                            ("mentions".to_owned(), json!([])),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+            service
+                .store
+                .apply_graph_mutation(GraphMutation {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("native-pointer-acl-{id}"),
+                    op: "ADD".to_owned(),
+                    payload: json!({"id":format!("acl-{id}")}),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: serde_json::Map::from_iter([
+                            ("entity_type".to_owned(), json!("acl_record")),
+                            ("acl_truth_graph".to_owned(), json!(truth_graph)),
+                            ("acl_target_grain".to_owned(), json!("node")),
+                            ("acl_target_entity_id".to_owned(), json!(id)),
+                            ("acl_version".to_owned(), json!(1)),
+                            ("acl_mode".to_owned(), json!("private")),
+                            ("owner_id".to_owned(), json!("alice")),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+        let pointer_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "run_id":"native-pointer-projection-run",
+                "workflow_id":"wf",
+                "conversation_id":"conv-native-pointer",
+                "start_node_id":"entry",
+                "node_ops":{"entry":"rust-native/aa_project_pointers"},
+                "initial_state":{
+                    "conversation_id":"conv-native-pointer",
+                    "user_id":"alice",
+                    "run_node_id":"native-pointer-run-anchor",
+                    "used_node_ids":["native-pointer-source"]
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(pointer_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let pointer_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner)
+            .json(&json!({"claimed_by":"rust-native-worker", "limit":1, "lease_seconds":60,
+                "run_id":"native-pointer-projection-run", "recipient_ids":["rust-native-worker"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(pointer_claim.status(), StatusCode::OK);
+        let pointer_work = pointer_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let pointer_execution = json!({
+            "handoff": {
+                "message_id": pointer_work["message_id"],
+                "claimed_by": pointer_work["claimed_by"],
+                "run_id": pointer_work["run_id"],
+                "step_id": pointer_work["step_id"],
+                "correlation_id": pointer_work["correlation_id"]
+            },
+            "payload": pointer_work["payload"]
+        });
+        for replay_principal in [&owner, &no_write] {
+            let response = client
+                .post(format!("{base}/internal/runtime/native/execute"))
+                .bearer_auth(replay_principal)
+                .json(&pointer_execution)
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.text().await.unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        let pointer_id = crate::native_answer_persist::stable_conversation_id(
+            "ptr",
+            &[
+                ("scope", "conv:conv-native-pointer"),
+                ("pointer_kind", "kg_node"),
+                ("target_kind", "node"),
+                ("target_id", "native-pointer-source"),
+            ],
+        );
+        let pointer_records = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![pointer_id.clone()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(pointer_records.len(), 1);
+        let pointer_document: Value =
+            serde_json::from_str(pointer_records[0].document.as_deref().unwrap()).unwrap();
+        assert_eq!(pointer_document["properties"]["target_id"], "native-pointer-source");
+        let usage_edge_id = crate::native_answer_persist::stable_conversation_id(
+            "e",
+            &[
+                ("scope", "conv:conv-native-pointer"),
+                ("rel", "used_evidence"),
+                ("src", "native-pointer-run-anchor"),
+                ("dst", &pointer_id),
+            ],
+        );
+        let usage_edges = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![usage_edge_id.clone()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(usage_edges.len(), 1);
+        assert_eq!(
+            service
+                .store
+                .replay_raw_events("alpha", 0, 1000)
+                .await
+                .unwrap()
+                .iter()
+                .filter(|event| event.entity_id == pointer_id || event.entity_id == usage_edge_id)
+                .count(),
+            2,
+            "retry must not duplicate the pointer or its usage edge event"
+        );
+        let pointer_state = service
+            .store
+            .read_recorded_runtime_state(
+                "native-pointer-projection-run",
+                "wf",
+                "conv-native-pointer",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(pointer_state.state["projected_pointer_ids"], json!([pointer_id]));
+
         let add_candidate = |id: &str, level: i64, lifecycle_status: &str| {
             let mut metadata = serde_json::Map::from_iter([
                 ("entity_type".to_owned(), json!("knowledge_node")),

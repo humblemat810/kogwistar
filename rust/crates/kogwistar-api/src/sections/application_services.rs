@@ -39,6 +39,71 @@ fn recorded_effect_graph_mutations(
 }
 
 impl PostgresRunApplicationService {
+    async fn completed_native_handoff_response(
+        &self,
+        handoff: &kogwistar_runtime::RecordedWorkerHandoff,
+        principal: &Value,
+    ) -> Result<Option<ApiEffectResponse>, ApiEffectResponse> {
+        let lane = self
+            .store
+            .get_projected_lane_message(&handoff.message_id)
+            .await
+            .map_err(|_| {
+                effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_RUNTIME_HANDOFF_UNAVAILABLE",
+                    "could not verify native handoff status",
+                )
+            })?;
+        let Some(lane) = lane.filter(|lane| lane.status == "completed") else {
+            return Ok(None);
+        };
+        if lane.run_id.as_deref() != Some(handoff.run_id.as_str())
+            || lane.step_id.as_deref() != Some(handoff.step_id.as_str())
+            || lane.correlation_id.as_deref() != Some(handoff.correlation_id.as_str())
+        {
+            return Err(effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_RUNTIME_HANDOFF_CONFLICT",
+                "completed native handoff does not match run, step, and correlation identity",
+            ));
+        }
+        let caller_id = authenticated_run_owner_id(principal).ok_or_else(|| {
+            effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "completed native handoff replay requires an authenticated run owner",
+            )
+        })?;
+        let run = self
+            .store
+            .server_run(&handoff.run_id)
+            .await
+            .map_err(|_| {
+                effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_RUNTIME_HANDOFF_UNAVAILABLE",
+                    "could not verify native handoff owner",
+                )
+            })?;
+        if !run.is_some_and(|run| run.user_id.as_deref() == Some(caller_id)) {
+            return Err(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "completed native handoff replay is restricted to the durable run owner",
+            ));
+        }
+        Ok(Some(json_effect(
+            StatusCode::OK,
+            json!({
+                "status": "completed",
+                "idempotent_replay": true,
+                "run_id": handoff.run_id,
+                "step_id": handoff.step_id
+            }),
+        )))
+    }
+
     async fn execute_native_runtime_step(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let input: RuntimeNativeExecuteRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
@@ -61,6 +126,14 @@ impl PostgresRunApplicationService {
             }
         };
         let handoff = input.handoff;
+        match self
+            .completed_native_handoff_response(&handoff, &request.principal)
+            .await
+        {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(response) => return response,
+        }
         let result = if native_request.operation == "aa_retrieve_candidates" {
             match self
                 .native_candidate_context(&native_request, Some(&request.principal))
@@ -158,6 +231,56 @@ impl PostgresRunApplicationService {
                         StatusCode::SERVICE_UNAVAILABLE,
                         "KOGWISTAR_EVIDENCE_READ_UNAVAILABLE",
                         "native evidence storage is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        } else if native_request.operation == "aa_project_pointers" {
+            match self
+                .native_pointer_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(records) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_pointer_records".to_owned(), records);
+                    match native_result_from_request(
+                        handoff.clone(),
+                        native_request.clone(),
+                        &self.native_operations,
+                    ) {
+                        Ok(result) => result,
+                        Err(_) => failed_native_result(
+                            handoff,
+                            &native_request,
+                            "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                            "native pointer projection rejected its bounded input",
+                        ),
+                    }
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native pointer projection requires the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "native pointer projection requires the run owner's current read_graph capability and admitted scope",
+                ),
+                Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_POINTER_READ_FAILED",
+                    "native pointer projection requires visible, active sources and run context",
+                ),
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_POINTER_READ_UNAVAILABLE",
+                        "native pointer storage is temporarily unavailable; the work remains unacknowledged",
                     );
                 }
             }
@@ -324,6 +447,45 @@ impl ApplicationService for PostgresRunApplicationService {
                     ),
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
                         return Err("native evidence storage is temporarily unavailable".to_owned());
+                    }
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
+                        "inline native execution has no external caller principal"
+                    ),
+                }
+            } else if native_request.operation == "aa_project_pointers" {
+                match self.native_pointer_context(&native_request, None).await {
+                    Ok(records) => {
+                        native_request
+                            .ephemeral_context
+                            .insert("authorized_pointer_records".to_owned(), records);
+                        match native_result_from_request(
+                            handoff.clone(),
+                            native_request.clone(),
+                            &self.native_operations,
+                        ) {
+                            Ok(result) => result,
+                            Err(_) => failed_native_result(
+                                handoff,
+                                &native_request,
+                                "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                                "native pointer projection rejected its bounded input",
+                            ),
+                        }
+                    }
+                    Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "native pointer projection requires the run owner's current read_graph capability and admitted scope",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_POINTER_READ_FAILED",
+                        "native pointer projection requires visible, active sources and run context",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                        return Err("native pointer storage is temporarily unavailable".to_owned());
                     }
                     Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
                         "inline native execution has no external caller principal"

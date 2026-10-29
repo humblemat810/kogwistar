@@ -698,6 +698,231 @@ impl PostgresRunApplicationService {
             })
     }
 
+    async fn native_pointer_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let principal = self.native_read_principal(request, caller).await?;
+        let read_ids = |field: &str| -> Result<Vec<String>, NativeEvidenceContextError> {
+            let Some(value) = request.state.get(field) else {
+                return Ok(Vec::new());
+            };
+            let Some(values) = value.as_array() else {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            };
+            if values.len() > 100 {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            }
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .map(str::to_owned)
+                        .ok_or(NativeEvidenceContextError::GraphReadRejected)
+                })
+                .collect()
+        };
+        let used_ids = read_ids("used_node_ids")?;
+        let conversation_id = request
+            .state
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .filter(|id| *id == request.conversation_id)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let run_node_id = request
+            .state
+            .get("run_node_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let pointer_ids = used_ids
+            .iter()
+            .map(|id| {
+                crate::native_answer_persist::stable_conversation_id(
+                    "ptr",
+                    &[
+                        ("scope", &format!("conv:{conversation_id}")),
+                        ("pointer_kind", "kg_node"),
+                        ("target_kind", "node"),
+                        ("target_id", id),
+                    ],
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let run_node_id = run_node_id.to_owned();
+        let conversation_node_ids = std::iter::once(run_node_id.clone())
+            .chain(pointer_ids.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let edge_ids = pointer_ids
+            .iter()
+            .map(|pointer_id| {
+                crate::native_answer_persist::stable_conversation_id(
+                    "e",
+                    &[
+                        ("scope", &format!("conv:{conversation_id}")),
+                        ("rel", "used_evidence"),
+                        ("src", &run_node_id),
+                        ("dst", pointer_id),
+                    ],
+                )
+            })
+            .collect::<Vec<_>>();
+        let scope_claims = security_scope_value(&principal);
+        let scope = GraphScope {
+            namespace: scope_claims["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: principal
+                .get("workspace_id")
+                .or_else(|| principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let acl_principal = graph_acl_principal_from_claims(
+            &principal,
+            scope_claims["security_scope"].as_str(),
+        );
+        let conversation_id = conversation_id.to_owned();
+        let result = self.store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let read = |table: &str, ids: &[String]| GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: table.to_owned(),
+                        ids: Some(ids.to_vec()),
+                        metadata: MetadataFilter::default(),
+                        limit: ids.len().max(1),
+                    };
+                    let knowledge_nodes = if used_ids.is_empty() {
+                        Vec::new()
+                    } else {
+                        uow.graph_projection_records(read("gke_nodes", &used_ids)).await?
+                    };
+                    let conversation_nodes = uow
+                        .graph_projection_records(read("gke_nodes", &conversation_node_ids))
+                        .await?;
+                    let conversation_edges = if edge_ids.is_empty() {
+                        Vec::new()
+                    } else {
+                        uow.graph_projection_records(read("gke_edges", &edge_ids)).await?
+                    };
+                    let knowledge_ids = knowledge_nodes
+                        .iter()
+                        .map(|record| record.id.clone())
+                        .collect::<Vec<_>>();
+                    let conversation_entity_ids = conversation_nodes
+                        .iter()
+                        .chain(conversation_edges.iter())
+                        .map(|record| record.id.clone())
+                        .collect::<Vec<_>>();
+                    let knowledge_acl = uow
+                        .graph_acl_records_for_entities(&scope, "knowledge", &knowledge_ids)
+                        .await?;
+                    let conversation_acl = uow
+                        .graph_acl_records_for_entities(
+                            &scope,
+                            "conversation",
+                            &conversation_entity_ids,
+                        )
+                        .await?;
+                    let mut knowledge_index = GraphAclIndex::default();
+                    knowledge_index.extend_from_records(&knowledge_acl, "knowledge");
+                    let mut conversation_index = GraphAclIndex::default();
+                    conversation_index.extend_from_records(&conversation_acl, "conversation");
+                    let (visible_knowledge, _) = graph_records_visible_by_acl_with_index(
+                        &knowledge_nodes,
+                        &[],
+                        &knowledge_index,
+                        &acl_principal,
+                    );
+                    let (visible_conversation_nodes, visible_conversation_edges) =
+                        graph_records_visible_by_acl_with_index(
+                            &conversation_nodes,
+                            &conversation_edges,
+                            &conversation_index,
+                            &acl_principal,
+                        );
+                    let selected = used_ids.iter().cloned().collect::<BTreeSet<_>>();
+                    let visible_knowledge_ids = visible_knowledge
+                        .iter()
+                        .filter(|record| {
+                            selected.contains(&record.id)
+                                && !matches!(
+                                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                                    Some("tombstoned" | "deleted")
+                                )
+                        })
+                        .map(|record| record.id.clone())
+                        .collect::<BTreeSet<_>>();
+                    if visible_knowledge_ids != selected {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    }
+                    let visible_node_ids = visible_conversation_nodes
+                        .iter()
+                        .map(|record| record.id.clone())
+                        .collect::<BTreeSet<_>>();
+                    let visible_edge_ids = visible_conversation_edges
+                        .iter()
+                        .map(|record| record.id.clone())
+                        .collect::<BTreeSet<_>>();
+                    let required_nodes = BTreeSet::from([run_node_id.clone()]);
+                    if !required_nodes.is_subset(&visible_node_ids)
+                        || conversation_nodes.iter().any(|record| {
+                            pointer_ids.contains(&record.id) && !visible_node_ids.contains(&record.id)
+                        })
+                        || conversation_edges.iter().any(|record| {
+                            edge_ids.contains(&record.id) && !visible_edge_ids.contains(&record.id)
+                        })
+                    {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    }
+                    let run_record = visible_conversation_nodes
+                        .iter()
+                        .find(|record| record.id == run_node_id);
+                    if !run_record.is_some_and(|record| {
+                        record.metadata.get("entity_type").and_then(Value::as_str)
+                            == Some("agent_run")
+                            && record.metadata.get("conversation_id").and_then(Value::as_str)
+                                == Some(conversation_id.as_str())
+                            && !matches!(
+                                record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                                Some("tombstoned" | "deleted")
+                            )
+                    }) {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    }
+                    let selected_records = |records: &[GraphRecord], ids: &BTreeSet<String>| {
+                        records
+                            .iter()
+                            .filter(|record| ids.contains(&record.id))
+                            .map(|record| json!({"id":record.id,"document":record.document,"metadata":record.metadata}))
+                            .collect::<Vec<_>>()
+                    };
+                    Ok(Ok(json!({
+                        "knowledge_nodes": selected_records(&visible_knowledge, &selected),
+                        "conversation_nodes": selected_records(&visible_conversation_nodes, &conversation_node_ids.iter().cloned().collect()),
+                        "conversation_edges": selected_records(&visible_conversation_edges, &edge_ids.iter().cloned().collect())
+                    })))
+                })
+            })
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        result.map_err(|error| match error {
+                NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
+                NativeEvidenceRecordError::Unavailable => NativeEvidenceContextError::GraphReadUnavailable,
+            })
+    }
+
     async fn native_turn_link_context(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
