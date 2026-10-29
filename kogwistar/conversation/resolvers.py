@@ -36,9 +36,6 @@ from .models import (
 )
 from .conversation_context import PromptContext
 
-if TYPE_CHECKING:
-    from kogwistar.runtime.models import StateUpdate
-
 import os
 import time
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
@@ -133,7 +130,7 @@ if TYPE_CHECKING:
 
 # Import your real RunResult types from kogwistar.runtime/models
 from kogwistar.engine_core.models import Span  # noqa: E402
-from kogwistar.runtime.models import RunSuccess  # noqa: E402
+from kogwistar.runtime.models import RunSuccess, StateUpdate  # noqa: E402
 from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
 # Agentic answering helper types
@@ -1106,6 +1103,11 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     if isinstance(selected_memory, RetrievalResult) and isinstance(
         memory_context_text, str
     ):
+        if deps.get("_rust_worker_effects") is True:
+            raise RuntimeError(
+                "memory_pin is not supported by Rust worker graph effects; "
+                "refusing Python graph writes"
+            )
         out = mem_retriever.pin_selected(
             user_id=state["user_id"],
             current_conversation_id=state["conversation_id"],

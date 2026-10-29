@@ -16,6 +16,7 @@ from kogwistar.runtime.models import RunSuccess
 class FakeConversationEngine:
     def __init__(self) -> None:
         self.nodes: dict[str, Any] = {}
+        self.edges: dict[str, Any] = {}
         self.write = self
 
     def _iterative_defensive_emb(self, _text: str):
@@ -23,6 +24,9 @@ class FakeConversationEngine:
 
     def add_node(self, node: Any) -> None:
         self.nodes[str(node.id)] = node
+
+    def add_edge(self, edge: Any) -> None:
+        self.edges[str(edge.id)] = edge
 
     def get_nodes(self, ids: list[str]) -> list[Any]:
         return [self.nodes[str(i)] for i in ids]
@@ -75,6 +79,82 @@ def test_add_user_turn_respects_provided_turn_node_id():
     res = fn(ctx)
     assert isinstance(res, RunSuccess)
     assert "provided_node_id" in ce.nodes
+
+
+def test_memory_pin_fails_closed_for_rust_worker_effects(monkeypatch):
+    from types import SimpleNamespace
+
+    from kogwistar.conversation import resolvers
+    from kogwistar.conversation.models import MetaFromLastSummary, RetrievalResult
+    from kogwistar.engine_core.models import Span
+
+    ce = FakeConversationEngine()
+    ce.edges = {}
+    memory = SimpleNamespace(
+        selected=RetrievalResult(nodes=[], edges=[]),
+        memory_context_text="remembered context",
+    )
+    monkeypatch.setattr(resolvers, "_memory_result_from_state", lambda _state: memory)
+    state = {
+        "user_id": "u1",
+        "conversation_id": "c1",
+        "turn_node_id": "turn-1",
+        "turn_index": 1,
+        "mem_id": "memory-context-1",
+        "self_span": Span.from_dummy_for_conversation().model_dump(
+            field_mode="backend", dump_format="json"
+        ),
+        "_deps": {
+            "conversation_engine": ce,
+            "llm_tasks": object(),
+            "filtering_callback": lambda *_args: None,
+            "_rust_worker_effects": True,
+            "prev_turn_meta_summary": MetaFromLastSummary(0, 0, 1),
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="refusing Python graph writes"):
+        default_resolver.handlers["memory_pin"](FakeStepContext(state))
+
+    assert ce.nodes == {}
+    assert ce.edges == {}
+
+
+def test_memory_pin_preserves_python_graph_write_path(monkeypatch):
+    from types import SimpleNamespace
+
+    from kogwistar.conversation import resolvers
+    from kogwistar.conversation.models import MetaFromLastSummary, RetrievalResult
+    from kogwistar.engine_core.models import Span
+
+    ce = FakeConversationEngine()
+    memory = SimpleNamespace(
+        selected=RetrievalResult(nodes=[], edges=[]),
+        memory_context_text="remembered context",
+    )
+    monkeypatch.setattr(resolvers, "_memory_result_from_state", lambda _state: memory)
+    state = {
+        "user_id": "u1",
+        "conversation_id": "c1",
+        "turn_node_id": "turn-1",
+        "turn_index": 1,
+        "mem_id": "memory-context-1",
+        "self_span": Span.from_dummy_for_conversation().model_dump(
+            field_mode="backend", dump_format="json"
+        ),
+        "_deps": {
+            "conversation_engine": ce,
+            "llm_tasks": object(),
+            "filtering_callback": lambda *_args: None,
+            "prev_turn_meta_summary": MetaFromLastSummary(0, 0, 1),
+        },
+    }
+
+    result = default_resolver.handlers["memory_pin"](FakeStepContext(state))
+
+    assert isinstance(result, RunSuccess)
+    assert list(ce.nodes) == ["memory-context-1"]
+    assert list(ce.edges) == ["turn-1::hm::memory-context-1"]
 
 
 def test_answer_prefers_agentic_when_available():
