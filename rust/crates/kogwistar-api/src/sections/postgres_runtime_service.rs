@@ -3648,6 +3648,61 @@ impl PostgresRunApplicationService {
                 "This route remains deferred to the Python application service",
             );
         }
+        if request.method == "POST" && is_conversation_list_route(&request.path_and_query) {
+            let input: CreateConversationHttpInput = match serde_json::from_slice(&request.body) {
+                Ok(input) => input,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error.to_string(),
+                    );
+                }
+            };
+            let mut args = serde_json::Map::from_iter([("user_id".to_owned(), json!(input.user_id))]);
+            if let Some(conversation_id) = input.conversation_id {
+                args.insert("conversation_id".to_owned(), json!(conversation_id));
+            }
+            if let Some(start_node_id) = input.start_node_id {
+                args.insert("start_node_id".to_owned(), json!(start_node_id));
+            }
+            let syscall_request = ApiEffectRequest {
+                contract_version: request.contract_version,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"create_conversation",
+                    "args":args,
+                }))
+                .expect("typed conversation-create input serializes"),
+                principal: request.principal,
+            };
+            let response = self
+                .syscall_effect(&syscall_request, "create_conversation")
+                .await;
+            if !(200..300).contains(&response.status) {
+                return response;
+            }
+            let envelope: Value = match serde_json::from_slice(&response.body) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        error.to_string(),
+                    );
+                }
+            };
+            return match envelope.get("result") {
+                Some(result) => json_effect(StatusCode::OK, result.clone()),
+                None => effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                    "conversation-create syscall returned no result",
+                ),
+            };
+        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {

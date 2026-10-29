@@ -143,7 +143,7 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 11 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 10 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
@@ -174,6 +174,14 @@ Only these local items remain in scope before production rollout:
   conversation and verifies it is excluded. This route inherits the shared
   10,000-visible-record read cap; large-graph pagination/volume parity remains
   open and is not implied by the route-level conformance result.
+- [x] The PostgreSQL Rust service now serves `POST /api/conversations` by
+  adapting the public request to the existing native `create_conversation`
+  syscall, preserving authenticated-owner, `spawn_process`, role, and
+  conversation-namespace checks and the syscall's atomic start-node/ACL/index
+  transaction. The packaged-server live PostgreSQL test verifies the public
+  response and durable start-node projection, and rejects owner spoofing;
+  SQLite remains explicitly unsupported. The remaining turn-answer route is
+  still deferred.
 - [x] Conversation summary, transcript, and latest-snapshot reads share one
   storage-scope/ACL-principal derivation and one ACL-filtered record-read
   helper. The scope/principal invariant test and both live summary/transcript
@@ -545,13 +553,14 @@ deployment canary evidence required to make Rust its live default writer.
   executable evidence; implementation and fresh four-layer proof remain pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
-- The 16 frozen server routes and four remaining frozen conversation/tool syscalls are
-  now versioned Python-roll-back deferrals in `server_operation_deferrals` in
+- The currently deferred Rust server routes and four remaining frozen
+  conversation/tool syscalls are classified in `server_operation_deferrals` in
   `contracts/rust-port-v1.json`. Each records a prerequisite authority and
   capability-specific exit evidence; a contract test requires an exact,
-  duplicate-free match with Rust's direct fail-closed inventories. This closes
-  their classification task only, not their Rust authority or Phase 5
-  conformance gates.
+  duplicate-free match with Rust's direct fail-closed inventories. Implemented
+  routes leave this inventory only after their native authority path and
+  capability-specific evidence are verified. This closes classification only,
+  not the remaining Rust authority or Phase 5 conformance gates.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
 - No downstream adopter production internal/test, 1%, 10%, 50%, and 100% canary

@@ -321,6 +321,7 @@ type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
 const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/conversations"),
+    ("POST", "/api/conversations"),
     ("GET", "/api/workflow/tools/audit"),
     ("GET", "/api/conversations/{conversation_id}"),
     ("GET", "/api/conversations/{conversation_id}/turns"),
@@ -896,6 +897,15 @@ struct SyscallInput {
     op: String,
     #[serde(default)]
     args: serde_json::Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CreateConversationHttpInput {
+    user_id: String,
+    #[serde(default)]
+    conversation_id: Option<String>,
+    #[serde(default)]
+    start_node_id: Option<String>,
 }
 
 fn default_syscall_version() -> String {

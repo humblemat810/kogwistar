@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # imported as a repository module in unit tests
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 LAYERS = ("core", "parser", "sink", "application")
-SERVER_DEFERRAL_ROUTE_COUNT_V1 = 11
+SERVER_DEFERRAL_ROUTE_COUNT_V1 = 10
 SERVER_DEFERRAL_SYSCALL_COUNT_V1 = 4
 REQUIRED_RUST_OWNERS = {
     "deterministic-contracts",

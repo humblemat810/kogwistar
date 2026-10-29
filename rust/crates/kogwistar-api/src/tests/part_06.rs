@@ -5340,6 +5340,80 @@
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(server_ready, "packaged Rust server did not become ready");
+        let conversation_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
+                "ns":"conversation","storage_ns":"conversation",
+                "capabilities":["spawn_process"],
+                "exp": now_seconds + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+        )
+        .unwrap();
+        let conversation_create = client
+            .post(format!("{base_url}/api/conversations"))
+            .bearer_auth(&conversation_token)
+            .json(&json!({
+                "user_id":"alice",
+                "conversation_id":"rust-only-rest-create-e2e",
+                "start_node_id":"rust-only-rest-create-start"
+            }))
+            .send()
+            .await
+            .unwrap();
+        let create_status = conversation_create.status();
+        let create_body = conversation_create.text().await.unwrap();
+        assert_eq!(
+            create_status.as_u16(),
+            StatusCode::OK.as_u16(),
+            "{create_body}"
+        );
+        let created: Value = serde_json::from_str(&create_body).unwrap();
+        assert_eq!(created["conversation_id"], "rust-only-rest-create-e2e");
+        assert_eq!(created["user_id"], "alice");
+        assert_eq!(created["start_node_id"], "rust-only-rest-create-start");
+        assert_eq!(created["tail_node_id"], "rust-only-rest-create-start");
+        assert_eq!(created["turn_count"], 0);
+        let created_record = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "conversation".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["rust-only-rest-create-start".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(created_record.len(), 1);
+        assert_eq!(
+            created_record[0].metadata.get("entity_type").and_then(Value::as_str),
+            Some("conversation_start")
+        );
+        assert_eq!(
+            created_record[0].metadata.get("user_id").and_then(Value::as_str),
+            Some("alice")
+        );
+        let spoofed_create = client
+            .post(format!("{base_url}/api/conversations"))
+            .bearer_auth(&conversation_token)
+            .json(&json!({
+                "user_id":"bob",
+                "conversation_id":"rust-only-rest-create-spoof"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            spoofed_create.status().as_u16(),
+            StatusCode::FORBIDDEN.as_u16(),
+            "user spoofing must fail through the same native syscall authority"
+        );
         let submit = client
             .post(format!("{base_url}/api/workflow/runs"))
             .bearer_auth(&token)
