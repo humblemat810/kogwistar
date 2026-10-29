@@ -28,6 +28,12 @@ class FakeConversationEngine:
     def add_edge(self, edge: Any) -> None:
         self.edges[str(edge.id)] = edge
 
+    def node_doc_and_meta(self, node: Any):
+        return str(node.summary or node.label or ""), dict(node.metadata)
+
+    def edge_doc_and_meta(self, edge: Any):
+        return str(edge.summary or edge.label or ""), dict(edge.metadata)
+
     def get_nodes(self, ids: list[str]) -> list[Any]:
         return [self.nodes[str(i)] for i in ids]
 
@@ -81,26 +87,56 @@ def test_add_user_turn_respects_provided_turn_node_id():
     assert "provided_node_id" in ce.nodes
 
 
-def test_memory_pin_fails_closed_for_rust_worker_effects(monkeypatch):
+@pytest.mark.parametrize("acl_enabled, expected_acl_nodes", [(False, 1), (True, 6)])
+def test_memory_pin_batches_graph_and_acl_effects_for_rust_worker(
+    monkeypatch, acl_enabled, expected_acl_nodes
+):
     from types import SimpleNamespace
 
     from kogwistar.conversation import resolvers
     from kogwistar.conversation.models import MetaFromLastSummary, RetrievalResult
     from kogwistar.engine_core.models import Span
+    from kogwistar.acl.graph import ACLGraph
+    from kogwistar.engine_core.subsystems.acl import ACLSubsystem
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
 
     ce = FakeConversationEngine()
-    ce.edges = {}
+    ce.kg_graph_type = "conversation"
+    ce.acl_enabled = acl_enabled
+    ce.acl_graph = ACLGraph()
+    ce.raw_read = SimpleNamespace(get_nodes=lambda **_kwargs: [])
+    ce.acl = ACLSubsystem(ce)
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.namespace = "conversation"
+    ce.backend = SimpleNamespace(
+        nodes=SimpleNamespace(name="gke_nodes"),
+        edges=SimpleNamespace(name="gke_edges"),
+        embedding_dim=2,
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
     memory = SimpleNamespace(
         selected=RetrievalResult(nodes=[], edges=[]),
         memory_context_text="remembered context",
     )
     monkeypatch.setattr(resolvers, "_memory_result_from_state", lambda _state: memory)
+    summary = MetaFromLastSummary(4, 2, 1)
     state = {
         "user_id": "u1",
         "conversation_id": "c1",
         "turn_node_id": "turn-1",
         "turn_index": 1,
         "mem_id": "memory-context-1",
+        "prev_turn_meta_summary": {
+            "prev_node_char_distance_from_last_summary": 4,
+            "prev_node_distance_from_last_summary": 2,
+            "tail_turn_index": 1,
+        },
         "self_span": Span.from_dummy_for_conversation().model_dump(
             field_mode="backend", dump_format="json"
         ),
@@ -109,15 +145,50 @@ def test_memory_pin_fails_closed_for_rust_worker_effects(monkeypatch):
             "llm_tasks": object(),
             "filtering_callback": lambda *_args: None,
             "_rust_worker_effects": True,
-            "prev_turn_meta_summary": MetaFromLastSummary(0, 0, 1),
+            "prev_turn_meta_summary": summary,
         },
     }
 
-    with pytest.raises(RuntimeError, match="refusing Python graph writes"):
-        default_resolver.handlers["memory_pin"](FakeStepContext(state))
+    ctx = FakeStepContext(state)
+    ctx.idempotency_key = "memory-pin-worker"
+    result = default_resolver.handlers["memory_pin"](ctx)
 
+    assert isinstance(result, RunSuccess)
     assert ce.nodes == {}
     assert ce.edges == {}
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert sum(
+        mutation.payload.get("metadata", {}).get("entity_type") == "acl_record"
+        for mutation in batch.mutations
+    ) == expected_acl_nodes
+    assert len(batch.mutations) == 2 + expected_acl_nodes
+    assert len(batch.index_jobs) == 2 * len(batch.mutations)
+    acl_context_mutation = next(
+        mutation
+        for mutation in batch.mutations
+        if mutation.payload.get("metadata", {}).get("entity_type") == "acl_record"
+        and mutation.payload["metadata"].get("acl_target_entity_id")
+        == "memory-context-1"
+        and mutation.payload["metadata"].get("acl_target_grain") == "node"
+    )
+    assert isinstance(
+        batch.mutations[0].model_envelope["payload"], dict
+    )
+    assert acl_context_mutation.payload["metadata"]["acl_mode"] == "private"
+    assert batch.mutations[0].record.id == "memory-context-1"
+    assert any(mutation.entity_kind == "edge" for mutation in batch.mutations)
+    assert (summary.prev_node_char_distance_from_last_summary,
+            summary.prev_node_distance_from_last_summary) == (4, 2)
+    summary_update = next(
+        update["prev_turn_meta_summary"]
+        for mode, update in result.state_update
+        if mode == "u" and "prev_turn_meta_summary" in update
+    )
+    assert summary_update == {
+        "prev_node_char_distance_from_last_summary": 22,
+        "prev_node_distance_from_last_summary": 3,
+        "tail_turn_index": 1,
+    }
 
 
 def test_memory_pin_preserves_python_graph_write_path(monkeypatch):
@@ -133,6 +204,7 @@ def test_memory_pin_preserves_python_graph_write_path(monkeypatch):
         memory_context_text="remembered context",
     )
     monkeypatch.setattr(resolvers, "_memory_result_from_state", lambda _state: memory)
+    summary = MetaFromLastSummary(4, 2, 1)
     state = {
         "user_id": "u1",
         "conversation_id": "c1",
@@ -146,7 +218,7 @@ def test_memory_pin_preserves_python_graph_write_path(monkeypatch):
             "conversation_engine": ce,
             "llm_tasks": object(),
             "filtering_callback": lambda *_args: None,
-            "prev_turn_meta_summary": MetaFromLastSummary(0, 0, 1),
+            "prev_turn_meta_summary": summary,
         },
     }
 
@@ -155,6 +227,95 @@ def test_memory_pin_preserves_python_graph_write_path(monkeypatch):
     assert isinstance(result, RunSuccess)
     assert list(ce.nodes) == ["memory-context-1"]
     assert list(ce.edges) == ["turn-1::hm::memory-context-1"]
+    assert summary.prev_node_distance_from_last_summary == 3
+    assert summary.prev_node_char_distance_from_last_summary == 22
+
+
+def test_memory_pin_acl_worker_effects_supersede_and_replay_idempotently():
+    from types import SimpleNamespace
+
+    from kogwistar.acl.graph import ACLGraph, ACLRecord, ACLTarget
+    from kogwistar.acl.models import ACLEdge, ACLNode
+    from kogwistar.conversation.models import ConversationNode
+    from kogwistar.conversation.resolvers import _memory_pin_worker_entities
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.engine_core.subsystems.acl import ACLSubsystem
+
+    persisted_acl_nodes = []
+    ce = FakeConversationEngine()
+    ce.kg_graph_type = "conversation"
+    ce.acl_enabled = True
+    ce.acl_graph = ACLGraph()
+    ce.raw_read = SimpleNamespace(
+        get_nodes=lambda **_kwargs: list(persisted_acl_nodes)
+    )
+    ce.acl = ACLSubsystem(ce)
+    memory_node = ConversationNode(
+        id="memory-context-replay",
+        label="Memory context",
+        type="entity",
+        doc_id="memory-context-replay",
+        summary="saved context",
+        role="system",
+        turn_index=1,
+        conversation_id="c1",
+        user_id="u1",
+        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+        properties={},
+        metadata={
+            "entity_type": "memory_context",
+            "visibility": "private",
+            "owner_agent_id": "agent-a",
+            "security_scope": "scope-a",
+            "level_from_root": 0,
+        },
+        domain_id=None,
+        canonical_entity_id=None,
+    )
+    prior_acl = ACLRecord(
+        target=ACLTarget(
+            truth_graph="conversation",
+            entity_id="memory-context-replay",
+            grain="node",
+        ),
+        version=1,
+        mode="public",
+        created_by="agent-a",
+        owner_id="agent-a",
+        security_scope="scope-a",
+    )
+    persisted_acl_nodes.append(ce.acl._build_acl_record_node(prior_acl))
+
+    effects = _memory_pin_worker_entities(
+        ce,
+        [memory_node],
+        user_id="u1",
+        memory_context_node=memory_node,
+    )
+    current_acl_node = next(
+        entity
+        for entity, _kind in effects
+        if isinstance(entity, ACLNode)
+        and entity.metadata.get("acl_target_grain") == "node"
+    )
+    assert current_acl_node.metadata["acl_version"] == 2
+    assert any(
+        isinstance(entity, ACLEdge) and entity.relation == "acl_supersedes"
+        for entity, _kind in effects
+    )
+
+    persisted_acl_nodes.extend(
+        entity for entity, _kind in effects if isinstance(entity, ACLNode)
+    )
+    replay_effects = _memory_pin_worker_entities(
+        ce,
+        [memory_node],
+        user_id="u1",
+        memory_context_node=memory_node,
+    )
+    assert [entity.id for entity, _kind in replay_effects] == [
+        "memory-context-replay"
+    ]
 
 
 def test_answer_prefers_agentic_when_available():

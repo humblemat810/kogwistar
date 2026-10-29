@@ -287,7 +287,7 @@ class MemoryRetriever:
             node_id_entry=None,
         )
 
-    def pin_selected(
+    def _prepare_selected_pin(
         self,
         *,
         user_id: str,
@@ -304,8 +304,12 @@ class MemoryRetriever:
         shared_with_agents: list[str] | tuple[str, ...] | None = None,
         security_scope: str | None = None,
         agent_id: str | None = None,
-    ) -> MemoryPinResult | None:
-        """Materialize a `memory_context` node into the current conversation canvas.
+    ) -> tuple[
+        MemoryPinResult | None,
+        list[ConversationNode | ConversationEdge],
+        MetaFromLastSummary | None,
+    ]:
+        """Build memory-pin graph entities without persisting them.
 
         Edges:
         - Turn --has_memory_context--> MemoryContext
@@ -314,7 +318,7 @@ class MemoryRetriever:
         If nothing selected, returns None.
         """
         if not selected_memory or not memory_context_text:
-            return None
+            return None, [], None
 
         effective_visibility = _normalize_visibility_mode(visibility)
         effective_scope = str(
@@ -383,19 +387,7 @@ class MemoryRetriever:
         if shared_agent_values:
             mem_node.metadata["shared_with_agents"] = list(shared_agent_values)
 
-        self.conversation_engine.write.add_node(mem_node)
-        record_acl = getattr(self.conversation_engine, "record_acl", None)
-        if callable(record_acl) and not getattr(self.conversation_engine, "acl_enabled", False):
-            record_acl(
-                truth_graph="conversation",
-                entity_id=mem_node.safe_get_id(),
-                version=1,
-                mode=effective_visibility,
-                created_by=effective_agent or user_id,
-                owner_id=effective_agent or user_id,
-                security_scope=effective_scope or None,
-                shared_with_principals=shared_values,
-            )
+        graph_entities: list[ConversationNode | ConversationEdge] = [mem_node]
         edge_ids: list[str] = []
         edges: list[ConversationEdge] = []
         # Turn -> MemoryContext
@@ -423,12 +415,18 @@ class MemoryRetriever:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.write.add_edge(e1)
+        graph_entities.append(e1)
         edge_ids.append(e1_id)
         edges.append(e1)
-        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
-            memory_context_text
+        updated_summary = MetaFromLastSummary(
+            prev_node_char_distance_from_last_summary=(
+                prev_turn_meta_summary.prev_node_char_distance_from_last_summary
+                + len(memory_context_text)
+            ),
+            prev_node_distance_from_last_summary=(
+                prev_turn_meta_summary.prev_node_distance_from_last_summary + 1
+            ),
+            tail_turn_index=prev_turn_meta_summary.tail_turn_index,
         )
         # MemoryContext -> Sources nodes
         for node in selected_memory.nodes:
@@ -449,15 +447,15 @@ class MemoryRetriever:
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={
-                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "char_distance_from_last_summary": updated_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": updated_summary.prev_node_distance_from_last_summary,
                     "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     **edge_acl_metadata,
                 },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.write.add_edge(e)
+            graph_entities.append(e)
             edge_ids.append(e_id)
         # MemoryContext -> Sources edges
         for edge in selected_memory.edges:
@@ -478,22 +476,92 @@ class MemoryRetriever:
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={
-                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "char_distance_from_last_summary": updated_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": updated_summary.prev_node_distance_from_last_summary,
                     "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     **edge_acl_metadata,
                 },
                 source_edge_ids=[],
                 target_edge_ids=[edge.safe_get_id()],
             )
-            self.conversation_engine.write.add_edge(e)
+            graph_entities.append(e)
             edge_ids.append(e_id)
             edges.append(e)
-        return MemoryPinResult(
-            memory_context_node=mem_node,
-            pinned_edges=edges,
-            node_id_entry=mem_node.safe_get_id(),
-            visibility=effective_visibility,
-            security_scope=effective_scope or None,
-            shared_with=shared_values,
+        return (
+            MemoryPinResult(
+                memory_context_node=mem_node,
+                pinned_edges=edges,
+                node_id_entry=mem_node.safe_get_id(),
+                visibility=effective_visibility,
+                security_scope=effective_scope or None,
+                shared_with=shared_values,
+            ),
+            graph_entities,
+            updated_summary,
         )
+
+    def pin_selected(
+        self,
+        *,
+        user_id: str,
+        current_conversation_id: str,
+        mem_id: str | None = None,
+        turn_node_id: str,
+        turn_index: int,
+        self_span: Span,
+        selected_memory: RetrievalResult,
+        memory_context_text: str,
+        prev_turn_meta_summary: MetaFromLastSummary,
+        visibility: str = "private",
+        shared_with: list[str] | tuple[str, ...] | None = None,
+        shared_with_agents: list[str] | tuple[str, ...] | None = None,
+        security_scope: str | None = None,
+        agent_id: str | None = None,
+    ) -> MemoryPinResult | None:
+        """Persist the prepared memory context through the Python write path."""
+        result, graph_entities, updated_summary = self._prepare_selected_pin(
+            user_id=user_id,
+            current_conversation_id=current_conversation_id,
+            mem_id=mem_id,
+            turn_node_id=turn_node_id,
+            turn_index=turn_index,
+            self_span=self_span,
+            selected_memory=selected_memory,
+            memory_context_text=memory_context_text,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            visibility=visibility,
+            shared_with=shared_with,
+            shared_with_agents=shared_with_agents,
+            security_scope=security_scope,
+            agent_id=agent_id,
+        )
+        if result is None:
+            return None
+        for entity_index, entity in enumerate(graph_entities):
+            if isinstance(entity, ConversationNode):
+                self.conversation_engine.write.add_node(entity)
+                record_acl = getattr(self.conversation_engine, "record_acl", None)
+                if callable(record_acl) and not getattr(
+                    self.conversation_engine, "acl_enabled", False
+                ):
+                    record_acl(
+                        truth_graph="conversation",
+                        entity_id=entity.safe_get_id(),
+                        version=1,
+                        mode=result.visibility,
+                        created_by=entity.metadata.get("owner_agent_id")
+                        or entity.user_id,
+                        owner_id=entity.metadata.get("owner_agent_id") or entity.user_id,
+                        security_scope=result.security_scope,
+                        shared_with_principals=result.shared_with,
+                    )
+            else:
+                self.conversation_engine.write.add_edge(entity)
+            if entity_index == 1 and updated_summary is not None:
+                prev_turn_meta_summary.prev_node_distance_from_last_summary = (
+                    updated_summary.prev_node_distance_from_last_summary
+                )
+                prev_turn_meta_summary.prev_node_char_distance_from_last_summary = (
+                    updated_summary.prev_node_char_distance_from_last_summary
+                )
+        return result

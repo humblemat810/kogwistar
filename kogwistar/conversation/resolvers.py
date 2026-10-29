@@ -23,6 +23,7 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, cast
 from typing_extensions import TypedDict
 
@@ -129,7 +130,7 @@ if TYPE_CHECKING:
     RawStepFn = Callable[[StepContext], Json | StepRunResult]
 
 # Import your real RunResult types from kogwistar.runtime/models
-from kogwistar.engine_core.models import Span  # noqa: E402
+from kogwistar.engine_core.models import Edge, Node, Span  # noqa: E402
 from kogwistar.runtime.models import RunSuccess, StateUpdate  # noqa: E402
 from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
 
@@ -166,7 +167,7 @@ def _span_from_state(value: object) -> Span:
 def _worker_graph_mutation_batch_for_entity(
     ctx: StepContext,
     engine: object,
-    entity: ConversationNode | ConversationEdge,
+    entity: Node | Edge,
     *,
     entity_kind: Literal["node", "edge"],
 ) -> dict[str, JsonValue]:
@@ -298,7 +299,7 @@ def _worker_graph_mutation_batch_for_entity(
 def _worker_graph_mutation_batch_for_entities(
     ctx: StepContext,
     engine: object,
-    entities: Sequence[tuple[ConversationNode | ConversationEdge, Literal["node", "edge"]]],
+    entities: Sequence[tuple[Node | Edge, Literal["node", "edge"]]],
 ) -> dict[str, JsonValue]:
     """Combine one operation's ordered graph effects into its atomic worker batch."""
     from kogwistar.engine_core.graph_mutation_contract import (
@@ -335,6 +336,104 @@ def _worker_graph_mutation_batch_for_entities(
         )
     )
     return cast(dict[str, JsonValue], batch.model_dump(mode="json"))
+
+
+def _memory_pin_worker_entities(
+    engine: object,
+    graph_entities: Sequence[ConversationNode | ConversationEdge],
+    *,
+    user_id: str,
+    memory_context_node: ConversationNode,
+) -> list[tuple[Node | Edge, Literal["node", "edge"]]]:
+    """Add the ACL graph effects normally emitted by conversation writes."""
+    from kogwistar.acl.graph import ACLRecord, ACLTarget
+
+    acl = getattr(engine, "acl", None)
+    acl_graph = getattr(engine, "acl_graph", None)
+    if acl is None or acl_graph is None or not callable(
+        getattr(acl_graph, "invalidate", None)
+    ):
+        raise RuntimeError("Rust memory pin requires the conversation ACL subsystem")
+
+    effects: list[tuple[Node | Edge, Literal["node", "edge"]]] = []
+    acl_enabled = bool(getattr(engine, "acl_enabled", False))
+    for entity in graph_entities:
+        entity_kind: Literal["node", "edge"] = (
+            "node" if isinstance(entity, ConversationNode) else "edge"
+        )
+        effects.append((entity, entity_kind))
+        if acl_enabled:
+            if not acl.should_auto_acl_item(entity):
+                continue
+            records = acl._default_acl_records_for_item(entity, grain=entity_kind)
+        elif entity is memory_context_node:
+            owner_id = str(
+                entity.metadata.get("owner_agent_id")
+                or entity.metadata.get("agent_id")
+                or user_id
+            )
+            records = (
+                ACLRecord(
+                    target=ACLTarget(
+                        truth_graph="conversation",
+                        entity_id=entity.safe_get_id(),
+                        grain="node",
+                    ),
+                    version=1,
+                    mode=cast(Any, entity.metadata.get("visibility", "private")),
+                    created_by=owner_id,
+                    owner_id=owner_id,
+                    security_scope=entity.metadata.get("security_scope") or None,
+                    shared_with_principals=tuple(
+                        str(value) for value in entity.metadata.get("shared_with", ())
+                    ),
+                ),
+            )
+        else:
+            records = ()
+
+        for record in records:
+            acl_node = acl._build_acl_record_node(record)
+            normalized_record = acl._record_from_acl_node(acl_node)
+            if normalized_record is None:
+                raise RuntimeError("Rust memory pin produced an invalid ACL record node")
+            previous = acl._latest_persisted_acl_record(
+                grain=record.target.grain,
+                truth_graph=record.target.truth_graph,
+                entity_id=record.target.entity_id,
+                target_item_id=record.target.target_item_id,
+            )
+            if previous is not None and replace(
+                normalized_record,
+                version=previous.version,
+                supersedes_version=previous.supersedes_version,
+            ) == previous:
+                acl_graph.invalidate(
+                    truth_graph=record.target.truth_graph,
+                    grain=record.target.grain,
+                    entity_id=record.target.entity_id,
+                    target_item_id=record.target.target_item_id,
+                )
+                continue
+            if previous is not None and not acl_enabled:
+                raise RuntimeError(
+                    "Rust memory pin cannot replace an existing explicit ACL version"
+                )
+            effects.append((acl_node, "node"))
+            if previous is not None:
+                effects.append(
+                    (
+                        acl._build_acl_supersedes_edge(current=record, previous=previous),
+                        "edge",
+                    )
+                )
+            acl_graph.invalidate(
+                truth_graph=record.target.truth_graph,
+                grain=record.target.grain,
+                entity_id=record.target.entity_id,
+                target_item_id=record.target.target_item_id,
+            )
+    return effects
 
 
 def _append_op_log(state: object, entry: str) -> None:
@@ -1096,6 +1195,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     )
 
     out = None
+    worker_effect_batch: dict[str, JsonValue] | None = None
     selected_memory = mem_rehydrated.selected if mem_rehydrated else None
     memory_context_text = (
         mem_rehydrated.memory_context_text if mem_rehydrated else None
@@ -1104,21 +1204,58 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
         memory_context_text, str
     ):
         if deps.get("_rust_worker_effects") is True:
-            raise RuntimeError(
-                "memory_pin is not supported by Rust worker graph effects; "
-                "refusing Python graph writes"
+            out, graph_entities, updated_summary = mem_retriever._prepare_selected_pin(
+                user_id=state["user_id"],
+                current_conversation_id=state["conversation_id"],
+                turn_node_id=state["turn_node_id"],
+                mem_id=state["mem_id"],
+                turn_index=state["turn_index"],
+                self_span=_span_from_state(state.get("self_span")),
+                selected_memory=selected_memory,
+                memory_context_text=memory_context_text,
+                prev_turn_meta_summary=prev_turn_meta_summary,
             )
-        out = mem_retriever.pin_selected(
-            user_id=state["user_id"],
-            current_conversation_id=state["conversation_id"],
-            turn_node_id=state["turn_node_id"],
-            mem_id=state["mem_id"],
-            turn_index=state["turn_index"],
-            self_span=_span_from_state(state.get("self_span")),
-            selected_memory=selected_memory,
-            memory_context_text=memory_context_text,
-            prev_turn_meta_summary=prev_turn_meta_summary,
-        )
+            if out is not None:
+                if updated_summary is None:
+                    raise RuntimeError("Rust memory pin is missing its summary update")
+                ce = deps["conversation_engine"]
+                node_hooks = tuple(getattr(ce, "pre_add_node_hooks", ()) or ())
+                edge_hooks = tuple(getattr(ce, "pre_add_edge_hooks", ()) or ())
+                if len(graph_entities) > 1 and (node_hooks or edge_hooks):
+                    raise RuntimeError(
+                        "Rust worker memory pin batch cannot preserve hooks that may "
+                        "observe preceding Python writes"
+                    )
+                for entity in graph_entities:
+                    if isinstance(entity, ConversationNode):
+                        for hook in node_hooks:
+                            hook(entity)
+                    else:
+                        if any(bool(hook(entity)) for hook in edge_hooks):
+                            raise RuntimeError(
+                                "Rust worker memory pin cannot omit a hook-rejected edge"
+                            )
+                worker_entities = _memory_pin_worker_entities(
+                    ce,
+                    graph_entities,
+                    user_id=state["user_id"],
+                    memory_context_node=out.memory_context_node,
+                )
+                worker_effect_batch = _worker_graph_mutation_batch_for_entities(
+                    ctx, ce, worker_entities
+                )
+        else:
+            out = mem_retriever.pin_selected(
+                user_id=state["user_id"],
+                current_conversation_id=state["conversation_id"],
+                turn_node_id=state["turn_node_id"],
+                mem_id=state["mem_id"],
+                turn_index=state["turn_index"],
+                self_span=_span_from_state(state.get("self_span")),
+                selected_memory=selected_memory,
+                memory_context_text=memory_context_text,
+                prev_turn_meta_summary=prev_turn_meta_summary,
+            )
 
     # ctx.state["memory_pin_raw"] = out
     outj = {
@@ -1132,10 +1269,16 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
         else [],
     }
     # ctx.state["memory_pin"] = outj
-    state_update: list[StateUpdate] = cast(
-        list[StateUpdate], [("u", {"memory_pin": outj})]
-    )
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    update_payload: dict[str, object] = {"memory_pin": outj}
+    state_update: list[StateUpdate] = cast(list[StateUpdate], [("u", update_payload)])
+    result_values: dict[str, object] = {"state_update": state_update}
+    if deps.get("_rust_worker_effects") is True:
+        update_payload["prev_turn_meta_summary"] = _meta_summary_payload(
+            updated_summary if out is not None else prev_turn_meta_summary
+        )
+    if worker_effect_batch is not None:
+        result_values["graph_mutation_batch"] = worker_effect_batch
+    return RunSuccess(conversation_node_id=None, **result_values)
 
 
 @default_resolver.register("kg_pin")
