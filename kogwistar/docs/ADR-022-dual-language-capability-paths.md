@@ -113,8 +113,10 @@ then workflow/worker execution and recovery, then conversation/agent and the
 remaining REST/MCP/CLI surfaces. PostgreSQL is the first complete graph and
 transaction proving ground. SQLite remains a metadata/event/runtime backend
 until a native graph authority is implemented and tested. The Rust service can
-also compose SQLite metadata with Chroma node/edge projection reads; that does
-not make SQLite a graph authority or establish graph-write parity. In the
+compose SQLite metadata and durable queue state with Chroma node/edge projection
+reads and an optional inline Rust embedding projection worker. That worker
+writes only a derived Chroma projection; it does not make SQLite a graph
+authority or establish graph-write parity. In the
 PostgreSQL-to-Chroma projection design, Chroma is a derived projection, not a
 substitute for canonical graph authority. An internal
 pre-indexed route is a dependency, not proof that public ingestion, embeddings,
