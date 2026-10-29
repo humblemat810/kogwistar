@@ -282,6 +282,23 @@ impl PostgresStore {
         graph_projection_vector_query(&**client, &self.tables, query, &metadata_not_equals).await
     }
 
+    pub async fn graph_projection_vector_query_level_lte_excluding_metadata(
+        &self,
+        query: GraphProjectionVectorQuery,
+        metadata_not_equals: BTreeMap<String, Value>,
+        level_lte: i64,
+    ) -> PostgresStoreResult<Vec<VectorMatch>> {
+        let client = self.client().await?;
+        super::super::graph::graph_projection_vector_query_with_level_lte(
+            &**client,
+            &self.tables,
+            query,
+            &metadata_not_equals,
+            Some(level_lte),
+        )
+        .await
+    }
+
     /// Execute multiple same-scope nearest-neighbor searches in one database
     /// round trip, preserving one ranked result row per query embedding.
     pub async fn graph_projection_vector_query_batch(

@@ -524,12 +524,34 @@
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             ..AuthConfig::default()
         };
+        let embedding_calls = Arc::new(Mutex::new(Vec::new()));
+        let embedding_provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-native-search-v1".to_owned(),
+                dimension: 3,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8, 0.0],
+            calls: embedding_calls.clone(),
+            fail: None,
+        });
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
             .unwrap()
             .with_native_operations(registry)
             .with_owner_auth_config(&owner_auth_config)
             .await
-            .unwrap();
+            .unwrap()
+            .with_embedding_provider(embedding_provider);
         service.ensure_schema().await.unwrap();
         service.store.create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default()).await.unwrap();
 
@@ -669,6 +691,124 @@
         assert!(graph_jobs.iter().any(|job| job.job_id == "graph-job-native-graph-run"));
         let graph_events = service.store.replay_raw_events("alpha", 0, 100).await.unwrap();
         assert!(graph_events.iter().any(|event| event.event_id == "graph-event-native-graph-run"));
+
+        let add_candidate = |id: &str, level: i64, lifecycle_status: &str| {
+            let mut metadata = serde_json::Map::from_iter([
+                ("entity_type".to_owned(), json!("knowledge_node")),
+                ("level_from_root".to_owned(), json!(level)),
+                ("label".to_owned(), json!(id)),
+                ("summary".to_owned(), json!(format!("summary {id}"))),
+                ("lifecycle_status".to_owned(), json!(lifecycle_status)),
+            ]);
+            metadata.insert("mentions".to_owned(), json!([]));
+            GraphMutation {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("retrieval-node-{id}"),
+                op: "ADD".to_owned(),
+                payload: json!({"id": id}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(format!("document {id}")),
+                    metadata,
+                    embedding: Some(vec![0.6, 0.8, 0.0]),
+                },
+                embedding_dim: 3,
+            }
+        };
+        let add_acl = |id: &str, mode: &str, owner: &str| GraphMutation {
+            scope: GraphScope {
+                namespace: "alpha".to_owned(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("retrieval-acl-{id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id": format!("acl-{id}")}),
+            record: GraphRecord {
+                id: format!("acl-{id}"),
+                document: None,
+                metadata: serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!("knowledge")),
+                    ("acl_target_grain".to_owned(), json!("node")),
+                    ("acl_target_entity_id".to_owned(), json!(id)),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("acl_mode".to_owned(), json!(mode)),
+                    ("owner_id".to_owned(), json!(owner)),
+                ]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        for mutation in [
+            add_candidate("retrieval-own", 0, "active"),
+            add_acl("retrieval-own", "private", "alice"),
+            add_candidate("retrieval-foreign", 0, "active"),
+            add_acl("retrieval-foreign", "private", "bob"),
+            add_candidate("retrieval-deep", 5, "active"),
+            add_acl("retrieval-deep", "public", "alice"),
+            add_candidate("retrieval-tombstone", 0, "tombstoned"),
+            add_acl("retrieval-tombstone", "public", "alice"),
+        ] {
+            service.store.apply_graph_mutation(mutation).await.unwrap();
+        }
+        let retrieval_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "run_id": "native-candidate-retrieval-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-candidate-retrieval",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/aa_retrieve_candidates"},
+                "initial_state": {
+                    "question": "native candidate search",
+                    "max_candidates": 20,
+                    "max_retrieval_level": 4
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retrieval_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let retrieval_state = service
+            .store
+            .read_recorded_runtime_state(
+                "native-candidate-retrieval-run",
+                "wf",
+                "conv-native-candidate-retrieval",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retrieval_state.state["candidates"],
+            json!([{
+                "id": "retrieval-own",
+                "label": "retrieval-own",
+                "summary": "summary retrieval-own",
+                "doc": "document retrieval-own"
+            }])
+        );
+        assert_eq!(
+            *embedding_calls.lock().unwrap(),
+            vec![vec!["native candidate search".to_owned()]]
+        );
+        assert!(retrieval_state
+            .state
+            .get("authorized_candidate_records")
+            .is_none());
+
         let foreign_principal = json!({
             "user_id": "bob",
             "actor_id": "bob",

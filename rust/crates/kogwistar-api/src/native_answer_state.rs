@@ -9,12 +9,100 @@ pub(crate) fn register(
     registry: &mut NativeOperationRegistry,
 ) -> Result<(), NativeOperationRegistrationError> {
     registry.register_routed("aa_maybe_iterate", "v1", execute_maybe_iterate)?;
+    registry.register("aa_retrieve_candidates", "v1", execute_retrieve_candidates)?;
     registry.register(
         "aa_select_used_evidence",
         "v1",
         execute_select_used_evidence,
     )?;
     registry.register("aa_evaluate_answer", "v1", execute_evaluate_answer)
+}
+
+fn execute_retrieve_candidates(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    const MAX_CANDIDATES: usize = 200;
+    let candidates = request
+        .ephemeral_context
+        .get("authorized_candidate_records")
+        .and_then(Value::as_array)
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "authorized_candidate_records",
+            reason: "host-authorized retrieval results are required",
+        })?;
+    if candidates.len() > MAX_CANDIDATES {
+        return Err(RuntimeNativeExecutionError::InvalidState {
+            field: "authorized_candidate_records",
+            reason: "retrieval result count exceeds the native limit",
+        });
+    }
+    let mut projected = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let candidate = candidate
+            .as_object()
+            .ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                reason: "each host-authorized candidate must be an object",
+            })?;
+        let id = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                reason: "each host-authorized candidate must have a non-empty ID",
+            })?;
+        for field in ["label", "summary", "doc"] {
+            if candidate
+                .get(field)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(RuntimeNativeExecutionError::InvalidState {
+                    field: "authorized_candidate_records",
+                    reason: "candidate text fields must be strings or null",
+                });
+            }
+        }
+        projected.push(json!({
+            "id": id,
+            "label": candidate.get("label").cloned().unwrap_or(Value::Null),
+            "summary": candidate.get("summary").cloned().unwrap_or(Value::Null),
+            "doc": candidate.get("doc").and_then(Value::as_str).unwrap_or_default(),
+        }));
+    }
+    projected.sort_by(|left, right| {
+        left.get("id")
+            .and_then(Value::as_str)
+            .cmp(&right.get("id").and_then(Value::as_str))
+    });
+
+    let log_entry = format!("aa_retrieve_candidates:{}", projected.len());
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let candidates = Value::Array(projected);
+    let update = Map::from_iter([("candidates".to_owned(), candidates.clone())]);
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
 }
 
 fn optional_integer(state: &Map<String, Value>, field: &str) -> i64 {
@@ -496,6 +584,60 @@ mod tests {
             result["final_state"]["op_log"],
             json!(["aa_select_used_evidence:2"])
         );
+    }
+
+    #[test]
+    fn candidate_retrieval_requires_host_authorized_records_and_projects_canonical_candidates() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({"op_log": ["aa_prepare"]}));
+        request.operation = "aa_retrieve_candidates".to_owned();
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                ..
+            })
+        ));
+
+        request.ephemeral_context.insert(
+            "authorized_candidate_records".to_owned(),
+            json!([
+                {"id": "node-z", "label": "Z", "summary": null, "doc": "body z", "embedding": [1.0]},
+                {"id": "node-a", "label": "A", "summary": "summary a", "doc": "body a"}
+            ]),
+        );
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        let result = effect.result.unwrap();
+        assert_eq!(
+            result["final_state"]["candidates"],
+            json!([
+                {"id": "node-a", "label": "A", "summary": "summary a", "doc": "body a"},
+                {"id": "node-z", "label": "Z", "summary": null, "doc": "body z"}
+            ])
+        );
+        assert_eq!(
+            result["final_state"]["op_log"],
+            json!(["aa_prepare", "aa_retrieve_candidates:2"])
+        );
+        assert_eq!(effect.state_update.len(), 2);
+    }
+
+    #[test]
+    fn candidate_retrieval_rejects_malformed_host_projection() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({}));
+        request.operation = "aa_retrieve_candidates".to_owned();
+        request.ephemeral_context.insert(
+            "authorized_candidate_records".to_owned(),
+            json!([{"id": "node-1", "doc": {"untrusted": true}}]),
+        );
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                ..
+            })
+        ));
     }
 
     #[test]

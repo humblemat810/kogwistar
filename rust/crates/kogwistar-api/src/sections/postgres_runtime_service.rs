@@ -470,7 +470,7 @@ impl PostgresRunApplicationService {
         )
     }
 
-    async fn native_evidence_context(
+    async fn native_read_principal(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
         caller: Option<&Value>,
@@ -501,6 +501,164 @@ impl PostgresRunApplicationService {
         // ACL records are keyed by the durable run-owner ID, while the refreshed
         // auth principal's `sub` may be an email address.
         principal["actor_id"] = json!(durable_owner);
+        Ok(principal)
+    }
+
+    async fn native_candidate_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let principal = self.native_read_principal(request, caller).await?;
+        let question = request
+            .state
+            .get("question")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty() && value.len() <= 100_000)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let max_candidates = request
+            .state
+            .get("max_candidates")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= 200)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let max_retrieval_level = request
+            .state
+            .get("max_retrieval_level")
+            .and_then(Value::as_i64)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        if max_candidates == 0 {
+            return Ok(Value::Array(Vec::new()));
+        }
+        let provider = self
+            .embedding_provider
+            .as_ref()
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let profile = provider.profile();
+        profile
+            .validate()
+            .map_err(|_| NativeEvidenceContextError::GraphReadRejected)?;
+        if profile.dimension > 8192 {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let query_text = vec![question.to_owned()];
+        let mut vectors = provider
+            .embed(&query_text)
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        if vectors.len() != 1 || vectors[0].len() != profile.dimension {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let vector = vectors
+            .pop()
+            .expect("the embedding result count was validated")
+            .into_iter()
+            .map(|value| {
+                let value = value as f32;
+                value
+                    .is_finite()
+                    .then_some(value)
+                    .ok_or(NativeEvidenceContextError::GraphReadRejected)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let metric = match profile.similarity_metric.to_ascii_lowercase().as_str() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" => DistanceMetric::InnerProduct,
+            _ => return Err(NativeEvidenceContextError::GraphReadRejected),
+        };
+        let scope_value = security_scope_value(&principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: principal
+                .get("workspace_id")
+                .or_else(|| principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let query = GraphProjectionVectorQuery {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            query: VectorQuery {
+                embedding: vector,
+                limit: max_candidates,
+                metadata: MetadataFilter::default(),
+                metric,
+            },
+            embedding_dim: profile.dimension,
+        };
+        let candidates = self
+            .store
+            .graph_projection_vector_query_level_lte_excluding_metadata(
+                query,
+                BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+                max_retrieval_level,
+            )
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        let candidate_rows = vec![
+            candidates
+                .iter()
+                .map(|matched| matched.record.clone())
+                .collect::<Vec<_>>(),
+        ];
+        let acl_principal = graph_acl_principal_from_claims(
+            &principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let visible_ids = self
+            .authorized_vector_candidate_ids(
+                &scope,
+                "knowledge",
+                "node",
+                &candidate_rows,
+                &acl_principal,
+            )
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        let mut projected = candidates
+            .into_iter()
+            .filter(|matched| {
+                visible_ids.contains(&matched.record.id)
+                    && !matched
+                        .record
+                        .metadata
+                        .get("lifecycle_status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+            })
+            .map(|matched| {
+                let record = matched.record;
+                json!({
+                    "id": record.id,
+                    "label": record.metadata.get("label").cloned().unwrap_or(Value::Null),
+                    "summary": record.metadata.get("summary").cloned().unwrap_or(Value::Null),
+                    "doc": record.document.unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        projected.sort_by(|left, right| {
+            left.get("id")
+                .and_then(Value::as_str)
+                .cmp(&right.get("id").and_then(Value::as_str))
+        });
+        Ok(Value::Array(projected))
+    }
+
+    async fn native_evidence_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let principal = self.native_read_principal(request, caller).await?;
         let read_ids = |field: &str| -> Result<Vec<String>, NativeEvidenceContextError> {
             let Some(value) = request.state.get(field) else {
                 return Ok(Vec::new());

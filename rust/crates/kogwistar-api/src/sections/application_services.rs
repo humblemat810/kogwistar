@@ -61,7 +61,57 @@ impl PostgresRunApplicationService {
             }
         };
         let handoff = input.handoff;
-        let result = if native_request.operation == "aa_materialize_evidence_pack" {
+        let result = if native_request.operation == "aa_retrieve_candidates" {
+            match self
+                .native_candidate_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(records) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_candidate_records".to_owned(), records);
+                    match native_result_from_request(
+                        handoff.clone(),
+                        native_request.clone(),
+                        &self.native_operations,
+                    ) {
+                        Ok(result) => result,
+                        Err(_) => failed_native_result(
+                            handoff,
+                            &native_request,
+                            "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                            "native candidate retrieval rejected its bounded input",
+                        ),
+                    }
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native graph reads require the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "native candidate retrieval requires the run owner's current read_graph capability and admitted scope",
+                ),
+                Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_CANDIDATE_RETRIEVAL_REJECTED",
+                    "native candidate retrieval configuration or input is invalid",
+                ),
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_CANDIDATE_RETRIEVAL_UNAVAILABLE",
+                        "native candidate retrieval is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        } else if native_request.operation == "aa_materialize_evidence_pack" {
             match self
                 .native_evidence_context(&native_request, Some(&request.principal))
                 .await
@@ -151,7 +201,46 @@ impl ApplicationService for PostgresRunApplicationService {
                 return Ok(false);
             };
             let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
-            let mut result = if native_request.operation == "aa_materialize_evidence_pack" {
+            let mut result = if native_request.operation == "aa_retrieve_candidates" {
+                match self.native_candidate_context(&native_request, None).await {
+                    Ok(records) => {
+                        native_request
+                            .ephemeral_context
+                            .insert("authorized_candidate_records".to_owned(), records);
+                        match native_result_from_request(
+                            handoff.clone(),
+                            native_request.clone(),
+                            &self.native_operations,
+                        ) {
+                            Ok(result) => result,
+                            Err(_) => failed_native_result(
+                                handoff,
+                                &native_request,
+                                "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                                "native candidate retrieval rejected its bounded input",
+                            ),
+                        }
+                    }
+                    Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "native candidate retrieval requires the run owner's current read_graph capability and admitted scope",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CANDIDATE_RETRIEVAL_REJECTED",
+                        "native candidate retrieval configuration or input is invalid",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                        return Err("native candidate retrieval is temporarily unavailable".to_owned());
+                    }
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
+                        "inline native execution has no external caller principal"
+                    ),
+                }
+            } else if native_request.operation == "aa_materialize_evidence_pack" {
                 match self.native_evidence_context(&native_request, None).await {
                     Ok(records) => {
                         native_request

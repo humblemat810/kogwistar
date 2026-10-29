@@ -83,6 +83,20 @@ pub(crate) async fn graph_projection_vector_query<C>(
 where
     C: GenericClient + Sync,
 {
+    graph_projection_vector_query_with_level_lte(client, tables, query, metadata_not_equals, None)
+        .await
+}
+
+pub(crate) async fn graph_projection_vector_query_with_level_lte<C>(
+    client: &C,
+    tables: &Tables,
+    query: GraphProjectionVectorQuery,
+    metadata_not_equals: &BTreeMap<String, Value>,
+    level_lte: Option<i64>,
+) -> PostgresStoreResult<Vec<VectorMatch>>
+where
+    C: GenericClient + Sync,
+{
     if query.query.embedding.len() != query.embedding_dim {
         return Err(StoreError::VectorDimensionMismatch {
             expected: query.embedding_dim,
@@ -98,6 +112,14 @@ where
         metadata_not_equals,
         1,
     )?;
+    let mut clauses = vec![filter_sql];
+    if let Some(level_lte) = level_lte {
+        values.push(level_lte.to_string());
+        let level_parameter = values.len();
+        clauses.push(format!(
+            "metadata->>'level_from_root' ~ '^-?[0-9]+$' AND (metadata->>'level_from_root')::BIGINT <= ${level_parameter}::TEXT::BIGINT"
+        ));
+    }
     let vector_sql = format!(
         "{}::vector",
         sql_text_literal(&vector_literal(&query.query.embedding))
@@ -121,8 +143,9 @@ where
         .query(
             &format!(
                 "SELECT id, document, metadata::TEXT, embedding::TEXT, embedding {operator} {vector_sql} AS distance \
-                 FROM {table} WHERE embedding IS NOT NULL AND {filter_sql} \
+                 FROM {table} WHERE embedding IS NOT NULL AND {} \
                  ORDER BY distance ASC, id ASC LIMIT ${limit_index}::TEXT::BIGINT"
+                , clauses.join(" AND ")
             ),
             &params,
         )

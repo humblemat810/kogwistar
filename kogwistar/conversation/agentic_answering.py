@@ -893,6 +893,7 @@ class AgenticAnsweringAgent:
             "iter_idx": 0,
             "max_iter": int(self.config.max_iter),
             "max_candidates": int(self.config.max_candidates),
+            "max_retrieval_level": int(self.config.max_retrieval_level),
             "materialize_depth": str(self.config.materialize_depth),
             "should_iterate": False,
             "_deps": {
