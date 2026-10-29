@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.lifecycle import LifecycleSubsystem
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.two_stage_chroma import (
@@ -1163,6 +1164,19 @@ def test_chroma_capability_requires_eventual_reconciliation():
     capability = chroma_two_stage_capability()
     assert capability.atomic_promotion == "eventual_reconcile"
     assert capability.is_complete()
+
+
+def test_chroma_lifecycle_does_not_assume_atomic_stage1_cleanup(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    engine.two_stage_projection_capability = chroma_two_stage_capability()
+
+    removed = LifecycleSubsystem(engine)._cleanup_pending_two_stage(
+        entity_kind="node", entity_id="n1"
+    )
+
+    assert removed is False
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
 
 
 @pytest.mark.integration
