@@ -110,8 +110,26 @@ def test_graph_upsert_legacy_request_reaches_existing_persistence_path(monkeypat
 DOC_ID = "pytest-doc-upsert-1"
 
 
-def test_graph_upsert_llm_batch_with_references():
+def test_graph_upsert_llm_batch_with_references(monkeypatch, tmp_path):
     # clean slate (best-effort)
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.setenv(selector, "python")
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only graph upsert attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
 
     import kogwistar.server_mcp_with_admin as server
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -121,12 +139,12 @@ def test_graph_upsert_llm_batch_with_references():
     headers = _rw_headers(client)
 
     fake_engine = GraphKnowledgeEngine(
-        persist_directory="./.tmp_pytest/graph_upsert_fake",
+        persist_directory=str(tmp_path / "graph_upsert_fake"),
         kg_graph_type="knowledge",
         embedding_function=ConstantEmbeddingFunction(dim=8),
         backend_factory=build_fake_backend,
     )
-    server.engine._value = fake_engine
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
 
     client.delete(f"/admin/doc/{DOC_ID}", headers=headers)
 
