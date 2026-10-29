@@ -810,16 +810,21 @@ pub fn context_snapshot_from_visible_records(
         {
             continue;
         }
-        let order = ["snapshot_seq", "created_at_ms", "step_seq"]
+        let order = ["run_step_seq", "snapshot_seq", "created_at_ms", "step_seq"]
             .into_iter()
             .find_map(|field| record_field(record, field).and_then(|value| value.as_i64()))
             .ok_or(ConversationContractError::MissingSnapshotOrder)?;
-        candidates.push((order, record.id.clone(), record));
+        let attempt = record_field(record, "attempt_seq")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_default();
+        candidates.push((order, attempt, record.id.clone(), record));
     }
-    let Some((_, _, record)) = candidates
-        .into_iter()
-        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
-    else {
+    let Some((_, _, _, record)) = candidates.into_iter().max_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.cmp(&right.2))
+    }) else {
         return Err(ConversationContractError::EmptyField {
             field: "snapshot_node_id",
         });
@@ -4615,6 +4620,62 @@ mod tests {
         .unwrap();
         assert_eq!(snapshot.snapshot_node_id, "snapshot-new");
         assert_eq!(snapshot.properties["value"], "new");
+    }
+
+    #[test]
+    fn context_snapshot_projection_matches_python_run_and_attempt_order_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/context-snapshot-order-v1.json"
+        )))
+        .expect("valid shared Python context-snapshot ordering fixture");
+        let conversation_id = fixture["conversation_id"].as_str().unwrap();
+        let run_id = fixture["run_id"].as_str().unwrap();
+        let stage = fixture["stage"].as_str().unwrap();
+        let records = fixture["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| {
+                let id = candidate["id"].as_str().unwrap().to_owned();
+                let metadata = serde_json::json!({
+                    "entity_type": "context_snapshot",
+                    "conversation_id": conversation_id,
+                    "run_id": run_id,
+                    "stage": stage,
+                    "run_step_seq": candidate["run_step_seq"],
+                    "attempt_seq": candidate["attempt_seq"]
+                })
+                .as_object()
+                .unwrap()
+                .clone();
+                GraphRecord {
+                    id,
+                    document: Some(
+                        serde_json::json!({
+                            "metadata": metadata,
+                            "properties": candidate["properties"]
+                        })
+                        .to_string(),
+                    ),
+                    metadata,
+                    embedding: None,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let snapshot = context_snapshot_from_visible_records(
+            &records,
+            conversation_id,
+            Some(run_id),
+            Some(stage),
+        )
+        .expect("Python run_step_seq and attempt_seq metadata is orderable");
+        assert_eq!(
+            snapshot.snapshot_node_id,
+            fixture["expected_snapshot_node_id"].as_str().unwrap()
+        );
+        assert_eq!(snapshot.properties["prompt_messages"], "latest retry");
     }
 
     #[test]

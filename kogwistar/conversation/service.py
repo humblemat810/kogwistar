@@ -1106,13 +1106,15 @@ class ConversationService:
         if not snaps:
             return None
 
-        def _k(n: ConversationNode) -> int:
-            try:
-                return _json_int((n.metadata or {}).get("run_step_seq"))
-            except Exception:
-                return 0
+        def _k(n: ConversationNode) -> tuple[int, int, str]:
+            metadata = n.metadata or {}
+            return (
+                _json_int(metadata.get("run_step_seq")),
+                _json_int(metadata.get("attempt_seq")),
+                n.id,
+            )
 
-        return sorted(snaps, key=_k)[-1]
+        return max(snaps, key=_k)
 
     def get_context_snapshot_payload(
         self,

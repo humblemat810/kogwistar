@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.ci_full
@@ -365,3 +367,68 @@ def test_persist_context_snapshot_allows_empty_used_node_ids(
     meta = (snaps.get("metadatas") or [{}])[0] or {}
     assert meta.get("entity_type") == "context_snapshot"
     assert "used_node_ids" not in meta
+
+
+def test_latest_context_snapshot_uses_run_step_and_attempt_order(tmp_path) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "context-snapshot-order-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    kg, conv = _make_engine_pair(
+        backend_kind="fake",
+        tmp_path=tmp_path,
+        sa_engine=None,
+        pg_schema=None,
+        dim=3,
+        use_fake=True,
+    )
+    service = ConversationService.from_engine(
+        conversation_engine=conv, knowledge_engine=kg
+    )
+    try:
+        for candidate in fixture["candidates"]:
+            metadata = {
+                "entity_type": "context_snapshot",
+                "level_from_root": 0,
+                "conversation_id": fixture["conversation_id"],
+                "run_id": fixture["run_id"],
+                "stage": fixture["stage"],
+                "run_step_seq": candidate["run_step_seq"],
+                "attempt_seq": candidate["attempt_seq"],
+            }
+            conv.write.add_node(
+                ConversationNode(
+                    id=candidate["id"],
+                    label="Context Snapshot",
+                    type="entity",
+                    summary="",
+                    role="system",
+                    conversation_id=fixture["conversation_id"],
+                    turn_index=None,
+                    properties=candidate["properties"],
+                    metadata=metadata,
+                    mentions=[
+                        Grounding(
+                            spans=[
+                                _mk_span(f"test:conv:{fixture['conversation_id']}")
+                            ]
+                        )
+                    ],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                )
+            )
+
+        selected = service.latest_context_snapshot_node(
+            conversation_id=fixture["conversation_id"],
+            run_id=fixture["run_id"],
+            stage=fixture["stage"],
+        )
+        assert selected is not None
+        assert selected.id == fixture["expected_snapshot_node_id"]
+    finally:
+        conv.close()
+        kg.close()
