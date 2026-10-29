@@ -139,8 +139,13 @@
             global_role: Some("rw".to_owned()),
             global_ns: Some("alpha".to_owned()),
         };
-        let principal =
-            revalidated_runtime_owner_principal(&binding, &current, &capabilities).unwrap();
+        let principal = revalidated_runtime_owner_principal(
+            &binding,
+            &current,
+            &capabilities,
+            "write_graph",
+        )
+        .unwrap();
         assert_eq!(principal["ns"], json!(["alpha"]));
         assert!(principal_strings(&principal, "capabilities").contains(&"write_graph".to_owned()));
 
@@ -148,18 +153,36 @@
             global_role: Some("ro".to_owned()),
             ..current.clone()
         };
-        assert!(revalidated_runtime_owner_principal(&binding, &downgraded, &capabilities).is_err());
+        assert!(revalidated_runtime_owner_principal(
+            &binding,
+            &downgraded,
+            &capabilities,
+            "write_graph"
+        )
+        .is_err());
         let deactivated = AuthUser {
             is_active: false,
             ..current.clone()
         };
-        assert!(revalidated_runtime_owner_principal(&binding, &deactivated, &capabilities).is_err());
+        assert!(revalidated_runtime_owner_principal(
+            &binding,
+            &deactivated,
+            &capabilities,
+            "write_graph"
+        )
+        .is_err());
         let moved_namespace = AuthUser {
             global_ns: Some("beta".to_owned()),
             ..current.clone()
         };
         assert!(
-            revalidated_runtime_owner_principal(&binding, &moved_namespace, &capabilities).is_err()
+            revalidated_runtime_owner_principal(
+                &binding,
+                &moved_namespace,
+                &capabilities,
+                "write_graph"
+            )
+            .is_err()
         );
 
         let narrow_admission = json!({
@@ -176,9 +199,52 @@
             .approvals
             .insert(("alice".to_owned(), "later-approval".to_owned()), BTreeSet::from(["write_graph".to_owned()]));
         assert!(
-            revalidated_runtime_owner_principal(&narrow_binding, &current, &capabilities).is_err(),
+            revalidated_runtime_owner_principal(
+                &narrow_binding,
+                &current,
+                &capabilities,
+                "write_graph"
+            )
+            .is_err(),
             "a post-admission capability approval must not widen the run"
         );
+    }
+
+    #[test]
+    fn inline_run_owner_revalidation_supports_read_only_native_capability() {
+        let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
+        let admitted = json!({
+            "user_id": "alice",
+            "sub": "alice@example.test",
+            "role": "ro",
+            "ns": "alpha",
+            "capabilities": ["read_graph"]
+        });
+        let binding = runtime_owner_binding_v1(&admitted, &capabilities).unwrap();
+        let current = AuthUser {
+            user_id: "alice".to_owned(),
+            email: "alice@example.test".to_owned(),
+            display_name: None,
+            is_active: true,
+            global_role: Some("ro".to_owned()),
+            global_ns: Some("alpha".to_owned()),
+        };
+
+        let principal = revalidated_runtime_owner_principal(
+            &binding,
+            &current,
+            &capabilities,
+            "read_graph",
+        )
+        .unwrap();
+        assert!(principal_strings(&principal, "capabilities").contains(&"read_graph".to_owned()));
+        assert!(revalidated_runtime_owner_principal(
+            &binding,
+            &current,
+            &capabilities,
+            "write_graph"
+        )
+        .is_err());
     }
 
     #[tokio::test]

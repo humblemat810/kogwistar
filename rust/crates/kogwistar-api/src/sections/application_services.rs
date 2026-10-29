@@ -112,7 +112,10 @@ impl ApplicationService for PostgresRunApplicationService {
                 .as_ref()
                 .is_some_and(recorded_effect_has_graph_batch)
             {
-                match self.resolve_inline_native_owner_principal(&run_id).await {
+                match self
+                    .resolve_inline_native_owner_principal(&run_id, "write_graph")
+                    .await
+                {
                     Ok(principal) => Some(principal),
                     Err(_) => {
                         let effect = result

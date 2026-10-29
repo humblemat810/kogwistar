@@ -52,6 +52,7 @@ fn revalidated_runtime_owner_principal(
     binding: &RuntimeOwnerBindingV1,
     user: &AuthUser,
     capabilities: &SharedCapabilityState,
+    required_capability: &str,
 ) -> Result<Value, String> {
     if binding.version != 1 || binding.user_id != user.user_id || !user.is_active {
         return Err("run owner binding is missing, mismatched, or inactive".to_owned());
@@ -99,8 +100,10 @@ fn revalidated_runtime_owner_principal(
         .intersection(&binding.admitted_capabilities)
         .cloned()
         .collect::<BTreeSet<_>>();
-    if !effective.contains("write_graph") {
-        return Err("run owner no longer has write_graph capability".to_owned());
+    if !effective.contains(required_capability) {
+        return Err(format!(
+            "run owner no longer has {required_capability} capability"
+        ));
     }
     principal["capabilities"] = json!(effective);
     Ok(principal)
@@ -407,7 +410,11 @@ impl PostgresRunApplicationService {
         Ok(self)
     }
 
-    async fn resolve_inline_native_owner_principal(&self, run_id: &str) -> Result<Value, String> {
+    async fn resolve_inline_native_owner_principal(
+        &self,
+        run_id: &str,
+        required_capability: &str,
+    ) -> Result<Value, String> {
         let run = self
             .store
             .server_run(run_id)
@@ -448,7 +455,12 @@ impl PostgresRunApplicationService {
             .await?
             .filter(|user| user.is_active)
             .ok_or_else(|| "native worker run owner is missing or inactive".to_owned())?;
-        revalidated_runtime_owner_principal(&binding, &user, &self.capabilities)
+        revalidated_runtime_owner_principal(
+            &binding,
+            &user,
+            &self.capabilities,
+            required_capability,
+        )
     }
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
@@ -738,6 +750,7 @@ impl PostgresRunApplicationService {
             &owner_binding,
             &owner_user,
             &self.capabilities,
+            "write_graph",
         ) {
             Ok(principal) => principal,
             Err(error) => {
