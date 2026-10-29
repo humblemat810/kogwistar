@@ -364,6 +364,59 @@ fn boolean_environment(name: &str) -> Result<bool, std::io::Error> {
     }
 }
 
+fn parse_projection_reconcile_interval(
+    raw: Option<&str>,
+) -> Result<std::time::Duration, String> {
+    let Some(raw) = raw else {
+        return Ok(std::time::Duration::ZERO);
+    };
+    let seconds = raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "must be a non-negative integer number of seconds".to_owned())?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+fn parse_projection_reconcile_namespace(
+    interval: std::time::Duration,
+    namespace: Option<String>,
+) -> Result<String, String> {
+    if interval.is_zero() {
+        return Ok(String::new());
+    }
+    let namespace = namespace.ok_or_else(|| {
+        "KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE is required when periodic projection reconciliation is enabled".to_owned()
+    })?;
+    if namespace.trim().is_empty() {
+        return Err("KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE must not be empty".to_owned());
+    }
+    Ok(namespace)
+}
+
+fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std::io::Error> {
+    const INTERVAL_NAME: &str = "KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S";
+    let raw = match std::env::var(INTERVAL_NAME) {
+        Ok(raw) => Some(raw),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{INTERVAL_NAME} is not valid Unicode"),
+            ));
+        }
+    };
+    let interval = parse_projection_reconcile_interval(raw.as_deref()).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{INTERVAL_NAME} {error}"),
+        )
+    })?;
+    let namespace = std::env::var("KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE").ok();
+    let namespace = parse_projection_reconcile_namespace(interval, namespace)
+        .map_err(std::io::Error::other)?;
+    Ok((interval, namespace))
+}
+
 /// Run the packaged Rust server using the same environment contract as the
 /// standalone binary.  PyO3 calls this function so native wheels need not ship
 /// a second platform-specific executable beside the extension module.
@@ -380,6 +433,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     let backend = environment("KOGWISTAR_BACKEND", "in_memory");
     let inline_embedding_worker = boolean_environment("KOGWISTAR_EMBEDDING_WORKER_INLINE")?;
     let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
+    let (reconcile_interval, reconcile_namespace) = projection_reconcile_settings()?;
     let state = ApiState {
         health: HealthSnapshot {
             backend: backend.clone(),
@@ -404,6 +458,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         auth: AuthConfig::from_environment(),
     };
     let mut embedding_worker_available = false;
+    let mut projection_reconciliation_available = false;
     let application: Arc<dyn ApplicationService> = if backend == "pg" {
         match std::env::var("KOGWISTAR_PG_DSN") {
             Ok(dsn) if !dsn.trim().is_empty() => {
@@ -479,6 +534,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     _ => None,
                 };
                 let chroma_configured = chroma.is_some();
+                projection_reconciliation_available = chroma_configured;
                 let mut service = open_sqlite_application_service(path, chroma)
                     .await
                     .map_err(std::io::Error::other)?;
@@ -507,6 +563,13 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         )
         .into());
     }
+    if !reconcile_interval.is_zero() && !projection_reconciliation_available {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S requires the SQLite+Chroma graph projection",
+        )
+        .into());
+    }
     let native_worker = if inline_native_runtime {
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         let application = Arc::clone(&application);
@@ -520,13 +583,16 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     } else {
         None
     };
-    let embedding_worker = if inline_embedding_worker {
+    let embedding_worker = if inline_embedding_worker || !reconcile_interval.is_zero() {
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         Some((
             shutdown,
             tokio::spawn(supervise_inline_embedding_worker(
                 Arc::clone(&application),
                 shutdown_rx,
+                inline_embedding_worker,
+                reconcile_interval,
+                reconcile_namespace,
             )),
         ))
     } else {
@@ -583,6 +649,16 @@ pub trait ApplicationService: Send + Sync + 'static {
         _lease_seconds: i64,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
         Box::pin(async { Ok(false) })
+    }
+
+    /// Reconcile one eventual graph projection namespace. Services without
+    /// that projection reject an explicitly scheduled reconciliation.
+    fn reconcile_eventual_projection_once(
+        &self,
+        _namespace: String,
+        _page_size: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, String>> + Send + '_>> {
+        Box::pin(async { Err("eventual projection reconciliation is unsupported".to_owned()) })
     }
 
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {
@@ -648,19 +724,56 @@ async fn run_inline_native_worker(application: Arc<dyn ApplicationService>) {
     }
 }
 
+async fn reconcile_projection_if_due(
+    application: &dyn ApplicationService,
+    interval: std::time::Duration,
+    namespace: &str,
+    next_reconcile: &mut tokio::time::Instant,
+) {
+    if interval.is_zero() || tokio::time::Instant::now() < *next_reconcile {
+        return;
+    }
+    *next_reconcile = tokio::time::Instant::now() + interval;
+    match application
+        .reconcile_eventual_projection_once(namespace.to_owned(), 100)
+        .await
+    {
+        Ok(reconciled) => {
+            eprintln!("inline Rust projection reconciliation completed: {reconciled} changes");
+        }
+        Err(error) => {
+            eprintln!("inline Rust projection reconciliation failed: {error}");
+        }
+    }
+}
+
 async fn run_inline_embedding_worker(
     application: Arc<dyn ApplicationService>,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    poll_embeddings: bool,
+    reconcile_interval: std::time::Duration,
+    reconcile_namespace: String,
 ) {
     const BATCH_LIMIT: usize = 32;
     const LEASE_SECONDS: i64 = 60;
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    let mut next_reconcile = tokio::time::Instant::now();
     loop {
         tokio::select! {
             _ = &mut shutdown => return,
             _ = interval.tick() => {}
         }
         loop {
+            reconcile_projection_if_due(
+                application.as_ref(),
+                reconcile_interval,
+                &reconcile_namespace,
+                &mut next_reconcile,
+            )
+            .await;
+            if !poll_embeddings {
+                break;
+            }
             match application
                 .execute_inline_embedding_work_once(BATCH_LIMIT, LEASE_SECONDS)
                 .await
@@ -682,6 +795,9 @@ async fn run_inline_embedding_worker(
 async fn supervise_inline_embedding_worker(
     application: Arc<dyn ApplicationService>,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    poll_embeddings: bool,
+    reconcile_interval: std::time::Duration,
+    reconcile_namespace: String,
 ) {
     loop {
         let (worker_shutdown, worker_shutdown_rx) = tokio::sync::oneshot::channel();
@@ -689,6 +805,9 @@ async fn supervise_inline_embedding_worker(
         let mut worker = tokio::spawn(run_inline_embedding_worker(
             worker_application,
             worker_shutdown_rx,
+            poll_embeddings,
+            reconcile_interval,
+            reconcile_namespace.clone(),
         ));
         tokio::select! {
             result = &mut worker => {

@@ -1932,13 +1932,31 @@
             )
             .unwrap();
 
-        assert_eq!(service.reconcile_chroma_projection(namespace, 2).await.unwrap(), 3);
+        assert_eq!(
+            ApplicationService::reconcile_eventual_projection_once(
+                &service,
+                namespace.to_owned(),
+                2,
+            )
+            .await
+            .unwrap(),
+            3
+        );
         let pending_jobs = service
             .store
             .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
             .unwrap()
             .len();
-        assert_eq!(service.reconcile_chroma_projection(namespace, 2).await.unwrap(), 0);
+        assert_eq!(
+            ApplicationService::reconcile_eventual_projection_once(
+                &service,
+                namespace.to_owned(),
+                2,
+            )
+            .await
+            .unwrap(),
+            0
+        );
         assert_eq!(
             service
                 .store
@@ -2607,6 +2625,9 @@
         let worker = tokio::spawn(run_inline_embedding_worker(
             Arc::new(service.clone()),
             worker_shutdown_rx,
+            true,
+            std::time::Duration::ZERO,
+            String::new(),
         ));
         let jobs = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {

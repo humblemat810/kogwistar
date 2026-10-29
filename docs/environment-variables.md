@@ -37,7 +37,7 @@ tests, and optional integrations.
 
 | Variable | Used By | Purpose |
 | --- | --- | --- |
-| `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend. The inline embedding worker currently requires `pg`. |
+| `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend. The inline embedding worker supports PostgreSQL or SQLite metadata with an explicitly configured Chroma graph projection. |
 | `KOGWISTAR_PG_DSN` | Rust `kogwistar-server` | PostgreSQL DSN for the native Rust service and its durable index-job queue. |
 | `KOGWISTAR_PG_SCHEMA_BASE` | Rust `kogwistar-server` | PostgreSQL schema base; defaults to `kogwistar`. |
 | `KOGWISTAR_META_SQLITE_PATH` | Rust `kogwistar-server` | Selects SQLite for metadata/runtime/queue storage when the PostgreSQL backend is not selected. It does not make SQLite authoritative for graph data. |
@@ -49,7 +49,9 @@ tests, and optional integrations.
 | `KOGWISTAR_EMBEDDING_MODEL` | Rust `kogwistar-server` | Ollama embedding model name; required when the provider is configured. |
 | `KOGWISTAR_EMBEDDING_DIMENSION` | Rust `kogwistar-server` | Positive vector dimension expected from the configured provider. |
 | `KOGWISTAR_EMBEDDING_ENDPOINT` | Rust `kogwistar-server` | Ollama endpoint; defaults to `http://127.0.0.1:11434`. |
-| `KOGWISTAR_EMBEDDING_WORKER_INLINE` | Rust `kogwistar-server` | Opts into an in-process Rust worker that polls PostgreSQL embedding jobs (batches up to 32, 60-second leases). Defaults off. Enabling it without the Rust PostgreSQL service and configured provider fails startup. Health reports `embedding_inline_worker_enabled`. |
+| `KOGWISTAR_EMBEDDING_WORKER_INLINE` | Rust `kogwistar-server` | Opts into an in-process Rust worker that polls supported embedding-job queues (batches up to 32, 60-second leases). Defaults off. Enabling it without a supported graph backend and configured provider fails startup. |
+| `KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` | Rust `kogwistar-server` | Optional low-frequency full-namespace Chroma projection reconciliation interval in seconds. Defaults to `0` (off); enabling requires SQLite metadata plus `KOGWISTAR_CHROMA_ENDPOINT`. It can run without enabling embedding polling. |
+| `KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE` | Rust `kogwistar-server` | Namespace reconciled by the optional Rust Chroma scanner. Required when `KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` is positive. Configure only one designated scanner per namespace. |
 | `KOGWISTAR_RUNTIME_NATIVE_INLINE` | Rust `kogwistar-server` | Opts into the separate inline recorded-workflow runtime worker. Defaults off. |
 | `JWT_PROTECTED_PATHS` | `kogwistar.server.auth_middleware` | Comma-separated list of protected paths. |
 | `DEV_STREAM_GUARD` | `kogwistar.server.auth_middleware` | Enables or disables the dev stream guard. |

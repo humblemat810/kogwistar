@@ -783,6 +783,16 @@ impl ApplicationService for SqliteRunApplicationService {
         })
     }
 
+    fn reconcile_eventual_projection_once(
+        &self,
+        namespace: String,
+        page_size: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, String>> + Send + '_>> {
+        Box::pin(async move {
+            self.reconcile_chroma_projection(&namespace, page_size).await
+        })
+    }
+
     fn execute_inline_native_work_once(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
