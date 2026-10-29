@@ -519,6 +519,134 @@ def test_rust_authority_rejects_python_process(tmp_path: Path) -> None:
         assert child.returncode == 0, output
 
 
+@pytest.mark.ci_full
+@pytest.mark.skipif(os.name == "nt", reason="Windows may not replace an open SQLite file")
+def test_python_authority_rejects_rust_process_after_database_path_replacement(
+    tmp_path: Path,
+) -> None:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required for the cross-language process check")
+    database = tmp_path / "python-owned-replaced.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE original_probe (value INTEGER)")
+    replacement = tmp_path / "replacement.sqlite"
+    with sqlite3.connect(replacement) as connection:
+        connection.execute("CREATE TABLE replacement_probe (value INTEGER)")
+
+    ready_path = Path(f"{database}.ready")
+    manifest = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    command = [
+        cargo,
+        "test",
+        "--manifest-path",
+        str(manifest),
+        "-p",
+        "kogwistar-store-sqlite",
+        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "--",
+        "--exact",
+        "--nocapture",
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_SQLITE_LOCK_CHILD_PATH": str(database),
+            "KOGWISTAR_SQLITE_LOCK_CHILD_READY": str(ready_path),
+            "KOGWISTAR_SQLITE_LOCK_EXPECT_CONFLICT": "1",
+        }
+    )
+
+    with sqlite_execution_context("python"):
+        owner = acquire_sqlite_database(database, "python")
+        try:
+            os.replace(replacement, database)
+            child = subprocess.run(
+                command,
+                cwd=manifest.parent.parent,
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=90,
+                check=False,
+            )
+            assert child.returncode == 0, child.stdout
+        finally:
+            owner.release()
+
+
+@pytest.mark.ci_full
+@pytest.mark.skipif(os.name == "nt", reason="Windows may not replace an open SQLite file")
+def test_rust_authority_rejects_python_after_database_path_replacement(
+    tmp_path: Path,
+) -> None:
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        pytest.skip("cargo is required for the cross-language process check")
+    database = tmp_path / "rust-owned-replaced.sqlite"
+    sqlite3.connect(database).close()
+    replacement = tmp_path / "replacement.sqlite"
+    with sqlite3.connect(replacement) as connection:
+        connection.execute("CREATE TABLE replacement_probe (value INTEGER)")
+
+    ready_path = Path(f"{database}.ready")
+    manifest = Path(__file__).resolve().parents[2] / "rust" / "Cargo.toml"
+    command = [
+        cargo,
+        "test",
+        "--manifest-path",
+        str(manifest),
+        "-p",
+        "kogwistar-store-sqlite",
+        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "--",
+        "--exact",
+        "--nocapture",
+    ]
+    env = os.environ.copy()
+    env.update(
+        {
+            "KOGWISTAR_SQLITE_LOCK_CHILD_PATH": str(database),
+            "KOGWISTAR_SQLITE_LOCK_CHILD_READY": str(ready_path),
+        }
+    )
+    child = subprocess.Popen(
+        command,
+        cwd=manifest.parent.parent,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        for _ in range(120):
+            if ready_path.exists():
+                break
+            if child.poll() is not None:
+                output = child.stdout.read() if child.stdout else ""
+                raise AssertionError(f"Rust lock child exited before readiness: {output}")
+            time.sleep(0.5)
+        else:
+            child.kill()
+            output, _ = child.communicate(timeout=10)
+            raise AssertionError(f"Rust lock child did not become ready: {output}")
+
+        os.replace(replacement, database)
+        with independent_sqlite_execution_context("python"):
+            with pytest.raises(SQLiteContextError) as conflict:
+                acquire_sqlite_database(database, "python")
+        _assert_code(conflict.value, "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT")
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=30)
+        output = child.stdout.read() if child.stdout else ""
+        assert child.returncode == 0, output
+
+
 def test_cross_implementation_acquire_race_grants_one_owner_only(
     tmp_path: Path,
 ) -> None:
