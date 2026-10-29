@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "workflow_id": "increment-counter-workflow-v1",
+  "initial_state": {
+    "counter": 0
+  },
+  "nodes": [
+    {
+      "id": "first",
+      "operation": "increment-counter",
+      "version": "v1",
+      "terminal": false
+    },
+    {
+      "id": "second",
+      "operation": "increment-counter",
+      "version": "v1",
+      "terminal": true
+    }
+  ],
+  "routes": [
+    {
+      "source_node_id": "first",
+      "target_node_id": "second",
+      "join_mask": 0
+    }
+  ],
+  "expected_status": "succeeded",
+  "expected_final_state": {
+    "counter": 2
+  }
+}

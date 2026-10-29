@@ -2809,6 +2809,14 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
 
     suffix = os.urandom(8).hex()
+    workflow_contract = json.loads(
+        (
+            ROOT
+            / "contracts"
+            / "golden"
+            / "runtime-native-increment-workflow-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     run_id = f"native-http-{suffix}"
     pg_schema = f"kw_native_http_{suffix}" if backend == "pg" else None
     with socket.socket() as sock:
@@ -2863,26 +2871,19 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             headers=headers,
             json={
                 "run_id": run_id,
-                "workflow_id": "rust-native-http-workflow",
+                "workflow_id": workflow_contract["workflow_id"],
                 "conversation_id": "rust-native-http-conversation",
-                "initial_state": {"counter": 0},
+                "initial_state": workflow_contract["initial_state"],
                 "runtime_kind": "sync",
-                "start_node_id": "first",
+                "start_node_id": workflow_contract["nodes"][0]["id"],
                 "node_ops": {
-                    "first": "rust-native/increment-counter",
-                    "second": "rust-native/increment-counter",
+                    node["id"]: f"rust-native/{node['operation']}"
+                    for node in workflow_contract["nodes"]
                 },
                 "node_executor_targets": {
-                    "first": "rust-native",
-                    "second": "rust-native",
+                    node["id"]: "rust-native" for node in workflow_contract["nodes"]
                 },
-                "runtime_routes": [
-                    {
-                        "source_node_id": "first",
-                        "target_node_id": "second",
-                        "join_mask": 0,
-                    }
-                ],
+                "runtime_routes": workflow_contract["routes"],
             },
             timeout=10,
         )
@@ -2890,7 +2891,8 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
 
         if execution_mode == "external-worker":
             executed_steps: list[str] = []
-            for expected_step in ("first", "second"):
+            expected_step_ids = [node["id"] for node in workflow_contract["nodes"]]
+            for expected_step in expected_step_ids:
                 claimed = httpx.post(
                     f"{base_url}/internal/runtime/claim",
                     headers=headers,
@@ -2931,7 +2933,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
                 )
                 assert executed.status_code == 200, executed.text
                 executed_steps.append(work["step_id"])
-            assert executed_steps == ["first", "second"]
+            assert executed_steps == expected_step_ids
             execution_completed_at = time.perf_counter()
         else:
             for _ in range(200):
@@ -2998,7 +3000,10 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             timeout=10,
         )
         assert checkpoints.status_code == 200, checkpoints.text
-        assert checkpoints.json()["checkpoints"][-1]["state"]["counter"] == 2
+        assert (
+            checkpoints.json()["checkpoints"][-1]["state"]["counter"]
+            == workflow_contract["expected_final_state"]["counter"]
+        )
         steps_response = httpx.get(
             f"{base_url}/api/workflow/runs/{run_id}/steps",
             headers=headers,
@@ -3006,7 +3011,9 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         )
         assert steps_response.status_code == 200, steps_response.text
         steps = steps_response.json()["steps"]
-        assert [step["workflow_node_id"] for step in steps] == ["first", "second"]
+        assert [step["workflow_node_id"] for step in steps] == [
+            node["id"] for node in workflow_contract["nodes"]
+        ]
         mcp_events = httpx.post(
             f"{base_url}/mcp/workflow",
             headers=headers,
@@ -3044,7 +3051,10 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_url = sa.engine.make_url(pg_dsn)
+            if cleanup_url.drivername in {"postgres", "postgresql"}:
+                cleanup_url = cleanup_url.set(drivername="postgresql+psycopg")
+            cleanup_engine = sa.create_engine(cleanup_url, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(
