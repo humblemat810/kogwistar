@@ -1772,6 +1772,178 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_native_worker_promotes_to_real_chroma_after_restart() {
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let namespace = format!("rust-live-{suffix}");
+        let entity_id = format!("node-{suffix}");
+        let node_collection = format!("kgw-rust-n-{suffix}");
+        let edge_collection = format!("kgw-rust-e-{suffix}");
+        let path = std::env::temp_dir().join(format!("kogwistar-live-chroma-{suffix}.sqlite3"));
+        let graph_config = SqliteChromaGraphConfig {
+            endpoint: endpoint.clone(),
+            metric: DistanceMetric::Cosine,
+            node_collection: node_collection.clone(),
+            edge_collection: edge_collection.clone(),
+        };
+        let provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail: None,
+        });
+        let source_text = format!("Rust live Chroma restart probe {suffix}");
+        let model_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let mut payload = model_fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .unwrap()["payload"]
+            .clone();
+        payload["id"] = json!(entity_id);
+        payload["document"] = json!(source_text);
+        payload["metadata"]["namespace"] = json!(namespace);
+        let mut expected_document_payload = payload.clone();
+        expected_document_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("embedding");
+        expected_document_payload
+            .as_object_mut()
+            .unwrap()
+            .remove("metadata");
+        let expected_document =
+            kogwistar_contracts::canonical_json(&expected_document_payload, false);
+        let service = open_sqlite_application_service(&path, Some(graph_config.clone()))
+            .await
+            .unwrap()
+            .with_embedding_provider(provider.clone());
+        let appended = service
+            .store
+            .append_raw_entity_event(
+                &namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: format!("add-{suffix}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: entity_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: payload.to_string(),
+                },
+            )
+            .unwrap();
+        let revision = sqlite_canonical_entity_revision(
+            &service.store,
+            &namespace,
+            "node",
+            &entity_id,
+        )
+        .unwrap()
+        .unwrap();
+        let job_payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(&revision);
+        service
+            .store
+            .enqueue_index_job(NewIndexJob {
+                job_id: format!("embed-{suffix}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.clone(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some(job_payload),
+                max_retries: 3,
+            })
+            .unwrap();
+
+        drop(service);
+        let service = open_sqlite_application_service(&path, Some(graph_config))
+            .await
+            .unwrap()
+            .with_embedding_provider(provider);
+        let pending = service
+            .store
+            .list_index_jobs(Some(&namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].entity_id, entity_id);
+        assert_eq!(
+            sqlite_canonical_entity_revision(&service.store, &namespace, "node", &entity_id)
+                .unwrap()
+                .unwrap()
+                .revision,
+            appended.event.seq
+        );
+
+        let summary = service
+            .run_embedding_projection_jobs_once(1, 30, Some(&namespace))
+            .await
+            .unwrap();
+        assert_eq!(summary.claimed, 1);
+        assert_eq!(
+            summary.projected, 1,
+            "Rust Chroma promotion failed; summary={summary:?}, jobs={:?}",
+            service
+                .store
+                .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+                .unwrap()
+        );
+        assert!(service
+            .store
+            .get_stage1_node_projection(&namespace, &format!("node:{entity_id}"))
+            .unwrap()
+            .is_none());
+
+        let chroma_config = |collection: String| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            metric: DistanceMetric::Cosine,
+            collection,
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            chroma_config(node_collection),
+            chroma_config(edge_collection),
+        )
+        .await
+        .unwrap();
+        let stored = graph
+            .graph_record_of_kind(&namespace, GraphEntityKind::Node, &entity_id)
+            .await
+            .unwrap()
+            .expect("the Rust worker persisted the node in real Chroma");
+        assert_eq!(stored.document.as_deref(), Some(expected_document.as_str()));
+        assert_eq!(stored.embedding.as_deref(), Some([0.6_f32, 0.8_f32].as_slice()));
+        assert_eq!(stored.metadata["_kogwistar_stage2_ready"], true);
+        assert_eq!(
+            stored.metadata["_kogwistar_source_revision"],
+            appended.event.seq
+        );
+
+        drop(graph);
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn sqlite_chroma_reconciliation_removes_orphaned_tombstone_projection() {
         use kogwistar_store::NamedProjectionWrite;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
