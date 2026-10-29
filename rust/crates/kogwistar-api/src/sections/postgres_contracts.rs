@@ -7,6 +7,7 @@ pub struct PostgresRunApplicationService {
     owner_auth_store: Option<Arc<AuthStore>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     embedding_storage_scope: Result<String, String>,
+    chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

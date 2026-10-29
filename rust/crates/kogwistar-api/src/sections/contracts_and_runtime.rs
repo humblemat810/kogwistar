@@ -312,6 +312,32 @@ fn embedding_provider_from_settings(
     Ok(Some(Arc::new(provider)))
 }
 
+fn chat_completion_provider_from_environment(
+) -> Result<Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>, String> {
+    let endpoint = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let model = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (endpoint, model) {
+        (None, None) => Ok(None),
+        (Some(endpoint), Some(model)) => {
+            let api_key = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_API_KEY")
+                .ok()
+                .filter(|value| !value.is_empty());
+            crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+                endpoint, model, api_key,
+            )
+            .map(Some)
+        }
+        _ => Err(
+            "KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT and KOGWISTAR_CHAT_COMPLETIONS_MODEL must be configured together"
+                .to_owned(),
+        ),
+    }
+}
+
 fn parse_inline_worker_flag(name: &str, value: Option<&str>) -> Result<bool, String> {
     match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
         None | Some("") | Some("0") | Some("false") | Some("no") | Some("off") => Ok(false),
@@ -379,6 +405,11 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     &environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar"),
                 )
                 .map_err(std::io::Error::other)?;
+                if let Some(provider) = chat_completion_provider_from_environment()
+                    .map_err(std::io::Error::other)?
+                {
+                    service = service.with_chat_completion_provider(provider);
+                }
                 if inline_native_runtime {
                     service = service
                         .with_owner_auth_config(&state.auth)

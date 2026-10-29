@@ -134,7 +134,21 @@ impl PostgresRunApplicationService {
             Ok(None) => {}
             Err(response) => return response,
         }
-        let result = if native_request.operation == "aa_get_view_and_question" {
+        let result = if native_request.operation == "aa_generate_answer_with_citations" {
+            match self
+                .execute_native_answer_generation(handoff.clone(), native_request.clone())
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_CHAT_PROVIDER_UNAVAILABLE",
+                        "Rust-native structured chat provider is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        } else if native_request.operation == "aa_get_view_and_question" {
             match self
                 .native_answer_view_context(&native_request, Some(&request.principal))
                 .await
@@ -424,7 +438,10 @@ impl ApplicationService for PostgresRunApplicationService {
                 return Ok(false);
             };
             let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
-            let mut result = if native_request.operation == "aa_get_view_and_question" {
+            let mut result = if native_request.operation == "aa_generate_answer_with_citations" {
+                self.execute_native_answer_generation(handoff.clone(), native_request.clone())
+                    .await?
+            } else if native_request.operation == "aa_get_view_and_question" {
                 match self.native_answer_view_context(&native_request, None).await {
                     Ok(view) => {
                         native_request

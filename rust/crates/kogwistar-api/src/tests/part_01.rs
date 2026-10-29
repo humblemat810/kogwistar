@@ -3035,10 +3035,22 @@
                     "Rust-only admission must fail until every node operation is registered natively"
                 );
 
+                let mut native_answer_plan = mixed_executor_plan.clone();
+                native_answer_plan.node_executor_targets.insert(
+                    "node-aa_generate_answer_with_citations".to_owned(),
+                    "rust-native".to_owned(),
+                );
+                assert!(answer_workflow_plan_is_executable(
+                    workflow_id,
+                    &native_answer_plan,
+                    &native_operations
+                ));
+
                 let mut unsupported_native_plan = mixed_executor_plan.clone();
-                unsupported_native_plan
-                    .node_executor_targets
-                    .insert("node-aa_generate_answer_with_citations".to_owned(), "rust-native".to_owned());
+                unsupported_native_plan.node_executor_targets.insert(
+                    "node-aa_validate_or_repair_citations".to_owned(),
+                    "rust-native".to_owned(),
+                );
                 assert!(!answer_workflow_plan_is_executable(
                     workflow_id,
                     &unsupported_native_plan,

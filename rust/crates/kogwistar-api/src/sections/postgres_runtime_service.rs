@@ -316,6 +316,7 @@ impl PostgresRunApplicationService {
                 owner_auth_store: None,
                 embedding_provider: None,
                 embedding_storage_scope,
+                chat_completion_provider: None,
             })
             .map_err(|error| error.to_string())
     }
@@ -1142,6 +1143,87 @@ impl PostgresRunApplicationService {
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    /// Configure a Rust-native OpenAI-compatible structured-answer provider.
+    /// No Python worker fallback is used when this provider is missing.
+    pub(crate) fn with_chat_completion_provider(
+        mut self,
+        provider: crate::native_answer_generation::OpenAiCompatibleChatConfig,
+    ) -> Self {
+        self.chat_completion_provider = Some(provider);
+        self
+    }
+
+    async fn native_generate_answer(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<Value, String> {
+        let provider = self
+            .chat_completion_provider
+            .as_ref()
+            .ok_or_else(|| "Rust-native structured-answer provider is not configured".to_owned())?;
+        let runtime = request
+            .state
+            .get("_rt")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "native answer generation requires runtime context".to_owned())?;
+        let evidence_pack = runtime
+            .get("evidence_pack")
+            .ok_or_else(|| "native answer generation requires a materialized evidence pack".to_owned())?;
+        let question = request
+            .state
+            .get("question")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "native answer generation requires a question".to_owned())?;
+        let system_prompt = request
+            .state
+            .get("system_prompt")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "native answer generation requires a system prompt".to_owned())?;
+        let used_node_ids = request
+            .state
+            .get("used_node_ids")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "native answer generation requires selected evidence IDs".to_owned())?
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "selected evidence IDs must be strings".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        provider
+            .answer(system_prompt, question, evidence_pack, &used_node_ids)
+            .await
+    }
+
+    async fn execute_native_answer_generation(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        mut request: kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<RuntimeWorkerResultRequest, String> {
+        if self.chat_completion_provider.is_none() {
+            return Ok(failed_native_result(
+                handoff,
+                &request,
+                "KOGWISTAR_CHAT_PROVIDER_NOT_CONFIGURED",
+                "Rust-native answer generation requires a configured structured chat provider",
+            ));
+        }
+        let answer = self.native_generate_answer(&request).await?;
+        request
+            .ephemeral_context
+            .insert("provider_answer".to_owned(), answer);
+        request.ephemeral_context.insert(
+            "provider_model".to_owned(),
+            json!(self
+                .chat_completion_provider
+                .as_ref()
+                .expect("provider availability checked above")
+                .model()),
+        );
+        native_result_from_request(handoff, request, &self.native_operations)
     }
 
     /// Run one bounded batch of durable embedding jobs entirely through the
