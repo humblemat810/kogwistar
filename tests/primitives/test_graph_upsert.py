@@ -255,6 +255,11 @@ def test_graph_upsert_llm_batch_with_references(monkeypatch, tmp_path):
     assert len(data["node_ids"]) >= 2
     assert len(data["edge_ids"]) >= 2
 
+    node_hits = fake_engine.vector_search_nodes([0.01] * 8, top_k=10)
+    edge_hits = fake_engine.vector_search_edges([0.01] * 8, top_k=10)
+    assert set(data["node_ids"]).issubset(set(node_hits["ids"][0]))
+    assert set(data["edge_ids"]).issubset(set(edge_hits["ids"][0]))
+
     # minimal smoke test of viz JSON (ensures persistence + endpoints tables are coherent)
     viz = client.get(f"/api/viz/d3.json?doc_id={DOC_ID}&mode=reify", headers=headers)
     assert viz.status_code == 200
