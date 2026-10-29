@@ -291,6 +291,42 @@ jobs:
           --skip runtime_serving_lookup_scale_probe
           --skip postgres_queue_projects_to_chroma_without_cross_store_transaction
 
+      - name: Set up Python for live Chroma interoperability
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install live Chroma interoperability dependencies
+        working-directory: .
+        run: python -m pip install -e ".[test,server,chroma]"
+
+      - name: Build Rust API server for live Chroma interoperability
+        run: cargo build -p kogwistar-api --bin kogwistar-server --locked
+
+      - name: Verify sequential Python-Chroma-Rust projection recovery
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/chroma-rust-interop.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          if tests != 1 or skipped:
+              raise SystemExit(
+                  f"live Chroma interop must run exactly once without skips: "
+                  f"tests={tests}, skipped={skipped}"
+              )
+          PY
+
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
