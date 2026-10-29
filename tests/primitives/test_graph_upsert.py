@@ -143,7 +143,14 @@ def test_graph_upsert_llm_batch_with_references(monkeypatch, tmp_path):
         kg_graph_type="knowledge",
         embedding_function=ConstantEmbeddingFunction(dim=8),
         backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
     )
+    from kogwistar.engine_core.engine_sqlite import EngineSQLite
+
+    metadata_directory = tmp_path / "graph_upsert_metadata"
+    durable_metadata = EngineSQLite(metadata_directory)
+    durable_metadata.ensure_initialized()
+    fake_engine.metadata = durable_metadata
     monkeypatch.setattr(server.engine, "_value", fake_engine)
 
     client.delete(f"/admin/doc/{DOC_ID}", headers=headers)
@@ -254,6 +261,25 @@ def test_graph_upsert_llm_batch_with_references(monkeypatch, tmp_path):
     assert data["edges_added"] >= 2
     assert len(data["node_ids"]) >= 2
     assert len(data["edge_ids"]) >= 2
+
+    from kogwistar.workers.index_job_worker import IndexJobWorker
+
+    worker_result = IndexJobWorker(
+        engine=fake_engine,
+        batch_size=32,
+        max_jobs_per_tick=32,
+        namespace=fake_engine.namespace,
+    ).tick()
+    assert worker_result.failed == 0
+    assert worker_result.done == worker_result.claimed
+    assert worker_result.done > 0
+
+    reopened_metadata = EngineSQLite(metadata_directory)
+    completed_jobs = reopened_metadata.list_index_jobs(
+        namespace=fake_engine.namespace, limit=32
+    )
+    assert len(completed_jobs) == worker_result.claimed
+    assert all(job.status == "DONE" for job in completed_jobs)
 
     node_hits = fake_engine.vector_search_nodes([0.01] * 8, top_k=10)
     edge_hits = fake_engine.vector_search_edges([0.01] * 8, top_k=10)
