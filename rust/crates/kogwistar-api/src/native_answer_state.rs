@@ -309,6 +309,7 @@ mod tests {
                     source_fanout: false,
                 },
             ],
+            ephemeral_context: Map::new(),
         }
     }
 

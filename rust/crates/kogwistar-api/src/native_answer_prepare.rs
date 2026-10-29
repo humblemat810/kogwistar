@@ -228,6 +228,7 @@ mod tests {
             step_seq: 1,
             state: serde_json::from_value::<Map<String, Value>>(state).unwrap(),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         }
     }
 

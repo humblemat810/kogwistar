@@ -102,6 +102,7 @@
                 priority: 100,
                 source_fanout: false,
             }],
+            ephemeral_context: Map::new(),
         })
         .unwrap();
 
@@ -147,6 +148,31 @@
             "result": effect.result,
         });
         assert_eq!(durable, fixture);
+    }
+
+    #[test]
+    fn native_step_ephemeral_context_is_never_serialized() {
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::from_iter([("secret_read".to_owned(), json!({"id": "private"}))]),
+        };
+        let wire = serde_json::to_value(&request).unwrap();
+        assert!(wire.get("ephemeral_context").is_none());
+        assert!(serde_json::to_string(&wire).unwrap().find("private").is_none());
+        let restored: RuntimeNativeStepRequest = serde_json::from_value(wire).unwrap();
+        assert!(restored.ephemeral_context.is_empty());
     }
 
     #[test]
@@ -211,6 +237,7 @@
                     source_fanout: false,
                 },
             ],
+            ephemeral_context: Map::new(),
         };
         let selected = execute_native_step_with_registry(&request, &registry).unwrap();
         assert_eq!(selected.successors.len(), 1);
@@ -284,6 +311,7 @@
             step_seq: 0,
             state: Map::new(),
             runtime_routes: vec![],
+            ephemeral_context: Map::new(),
         };
         assert!(matches!(
             execute_native_step(&request),
@@ -437,7 +465,7 @@
             operation: "graph".to_owned(), op_version: "v1".to_owned(),
             run_id: "run".to_owned(), workflow_id: "wf".to_owned(), node_id: "node".to_owned(),
             conversation_id: "conversation".to_owned(), turn_node_id: None, token_id: "token".to_owned(),
-            parent_token_id: None, step_seq: 1, state: Map::new(), runtime_routes: Vec::new(),
+            parent_token_id: None, step_seq: 1, state: Map::new(), runtime_routes: Vec::new(), ephemeral_context: Map::new(),
         };
         let effect = execute_native_step_with_registry(&request, &registry).unwrap();
         assert_eq!(effect.graph_mutation_batch.unwrap().mutations[0].event_id, "event-1");
@@ -479,6 +507,7 @@
             step_seq: 1,
             state: Map::new(),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         };
         let effect = execute_native_step_with_registry(&request, &registry).unwrap();
         assert!(effect.graph_mutation_batch.is_none());
@@ -566,6 +595,7 @@
             step_seq: 1,
             state: serde_json::from_value(append_fixture["initial_state"].clone()).unwrap(),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         };
         let append_effect = execute_native_step_with_registry(&append_request, &registry).unwrap();
         assert_eq!(
@@ -594,6 +624,7 @@
             step_seq: 1,
             state: Map::from_iter([(String::from("label"), json!("native"))]),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         };
         let effect = execute_native_step_with_registry(&request, &registry).unwrap();
         assert_eq!(
@@ -680,6 +711,7 @@
             step_seq: 1,
             state: Map::new(),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         };
 
         let admitted = execute_native_step_with_registry(&request, &registry).is_ok();
@@ -784,6 +816,7 @@
             step_seq: 1,
             state: Map::from_iter([("count".to_owned(), json!(1))]),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         };
 
         assert!(matches!(
@@ -822,6 +855,7 @@
             step_seq: 1,
             state: Map::new(),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         };
 
         assert!(matches!(

@@ -10,6 +10,7 @@ pub(crate) fn registry() -> Result<NativeOperationRegistry, NativeOperationRegis
     let mut registry = crate::native_memory_pin::registry()?;
     crate::native_answer_prepare::register(&mut registry)?;
     crate::native_answer_state::register(&mut registry)?;
+    crate::native_answer_materialize::register(&mut registry)?;
     registry.register_graph_v2("aa_persist_response", "v1", execute_persist_response)?;
     Ok(registry)
 }
@@ -409,6 +410,7 @@ mod tests {
             step_seq: 5,
             state: serde_json::from_value::<Map<String, Value>>(state).unwrap(),
             runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
         }
     }
 

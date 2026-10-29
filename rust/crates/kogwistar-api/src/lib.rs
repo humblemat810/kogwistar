@@ -53,6 +53,7 @@ use kogwistar_store_sqlite::{
 };
 
 mod cutover;
+mod native_answer_materialize;
 mod native_answer_persist;
 mod native_answer_prepare;
 mod native_answer_state;

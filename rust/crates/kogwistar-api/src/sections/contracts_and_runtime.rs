@@ -682,18 +682,35 @@ fn native_result_for_claimed_work(
     work: RuntimeClaimedWork,
     registry: &kogwistar_runtime::NativeOperationRegistry,
 ) -> Result<RuntimeWorkerResultRequest, String> {
+    let (handoff, native_request) = native_request_for_claimed_work(&work)?;
+    native_result_from_request(handoff, native_request, registry)
+}
+
+fn native_request_for_claimed_work(
+    work: &RuntimeClaimedWork,
+) -> Result<(RecordedWorkerHandoff, kogwistar_runtime::RuntimeNativeStepRequest), String> {
     let handoff = RecordedWorkerHandoff {
-        message_id: work.message_id,
-        claimed_by: work.claimed_by,
-        run_id: work.run_id,
+        message_id: work.message_id.clone(),
+        claimed_by: work.claimed_by.clone(),
+        run_id: work.run_id.clone(),
         step_id: work
             .step_id
+            .clone()
             .ok_or_else(|| "claimed native work is missing step_id".to_owned())?,
         correlation_id: work
             .correlation_id
+            .clone()
             .ok_or_else(|| "claimed native work is missing correlation_id".to_owned())?,
     };
-    let native_request = native_step_request_from_payload(&handoff, work.payload)?;
+    let native_request = native_step_request_from_payload(&handoff, work.payload.clone())?;
+    Ok((handoff, native_request))
+}
+
+fn native_result_from_request(
+    handoff: RecordedWorkerHandoff,
+    native_request: kogwistar_runtime::RuntimeNativeStepRequest,
+    registry: &kogwistar_runtime::NativeOperationRegistry,
+) -> Result<RuntimeWorkerResultRequest, String> {
     let effect = kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
         .map_err(|error| format!("native execution rejected: {error}"))?;
     Ok(RuntimeWorkerResultRequest {
@@ -701,6 +718,56 @@ fn native_result_for_claimed_work(
         transition: None,
         effect: Some(effect),
     })
+}
+
+fn failed_native_result(
+    handoff: RecordedWorkerHandoff,
+    request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    code: &str,
+    message: &str,
+) -> RuntimeWorkerResultRequest {
+    let mut trace = json!({
+        "schema_version": kogwistar_runtime::RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+        "event": "runtime.native.step.failed",
+        "executor_target": kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        "operation": request.operation,
+        "op_version": request.op_version,
+        "run_id": request.run_id,
+        "workflow_id": request.workflow_id,
+        "conversation_id": request.conversation_id,
+        "turn_node_id": request.turn_node_id,
+        "node_id": request.node_id,
+        "token_id": request.token_id,
+        "parent_token_id": request.parent_token_id,
+        "step_seq": request.step_seq,
+        "error_code": code,
+    });
+    attach_rust_native_seam_attestation(&mut trace);
+    RuntimeWorkerResultRequest {
+        handoff,
+        transition: None,
+        effect: Some(RecordedWorkerSuccessEffect {
+            contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+            effect_id: format!(
+                "native-step|{}|{}|{}|{}",
+                request.run_id, request.node_id, request.token_id, request.step_seq
+            ),
+            status: kogwistar_runtime::RuntimeWorkerEffectStatus::Failed,
+            state_update: Vec::new(),
+            update: None,
+            state_schema: Map::new(),
+            successors: Vec::new(),
+            route_next: Vec::new(),
+            result: Some(json!({"code": code})),
+            errors: vec![message.to_owned()],
+            wait_reason: None,
+            resume_payload: None,
+            usage: None,
+            trace_events: vec![trace],
+            graph_mutation_batch: None,
+            graph_mutation_batch_v2: None,
+        }),
+    }
 }
 
 #[derive(Default)]
@@ -1599,6 +1666,7 @@ fn native_step_request_from_payload(
             state: serde_json::from_value(payload["initial_state"].clone())
                 .map_err(|error| format!("invalid native initial state: {error}"))?,
             runtime_routes,
+            ephemeral_context: Map::new(),
         });
     }
 
@@ -1640,6 +1708,7 @@ fn native_step_request_from_payload(
         step_seq: payload.step_seq,
         state: payload.state,
         runtime_routes: payload.runtime_routes,
+        ephemeral_context: Map::new(),
     })
 }
 

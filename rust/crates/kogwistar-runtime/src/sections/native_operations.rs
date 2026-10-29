@@ -164,6 +164,10 @@ pub struct RuntimeNativeStepRequest {
     pub state: Map<String, Value>,
     #[serde(default)]
     pub runtime_routes: Vec<RuntimeStaticRoute>,
+    /// Host-authorized, process-local inputs for native operations. This is
+    /// deliberately excluded from serialization and durable workflow state.
+    #[serde(skip)]
+    pub ephemeral_context: Map<String, Value>,
 }
 
 #[derive(Debug, Error)]

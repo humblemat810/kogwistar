@@ -22,7 +22,170 @@ fn graph_record_string_ids(record: &GraphRecord, field: &str) -> Vec<String> {
         .collect()
 }
 
+enum NativeEvidenceRecordError {
+    Rejected,
+    Unavailable,
+}
+
 impl PostgresRunApplicationService {
+    async fn authorized_evidence_records(
+        &self,
+        principal: &Value,
+        node_ids: &[String],
+        edge_ids: &[String],
+    ) -> Result<Value, NativeEvidenceRecordError> {
+        if node_ids.len().saturating_add(edge_ids.len()) > 100 {
+            return Err(NativeEvidenceRecordError::Rejected);
+        }
+        let scope_value = security_scope_value(principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: principal
+                .get("workspace_id")
+                .or_else(|| principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let scope_value = scope_value.clone();
+        let principal = principal.clone();
+        let node_ids = node_ids.to_vec();
+        let edge_ids = edge_ids.to_vec();
+        self.store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let read = |table: &str, ids: &[String]| GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: table.to_owned(),
+                        ids: (!ids.is_empty()).then(|| ids.to_vec()),
+                        metadata: MetadataFilter::default(),
+                        limit: ids.len().max(1),
+                    };
+                    let mut nodes = if node_ids.is_empty() {
+                        Vec::new()
+                    } else {
+                        uow.graph_projection_records(read("gke_nodes", &node_ids)).await?
+                    };
+                    let edges = if edge_ids.is_empty() {
+                        Vec::new()
+                    } else {
+                        uow.graph_projection_records(read("gke_edges", &edge_ids)).await?
+                    };
+                    let endpoint_ids = edges
+                        .iter()
+                        .flat_map(|edge| {
+                            graph_record_string_ids(edge, "source_ids")
+                                .into_iter()
+                                .chain(graph_record_string_ids(edge, "target_ids"))
+                        })
+                        .collect::<BTreeSet<_>>();
+                    if endpoint_ids.len() > 1000 {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    }
+                    let selected_node_ids = node_ids.iter().cloned().collect::<BTreeSet<_>>();
+                    let additional_endpoint_ids = endpoint_ids
+                        .difference(&selected_node_ids)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !additional_endpoint_ids.is_empty() {
+                        nodes.extend(
+                            uow.graph_projection_records(read(
+                                "gke_nodes",
+                                &additional_endpoint_ids,
+                            ))
+                            .await?,
+                        );
+                    }
+                    let mut unique_nodes = BTreeMap::new();
+                    for node in nodes {
+                        unique_nodes.insert(node.id.clone(), node);
+                    }
+                    let nodes = unique_nodes.into_values().collect::<Vec<_>>();
+                    let entity_ids = nodes
+                        .iter()
+                        .chain(edges.iter())
+                        .map(|record| record.id.clone())
+                        .collect::<BTreeSet<_>>();
+                    let acl_records = uow
+                        .graph_acl_records_for_entities(
+                            &scope,
+                            "knowledge",
+                            &entity_ids.into_iter().collect::<Vec<_>>(),
+                        )
+                        .await?;
+                    let mut acl_index = GraphAclIndex::default();
+                    acl_index.extend_from_records(&acl_records, "knowledge");
+                    let acl_principal = graph_acl_principal_from_claims(
+                        &principal,
+                        scope_value["security_scope"].as_str(),
+                    );
+                    let (visible_nodes, visible_edges) =
+                        graph_records_visible_by_acl_with_index(
+                            &nodes,
+                            &edges,
+                            &acl_index,
+                            &acl_principal,
+                        );
+                    let selected_node_ids = node_ids.iter().collect::<BTreeSet<_>>();
+                    let selected_edge_ids = edge_ids.iter().collect::<BTreeSet<_>>();
+                    let node_records = visible_nodes
+                        .iter()
+                        .filter(|record| {
+                            selected_node_ids.contains(&record.id)
+                                && !matches!(
+                                    record
+                                        .metadata
+                                        .get("lifecycle_status")
+                                        .and_then(Value::as_str),
+                                    Some("tombstoned" | "deleted")
+                                )
+                        })
+                        .map(|record| {
+                            json!({
+                                "id": record.id,
+                                "document": record.document,
+                                "metadata": record.metadata,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let edge_records = visible_edges
+                        .iter()
+                        .filter(|record| {
+                            selected_edge_ids.contains(&record.id)
+                                && !matches!(
+                                    record
+                                        .metadata
+                                        .get("lifecycle_status")
+                                        .and_then(Value::as_str),
+                                    Some("tombstoned" | "deleted")
+                                )
+                        })
+                        .map(|record| {
+                            json!({
+                                "id": record.id,
+                                "document": record.document,
+                                "metadata": record.metadata,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    if node_records.len() != selected_node_ids.len()
+                        || edge_records.len() != selected_edge_ids.len()
+                    {
+                        return Ok(Err(NativeEvidenceRecordError::Rejected));
+                    }
+                    Ok(Ok(json!({"nodes": node_records, "edges": edge_records})))
+                })
+            })
+            .await
+            .map_err(|_| NativeEvidenceRecordError::Unavailable)?
+    }
+
     async fn graph_records_snapshot(
         &self,
         scope: GraphScope,

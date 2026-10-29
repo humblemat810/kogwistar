@@ -50,7 +50,7 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let native_request = match native_step_request_from_payload(&input.handoff, input.payload) {
+        let mut native_request = match native_step_request_from_payload(&input.handoff, input.payload) {
             Ok(value) => value,
             Err(error) => {
                 return effect_error(
@@ -60,23 +60,68 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let effect = match kogwistar_runtime::execute_native_step_with_registry(
-            &native_request,
-            &self.native_operations,
-        ) {
-            Ok(effect) => effect,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
-                    error.to_string(),
-                );
+        let handoff = input.handoff;
+        let result = if native_request.operation == "aa_materialize_evidence_pack" {
+            match self
+                .native_evidence_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(records) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_evidence_records".to_owned(), records);
+                    match native_result_from_request(
+                        handoff.clone(),
+                        native_request.clone(),
+                        &self.native_operations,
+                    ) {
+                        Ok(result) => result,
+                        Err(_) => failed_native_result(
+                            handoff,
+                            &native_request,
+                            "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                            "native evidence materialization rejected its bounded input",
+                        ),
+                    }
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native evidence reads require the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "native evidence materialization requires the run owner's current read_graph capability and admitted scope",
+                ),
+                Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_EVIDENCE_READ_FAILED",
+                    "native evidence materialization could not read the selected knowledge records",
+                ),
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_EVIDENCE_READ_UNAVAILABLE",
+                        "native evidence storage is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
             }
-        };
-        let result = RuntimeWorkerResultRequest {
-            handoff: input.handoff,
-            transition: None,
-            effect: Some(effect),
+        } else {
+            match native_result_from_request(handoff, native_request, &self.native_operations) {
+                Ok(result) => result,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                        error,
+                    );
+                }
+            }
         };
         self.apply_runtime_result_input(
             result,
@@ -105,7 +150,49 @@ impl ApplicationService for PostgresRunApplicationService {
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
-            let mut result = native_result_for_claimed_work(work, &self.native_operations)?;
+            let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
+            let mut result = if native_request.operation == "aa_materialize_evidence_pack" {
+                match self.native_evidence_context(&native_request, None).await {
+                    Ok(records) => {
+                        native_request
+                            .ephemeral_context
+                            .insert("authorized_evidence_records".to_owned(), records);
+                        match native_result_from_request(
+                            handoff.clone(),
+                            native_request.clone(),
+                            &self.native_operations,
+                        ) {
+                            Ok(result) => result,
+                            Err(_) => failed_native_result(
+                                handoff,
+                                &native_request,
+                                "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                                "native evidence materialization rejected its bounded input",
+                            ),
+                        }
+                    }
+                    Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "native evidence materialization requires the run owner's current read_graph capability and admitted scope",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_EVIDENCE_READ_FAILED",
+                        "native evidence materialization could not read the selected knowledge records",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                        return Err("native evidence storage is temporarily unavailable".to_owned());
+                    }
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
+                        "inline native execution has no external caller principal"
+                    ),
+                }
+            } else {
+                native_result_from_request(handoff, native_request, &self.native_operations)?
+            };
             let run_id = result.handoff.run_id.clone();
             let mut inline_principal = if result
                 .effect

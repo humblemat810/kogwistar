@@ -473,10 +473,11 @@
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_native_graph_{}", uuid::Uuid::new_v4().simple());
         let mut registry = crate::native_answer_persist::registry().unwrap();
-        registry.register_graph("app/graph", "v1", |request| {
+        registry.register_graph_v2("app/graph", "v1", |request| {
             let batch = serde_json::from_value(json!({
-                "contract_version": 1,
+                "contract_version": 2,
                 "atomic": true,
+                "default_acl": {"truth_graph": "knowledge"},
                 "mutations": [{
                     "scope": {"namespace": "alpha"},
                     "table": "gke_nodes",
@@ -499,22 +500,50 @@
             Ok((kogwistar_runtime::NativeOperationOutput {
                 state_update: Vec::new(),
                 result: Some(json!({"native_graph": true})),
-            }, batch))
+            }, Some(batch)))
         }).unwrap();
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-native-graph-auth-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let auth_store = SqliteAuthStore::open(&auth_path).unwrap();
+        auth_store
+            .resolve_external_identity(ResolveExternalIdentity {
+                issuer: "test".to_owned(),
+                subject: "alice".to_owned(),
+                email: "alice@example.test".to_owned(),
+                display_name: None,
+                new_user_id: "alice".to_owned(),
+                default_role: "rw".to_owned(),
+                default_ns: "alpha".to_owned(),
+            })
+            .await
+            .unwrap();
+        drop(auth_store);
+        let owner_auth_config = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+            ..AuthConfig::default()
+        };
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
-            .unwrap().with_native_operations(registry);
+            .unwrap()
+            .with_native_operations(registry)
+            .with_owner_auth_config(&owner_auth_config)
+            .await
+            .unwrap();
         service.ensure_schema().await.unwrap();
         service.store.create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default()).await.unwrap();
 
         let secret = "native-graph-test-secret";
         let token = |subject: &str, namespace: &str, caps: &[&str]| encode(
             &Header::new(Algorithm::HS256),
-            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": "workflow",
+            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": namespace,
                 "storage_ns": namespace, "capabilities": caps, "exp": 4102444800_u64}),
             &EncodingKey::from_secret(secret.as_bytes()),
         ).unwrap();
         let owner = token("alice", "alpha", &["workflow.run.write", "write_graph"]);
+        let owner_read = token("alice", "alpha", &["workflow.run.write", "write_graph", "read_graph"]);
         let other = token("bob", "alpha", &["workflow.run.write", "write_graph"]);
+        let other_read = token("bob", "alpha", &["workflow.run.write", "read_graph"]);
         let wrong_scope = token("alice", "beta", &["workflow.run.write", "write_graph"]);
         let no_write = token("alice", "alpha", &["workflow.run.write"]);
         let app = router_with_application(ApiState {
@@ -636,13 +665,153 @@
         }).await.unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].document.as_deref(), Some("native graph"));
-        assert_eq!(service.store.list_index_jobs(Some("alpha"), None, None, None, None, 100).await.unwrap().len(), 1);
+        let graph_jobs = service.store.list_index_jobs(Some("alpha"), None, None, None, None, 100).await.unwrap();
+        assert!(graph_jobs.iter().any(|job| job.job_id == "graph-job-native-graph-run"));
         let graph_events = service.store.replay_raw_events("alpha", 0, 100).await.unwrap();
-        assert_eq!(graph_events.len(), 1);
-        assert_eq!(graph_events[0].event_id, "graph-event-native-graph-run");
+        assert!(graph_events.iter().any(|event| event.event_id == "graph-event-native-graph-run"));
+        let foreign_principal = json!({
+            "user_id": "bob",
+            "actor_id": "bob",
+            "sub": "bob",
+            "role": "rw",
+            "ns": "alpha",
+            "storage_ns": "alpha",
+            "capabilities": ["read_graph"]
+        });
+        assert!(service
+            .authorized_evidence_records(&foreign_principal, &["native-node".to_owned()], &[])
+            .await
+            .is_err(), "private knowledge ACL must hide the selected node from another principal");
         let lane = service.store.get_projected_lane_message(work["message_id"].as_str().unwrap()).await.unwrap().unwrap();
         assert_eq!(lane.status, "completed");
         assert_eq!(service.store.get_server_run("native-graph-run").await.unwrap().unwrap().status, "succeeded");
+
+        let evidence_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "run_id": "native-evidence-materialize-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-evidence-materialize",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/aa_materialize_evidence_pack"},
+                "initial_state": {
+                    "used_node_ids": ["native-node"],
+                    "used_edge_ids": [],
+                    "materialize_depth": "deep"
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(evidence_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let owner_guard_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "run_id": "native-evidence-owner-guard-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-evidence-owner-guard",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/aa_materialize_evidence_pack"},
+                "initial_state": {
+                    "used_node_ids": ["native-node"],
+                    "used_edge_ids": [],
+                    "materialize_depth": "deep"
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(owner_guard_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let owner_guard_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner_read)
+            .json(&json!({"claimed_by":"rust-native-worker", "limit":1, "lease_seconds":60,
+                "run_id":"native-evidence-owner-guard-run", "recipient_ids":["rust-native-worker"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(owner_guard_claim.status(), StatusCode::OK);
+        let owner_guard_work = owner_guard_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let owner_guard_execution = json!({
+            "handoff": {
+                "message_id": owner_guard_work["message_id"],
+                "claimed_by": owner_guard_work["claimed_by"],
+                "run_id": owner_guard_work["run_id"],
+                "step_id": owner_guard_work["step_id"],
+                "correlation_id": owner_guard_work["correlation_id"]
+            },
+            "payload": owner_guard_work["payload"]
+        });
+        let wrong_evidence_owner = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&other_read)
+            .json(&owner_guard_execution)
+            .send()
+            .await
+            .unwrap();
+        let wrong_evidence_owner_status = wrong_evidence_owner.status();
+        let wrong_evidence_owner_body = wrong_evidence_owner.text().await.unwrap();
+        assert_eq!(
+            wrong_evidence_owner_status,
+            StatusCode::FORBIDDEN,
+            "{wrong_evidence_owner_body}"
+        );
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message(owner_guard_work["message_id"].as_str().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed",
+            "a non-owner must not mutate or acknowledge the run"
+        );
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let evidence_state = service
+            .store
+            .read_recorded_runtime_state(
+                "native-evidence-materialize-run",
+                "wf",
+                "conv-native-evidence-materialize",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let Some(evidence_pack) = evidence_state.state.get("_rt").and_then(|state| state.get("evidence_pack")) else {
+            panic!(
+                "evidence pack missing; state={:?}; run={:?}",
+                evidence_state.state,
+                service.store.get_server_run("native-evidence-materialize-run").await.unwrap().unwrap()
+            );
+        };
+        assert_eq!(evidence_pack["nodes"][0]["text"], "native graph");
+        assert!(evidence_state.state.get("authorized_evidence_records").is_none());
+        let evidence_lanes = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some("native-evidence-materialize-run".to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(evidence_lanes.len(), 1);
+        assert_eq!(evidence_lanes[0].status, "completed");
+        assert_eq!(
+            service
+                .store
+                .get_server_run("native-evidence-materialize-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
 
         let memory_submit = client
             .post(format!("{base}/api/workflow/runs"))

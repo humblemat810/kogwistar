@@ -13,6 +13,13 @@ enum RuntimeGraphMutationBatch<'a> {
     V2(&'a kogwistar_contracts::GraphMutationBatchV2),
 }
 
+enum NativeEvidenceContextError {
+    CallerNotRunOwner,
+    OwnerAuthorization,
+    GraphReadRejected,
+    GraphReadUnavailable,
+}
+
 fn runtime_owner_binding_v1(
     principal: &Value,
     capabilities: &SharedCapabilityState,
@@ -461,6 +468,76 @@ impl PostgresRunApplicationService {
             &self.capabilities,
             required_capability,
         )
+    }
+
+    async fn native_evidence_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let run = self
+            .store
+            .server_run(&request.run_id)
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        let durable_owner = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        if let Some(caller) = caller {
+            let Some(caller_id) = authenticated_run_owner_id(caller) else {
+                return Err(NativeEvidenceContextError::CallerNotRunOwner);
+            };
+            if caller_id != durable_owner {
+                return Err(NativeEvidenceContextError::CallerNotRunOwner);
+            }
+        }
+        let mut principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?;
+        // ACL records are keyed by the durable run-owner ID, while the refreshed
+        // auth principal's `sub` may be an email address.
+        principal["actor_id"] = json!(durable_owner);
+        let read_ids = |field: &str| -> Result<Vec<String>, NativeEvidenceContextError> {
+            let Some(value) = request.state.get(field) else {
+                return Ok(Vec::new());
+            };
+            let Some(values) = value.as_array() else {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            };
+            if values.len() > 100 {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            }
+            let ids = values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .map(str::to_owned)
+                        .ok_or(NativeEvidenceContextError::GraphReadRejected)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            }
+            Ok(ids)
+        };
+        let node_ids = read_ids("used_node_ids")?;
+        let edge_ids = read_ids("used_edge_ids")?;
+        self.authorized_evidence_records(&principal, &node_ids, &edge_ids)
+            .await
+            .map_err(|error| match error {
+                NativeEvidenceRecordError::Rejected => {
+                    NativeEvidenceContextError::GraphReadRejected
+                }
+                NativeEvidenceRecordError::Unavailable => {
+                    NativeEvidenceContextError::GraphReadUnavailable
+                }
+            })
     }
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
