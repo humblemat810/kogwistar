@@ -300,7 +300,7 @@ jobs:
 
       - name: Install live Chroma interoperability dependencies
         working-directory: .
-        run: python -m pip install -e ".[test,server,chroma]"
+        run: python -m pip install -e ".[test,server,chroma,pgvector]"
 
       - name: Build Rust API server for live Chroma interoperability
         run: cargo build -p kogwistar-api --bin kogwistar-server --locked
