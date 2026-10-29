@@ -1225,6 +1225,62 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    #[tokio::test]
+    async fn sqlite_submit_rejects_answer_workflow_without_graph_authority() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-answer-not-ready-{nonce}.sqlite3"));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"workflow_id":"agentic_answering.v2","conversation_id":"answer-conversation"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let value = serde_json::from_slice::<Value>(&body).unwrap();
+        assert_eq!(value["code"], "KOGWISTAR_ANSWER_WORKFLOW_NOT_READY");
+
+        let store = SqliteStore::open(&path).unwrap();
+        assert!(store.list_server_runs(None, None, None, 10).unwrap().is_empty());
+        assert!(store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                inbox_id: Some("workflow-runtime".to_owned()),
+                ..LaneMessageFilter::default()
+            })
+            .unwrap()
+            .is_empty());
+        drop(store);
+        drop(app);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn snapshot_syscall_compatibility_drops_rust_only_fields() {
         let expected = serde_json::from_str::<Value>(include_str!(

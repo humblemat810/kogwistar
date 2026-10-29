@@ -2829,3 +2829,129 @@
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn answer_workflow_admission_requires_complete_python_executable_plan() {
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+        ))
+        .unwrap();
+        for (workflow_id, workflow) in contract["workflows"].as_object().unwrap() {
+            let required_ops = workflow["required_ops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|op| op.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            let python_ops = workflow["python_executor_ops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|op| op.as_str().unwrap().to_owned())
+                .collect::<std::collections::BTreeSet<_>>();
+            let required_predicates = workflow["required_predicates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|predicate| predicate.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            let node_ops = required_ops
+                .iter()
+                .map(|op| (format!("node-{op}"), op.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let python_op_version = workflow["python_op_version"].as_str().unwrap();
+            let node_versions = required_ops
+                .iter()
+                .map(|op| (format!("node-{op}"), python_op_version.to_owned()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let node_executor_targets = node_ops
+                .iter()
+                .filter(|(_, op)| python_ops.contains(*op))
+                .map(|(node_id, _)| (node_id.clone(), "python-worker".to_owned()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut routes = vec![kogwistar_runtime::RuntimeStaticRoute {
+                edge_id: "edge-default".to_owned(),
+                source_node_id: "node-start".to_owned(),
+                target_node_id: "node-end".to_owned(),
+                aliases: Vec::new(),
+                join_mask: 0,
+                predicate: None,
+                multiplicity: "one".to_owned(),
+                is_default: true,
+                priority: 100,
+                source_fanout: false,
+            }];
+            routes.extend(required_predicates
+                .iter()
+                .enumerate()
+                .map(|(index, predicate)| kogwistar_runtime::RuntimeStaticRoute {
+                    edge_id: format!("edge-{index}"),
+                    source_node_id: "node-start".to_owned(),
+                    target_node_id: "node-end".to_owned(),
+                    aliases: Vec::new(),
+                    join_mask: 0,
+                    predicate: Some(predicate.clone()),
+                    multiplicity: "one".to_owned(),
+                    is_default: false,
+                    priority: index as i64,
+                    source_fanout: false,
+                }));
+            let plan = RuntimeGraphPlan {
+                start_node_id: "node-start".to_owned(),
+                join_node_ids: Vec::new(),
+                start_join_mask: 0,
+                routes,
+                node_ops: node_ops.clone(),
+                node_versions,
+                node_environment_ids: std::collections::BTreeMap::new(),
+                node_executor_targets: node_executor_targets.clone(),
+            };
+            assert!(answer_workflow_plan_is_executable(workflow_id, &plan));
+            assert!(answer_workflow_admission_ready(workflow_id, Some(&plan)));
+            assert!(!answer_workflow_admission_ready(workflow_id, None));
+
+            let mut missing_operation = plan.clone();
+            missing_operation
+                .node_ops
+                .remove(&format!("node-{}", required_ops[1]));
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &missing_operation
+            ));
+
+            let mut missing_predicate = plan.clone();
+            missing_predicate.routes.pop();
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &missing_predicate
+            ));
+
+            let mut incompatible_operation_version = plan.clone();
+            incompatible_operation_version
+                .node_versions
+                .insert("node-start".to_owned(), "v2".to_owned());
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &incompatible_operation_version
+            ));
+
+            let mut incompatible_executor = plan.clone();
+            if let Some((node_id, _)) = node_ops.iter().find(|(_, op)| python_ops.contains(*op)) {
+                incompatible_executor
+                    .node_executor_targets
+                    .insert(node_id.clone(), "rust-native".to_owned());
+                assert!(!answer_workflow_plan_is_executable(
+                    workflow_id,
+                    &incompatible_executor
+                ));
+            }
+
+            let mut implicit_noop = plan;
+            implicit_noop
+                .node_ops
+                .insert("node-accidental".to_owned(), "noop".to_owned());
+            assert!(!answer_workflow_plan_is_executable(workflow_id, &implicit_noop));
+        }
+        assert!(!is_answer_workflow_id("ordinary.workflow"));
+        assert!(answer_workflow_admission_ready("ordinary.workflow", None));
+    }

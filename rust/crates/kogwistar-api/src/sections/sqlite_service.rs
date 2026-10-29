@@ -1243,6 +1243,13 @@ impl SqliteRunApplicationService {
                 .ok()
                 .flatten(),
         );
+        if is_answer_workflow_id(&workflow_id) {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_ANSWER_WORKFLOW_NOT_READY",
+                "SQLite runtime has no conversation graph authority for answer workflows",
+            );
+        }
         if graph_plan
             .as_ref()
             .is_some_and(|plan| submitted_runtime_graph_conflicts(plan, &input))

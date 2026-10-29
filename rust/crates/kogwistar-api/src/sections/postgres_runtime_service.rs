@@ -549,6 +549,13 @@ impl PostgresRunApplicationService {
             (Ok(projection), Ok(snapshot)) => exact_runtime_graph_plan(projection, snapshot),
             _ => None,
         };
+        if !answer_workflow_admission_ready(&workflow_id, graph_plan.as_ref()) {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_ANSWER_WORKFLOW_NOT_READY",
+                "the selected answer workflow has no complete authoritative plan with a compatible executor",
+            );
+        }
         if graph_plan
             .as_ref()
             .is_some_and(|plan| submitted_runtime_graph_conflicts(plan, &input))

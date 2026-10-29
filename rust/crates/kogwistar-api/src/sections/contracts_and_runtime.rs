@@ -1003,6 +1003,92 @@ struct RuntimeGraphPlan {
     node_executor_targets: std::collections::BTreeMap<String, String>,
 }
 
+fn is_answer_workflow_id(workflow_id: &str) -> bool {
+    matches!(workflow_id, "agentic_answering.v2" | "debug.rag.v1")
+}
+
+fn answer_workflow_admission_ready(
+    workflow_id: &str,
+    plan: Option<&RuntimeGraphPlan>,
+) -> bool {
+    !is_answer_workflow_id(workflow_id)
+        || plan.is_some_and(|value| answer_workflow_plan_is_executable(workflow_id, value))
+}
+
+fn answer_workflow_plan_is_executable(
+    workflow_id: &str,
+    plan: &RuntimeGraphPlan,
+) -> bool {
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+    ))
+    .expect("answer workflow runtime contract fixture is valid JSON");
+    if contract["schema_version"].as_u64() != Some(1) {
+        return false;
+    }
+    let Some(workflow) = contract["workflows"].get(workflow_id) else {
+        return false;
+    };
+    let required_ops = workflow["required_ops"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let required_predicates = workflow["required_predicates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let python_executor_ops = workflow["python_executor_ops"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let python_op_version = workflow["python_op_version"].as_str();
+    if required_ops.is_empty()
+        || python_executor_ops != required_ops
+        || python_op_version.is_none()
+    {
+        return false;
+    }
+    let Some(start_op) = plan.node_ops.get(&plan.start_node_id) else {
+        return false;
+    };
+    let plan_ops = plan
+        .node_ops
+        .values()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let plan_predicates = plan
+        .routes
+        .iter()
+        .filter_map(|route| route.predicate.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    let requires_default_route = workflow["requires_default_route"].as_bool() == Some(true);
+    if start_op != "start"
+        || plan.node_ops.len() != required_ops.len()
+        || plan.node_versions.len() != required_ops.len()
+        || plan_ops != required_ops
+        || plan_predicates != required_predicates
+        || (requires_default_route && !plan.routes.iter().any(|route| route.is_default))
+    {
+        return false;
+    }
+    plan.node_ops.iter().all(|(node_id, op)| {
+        let python_version_matches = !python_executor_ops.contains(op.as_str())
+            || plan.node_versions.get(node_id).map(String::as_str) == python_op_version;
+        let python_target_matches = !python_executor_ops.contains(op.as_str())
+            || plan
+                .node_executor_targets
+                .get(node_id)
+                .is_none_or(|target| target == "python-worker");
+        python_version_matches && python_target_matches
+    })
+}
+
 fn submitted_runtime_graph_conflicts(
     graph_plan: &RuntimeGraphPlan,
     input: &RuntimeSubmitRun,

@@ -51,12 +51,15 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 limit=5000,
             )
             ops: set[str] = set()
+            operation_versions_match = True
             for node in nodes or []:
                 md = getattr(node, "metadata", {}) or {}
                 op = str(md.get("wf_op") or md.get("op") or "")
                 if op:
                     ops.add(op)
-            return expected_ops.issubset(ops)
+                    version = str(md.get("wf_version") or md.get("wf.version") or "v1")
+                    operation_versions_match = operation_versions_match and version == "v1"
+            return expected_ops.issubset(ops) and operation_versions_match
 
         # If the full workflow is already present and valid, return it.
         if mode == "full" and _has_full_answer_flow():
@@ -96,7 +99,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_start": start,
                         "wf_terminal": terminal,
                         "wf_fanout": fanout,
-                        "wf_version": "v2",
+                        "wf_version": "v1",
                     },
                     domain_id=None,
                     canonical_entity_id=None,
@@ -245,7 +248,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                     "wf_start": start,
                     "wf_terminal": terminal,
                     "wf_fanout": fanout,
-                    "wf_version": "v2",
+                    "wf_version": "v1",
                 }
                 metadata_final.update(metadata)
                 n = WorkflowNode(
@@ -262,7 +265,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                         "wf_start": start,
                         "wf_terminal": terminal,
                         "wf_fanout": fanout,
-                        "wf_version": "v2",
+                        "wf_version": "v1",
                         "wf_join": wf_join,
                     },
                     domain_id=None,

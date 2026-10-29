@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "workflows": {
+    "agentic_answering.v2": {
+      "required_ops": [
+        "start",
+        "aa_prepare",
+        "aa_get_view_and_question",
+        "aa_retrieve_candidates",
+        "aa_select_used_evidence",
+        "aa_materialize_evidence_pack",
+        "aa_generate_answer_with_citations",
+        "aa_validate_or_repair_citations",
+        "aa_evaluate_answer",
+        "aa_project_pointers",
+        "aa_maybe_iterate",
+        "aa_persist_response",
+        "link_assistant_turn",
+        "end"
+      ],
+      "required_predicates": ["aa_should_iterate", "always"],
+      "requires_default_route": true,
+      "python_op_version": "v1",
+      "python_executor_ops": [
+        "start",
+        "aa_prepare",
+        "aa_get_view_and_question",
+        "aa_retrieve_candidates",
+        "aa_select_used_evidence",
+        "aa_materialize_evidence_pack",
+        "aa_generate_answer_with_citations",
+        "aa_validate_or_repair_citations",
+        "aa_evaluate_answer",
+        "aa_project_pointers",
+        "aa_maybe_iterate",
+        "aa_persist_response",
+        "link_assistant_turn",
+        "end"
+      ]
+    },
+    "debug.rag.v1": {
+      "required_ops": [
+        "start",
+        "aa_prepare",
+        "aa_get_view_and_question",
+        "aa_retrieve_candidates",
+        "aa_debug_select_top_candidates",
+        "aa_project_pointers",
+        "aa_debug_answer_from_nodes",
+        "aa_persist_response",
+        "link_assistant_turn",
+        "end"
+      ],
+      "required_predicates": [],
+      "requires_default_route": true,
+      "python_op_version": "v1",
+      "python_executor_ops": [
+        "start",
+        "aa_prepare",
+        "aa_get_view_and_question",
+        "aa_retrieve_candidates",
+        "aa_debug_select_top_candidates",
+        "aa_project_pointers",
+        "aa_debug_answer_from_nodes",
+        "aa_persist_response",
+        "link_assistant_turn",
+        "end"
+      ]
+    }
+  }
+}

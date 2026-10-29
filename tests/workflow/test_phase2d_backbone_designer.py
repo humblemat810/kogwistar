@@ -39,6 +39,7 @@ def test_phase2d_conversation_designer_ensure_backbone(
     assert any(n.metadata.get("wf_terminal") for n in nodes.values()), (
         "expected a terminal node"
     )
+    assert {n.metadata.get("wf_version", "v1") for n in nodes.values()} == {"v1"}
     # exactly one outgoing edge from start in skeleton
     outs = adj.get(start.id) or []
     assert len(outs) == 1
