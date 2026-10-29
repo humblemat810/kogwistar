@@ -7,10 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
+from kogwistar.engine_core.storage_backend import get_atomic_mutation_capability
 from kogwistar.engine_core.two_stage_chroma import (
     SQLiteChromaTwoStageProjectionAdapter,
     _sequence_number,
@@ -1162,8 +1164,12 @@ def test_chroma_reconciles_missing_edge_endpoints_before_stage1_cleanup(tmp_path
 
 def test_chroma_capability_requires_eventual_reconciliation():
     capability = chroma_two_stage_capability()
+    mutation_capability = get_atomic_mutation_capability(ChromaBackend)
+
     assert capability.atomic_promotion == "eventual_reconcile"
     assert capability.is_complete()
+    assert mutation_capability.mode == "eventual"
+    assert mutation_capability.supports_atomic_mutation is False
 
 
 def test_chroma_lifecycle_does_not_assume_atomic_stage1_cleanup(tmp_path):
