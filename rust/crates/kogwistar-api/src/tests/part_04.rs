@@ -1434,7 +1434,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let chroma = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1510,7 +1510,7 @@
         let service = open_sqlite_application_service(
             &path,
             Some(SqliteChromaGraphConfig {
-                endpoint,
+                endpoint: endpoint.clone(),
                 metric: DistanceMetric::Cosine,
                 node_collection: "worker-nodes".to_owned(),
                 edge_collection: "worker-edges".to_owned(),
@@ -1518,7 +1518,7 @@
         )
         .await
         .unwrap()
-        .with_embedding_provider(provider);
+        .with_embedding_provider(provider.clone());
 
         let namespace = "worker-tenant";
         let recovery_fixture: Value = serde_json::from_str(include_str!(
@@ -1599,6 +1599,39 @@
                 max_retries: 3,
             })
             .unwrap();
+
+        // The SQLite queue and canonical event are durable across a Rust
+        // application-service restart; Chroma promotion remains eventual.
+        drop(service);
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "worker-nodes".to_owned(),
+                edge_collection: "worker-edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .with_embedding_provider(provider);
+        assert_eq!(
+            sqlite_canonical_entity_revision(&service.store, namespace, "node", entity_id)
+                .unwrap()
+                .unwrap()
+                .revision,
+            appended.event.seq
+        );
+        assert_eq!(
+            service
+                .store
+                .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+                .unwrap()
+                .iter()
+                .filter(|job| job.job_id == "worker-node-embedding")
+                .count(),
+            1
+        );
 
         let summary = service
             .run_embedding_projection_jobs_once(1, 30, Some(namespace))
