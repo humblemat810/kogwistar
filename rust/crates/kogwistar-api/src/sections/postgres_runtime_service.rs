@@ -295,12 +295,14 @@ impl PostgresRunApplicationService {
             .parse::<tokio_postgres::Config>()
             .map_err(|_| "invalid PostgreSQL DSN".to_owned())?;
         let embedding_storage_scope = rust_pgvector_embedding_scope(&config, schema);
+        let native_operations = crate::native_memory_pin::registry()
+            .map_err(|error| format!("could not register native conversation operations: {error}"))?;
         PostgresStore::from_dsn(&dsn, schema)
             .map(|store| Self {
                 store,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
-                native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
+                native_operations,
                 owner_auth_store: None,
                 embedding_provider: None,
                 embedding_storage_scope,
@@ -1260,6 +1262,15 @@ impl PostgresRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state;
+        initial_state.remove("_rt_graph_scope");
+        initial_state.remove("_rt_run_owner_id");
+        initial_state.insert(
+            "_rt_graph_scope".to_owned(),
+            security_scope_value(&request.principal),
+        );
+        if let Some(owner_id) = run_user_id.as_deref() {
+            initial_state.insert("_rt_run_owner_id".to_owned(), json!(owner_id));
+        }
         install_authoritative_node_executor_targets(
             &mut initial_state,
             &effective_node_executor_targets,

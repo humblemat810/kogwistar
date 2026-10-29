@@ -53,6 +53,7 @@ use kogwistar_store_sqlite::{
 };
 
 mod cutover;
+mod native_memory_pin;
 mod runtime_contract;
 pub use cutover::{
     ImplementationSnapshot, PENDING_SERVER_CUTOVER_ROUTES, PENDING_SYSCALL_CUTOVER_OPS,
