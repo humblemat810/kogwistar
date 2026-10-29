@@ -8,7 +8,7 @@
 use crate::worker_lease::with_lease_renewal;
 use kogwistar_store::{
     GraphProjectionWriteStore, GraphRecord, IndexJob, IndexJobClaimFilter, IndexJobProviderInput,
-    IndexJobWriteStore, StoreError, StoreResult,
+    IndexJobWriteStore, ProjectionWriteOutcome, StoreError, StoreResult,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -461,7 +461,7 @@ where
                 match action {
                     ProjectionAction::Upsert(record) => {
                         graph
-                            .upsert_graph_projection_record(
+                            .upsert_graph_projection_record_with_outcome(
                                 &job.namespace,
                                 &job.entity_kind,
                                 record,
@@ -472,13 +472,12 @@ where
                         // A repeated delete after lost acknowledgement is already the
                         // desired state, so `false` is still a successful projection.
                         graph
-                            .delete_graph_projection_record(
+                            .delete_graph_projection_record_with_outcome(
                                 &job.namespace,
                                 &job.entity_kind,
                                 &job.entity_id,
                             )
                             .await
-                            .map(|_| ())
                     }
                 }
             })
@@ -487,18 +486,23 @@ where
             summary.claim_lost += 1;
             continue;
         };
-        if let Err(error) = projection {
-            retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary).await?;
-            continue;
-        }
+        let projection = match projection {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary).await?;
+                continue;
+            }
+        };
         if queue
             .mark_index_job_done(&job.job_id, Some(claim_token))
             .await?
         {
-            if is_replay {
-                summary.reused += 1;
-            } else {
-                summary.projected += 1;
+            match projection {
+                // The replacement action is durably queued by the projection
+                // store. Do not report this acknowledged stale action as a write.
+                ProjectionWriteOutcome::Superseded => {}
+                ProjectionWriteOutcome::Applied if is_replay => summary.reused += 1,
+                ProjectionWriteOutcome::Applied => summary.projected += 1,
             }
         } else {
             summary.claim_lost += 1;

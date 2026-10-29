@@ -91,6 +91,215 @@ fn sqlite_canonical_entity_revision(
     )
 }
 
+#[derive(Clone)]
+struct RevisionFencedChromaProjectionStore {
+    queue: SqliteStore,
+    graph: kogwistar_store_chroma::ChromaGraphStore,
+}
+
+impl RevisionFencedChromaProjectionStore {
+    fn current_revision(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        entity_id: &str,
+    ) -> Result<Option<kogwistar_engine::canonical_revision::CanonicalEntityRevision>, StoreError>
+    {
+        sqlite_canonical_entity_revision(&self.queue, namespace, entity_kind, entity_id)
+    }
+
+    fn enqueue_current_revision(
+        &self,
+        revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
+    ) -> Result<(), StoreError> {
+        let payload_json =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(revision);
+        self.queue
+            .enqueue_index_job(NewIndexJob {
+                job_id: format!("revision-fence-{}", uuid::Uuid::new_v4()),
+                namespace: revision.namespace.clone(),
+                entity_kind: revision.entity_kind.clone(),
+                entity_id: revision.entity_id.clone(),
+                index_kind: "node_embedding".to_owned(),
+                op: if revision.is_deleted() {
+                    "DELETE".to_owned()
+                } else {
+                    "UPSERT".to_owned()
+                },
+                payload_json: Some(payload_json),
+                max_retries: 10,
+            })
+            .map_err(|error| StoreError::Backend {
+                backend: "sqlite-chroma-projection".to_owned(),
+                message: error.to_string(),
+            })?;
+        Ok(())
+    }
+
+    fn canonical_fingerprint(
+        revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
+    ) -> Result<String, StoreError> {
+        let payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(revision);
+        serde_json::from_str::<Value>(&payload)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("source_fingerprint")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .ok_or_else(|| StoreError::InvalidEntityEventPayload {
+                message: "canonical revision fingerprint is unavailable".to_owned(),
+            })
+    }
+
+    fn graph_kind(entity_kind: &str) -> Result<kogwistar_store::GraphEntityKind, StoreError> {
+        match entity_kind {
+            "node" => Ok(kogwistar_store::GraphEntityKind::Node),
+            "edge" => Ok(kogwistar_store::GraphEntityKind::Edge),
+            _ => Err(StoreError::Backend {
+                backend: "sqlite-chroma-projection".to_owned(),
+                message: "projection entity kind must be 'node' or 'edge'".to_owned(),
+            }),
+        }
+    }
+
+    async fn upsert_with_revision_fence(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        record: GraphRecord,
+    ) -> Result<kogwistar_store::ProjectionWriteOutcome, StoreError> {
+        use kogwistar_store::ProjectionWriteOutcome;
+
+        let kind = Self::graph_kind(entity_kind)?;
+        let Some(current) = self.current_revision(namespace, entity_kind, &record.id)? else {
+            kogwistar_store::GraphWriteStore::delete_graph_record_of_kind(
+                &self.graph,
+                namespace,
+                kind,
+                &record.id,
+            )
+            .await?;
+            return Ok(ProjectionWriteOutcome::Applied);
+        };
+        if current.is_deleted() {
+            self.enqueue_current_revision(&current)?;
+            return Ok(ProjectionWriteOutcome::Superseded);
+        }
+        let current_fingerprint = Self::canonical_fingerprint(&current)?;
+        let record_revision = record
+            .metadata
+            .get("_kogwistar_source_revision")
+            .and_then(Value::as_i64);
+        let record_fingerprint = record
+            .metadata
+            .get("_kogwistar_source_fingerprint")
+            .and_then(Value::as_str);
+        let stage2_ready = record
+            .metadata
+            .get("_kogwistar_stage2_ready")
+            .and_then(Value::as_bool)
+            == Some(true);
+        if !stage2_ready
+            || record_revision != Some(current.revision)
+            || record_fingerprint != Some(current_fingerprint.as_str())
+        {
+            self.enqueue_current_revision(&current)?;
+            return Ok(ProjectionWriteOutcome::Superseded);
+        }
+        kogwistar_store::GraphWriteStore::upsert_graph_record_of_kind(
+            &self.graph,
+            namespace,
+            kind,
+            record,
+        )
+        .await?;
+        Ok(ProjectionWriteOutcome::Applied)
+    }
+
+    async fn delete_with_revision_fence(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        id: &str,
+    ) -> Result<(bool, kogwistar_store::ProjectionWriteOutcome), StoreError> {
+        use kogwistar_store::ProjectionWriteOutcome;
+
+        let kind = Self::graph_kind(entity_kind)?;
+        if let Some(current) = self.current_revision(namespace, entity_kind, id)?
+            && !current.is_deleted()
+        {
+            self.enqueue_current_revision(&current)?;
+            return Ok((false, ProjectionWriteOutcome::Superseded));
+        }
+        let deleted = kogwistar_store::GraphWriteStore::delete_graph_record_of_kind(
+            &self.graph,
+            namespace,
+            kind,
+            id,
+        )
+        .await?;
+        Ok((deleted, ProjectionWriteOutcome::Applied))
+    }
+}
+
+impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjectionStore {
+    fn upsert_graph_projection_record(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        record: GraphRecord,
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            self.upsert_with_revision_fence(namespace, entity_kind, record)
+                .await
+                .map(|_| ())
+        }
+    }
+
+    fn delete_graph_projection_record(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            self.delete_with_revision_fence(namespace, entity_kind, id)
+                .await
+                .map(|(deleted, _)| deleted)
+        }
+    }
+
+    fn upsert_graph_projection_record_with_outcome(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        record: GraphRecord,
+    ) -> impl std::future::Future<Output = Result<kogwistar_store::ProjectionWriteOutcome, StoreError>> + Send
+    {
+        async move {
+            self.upsert_with_revision_fence(namespace, entity_kind, record)
+                .await
+        }
+    }
+
+    fn delete_graph_projection_record_with_outcome(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        id: &str,
+    ) -> impl std::future::Future<Output = Result<kogwistar_store::ProjectionWriteOutcome, StoreError>> + Send
+    {
+        async move {
+            self.delete_with_revision_fence(namespace, entity_kind, id)
+                .await
+                .map(|(_, outcome)| outcome)
+        }
+    }
+}
+
 impl SqliteRunApplicationService {
     fn stage2_record_is_current(
         record: &GraphRecord,
@@ -704,13 +913,17 @@ impl SqliteRunApplicationService {
             .validate()
             .map_err(|error| error.to_string())?;
         let store = self.store.clone();
+        let projection_store = RevisionFencedChromaProjectionStore {
+            queue: self.store.clone(),
+            graph,
+        };
         let index_filter = IndexJobClaimFilter {
             namespace: namespace.map(str::to_owned),
             index_kinds: vec!["node_embedding".to_owned()],
         };
         let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
             &self.store,
-            &graph,
+            &projection_store,
             limit,
             lease_seconds,
             index_filter,

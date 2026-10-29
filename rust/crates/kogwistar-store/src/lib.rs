@@ -2544,6 +2544,41 @@ pub trait GraphProjectionWriteStore: Send + Sync {
         entity_kind: &str,
         id: &str,
     ) -> impl Future<Output = StoreResult<bool>> + Send;
+
+    /// Report whether an accepted projection action changed the materialized
+    /// store or was safely superseded by a newer canonical revision. Existing
+    /// implementations remain source-compatible and default to `Applied`.
+    fn upsert_graph_projection_record_with_outcome(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        record: GraphRecord,
+    ) -> impl Future<Output = StoreResult<ProjectionWriteOutcome>> + Send {
+        async move {
+            self.upsert_graph_projection_record(namespace, entity_kind, record)
+                .await?;
+            Ok(ProjectionWriteOutcome::Applied)
+        }
+    }
+
+    fn delete_graph_projection_record_with_outcome(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        id: &str,
+    ) -> impl Future<Output = StoreResult<ProjectionWriteOutcome>> + Send {
+        async move {
+            self.delete_graph_projection_record(namespace, entity_kind, id)
+                .await?;
+            Ok(ProjectionWriteOutcome::Applied)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionWriteOutcome {
+    Applied,
+    Superseded,
 }
 
 impl<T: GraphWriteStore> GraphProjectionWriteStore for T {

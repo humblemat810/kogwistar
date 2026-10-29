@@ -1681,6 +1681,270 @@
     }
 
     #[tokio::test]
+    async fn sqlite_chroma_projection_fence_replaces_stale_delete_after_resurrection() {
+        use kogwistar_store::NamedProjectionWrite;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let chroma = tokio::spawn(async move {
+            let mut observed = Vec::new();
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (split, length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(split) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&bytes[..split]);
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= split + 4 + length {
+                            break (split, length);
+                        }
+                    }
+                };
+                let head = String::from_utf8_lossy(&bytes[..split]);
+                let request_line = head.lines().next().unwrap().to_owned();
+                let body: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length])
+                    .unwrap();
+                let response = json!({
+                    "id": format!("collection-{}", body["name"].as_str().unwrap()),
+                    "metadata": {"hnsw:space":"cosine"}
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                observed.push((request_line, body));
+            }
+            observed
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-chroma-stale-delete-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: calls.clone(),
+            fail: None,
+        });
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "fenced-nodes".to_owned(),
+                edge_collection: "fenced-edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .with_embedding_provider(provider);
+
+        let namespace = "fenced-tenant";
+        let entity_id = "resurrected-node";
+        let deleted = service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "resurrected-node-delete".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: entity_id.to_owned(),
+                    op: "DELETE".to_owned(),
+                    payload_json: json!({"id":entity_id}).to_string(),
+                },
+            )
+            .unwrap();
+        let deleted_revision = kogwistar_engine::canonical_revision::read_canonical_entity_revision(
+            &[EntityEvent {
+                namespace: deleted.event.namespace.clone(),
+                seq: deleted.event.seq,
+                event_id: deleted.event.event_id.clone(),
+                entity_kind: deleted.event.entity_kind.clone(),
+                entity_id: deleted.event.entity_id.clone(),
+                op: deleted.event.op.clone(),
+                payload: serde_json::from_str(&deleted.event.payload_json).unwrap(),
+            }],
+            namespace,
+            "node",
+            entity_id,
+        )
+        .unwrap()
+        .unwrap();
+        let stale_delete_payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(&deleted_revision);
+
+        let active = service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "resurrected-node-reactivate".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: entity_id.to_owned(),
+                    op: "REPLACE".to_owned(),
+                    payload_json: json!({"id":entity_id,"document":"current source"}).to_string(),
+                },
+            )
+            .unwrap();
+        let active_revision = sqlite_canonical_entity_revision(
+            &service.store,
+            namespace,
+            "node",
+            entity_id,
+        )
+        .unwrap()
+        .unwrap();
+        let active_job_payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(&active_revision);
+        let active_fingerprint = serde_json::from_str::<Value>(&active_job_payload).unwrap()
+            ["source_fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        service
+            .store
+            .replace_stage1_node_projection(
+                namespace,
+                "node:resurrected-node",
+                NamedProjectionWrite {
+                    payload: json!({
+                        "document":"current source",
+                        "metadata":{},
+                        "source_fingerprint":active_fingerprint
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    last_authoritative_seq: active.event.seq,
+                    last_materialized_seq: active.event.seq,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        service
+            .store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "stale-resurrection-delete".to_owned(),
+                namespace: namespace.to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "DELETE".to_owned(),
+                payload_json: Some(stale_delete_payload.clone()),
+                max_retries: 3,
+            })
+            .unwrap();
+
+        let summary = service
+            .run_embedding_projection_jobs_once(1, 30, Some(namespace))
+            .await
+            .unwrap();
+        assert_eq!(summary.claimed, 1);
+        assert_eq!(summary.projected, 0);
+        assert!(calls.lock().unwrap().is_empty(), "DELETE must not invoke embeddings");
+        let jobs = service
+            .store
+            .list_index_jobs(Some(namespace), None, Some("node"), Some(entity_id), Some("node_embedding"), 10)
+            .unwrap();
+        assert_eq!(
+            jobs.iter()
+                .find(|job| job.job_id == "stale-resurrection-delete")
+                .unwrap()
+                .status,
+            "DONE"
+        );
+        let replacement = jobs
+            .iter()
+            .find(|job| job.job_id != "stale-resurrection-delete" && job.status == "PENDING")
+            .expect("the active revision must be requeued before the stale delete is acknowledged");
+        assert_eq!(replacement.op, "UPSERT");
+        assert_eq!(replacement.payload_json.as_deref(), Some(active_job_payload.as_str()));
+        let fenced = RevisionFencedChromaProjectionStore {
+            queue: service.store.clone(),
+            graph: service.chroma_graph.as_ref().unwrap().clone(),
+        };
+        let deleted_fingerprint = serde_json::from_str::<Value>(&stale_delete_payload).unwrap()
+            ["source_fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let stale_upsert = kogwistar_store::GraphProjectionWriteStore::upsert_graph_projection_record_with_outcome(
+            &fenced,
+            namespace,
+            "node",
+            GraphRecord {
+                id: entity_id.to_owned(),
+                document: Some("stale tombstoned content".to_owned()),
+                metadata: serde_json::from_value(json!({
+                    "_kogwistar_stage2_ready":true,
+                    "_kogwistar_source_revision":deleted.event.seq,
+                    "_kogwistar_source_fingerprint":deleted_fingerprint
+                }))
+                .unwrap(),
+                embedding: Some(vec![0.0, 1.0]),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stale_upsert,
+            kogwistar_store::ProjectionWriteOutcome::Superseded
+        );
+        let pending = service
+            .store
+            .list_index_jobs(
+                Some(namespace),
+                Some("PENDING"),
+                Some("node"),
+                Some(entity_id),
+                Some("node_embedding"),
+                10,
+            )
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].op, "UPSERT");
+        assert_eq!(pending[0].payload_json.as_deref(), Some(active_job_payload.as_str()));
+        let requests = chroma.await.unwrap();
+        assert_eq!(requests.len(), 2, "stale delete must not call Chroma mutation endpoints");
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
     async fn postgres_embedding_worker_uses_configured_provider_and_leaves_other_jobs_pending() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
