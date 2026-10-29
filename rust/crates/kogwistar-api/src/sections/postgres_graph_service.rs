@@ -1657,6 +1657,7 @@ impl PostgresRunApplicationService {
             Err(response) => return response,
         };
         let response = match op {
+            "create_conversation" => self.create_conversation_syscall(request, &input).await,
             "spawn_process" => {
                 if !syscall_allowed(
                     request,

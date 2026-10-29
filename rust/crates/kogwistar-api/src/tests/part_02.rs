@@ -492,7 +492,8 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("conversation", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(conversation_supported, 4);
+        assert_eq!(conversation_supported, 5);
+        assert!(rust_mcp_tool_supported("conversation", "conversation.create"));
         assert!(rust_mcp_tool_supported("conversation", "conversation.ask"));
         assert!(rust_mcp_tool_supported(
             "conversation",

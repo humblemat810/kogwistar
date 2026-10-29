@@ -252,6 +252,7 @@
             .filter_map(|tool| tool["name"].as_str())
             .collect::<Vec<_>>();
         assert!(listed_names.contains(&"conversation.ask"));
+        assert!(!listed_names.contains(&"conversation.create"));
         assert!(!listed_names.contains(&"conversation.get_transcript"));
 
         let malformed = app
@@ -410,6 +411,113 @@
             "/api/conversations/conv%20%2F%201/turns"
         );
         assert!(request.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_conversation_create_uses_native_postgres_syscall() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        #[derive(Clone)]
+        struct CreateRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
+
+        impl ApplicationService for CreateRecorder {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "conversation" && name == "conversation.create"
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let seen = Arc::clone(&self.0);
+                Box::pin(async move {
+                    *seen.lock().unwrap() = Some(request);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: br#"{"version":"v1","op":"create_conversation","status":"ok","result":{"conversation_id":"conv-1","user_id":"alice","status":"active","start_node_id":"start-1","tail_node_id":"start-1","turn_count":0}}"#.to_vec(),
+                    }
+                })
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(CreateRecorder(Arc::clone(&seen))),
+        );
+        let malformed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"create-invalid","method":"tools/call","params":{"name":"conversation.create","arguments":{"user_id":"alice","start_node_id":17}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let malformed_body = to_bytes(malformed.into_body(), 4096).await.unwrap();
+        let malformed_value: Value = serde_json::from_slice(&malformed_body).unwrap();
+        assert_eq!(malformed_value["error"]["code"], -32602);
+        assert!(seen.lock().unwrap().is_none());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"create-1","method":"tools/call","params":{"name":"conversation.create","arguments":{"user_id":"alice","conversation_id":"conv-1","start_node_id":"start-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["result"],
+            json!({
+                "conversation_id":"conv-1",
+                "user_id":"alice",
+                "status":"active",
+                "start_node_id":"start-1",
+                "tail_node_id":"start-1",
+                "turn_count":0
+            })
+        );
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path_and_query, "/api/syscall/v1/create_conversation");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            json!({
+                "version":"v1",
+                "op":"create_conversation",
+                "args": {
+                    "user_id":"alice",
+                    "conversation_id":"conv-1",
+                    "start_node_id":"start-1"
+                }
+            })
+        );
     }
 
     #[tokio::test]

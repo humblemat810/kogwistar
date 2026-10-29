@@ -1510,6 +1510,164 @@
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn conversation_create_rejects_non_owner_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_create_owner_auth_contract",
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "create_conversation",
+                    "args": {"user_id": "bob", "conversation_id": "conv-1"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["spawn_process"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_RUN_OWNER_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_conversation_create_persists_private_start_node_when_dsn_available() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_conversation_create_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let create = |user_id: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version": "v1",
+                "op": "create_conversation",
+                "args": {
+                    "user_id": user_id,
+                    "conversation_id": "conv-create-test",
+                    "start_node_id": "conv-create-start"
+                }
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub": "alice",
+                "role": "rw",
+                "ns": "conversation",
+                "storage_ns": "conversation",
+                "capabilities": ["spawn_process"]
+            }),
+        };
+        let created = service.execute(create("alice")).await;
+        assert_eq!(created.status, StatusCode::OK.as_u16());
+        let created: Value = serde_json::from_slice(&created.body).unwrap();
+        assert_eq!(created["status"], "ok");
+        assert_eq!(created["result"]["conversation_id"], "conv-create-test");
+        assert_eq!(created["result"]["user_id"], "alice");
+        assert_eq!(created["result"]["start_node_id"], "conv-create-start");
+        assert_eq!(created["result"]["tail_node_id"], "conv-create-start");
+        assert_eq!(created["result"]["turn_count"], 0);
+
+        let details = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conv-create-test".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(details.status, StatusCode::OK.as_u16());
+        let details: Value = serde_json::from_slice(&details.body).unwrap();
+        assert_eq!(details["conversation_id"], "conv-create-test");
+        assert_eq!(details["user_id"], "alice");
+        assert_eq!(details["status"], "active");
+        assert_eq!(details["start_node_id"], "conv-create-start");
+        assert_eq!(details["tail_node_id"], "conv-create-start");
+        assert_eq!(details["turn_count"], 0);
+
+        let outsider_details = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conv-create-test".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "bob",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(outsider_details.status, StatusCode::NOT_FOUND.as_u16());
+
+        let transcript = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conv-create-test/turns".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(transcript.status, StatusCode::OK.as_u16());
+        let transcript: Value = serde_json::from_slice(&transcript.body).unwrap();
+        assert_eq!(transcript, json!({"conversation_id": "conv-create-test", "turns": []}));
+
+        let owner_mismatch = service.execute(create("bob")).await;
+        assert_eq!(owner_mismatch.status, StatusCode::FORBIDDEN.as_u16());
+        let duplicate = service.execute(create("alice")).await;
+        assert_eq!(duplicate.status, StatusCode::CONFLICT.as_u16());
+
+        drop(service);
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        cleanup
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+    }
+
     #[test]
     fn server_readiness_cannot_overclaim_pending_routes() {
         let mut implementation = ImplementationSnapshot::default();
@@ -1568,6 +1726,7 @@
         assert!(postgres.supports_mcp_tool("workflow", "workflow.run_status"));
         assert!(postgres.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(postgres.supports_mcp_tool("conversation", "conversation.ask"));
+        assert!(postgres.supports_mcp_tool("conversation", "conversation.create"));
         assert!(postgres.supports_mcp_tool(
             "conversation",
             "conversation.get_transcript"
@@ -1582,6 +1741,7 @@
         assert!(sqlite.supports_mcp_tool("workflow", "workflow.run_status"));
         assert!(!sqlite.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(!sqlite.supports_mcp_tool("conversation", "conversation.ask"));
+        assert!(!sqlite.supports_mcp_tool("conversation", "conversation.create"));
         assert!(!sqlite.supports_mcp_tool(
             "conversation",
             "conversation.get_transcript"

@@ -17,9 +17,9 @@ use jsonwebtoken::{
 };
 use kogwistar_contracts::{
     ContextSnapshotV1, ConversationTranscriptV1, DelegationAuthorityV1, DocumentUpsertV1,
-    GraphMutationBatchV1 as GraphMutationBatchInput, GraphMutationV1 as GraphMutationInput,
-    GraphNeighborsRequestV1, ToolAuditResponseV1, attach_rust_native_seam_attestation,
-    attenuate_capabilities, graph_neighbors_request_from_str,
+    GraphModelClass, GraphModelEnvelope, GraphMutationBatchV1 as GraphMutationBatchInput,
+    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1, ToolAuditResponseV1,
+    attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
 };
 use kogwistar_engine::embedding::EmbeddingProvider;
 use kogwistar_runtime::{

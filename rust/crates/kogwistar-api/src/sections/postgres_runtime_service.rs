@@ -1402,6 +1402,291 @@ impl PostgresRunApplicationService {
         .map_err(|error| error.to_string())
     }
 
+    async fn create_conversation_syscall(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "create_conversation",
+            true,
+            &["spawn_process"],
+            "conversation",
+        ) {
+            return syscall_forbidden("create_conversation");
+        }
+        let Some(actor_id) = authenticated_run_owner_id(&request.principal) else {
+            return effect_error(
+                StatusCode::UNAUTHORIZED,
+                "KOGWISTAR_AUTHENTICATION_REQUIRED",
+                "conversation creation requires an authenticated principal",
+            );
+        };
+        let Some(requested_user_id) = input
+            .args
+            .get("user_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "user_id is required",
+            );
+        };
+        if !requested_user_id.eq_ignore_ascii_case(actor_id) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "user_id must match the authenticated principal",
+            );
+        }
+        let optional_id = |key: &str| -> Result<Option<String>, ApiEffectResponse> {
+            match input.args.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(value)) if !value.trim().is_empty() => {
+                    Ok(Some(value.trim().to_owned()))
+                }
+                _ => Err(effect_error(
+                    StatusCode::BAD_REQUEST,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    format!("{key} must be a non-empty string or null"),
+                )),
+            }
+        };
+        let conversation_id = match optional_id("conversation_id") {
+            Ok(Some(value)) => value,
+            Ok(None) => uuid::Uuid::new_v4().to_string(),
+            Err(response) => return response,
+        };
+        let start_node_id = match optional_id("start_node_id") {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let user_id = actor_id.to_owned();
+        let start_id = start_node_id.unwrap_or_else(|| {
+            kogwistar_contracts::stable_id(
+                "conversation.node",
+                &[
+                    user_id.clone(),
+                    conversation_id.clone(),
+                    "Start of conversation".to_owned(),
+                    "-1".to_owned(),
+                    "system".to_owned(),
+                    "conversation_summary".to_owned(),
+                    "True".to_owned(),
+                ],
+            )
+            .to_string()
+        });
+        let (scope, _) = conversation_graph_scope_and_acl_principal(&request.principal);
+        if scope.namespace != "conversation" {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "conversation creation requires conversation storage scope",
+            );
+        }
+        let metadata = serde_json::Map::from_iter([
+            ("namespace".to_owned(), json!(scope.namespace)),
+            ("level_from_root".to_owned(), json!(0)),
+            ("entity_type".to_owned(), json!("conversation_start")),
+            ("turn_index".to_owned(), json!(-1)),
+            ("in_conversation_chain".to_owned(), json!(true)),
+            ("in_ui_chain".to_owned(), json!(true)),
+            ("lifecycle_status".to_owned(), json!("active")),
+            ("redirect_to_id".to_owned(), Value::Null),
+            ("role".to_owned(), json!("system")),
+            ("conversation_id".to_owned(), json!(conversation_id)),
+            ("user_id".to_owned(), json!(user_id)),
+        ]);
+        let properties = json!({"status": "active"});
+        let mentions = json!([{
+            "spans": [{
+                "collection_page_url": "conversation/_conv:_dummy",
+                "document_page_url": "conversation/_conv:_dummy",
+                "doc_id": "_conv:_dummy",
+                "insertion_method": "system",
+                "page_number": 1,
+                "start_char": 0,
+                "end_char": 1,
+                "excerpt": "",
+                "context_before": "",
+                "context_after": "",
+                "source_cluster_id": null,
+                "verification": {"method": "system", "is_verified": true, "score": 1.0, "notes": ""}
+            }],
+            "multimodal_spans": []
+        }]);
+        let payload = json!({
+            "id": start_id,
+            "label": "conversation start",
+            "type": "entity",
+            "summary": "Start of conversation",
+            "domain_id": null,
+            "canonical_entity_id": null,
+            "properties": properties,
+            "mentions": mentions,
+            "embedding": null,
+            "doc_id": null,
+            "metadata": metadata,
+            "level_from_root": 0,
+            "role": "system",
+            "turn_index": -1,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+        });
+        let envelope = GraphModelEnvelope::new(GraphModelClass::ConversationNode, payload.clone());
+        if let Err(error) = envelope.validate_family_v1() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_GRAPH_MODEL",
+                error.to_string(),
+            );
+        }
+        let mut record_metadata = payload["metadata"].as_object().cloned().unwrap_or_default();
+        record_metadata.insert("_class_name".to_owned(), json!("ConversationNode"));
+        record_metadata.insert("label".to_owned(), json!("conversation start"));
+        record_metadata.insert("type".to_owned(), json!("entity"));
+        record_metadata.insert("summary".to_owned(), json!("Start of conversation"));
+        record_metadata.insert("properties".to_owned(), json!(properties.to_string()));
+        record_metadata.insert("mentions".to_owned(), json!(mentions.to_string()));
+        let mut document_payload = payload.clone();
+        if let Some(object) = document_payload.as_object_mut() {
+            object.remove("metadata");
+            object.remove("embedding");
+        }
+        let document = match serde_json::to_string(&document_payload) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_SERIALIZATION_FAILED",
+                    error.to_string(),
+                );
+            }
+        };
+        let event_id = kogwistar_contracts::stable_id(
+            "conversation.create.event",
+            &[conversation_id.clone(), start_id.clone()],
+        )
+        .to_string();
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: event_id.clone(),
+            op: "ADD".to_owned(),
+            payload,
+            record: GraphRecord {
+                id: start_id.clone(),
+                document: Some(document),
+                metadata: record_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let owner_id = user_id.to_ascii_lowercase();
+        let security_scope = security_scope_value(&request.principal)
+            .get("security_scope")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase);
+        let response_conversation_id = conversation_id.clone();
+        let response_start_id = start_id.clone();
+        let transaction = self
+            .store
+            .transaction(|uow| {
+                Box::pin(async move {
+                    uow.lock_entity_identity(&scope.namespace, "conversation", &conversation_id)
+                        .await?;
+                    let existing = uow
+                        .graph_projection_records_for_update(GraphProjectionRead {
+                            scope: scope.clone(),
+                            table: "gke_nodes".to_owned(),
+                            ids: None,
+                            metadata: MetadataFilter {
+                                equals: BTreeMap::from([(
+                                    "conversation_id".to_owned(),
+                                    json!(conversation_id),
+                                )]),
+                            },
+                            limit: 10_000,
+                        })
+                        .await?;
+                    if existing.iter().any(|record| {
+                        record.metadata.get("entity_type").and_then(Value::as_str)
+                            == Some("conversation_start")
+                    }) {
+                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            "conversation_id already exists".to_owned(),
+                        ));
+                    }
+                    uow.lock_entity_identity(&scope.namespace, "node", &start_id)
+                        .await?;
+                    let node_collision = uow
+                        .graph_projection_records_for_update(GraphProjectionRead {
+                            scope: scope.clone(),
+                            table: "gke_nodes".to_owned(),
+                            ids: Some(vec![start_id.clone()]),
+                            metadata: MetadataFilter::default(),
+                            limit: 1,
+                        })
+                        .await?;
+                    if !node_collision.is_empty() {
+                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            "start_node_id already exists".to_owned(),
+                        ));
+                    }
+                    let (acl_mutations, index_jobs) = resolve_default_acl_graph_effects(
+                        uow,
+                        &scope,
+                        std::slice::from_ref(&mutation),
+                        "conversation",
+                        &owner_id,
+                        security_scope.as_deref(),
+                        &event_id,
+                    )
+                    .await?;
+                    uow.apply_graph_mutation(mutation).await?;
+                    for acl_mutation in acl_mutations {
+                        uow.apply_graph_mutation(acl_mutation).await?;
+                    }
+                    for index_job in index_jobs {
+                        uow.enqueue_index_job(index_job).await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+        match transaction {
+            Ok(()) => syscall_result(
+                &input.version,
+                "create_conversation",
+                json_effect(
+                    StatusCode::CREATED,
+                    json!({
+                        "conversation_id": response_conversation_id,
+                        "user_id": user_id,
+                        "status": "active",
+                        "start_node_id": response_start_id,
+                        "tail_node_id": response_start_id,
+                        "turn_count": 0,
+                    }),
+                ),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_CREATE_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
     async fn send_message_syscall(
         &self,
         request: &ApiEffectRequest,

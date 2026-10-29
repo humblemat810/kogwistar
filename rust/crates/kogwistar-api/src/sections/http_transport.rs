@@ -164,6 +164,54 @@ async fn mcp_handler(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let request = match tool_name {
+            "conversation.create" => {
+                let user_id = arguments
+                    .get("user_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let conversation_id = arguments
+                    .get("conversation_id")
+                    .filter(|value| !value.is_null())
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let start_node_id = arguments
+                    .get("start_node_id")
+                    .filter(|value| !value.is_null())
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let optional_strings_valid = ["conversation_id", "start_node_id"]
+                    .iter()
+                    .all(|key| arguments.get(*key).is_none_or(|value| value.is_null() || value.as_str().is_some_and(|value| !value.trim().is_empty())));
+                let known_arguments = ["user_id", "conversation_id", "start_node_id"];
+                user_id
+                    .filter(|_| {
+                        optional_strings_valid
+                            && arguments
+                                .keys()
+                                .all(|argument| known_arguments.contains(&argument.as_str()))
+                    })
+                    .map(|user_id| {
+                        let mut syscall_args = json!({"user_id": user_id});
+                        if let Some(conversation_id) = conversation_id {
+                            syscall_args["conversation_id"] = json!(conversation_id);
+                        }
+                        if let Some(start_node_id) = start_node_id {
+                            syscall_args["start_node_id"] = json!(start_node_id);
+                        }
+                        ApiEffectRequest {
+                            contract_version: 1,
+                            method: "POST".to_owned(),
+                            path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+                            body: serde_json::to_vec(&json!({
+                                "version": "v1",
+                                "op": "create_conversation",
+                                "args": syscall_args,
+                            }))
+                            .expect("conversation create syscall serializes"),
+                            principal: principal.clone(),
+                        }
+                    })
+            }
             "conversation.ask" => {
                 let conversation_id = arguments
                     .get("conversation_id")
@@ -751,7 +799,7 @@ async fn mcp_handler(
             .into_response();
         }
         let mut result = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
-        if tool_name == "conversation.ask" {
+        if matches!(tool_name, "conversation.create" | "conversation.ask") {
             result = result.get("result").cloned().unwrap_or(result);
         } else if tool_name == "conversation.get_transcript" {
             let conversation_id = arguments.get("conversation_id").and_then(Value::as_str);
