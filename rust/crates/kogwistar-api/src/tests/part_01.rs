@@ -3163,6 +3163,23 @@
             .find(|event| event["trace"]["event"] == "runtime.native.step.completed")
             .expect("successful Rust-native step must persist its trace");
         assert_eq!(native_trace["trace"]["executor_target"], "rust-native");
+        let trace = &native_trace["trace"];
+        let token_id = native_middle_work["payload"]["token_id"]
+            .as_str()
+            .expect("native step payload has its runtime token");
+        let step_seq = native_middle_work["payload"]["step_seq"]
+            .as_i64()
+            .expect("native step payload has its sequence");
+        assert_eq!(trace["trace_id"], "mixed-language-run");
+        assert_eq!(trace["attempt"], 1);
+        assert_eq!(trace["token_id"], token_id);
+        assert_eq!(trace["step_seq"], step_seq);
+        assert_eq!(trace["node_id"], "native-middle");
+        assert_eq!(trace["span_id"], format!("stp:mixed-language-run:{token_id}:{step_seq}:1:native-middle"));
+        assert_eq!(trace["parent_span_id"], format!("tok:mixed-language-run:{token_id}"));
+        assert_eq!(native_trace["run_id"], "mixed-language-run");
+        assert_eq!(native_trace["step_id"], "native-middle");
+        assert_eq!(native_trace["token_id"], token_id);
 
         // A non-native operation must keep the legacy Python-worker lane and
         // must not acquire native executor metadata implicitly.
