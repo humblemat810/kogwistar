@@ -27,6 +27,7 @@
   ],
   "expected_status": "succeeded",
   "expected_completed_steps": ["first", "second"],
+  "expected_step_sequences": [0, 1],
   "expected_final_state": {
     "counter": 2
   }

@@ -3040,6 +3040,9 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         assert len(native_traces) == 2
         expected_completed_steps = workflow_contract["expected_completed_steps"]
         assert [trace["node_id"] for trace in native_traces] == expected_completed_steps
+        assert [trace["step_seq"] for trace in native_traces] == workflow_contract[
+            "expected_step_sequences"
+        ]
         for trace in native_traces:
             assert trace["implementation_authority"] == "rust-native"
             assert trace["seam_crossings"] == []

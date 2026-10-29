@@ -313,6 +313,9 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
     ]
     assert [event["node_id"] for event in completed_steps] == expected_steps
     assert all(event["run_id"] == "python-shared-increment-contract" for event in completed_steps)
+    assert [event["step_seq"] for event in completed_steps] == contract[
+        "expected_step_sequences"
+    ]
     assert [json.loads(event["payload_json"])["status"] for event in completed_steps] == [
         "ok",
         "ok",
