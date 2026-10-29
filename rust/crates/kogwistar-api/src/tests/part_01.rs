@@ -1547,6 +1547,10 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_conversation_create_persists_private_start_node_when_dsn_available() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_conversation_create_{}", uuid::Uuid::new_v4().simple());
@@ -1655,7 +1659,85 @@
         let duplicate = service.execute(create("alice")).await;
         assert_eq!(duplicate.status, StatusCode::CONFLICT.as_u16());
 
-        drop(service);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let secret = "conversation-create-mcp-test-secret";
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "rw",
+                "ns": ["conversation"],
+                "storage_ns": "conversation",
+                "capabilities": ["spawn_process"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let application = Arc::new(service);
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    jwks_json: None,
+                    issuer: Some("local".to_owned()),
+                    audience: None,
+                    oidc_providers_json: None,
+                    auth_db_url: None,
+                },
+            },
+            application.clone(),
+        );
+        let mcp_create = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"create-live","method":"tools/call","params":{"name":"conversation.create","arguments":{"user_id":"alice","conversation_id":"conv-create-mcp","start_node_id":"conv-create-mcp-start"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_create.status(), StatusCode::OK);
+        let mcp_body = to_bytes(mcp_create.into_body(), 8192).await.unwrap();
+        let mcp_result: Value = serde_json::from_slice(&mcp_body).unwrap();
+        assert_eq!(mcp_result["result"]["conversation_id"], "conv-create-mcp");
+        assert_eq!(mcp_result["result"]["start_node_id"], "conv-create-mcp-start");
+        let mcp_created_details = application
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conv-create-mcp".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(mcp_created_details.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&mcp_created_details.body).unwrap()["start_node_id"],
+            "conv-create-mcp-start"
+        );
+
+        drop(application);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
