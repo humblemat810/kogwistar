@@ -226,6 +226,7 @@ class IndexingSubsystem:
 
         return _canonical_source_payload_json(source)
 
+    @implementation_selection_bound
     def canonical_source_payload_for_projection(
         self,
         *,

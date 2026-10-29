@@ -305,6 +305,36 @@
             })
             .await
             .unwrap();
+        service
+            .store
+            .project_lane_message(NewProjectedLaneMessage {
+                message_id: "lane-1".to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                recipient_id: "python-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "pending".to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: Some("owned-run".to_owned()),
+                step_id: Some("step-1".to_owned()),
+                correlation_id: Some("owned-run".to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: None,
+            })
+            .await
+            .unwrap();
+        let claimed = service
+            .store
+            .claim_projected_lane_messages("workflow", "workflow-runtime", "worker-1", 1, 30)
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].message_id, "lane-1");
+        assert_eq!(claimed[0].status, "claimed");
 
         let response = service
             .execute(ApiEffectRequest {
