@@ -2522,10 +2522,16 @@
         let listing: Value = serde_json::from_slice(&to_bytes(listing.into_body(), 65_536).await.unwrap()).unwrap();
         let advertised = listing["result"]["tools"].as_array().unwrap().iter()
             .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
-        for name in graph_read_tools {
-            assert!(advertised.contains(&name), "missing advertised MCP tool {name}: {advertised:?}");
-        }
-        assert!(!advertised.iter().any(|name| name.contains("write") || name.contains("mutat")));
+        let advertised_graph_tools = advertised
+            .iter()
+            .copied()
+            .filter(|name| name.starts_with("kg_"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            advertised_graph_tools,
+            graph_read_tools.into_iter().collect(),
+            "SQLite+Chroma must advertise exactly the implemented read-only graph surface"
+        );
 
         let denied = app.clone().oneshot(
             Request::builder()
