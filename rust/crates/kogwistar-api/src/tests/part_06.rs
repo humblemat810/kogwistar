@@ -4744,3 +4744,514 @@
         drop(service);
         let _ = std::fs::remove_file(path);
     }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; full Rust-native answer workflow against disposable PostgreSQL"]
+    async fn postgres_agentic_answer_workflow_executes_durably_without_python_worker() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
+        let schema = format!("rust_answer_e2e_{}", uuid::Uuid::new_v4().simple());
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-answer-e2e-auth-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let auth = SqliteAuthStore::open(&auth_path).unwrap();
+        auth.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "alice".to_owned(),
+            email: "alice@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "alice".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "alpha".to_owned(),
+        })
+        .await
+        .unwrap();
+        drop(auth);
+        let auth_config = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+            ..AuthConfig::default()
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let chat_address = listener.local_addr().unwrap();
+        let chat_server = tokio::spawn(async move {
+            let (mut stream, _) =
+                tokio::time::timeout(std::time::Duration::from_secs(30), listener.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let mut bytes = Vec::new();
+            let header_end = loop {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(position) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    break position + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .unwrap()
+                .trim()
+                .parse::<usize>()
+                .unwrap();
+            while bytes.len() < header_end + content_length {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+            }
+            let request: Value =
+                serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
+            assert_eq!(request["response_format"]["type"], "json_schema");
+            let answer = json!({
+                    "text":"The workflow runtime state is stored in the graph.",
+                    "reasoning":"The selected evidence states this directly.",
+                    "claims":[{"claim":"Workflow runtime state is stored in the graph.","citations":[{"source_node_id":"N1","mention_index":0,"span_index":0}]}]
+                }).to_string();
+            let response = json!({"choices":[{"message":{"content":answer}}]}).to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        });
+        let chat_provider = crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+            format!("http://{chat_address}/v1/chat/completions"),
+            "fixture-answer-model",
+            None,
+        )
+        .unwrap();
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap()
+            .with_native_operations(crate::native_answer_persist::registry().unwrap())
+            .with_owner_auth_config(&auth_config)
+            .await
+            .unwrap()
+            .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+                profile: kogwistar_engine::embedding::EmbeddingProfile {
+                    provider: "test".to_owned(),
+                    model: "fixed-answer-e2e-v1".to_owned(),
+                    dimension: 3,
+                    similarity_metric: "cosine".to_owned(),
+                    endpoint_fingerprint: None,
+                    max_sequence_length: None,
+                    crop_token_budget: None,
+                    tokenizer_fingerprint: None,
+                    crop_policy: None,
+                    embedding_kind: Some("single_vector".to_owned()),
+                    model_revision: None,
+                    preprocessing_fingerprint: None,
+                    max_image_patches: None,
+                },
+                vector: vec![0.6, 0.8, 0.0],
+                calls: Arc::new(Mutex::new(Vec::new())),
+                fail: None,
+            }))
+            .with_chat_completion_provider(chat_provider);
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let put_node = |id: &str,
+                        event_id: &str,
+                        metadata: serde_json::Map<String, Value>,
+                        document: Option<String>,
+                        embedding: Option<Vec<f32>>| {
+            GraphMutation {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: event_id.to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":id}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document,
+                    metadata,
+                    embedding,
+                },
+                embedding_dim: 3,
+            }
+        };
+        let acl = |target: &str, truth_graph: &str, mode: &str| {
+            put_node(
+                &format!("acl-{target}"),
+                &format!("e2e-acl-{target}"),
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!(truth_graph)),
+                    ("acl_target_grain".to_owned(), json!("node")),
+                    ("acl_target_entity_id".to_owned(), json!(target)),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("acl_mode".to_owned(), json!(mode)),
+                    ("owner_id".to_owned(), json!("alice")),
+                ]),
+                None,
+                None,
+            )
+        };
+        let item_acl = |target: &str, truth_graph: &str, grain: &str, item_id: &str, mode: &str| {
+            put_node(
+                &format!("acl-{grain}-{item_id}"),
+                &format!("e2e-acl-{grain}-{item_id}"),
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!(truth_graph)),
+                    ("acl_target_grain".to_owned(), json!(grain)),
+                    ("acl_target_entity_id".to_owned(), json!(target)),
+                    ("acl_target_item_id".to_owned(), json!(item_id)),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("acl_mode".to_owned(), json!(mode)),
+                    ("owner_id".to_owned(), json!("alice")),
+                ]),
+                None,
+                None,
+            )
+        };
+        for mutation in [
+            put_node(
+                "answer-user-turn",
+                "e2e-user-turn",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("conversation_turn")),
+                    (
+                        "conversation_id".to_owned(),
+                        json!("answer-e2e-conversation"),
+                    ),
+                    ("role".to_owned(), json!("user")),
+                    ("turn_index".to_owned(), json!(0)),
+                    ("in_conversation_chain".to_owned(), json!(true)),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
+                    json!({"summary":"Where is workflow runtime state stored?","metadata":{
+                        "entity_type":"conversation_turn","conversation_id":"answer-e2e-conversation",
+                        "role":"user","lifecycle_status":"active"
+                    }})
+                    .to_string(),
+                ),
+                None,
+            ),
+            acl("answer-user-turn", "conversation", "private"),
+            put_node(
+                "answer-evidence-node",
+                "e2e-evidence-node",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("knowledge_node")),
+                    ("label".to_owned(), json!("Rust workflow runtime")),
+                    (
+                        "summary".to_owned(),
+                        json!("The workflow runtime records state in a durable graph."),
+                    ),
+                    ("level_from_root".to_owned(), json!(0)),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                    (
+                        "mentions".to_owned(),
+                        json!([{"spans":[{"excerpt":"durable graph"}]}]),
+                    ),
+                ]),
+                Some("The workflow runtime records state in a durable graph.".to_owned()),
+                Some(vec![0.6_f32, 0.8, 0.0]),
+            ),
+            acl("answer-evidence-node", "knowledge", "public"),
+            item_acl(
+                "answer-evidence-node",
+                "knowledge",
+                "grounding",
+                "answer-evidence-node::mention::0",
+                "public",
+            ),
+            item_acl(
+                "answer-evidence-node",
+                "knowledge",
+                "span",
+                "answer-evidence-node::mention::0::span::0",
+                "public",
+            ),
+        ] {
+            service.store.apply_graph_mutation(mutation).await.unwrap();
+        }
+
+        let direct_vector_hits = service
+            .store
+            .graph_projection_vector_query_level_lte_excluding_metadata(
+                GraphProjectionVectorQuery {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    query: VectorQuery {
+                        embedding: vec![0.6, 0.8, 0.0],
+                        limit: 10,
+                        metadata: MetadataFilter::default(),
+                        metric: DistanceMetric::Cosine,
+                    },
+                    embedding_dim: 3,
+                },
+                std::collections::BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+                3,
+            )
+            .await
+            .unwrap();
+        assert!(
+            direct_vector_hits
+                .iter()
+                .any(|hit| hit.record.id == "answer-evidence-node"),
+            "seeded evidence must be retrievable before workflow admission: {direct_vector_hits:#?}"
+        );
+
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+        )))
+        .unwrap();
+        let workflow = &contract["workflows"]["agentic_answering.v2"];
+        let ops = workflow["required_ops"].as_array().unwrap();
+        let design_nodes = ops.iter().map(|value| {
+                let op = value.as_str().unwrap();
+                json!({"id":op,"label":op,"metadata":{
+                    "wf_op":op,"wf_version":"v1","wf_executor_target":"rust-native","wf_start":op=="start"
+                }})
+            }).collect::<Vec<_>>();
+        let design_edges = workflow["required_routes"].as_array().unwrap().iter().enumerate().map(|(index,route)| json!({
+                "id":format!("answer-e2e-route-{index}"),"source_ids":[route["from"]],"target_ids":[route["to"]],
+                "metadata":{"wf_predicate":route["predicate"],"wf_is_default":route["default"],
+                    "wf_priority":route["priority"],"wf_multiplicity":route["multiplicity"]}
+            })).collect::<Vec<_>>();
+        service
+            .store
+            .replace_named_projection(
+                "workflow_design",
+                "agentic_answering.v2",
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        service
+            .store
+            .put_workflow_design_snapshot(
+                "agentic_answering.v2",
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(
+                        &json!({"nodes":design_nodes,"edges":design_edges}),
+                    )
+                    .unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        let submit = service.execute(ApiEffectRequest {
+                contract_version:1, method:"POST".to_owned(), path_and_query:"/api/workflow/runs".to_owned(),
+                body:serde_json::to_vec(&json!({
+                    "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
+                    "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
+                    "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
+                        "turn_index":0,"evidence_selector":"bm25","max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
+                })).unwrap(),
+                principal:json!({"user_id":"alice","actor_id":"alice","sub":"alice","role":"rw","ns":"alpha","storage_ns":"alpha",
+                    "capabilities":["workflow.run.write","read_graph","write_graph"]}),
+            }).await;
+        assert_eq!(
+            submit.status,
+            StatusCode::ACCEPTED.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&submit.body)
+        );
+        let mut terminal_status = String::new();
+        let mut worker_error = None;
+        for _ in 0..40 {
+            match service.execute_inline_native_work_once().await {
+                Ok(true) => {
+                    terminal_status = service
+                        .store
+                        .get_server_run("rust-only-answer-e2e")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .status;
+                    if matches!(
+                        terminal_status.as_str(),
+                        "succeeded" | "failed" | "cancelled"
+                    ) {
+                        break;
+                    }
+                }
+                Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+                Err(error) => {
+                    worker_error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        let run = service
+            .store
+            .get_server_run("rust-only-answer-e2e")
+            .await
+            .unwrap();
+        if terminal_status != "succeeded" {
+            let state = service
+                .store
+                .read_recorded_runtime_state(
+                    "rust-only-answer-e2e",
+                    "agentic_answering.v2",
+                    "answer-e2e-conversation",
+                )
+                .await
+                .unwrap();
+            chat_server.abort();
+            panic!(
+                "native workflow did not complete: status={terminal_status:?}, error={worker_error:?}, run={run:#?}, state={state:#?}"
+            );
+        }
+        chat_server.await.unwrap();
+        let runtime = service
+            .store
+            .read_recorded_runtime_state(
+                "rust-only-answer-e2e",
+                "agentic_answering.v2",
+                "answer-e2e-conversation",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime.state["answer"]["text"],
+            "The workflow runtime state is stored in the graph."
+        );
+        assert_eq!(
+            runtime.state["used_node_ids"],
+            json!(["answer-evidence-node"])
+        );
+        let op_log = runtime.state["op_log"].as_array().unwrap();
+        for operation in ops.iter().filter_map(Value::as_str) {
+            assert!(
+                op_log
+                    .iter()
+                    .any(|value| value.as_str().is_some_and(|logged| {
+                        logged == operation
+                            || logged
+                                .strip_prefix(operation)
+                                .is_some_and(|suffix| suffix.starts_with(':'))
+                    })),
+                "workflow operation was not traced: {operation}; log={op_log:#?}"
+            );
+        }
+        assert!(
+            runtime.state["_rt_node_executor_targets"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|target| target == "rust-native")
+        );
+        assert_eq!(
+            runtime.state["answer"]["claims"][0]["citations"][0]["source_node_id"],
+            "answer-evidence-node"
+        );
+        assert_eq!(runtime.state["done"], true);
+        let assistant_id = runtime.state["agentic_answering_result"]["assistant_turn_node_id"]
+            .as_str()
+            .expect("persist response state contains its assistant turn ID")
+            .to_owned();
+        let assistant = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![assistant_id.to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            assistant.len(),
+            1,
+            "assistant response must be durable in the graph"
+        );
+        assert_eq!(
+            assistant[0].metadata.get("role").and_then(Value::as_str),
+            Some("assistant")
+        );
+        let edges = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 100,
+            })
+            .await
+            .unwrap();
+        assert!(
+            edges.iter().any(|edge| edge
+                .document
+                .as_deref()
+                .and_then(|document| serde_json::from_str::<Value>(document).ok())
+                .is_some_and(|document| {
+                    document["relation"] == "next_turn"
+                        && document["source_ids"] == json!(["answer-user-turn"])
+                        && document["target_ids"] == json!([assistant_id])
+                })),
+            "assistant turn must be linked to the admitted user turn"
+        );
+        let lanes = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some("rust-only-answer-e2e".to_owned()),
+                limit: 100,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(!lanes.is_empty());
+        assert!(lanes.iter().all(|lane| lane.status == "completed"));
+        drop(service);
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let task = tokio::spawn(connection);
+        cleanup
+            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+        drop(cleanup);
+        task.await.unwrap().unwrap();
+        let _ = std::fs::remove_file(auth_path);
+    }

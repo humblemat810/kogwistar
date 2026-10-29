@@ -95,6 +95,7 @@ fn execute_prepare(
     let node_metadata = json!({
         "level_from_root": 0,
         "entity_type": "agent_run",
+        "conversation_id": conversation_id,
         "in_conversation_chain": false,
         "lifecycle_status": "active",
         "redirect_to_id": null

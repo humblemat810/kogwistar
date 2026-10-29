@@ -366,10 +366,21 @@ fn execute_persist_response(
         Value::Object(result_payload),
     );
     update.insert("prev_turn_meta_summary".to_owned(), Value::Object(summary));
+    let mut op_log = state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!("aa_persist_response"));
     let mut final_state = state.clone();
     final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    let auxiliary = Map::from_iter([("op_log".to_owned(), json!("aa_persist_response"))]);
     let output = NativeOperationOutput {
-        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair(("a".to_owned(), auxiliary)),
+        ],
         result: Some(json!({
             "workflow_status": "succeeded",
             "final_state": final_state,
