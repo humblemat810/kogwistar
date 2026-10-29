@@ -4427,7 +4427,6 @@
 
     #[tokio::test]
     async fn sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered() {
-        use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use jsonwebtoken::{EncodingKey, Header, encode};
@@ -4531,11 +4530,22 @@
             }
             observed
         });
-        let shared = ChromaStoreConfig { endpoint, ..Default::default() };
-        let graph = ChromaGraphStore::connect_entity_collections(
-            ChromaStoreConfig { collection: "nodes".to_owned(), ..shared.clone() },
-            ChromaStoreConfig { collection: "edges".to_owned(), ..shared },
-        ).await.unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-chroma-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "nodes".to_owned(),
+                edge_collection: "edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let graph = service.chroma_graph.as_ref().unwrap();
         let filter = MetadataFilter::default();
         let (nodes, edges) = tokio::try_join!(
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Node, &filter, 100),
@@ -4558,8 +4568,6 @@
             .await
             .unwrap();
         assert_eq!(batched.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), ["n2"]);
-        let path = std::env::temp_dir().join(format!("kogwistar-sqlite-chroma-{}.sqlite3", uuid::Uuid::new_v4()));
-        let service = SqliteRunApplicationService::open(&path).unwrap().with_chroma_graph(graph);
         for (event_id, entity_id, op) in [
             ("n2-current", "n2", "ADD"),
             ("n4-old", "n4", "ADD"),

@@ -386,13 +386,13 @@
         assert_eq!(unavailable, expected_unavailable);
     }
 
-    #[test]
-    fn sqlite_graph_routes_fail_closed_with_explicit_authority_status() {
+    #[tokio::test]
+    async fn sqlite_graph_routes_fail_closed_with_explicit_authority_status() {
         let path = std::env::temp_dir().join(format!(
             "kogwistar-api-graph-authority-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let service = open_sqlite_application_service(&path, None).await.unwrap();
         for route in [
             "/internal/graph/neighbors",
             "/internal/graph/vector-query",

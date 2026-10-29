@@ -7,6 +7,44 @@ pub struct SqliteRunApplicationService {
     native_operations: kogwistar_runtime::NativeOperationRegistry,
 }
 
+#[derive(Clone)]
+struct SqliteChromaGraphConfig {
+    endpoint: String,
+    metric: DistanceMetric,
+    node_collection: String,
+    edge_collection: String,
+}
+
+async fn open_sqlite_application_service(
+    path: impl AsRef<std::path::Path>,
+    chroma: Option<SqliteChromaGraphConfig>,
+) -> Result<SqliteRunApplicationService, String> {
+    let mut service = SqliteRunApplicationService::open(path)?;
+    if let Some(chroma) = chroma {
+        let common = kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: chroma.endpoint,
+            metric: chroma.metric,
+            ..Default::default()
+        };
+        let node_config = kogwistar_store_chroma::ChromaStoreConfig {
+            collection: chroma.node_collection,
+            ..common.clone()
+        };
+        let edge_config = kogwistar_store_chroma::ChromaStoreConfig {
+            collection: chroma.edge_collection,
+            ..common
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            node_config,
+            edge_config,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        service = service.with_chroma_graph(graph);
+    }
+    Ok(service)
+}
+
 fn runtime_max_queue() -> usize {
     std::env::var("KOGWISTAR_RUNTIME_MAX_QUEUE")
         .ok()
