@@ -37,6 +37,11 @@ provider, and client boundaries still exist; "native end-to-end" means no
 Python/Rust handoff in the measured hot path. A native path is an optimization
 choice, not a prerequisite for using either implementation.
 
+A worker protocol may provide an explicit mixed-language seam, but it must not
+become a mandatory hop for a capability that supports a native path. Preserve
+direct Python-only and Rust-only routes; do not make either route depend on the
+other language's worker being installed or available.
+
 Do not deprecate a Python or Rust capability merely because the other language
 becomes faster or the default for one deployment. Deprecation of either public
 implementation requires a separate architecture and compatibility decision.
