@@ -403,7 +403,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         implementation: ImplementationSnapshot::default(),
         auth: AuthConfig::from_environment(),
     };
-    let mut embedding_worker_service = None;
+    let mut embedding_worker_available = false;
     let application: Arc<dyn ApplicationService> = if backend == "pg" {
         match std::env::var("KOGWISTAR_PG_DSN") {
             Ok(dsn) if !dsn.trim().is_empty() => {
@@ -432,7 +432,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                 .map_err(std::io::Error::other)?;
                 if let Some(provider) = embedding_provider {
                     service = service.with_embedding_provider(provider);
-                    embedding_worker_service = Some(service.clone());
+                    embedding_worker_available = true;
                 }
                 service
                     .ensure_schema()
@@ -478,18 +478,32 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     }
                     _ => None,
                 };
-                let service = open_sqlite_application_service(path, chroma)
+                let chroma_configured = chroma.is_some();
+                let mut service = open_sqlite_application_service(path, chroma)
                     .await
                     .map_err(std::io::Error::other)?;
+                if chroma_configured {
+                    let embedding_provider = embedding_provider_from_settings(
+                        std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
+                        std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+                        std::env::var("KOGWISTAR_EMBEDDING_DIMENSION").ok().as_deref(),
+                        std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT").ok().as_deref(),
+                    )
+                    .map_err(std::io::Error::other)?;
+                    if let Some(provider) = embedding_provider {
+                        service = service.with_embedding_provider(provider);
+                        embedding_worker_available = true;
+                    }
+                }
                 Arc::new(service)
             }
             _ => Arc::new(UnavailableApplicationService),
         }
     };
-    if inline_embedding_worker && embedding_worker_service.is_none() {
+    if inline_embedding_worker && !embedding_worker_available {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "KOGWISTAR_EMBEDDING_WORKER_INLINE requires the Rust PostgreSQL backend and a configured embedding provider",
+            "KOGWISTAR_EMBEDDING_WORKER_INLINE requires a supported graph backend and configured embedding provider (SQLite+Chroma or PostgreSQL)",
         )
         .into());
     }
@@ -507,11 +521,13 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         None
     };
     let embedding_worker = if inline_embedding_worker {
-        let service = embedding_worker_service.expect("validated above");
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         Some((
             shutdown,
-            tokio::spawn(supervise_inline_embedding_worker(service, shutdown_rx)),
+            tokio::spawn(supervise_inline_embedding_worker(
+                Arc::clone(&application),
+                shutdown_rx,
+            )),
         ))
     } else {
         None
@@ -555,6 +571,16 @@ pub trait ApplicationService: Send + Sync + 'static {
     /// Services without an inline runtime leave work for the external worker.
     fn execute_inline_native_work_once(
         &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    /// Run one bounded embedding/projection batch when this service owns an
+    /// explicitly configured inline worker. Other services leave it disabled.
+    fn execute_inline_embedding_work_once(
+        &self,
+        _limit: usize,
+        _lease_seconds: i64,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
         Box::pin(async { Ok(false) })
     }
@@ -623,7 +649,7 @@ async fn run_inline_native_worker(application: Arc<dyn ApplicationService>) {
 }
 
 async fn run_inline_embedding_worker(
-    service: PostgresRunApplicationService,
+    application: Arc<dyn ApplicationService>,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     const BATCH_LIMIT: usize = 32;
@@ -635,12 +661,12 @@ async fn run_inline_embedding_worker(
             _ = interval.tick() => {}
         }
         loop {
-            match service
-                .run_embedding_projection_jobs_once(BATCH_LIMIT, LEASE_SECONDS, None)
+            match application
+                .execute_inline_embedding_work_once(BATCH_LIMIT, LEASE_SECONDS)
                 .await
             {
-                Ok(summary) if summary.claimed == BATCH_LIMIT => continue,
-                Ok(_) => break,
+                Ok(true) => continue,
+                Ok(false) => break,
                 Err(error) => {
                     eprintln!("inline Rust embedding worker failed: {error}");
                     tokio::select! {
@@ -654,13 +680,14 @@ async fn run_inline_embedding_worker(
 }
 
 async fn supervise_inline_embedding_worker(
-    service: PostgresRunApplicationService,
+    application: Arc<dyn ApplicationService>,
     mut shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     loop {
         let (worker_shutdown, worker_shutdown_rx) = tokio::sync::oneshot::channel();
+        let worker_application = Arc::clone(&application);
         let mut worker = tokio::spawn(run_inline_embedding_worker(
-            service.clone(),
+            worker_application,
             worker_shutdown_rx,
         ));
         tokio::select! {

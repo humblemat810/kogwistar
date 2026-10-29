@@ -435,6 +435,18 @@ impl PostgresRunApplicationService {
 }
 
 impl ApplicationService for PostgresRunApplicationService {
+    fn execute_inline_embedding_work_once(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            self.run_embedding_projection_jobs_once(limit, lease_seconds, None)
+                .await
+                .map(|summary| summary.claimed == limit)
+        })
+    }
+
     fn execute_inline_native_work_once(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
@@ -759,6 +771,18 @@ impl ApplicationService for PostgresRunApplicationService {
 }
 
 impl ApplicationService for SqliteRunApplicationService {
+    fn execute_inline_embedding_work_once(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            self.run_embedding_projection_jobs_once(limit, lease_seconds, None)
+                .await
+                .map(|summary| summary.claimed == limit)
+        })
+    }
+
     fn execute_inline_native_work_once(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {

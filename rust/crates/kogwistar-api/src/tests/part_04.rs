@@ -1380,6 +1380,307 @@
     }
 
     #[tokio::test]
+    async fn sqlite_chroma_embedding_worker_projects_revision_fenced_stage1_document() {
+        use kogwistar_store::NamedProjectionWrite;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let chroma = tokio::spawn(async move {
+            let mut observed = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (split, length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0, "Chroma client closed before sending a full request");
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(split) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&bytes[..split]);
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= split + 4 + length {
+                            break (split, length);
+                        }
+                    }
+                };
+                let head = String::from_utf8_lossy(&bytes[..split]);
+                let request_line = head.lines().next().unwrap().to_owned();
+                let body: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length])
+                    .unwrap();
+                let response = if request_line.contains("/collections HTTP") {
+                    json!({
+                        "id": format!("collection-{}", body["name"].as_str().unwrap()),
+                        "metadata": {"hnsw:space":"cosine"}
+                    })
+                } else {
+                    json!({})
+                };
+                let response = response.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                observed.push((request_line, body));
+            }
+            observed
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-chroma-embedding-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: calls.clone(),
+            fail: None,
+        });
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "worker-nodes".to_owned(),
+                edge_collection: "worker-edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .with_embedding_provider(provider);
+
+        let namespace = "worker-tenant";
+        let entity_id = "worker-node";
+        let document = "canonical stage one text";
+        let appended = service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "worker-node-add".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: entity_id.to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({"id":entity_id,"document":document}).to_string(),
+                },
+            )
+            .unwrap();
+        let revision = sqlite_canonical_entity_revision(
+            &service.store,
+            namespace,
+            "node",
+            entity_id,
+        )
+        .unwrap()
+        .unwrap();
+        let job_payload = kogwistar_engine::canonical_revision::canonical_revision_job_payload(
+            &revision,
+        );
+        let fingerprint = serde_json::from_str::<Value>(&job_payload).unwrap()
+            ["source_fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        service
+            .store
+            .replace_stage1_node_projection(
+                namespace,
+                "node:worker-node",
+                NamedProjectionWrite {
+                    payload: json!({
+                        "document":document,
+                        "metadata":{"kind":"test"},
+                        "source_fingerprint":fingerprint
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    last_authoritative_seq: appended.event.seq,
+                    last_materialized_seq: appended.event.seq,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        service
+            .store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "worker-node-embedding".to_owned(),
+                namespace: namespace.to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some(job_payload),
+                max_retries: 3,
+            })
+            .unwrap();
+        service
+            .store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "worker-node-refs".to_owned(),
+                namespace: namespace.to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_refs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .unwrap();
+
+        let summary = service
+            .run_embedding_projection_jobs_once(1, 30, Some(namespace))
+            .await
+            .unwrap();
+        assert_eq!(summary.claimed, 1);
+        assert_eq!(summary.projected, 1);
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[vec![document.to_owned()]]
+        );
+        let jobs = service
+            .store
+            .list_index_jobs(Some(namespace), None, None, None, None, 10)
+            .unwrap();
+        assert_eq!(
+            jobs.iter()
+                .find(|job| job.job_id == "worker-node-embedding")
+                .unwrap()
+                .status,
+            "DONE"
+        );
+        assert_eq!(
+            jobs.iter()
+                .find(|job| job.job_id == "worker-node-refs")
+                .unwrap()
+                .status,
+            "PENDING"
+        );
+        let requests = chroma.await.unwrap();
+        let (upsert_path, upsert) = requests
+            .iter()
+            .find(|(line, _)| line.contains("/upsert"))
+            .expect("the worker writes the embedded record to Chroma");
+        assert!(upsert_path.contains("worker-nodes"));
+        assert_eq!(upsert["ids"], json!([entity_id]));
+        assert_eq!(upsert["documents"], json!([document]));
+        assert_eq!(upsert["embeddings"][0], json!([0.6, 0.8]));
+        let metadata: Value = serde_json::from_str(
+            upsert["metadatas"][0]["_kogwistar_original_metadata"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["_kogwistar_stage2_ready"], true);
+        assert_eq!(metadata["_kogwistar_source_revision"], appended.event.seq);
+        assert_eq!(metadata["_kogwistar_source_fingerprint"], fingerprint);
+
+        let stale_id = "stale-stage1-node";
+        let stale_appended = service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "stale-stage1-node-add".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: stale_id.to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({"id":stale_id,"document":"canonical v1"}).to_string(),
+                },
+            )
+            .unwrap();
+        let stale_revision = sqlite_canonical_entity_revision(
+            &service.store,
+            namespace,
+            "node",
+            stale_id,
+        )
+        .unwrap()
+        .unwrap();
+        let stale_job_payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(&stale_revision);
+        service
+            .store
+            .replace_stage1_node_projection(
+                namespace,
+                "node:stale-stage1-node",
+                NamedProjectionWrite {
+                    payload: json!({
+                        "document":"stale stage one text",
+                        "metadata":{},
+                        "source_fingerprint":"not-the-canonical-fingerprint"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    last_authoritative_seq: stale_appended.event.seq,
+                    last_materialized_seq: stale_appended.event.seq,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        service
+            .store
+            .enqueue_index_job(NewIndexJob {
+                job_id: "stale-stage1-embedding".to_owned(),
+                namespace: namespace.to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: stale_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some(stale_job_payload),
+                max_retries: 3,
+            })
+            .unwrap();
+        let stale_summary = service
+            .run_embedding_projection_jobs_once(1, 30, Some(namespace))
+            .await
+            .unwrap();
+        assert_eq!(stale_summary.claimed, 1);
+        assert_eq!(stale_summary.projected, 0);
+        assert_eq!(stale_summary.retried, 1);
+        assert_eq!(calls.lock().unwrap().as_slice(), &[vec![document.to_owned()]]);
+        let stale_job = service
+            .store
+            .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap()
+            .into_iter()
+            .find(|job| job.job_id == "stale-stage1-embedding")
+            .expect("mismatched Stage-1 revision remains retryable");
+        assert!(stale_job.last_error.as_deref().unwrap_or_default().contains("revisions do not match"));
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
     async fn postgres_embedding_worker_uses_configured_provider_and_leaves_other_jobs_pending() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
@@ -1569,7 +1870,7 @@
             .unwrap();
         let (worker_shutdown, worker_shutdown_rx) = tokio::sync::oneshot::channel();
         let worker = tokio::spawn(run_inline_embedding_worker(
-            service.clone(),
+            Arc::new(service.clone()),
             worker_shutdown_rx,
         ));
         let jobs = tokio::time::timeout(std::time::Duration::from_secs(10), async {

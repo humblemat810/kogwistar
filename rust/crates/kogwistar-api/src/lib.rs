@@ -37,7 +37,7 @@ use kogwistar_store::{
     GraphShortestPathQuery, IndexJobClaimFilter, LaneMessageClaimFilter, LaneMessageFilter,
     MetadataFilter, NamedProjection, NamedProjectionWrite, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ResolveExternalIdentity, ServerRun, ServerRunCreate, ServerRunEvent,
-    ServerRunReadStore, VectorQuery, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
+    ServerRunReadStore, StoreError, VectorQuery, WorkflowDesignDeltaWrite, WorkflowDesignSnapshot,
     WorkflowDesignSnapshotWrite, compact_conversation_list_candidates,
     conversation_summary_from_visible_records, conversation_transcript_from_visible_records,
     for_each_graph_projection_page, graph_find_edges_from_records, graph_k_hop_from_records,

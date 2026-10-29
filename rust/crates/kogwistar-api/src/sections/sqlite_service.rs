@@ -2,6 +2,7 @@
 pub struct SqliteRunApplicationService {
     store: SqliteStore,
     chroma_graph: Option<kogwistar_store_chroma::ChromaGraphStore>,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
@@ -51,6 +52,43 @@ fn runtime_max_queue() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(128)
+}
+
+fn sqlite_canonical_entity_revision(
+    store: &SqliteStore,
+    namespace: &str,
+    entity_kind: &str,
+    entity_id: &str,
+) -> Result<Option<kogwistar_engine::canonical_revision::CanonicalEntityRevision>, StoreError> {
+    let mut latest = store
+        .latest_entity_events(namespace, entity_kind, &[entity_id.to_owned()])
+        .map_err(|error| StoreError::Backend {
+            backend: "sqlite-chroma-projection".to_owned(),
+            message: error.to_string(),
+        })?;
+    let Some(raw) = latest.remove(entity_id) else {
+        return Ok(None);
+    };
+    let payload = serde_json::from_str::<Value>(&raw.payload_json).map_err(|error| {
+        StoreError::InvalidEntityEventPayload {
+            message: error.to_string(),
+        }
+    })?;
+    let event = EntityEvent {
+        namespace: raw.namespace,
+        seq: raw.seq,
+        event_id: raw.event_id,
+        entity_kind: raw.entity_kind,
+        entity_id: raw.entity_id,
+        op: raw.op,
+        payload,
+    };
+    kogwistar_engine::canonical_revision::read_canonical_entity_revision(
+        &[event],
+        namespace,
+        entity_kind,
+        entity_id,
+    )
 }
 
 impl SqliteRunApplicationService {
@@ -597,6 +635,7 @@ impl SqliteRunApplicationService {
             .map(|store| Self {
                 store,
                 chroma_graph: None,
+                embedding_provider: None,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
@@ -628,6 +667,191 @@ impl SqliteRunApplicationService {
     ) -> Self {
         self.chroma_graph = Some(graph);
         self
+    }
+
+    pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
+        self
+    }
+
+    /// Project one bounded batch from the existing SQLite Stage-1 rows into
+    /// Chroma. SQLite owns queue/revision state; Chroma remains an eventual
+    /// projection and each read is still revision-fenced.
+    pub async fn run_embedding_projection_jobs_once(
+        &self,
+        limit: usize,
+        lease_seconds: i64,
+        namespace: Option<&str>,
+    ) -> Result<kogwistar_engine::projection_worker::ProjectionWorkerSummary, String> {
+        if limit == 0 || limit > 1000 || lease_seconds <= 0 {
+            return Err("limit must be 1..=1000 and lease_seconds must be positive".to_owned());
+        }
+        if namespace.is_some_and(|value| value.trim().is_empty()) {
+            return Err("namespace must not be empty".to_owned());
+        }
+        let graph = self
+            .chroma_graph
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "Rust Chroma graph projection is not configured".to_owned())?;
+        let provider = self
+            .embedding_provider
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "Rust embedding provider is not configured".to_owned())?;
+        provider
+            .profile()
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let store = self.store.clone();
+        let index_filter = IndexJobClaimFilter {
+            namespace: namespace.map(str::to_owned),
+            index_kinds: vec!["node_embedding".to_owned()],
+        };
+        let summary = kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_provider_input(
+            &self.store,
+            &graph,
+            limit,
+            lease_seconds,
+            index_filter,
+            move |input| {
+                let store = store.clone();
+                let provider = provider.clone();
+                async move {
+                    if input.schema_version != 1
+                        || input.index_kind != "node_embedding"
+                        || !matches!(input.entity_kind.as_str(), "node" | "edge")
+                    {
+                        return Err(StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "unsupported embedding job contract".to_owned(),
+                        });
+                    }
+                    let current = sqlite_canonical_entity_revision(
+                        &store,
+                        &input.namespace,
+                        &input.entity_kind,
+                        &input.entity_id,
+                    )?
+                    .filter(|revision| !revision.is_deleted())
+                    .ok_or_else(|| StoreError::Backend {
+                        backend: "sqlite-chroma-projection".to_owned(),
+                        message: "canonical entity is missing or deleted".to_owned(),
+                    })?;
+                    let current_job_payload =
+                        kogwistar_engine::canonical_revision::canonical_revision_job_payload(
+                            &current,
+                        );
+                    let current_fingerprint = serde_json::from_str::<Value>(&current_job_payload)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("source_fingerprint")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .ok_or_else(|| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "canonical revision fingerprint is unavailable".to_owned(),
+                        })?;
+                    let queued_fingerprint = input
+                        .payload_json
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .and_then(|value| {
+                            value
+                                .get("source_fingerprint")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .ok_or_else(|| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "embedding job lacks a canonical source fingerprint".to_owned(),
+                        })?;
+                    let stage1_key = format!("{}:{}", input.entity_kind, input.entity_id);
+                    let stage1 = store
+                        .get_stage1_node_projection(&input.namespace, &stage1_key)
+                        .map_err(|error| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: error.to_string(),
+                        })?
+                        .ok_or_else(|| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "SQLite Stage-1 source row is missing".to_owned(),
+                        })?;
+                    let stage1_fingerprint = stage1
+                        .payload
+                        .get("source_fingerprint")
+                        .and_then(Value::as_str);
+                    if queued_fingerprint != current_fingerprint
+                        || stage1_fingerprint != Some(current_fingerprint.as_str())
+                        || stage1.last_authoritative_seq != current.revision
+                    {
+                        return Err(StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "queued, staged, and canonical revisions do not match".to_owned(),
+                        });
+                    }
+                    let document = stage1
+                        .payload
+                        .get("document")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "SQLite Stage-1 document is missing".to_owned(),
+                        })?
+                        .to_owned();
+                    let mut metadata = stage1
+                        .payload
+                        .get("metadata")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .ok_or_else(|| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "SQLite Stage-1 metadata is malformed".to_owned(),
+                        })?;
+                    let vectors = provider
+                        .embed(std::slice::from_ref(&document))
+                        .await
+                        .map_err(|_| StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "embedding provider failed".to_owned(),
+                        })?;
+                    if vectors.len() != 1
+                        || vectors[0].len() != provider.profile().dimension
+                        || vectors[0].iter().any(|value| !value.is_finite())
+                    {
+                        return Err(StoreError::Backend {
+                            backend: "sqlite-chroma-projection".to_owned(),
+                            message: "embedding provider returned an invalid vector".to_owned(),
+                        });
+                    }
+                    let embedding = vectors[0].iter().map(|value| *value as f32).collect::<Vec<_>>();
+                    if embedding.iter().any(|value| !value.is_finite()) {
+                        return Err(StoreError::NonFiniteVector);
+                    }
+                    metadata.insert("_kogwistar_stage2_ready".to_owned(), Value::Bool(true));
+                    metadata.insert(
+                        "_kogwistar_source_revision".to_owned(),
+                        Value::from(current.revision),
+                    );
+                    metadata.insert(
+                        "_kogwistar_source_fingerprint".to_owned(),
+                        Value::String(current_fingerprint),
+                    );
+                    Ok(GraphRecord {
+                        id: input.entity_id,
+                        document: Some(document),
+                        metadata,
+                        embedding: Some(embedding),
+                    })
+                }
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(summary)
     }
 
     async fn chroma_graph_snapshot(
