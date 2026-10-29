@@ -1739,6 +1739,230 @@
     }
 
     #[tokio::test]
+    async fn sqlite_chroma_reconciliation_removes_orphaned_tombstone_projection() {
+        use kogwistar_store::NamedProjectionWrite;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let namespace = "reconcile-tenant";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let chroma = tokio::spawn(async move {
+            let mut observed = Vec::new();
+            for _ in 0..7 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (split, length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0, "Chroma client closed before sending a full request");
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(split) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&bytes[..split]);
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= split + 4 + length {
+                            break (split, length);
+                        }
+                    }
+                };
+                let head = String::from_utf8_lossy(&bytes[..split]);
+                let request_line = head.lines().next().unwrap().to_owned();
+                let body: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length])
+                    .unwrap();
+                let response = if request_line.contains("/collections HTTP") {
+                    json!({
+                        "id": format!("collection-{}", body["name"].as_str().unwrap()),
+                        "metadata": {"hnsw:space":"cosine"}
+                    })
+                } else if request_line.contains("/get")
+                    && request_line.contains("collection-reconcile-nodes")
+                {
+                    let row = |id: &str, revision: i64| {
+                        let original = json!({
+                            "namespace": namespace,
+                            "_kogwistar_stage2_ready": true,
+                            "_kogwistar_source_revision": revision,
+                            "_kogwistar_source_fingerprint": "stale-fingerprint"
+                        });
+                        json!({
+                            "id": id,
+                            "document": "stale",
+                            "metadata": {
+                                "_kogwistar_namespace": namespace,
+                                "_kogwistar_original_metadata": original.to_string()
+                            },
+                            "embedding": [0.2, 0.8]
+                        })
+                    };
+                    let rows = if body.get("ids").is_some() {
+                        vec![row("orphan", 1)]
+                    } else if body["offset"] == 0 {
+                        vec![row("orphan", 1), row("stale-active", 1)]
+                    } else {
+                        Vec::new()
+                    };
+                    json!({
+                        "ids": rows.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(),
+                        "documents": rows.iter().map(|row| row["document"].clone()).collect::<Vec<_>>(),
+                        "metadatas": rows.iter().map(|row| row["metadata"].clone()).collect::<Vec<_>>(),
+                        "embeddings": rows.iter().map(|row| row["embedding"].clone()).collect::<Vec<_>>()
+                    })
+                } else {
+                    json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
+                };
+                let response = response.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                observed.push((request_line, body));
+            }
+            observed
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-chroma-reconcile-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "reconcile-nodes".to_owned(),
+                edge_collection: "reconcile-edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "orphan-tombstone".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "orphan".to_owned(),
+                    op: "TOMBSTONE".to_owned(),
+                    payload_json: json!({"id":"orphan"}).to_string(),
+                },
+            )
+            .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let mut active_payload = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .unwrap()["payload"]
+            .clone();
+        active_payload["id"] = json!("stale-active");
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "stale-active-add".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "stale-active".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: active_payload.to_string(),
+                },
+            )
+            .unwrap();
+        let mut stage1_only_payload = active_payload.clone();
+        stage1_only_payload["id"] = json!("stage1-only-stale");
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "stage1-only-add".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "stage1-only-stale".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: stage1_only_payload.to_string(),
+                },
+            )
+            .unwrap();
+        service
+            .store
+            .replace_stage1_node_projection(
+                namespace,
+                "node:stage1-only-stale",
+                NamedProjectionWrite {
+                    payload: json!({
+                        "id":"stage1-only-stale",
+                        "entity_kind":"node",
+                        "source_fingerprint":"stale-fingerprint"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                    last_authoritative_seq: 2,
+                    last_materialized_seq: 2,
+                    projection_schema_version: 2,
+                    materialization_status: "pending".to_owned(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(service.reconcile_chroma_projection(namespace, 2).await.unwrap(), 3);
+        let recovered_stage1 = service
+            .store
+            .get_stage1_node_projection(namespace, "node:stage1-only-stale")
+            .unwrap()
+            .expect("active stale Stage-1 row is rebuilt without a Chroma row");
+        assert_ne!(
+            recovered_stage1
+                .payload
+                .get("source_fingerprint")
+                .and_then(Value::as_str),
+            Some("stale-fingerprint")
+        );
+        assert!(service
+            .store
+            .get_stage1_node_projection(namespace, "node:stale-active")
+            .unwrap()
+            .is_some());
+        assert!(service
+            .store
+            .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap()
+            .iter()
+            .any(|job| job.entity_id == "stale-active" && job.op == "UPSERT"));
+        assert!(service
+            .store
+            .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap()
+            .iter()
+            .any(|job| job.entity_id == "stage1-only-stale" && job.op == "UPSERT"));
+        let requests = chroma.await.unwrap();
+        let (delete_path, delete_body) = requests
+            .iter()
+            .find(|(line, _)| line.contains("/delete"))
+            .expect("orphaned Stage-2 row is physically removed");
+        assert!(delete_path.contains("reconcile-nodes"));
+        assert_eq!(delete_body["ids"], json!(["orphan"]));
+        assert_eq!(delete_body["where"]["$or"][0]["_kogwistar_namespace"]["$eq"], namespace);
+        assert!(requests.iter().any(|(line, body)| {
+            line.contains("/get") && body.get("offset").and_then(Value::as_u64) == Some(2)
+        }));
+    }
+
+    #[tokio::test]
     async fn sqlite_chroma_projection_fence_replaces_stale_delete_after_resurrection() {
         use kogwistar_store::NamedProjectionWrite;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

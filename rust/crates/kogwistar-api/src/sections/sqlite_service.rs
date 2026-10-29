@@ -1129,6 +1129,272 @@ impl SqliteRunApplicationService {
         self
     }
 
+    /// Reconcile one SQLite/Chroma projection namespace against canonical
+    /// SQLite events. Chroma is eventually consistent, so callers may rerun
+    /// this bounded-page scan; it is not a multi-writer transaction.
+    pub async fn reconcile_chroma_projection(
+        &self,
+        namespace: &str,
+        page_size: usize,
+    ) -> Result<usize, String> {
+        if namespace.trim().is_empty() || page_size == 0 || page_size > 500 {
+            return Err("namespace must be non-empty and page_size must be 1..=500".to_owned());
+        }
+        let graph = self
+            .chroma_graph
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| "Rust Chroma graph projection is not configured".to_owned())?;
+        let projection_store = RevisionFencedChromaProjectionStore {
+            queue: self.store.clone(),
+            graph: graph.clone(),
+        };
+        let filter = kogwistar_store::MetadataFilter::default();
+        let mut affected = 0_usize;
+        let mut deleted = Vec::new();
+        let mut restored_stage1 = Vec::new();
+
+        // Repair stale durable Stage-1 rows even when their Stage-2 Chroma row
+        // is absent. A Stage-2-only scan cannot discover that failure mode.
+        let stage1_rows = self
+            .store
+            .list_stage1_node_projections(namespace)
+            .map_err(|error| error.to_string())?;
+        for kind_name in ["node", "edge"] {
+            let prefix = format!("{kind_name}:");
+            let rows = stage1_rows
+                .iter()
+                .filter_map(|row| {
+                    let entity_id = row.key.strip_prefix(&prefix)?;
+                    (!entity_id.is_empty()).then_some((row, entity_id.to_owned()))
+                })
+                .collect::<Vec<_>>();
+            let entity_ids = rows.iter().map(|(_, id)| id.clone()).collect::<Vec<_>>();
+            let latest_events = self
+                .store
+                .latest_entity_events(namespace, kind_name, &entity_ids)
+                .map_err(|error| error.to_string())?;
+            for (row, entity_id) in rows {
+                let current = latest_events
+                    .get(&entity_id)
+                    .map(|raw| {
+                        let payload = serde_json::from_str::<Value>(&raw.payload_json)
+                            .map_err(|error| error.to_string())?;
+                        let event = kogwistar_store::EntityEvent {
+                            namespace: raw.namespace.clone(),
+                            seq: raw.seq,
+                            event_id: raw.event_id.clone(),
+                            entity_kind: raw.entity_kind.clone(),
+                            entity_id: raw.entity_id.clone(),
+                            op: raw.op.clone(),
+                            payload,
+                        };
+                        read_canonical_entity_revision(&[event], namespace, kind_name, &entity_id)
+                            .map_err(|error| error.to_string())
+                    })
+                    .transpose()?
+                    .flatten();
+                let Some(current) = current.filter(|revision| !revision.is_deleted()) else {
+                    if self
+                        .store
+                        .clear_stage1_node_projection_if_current(
+                            namespace,
+                            &row.key,
+                            row.last_authoritative_seq,
+                        )
+                        .map_err(|error| error.to_string())?
+                    {
+                        affected += 1;
+                    }
+                    continue;
+                };
+                let fingerprint = RevisionFencedChromaProjectionStore::canonical_fingerprint(&current)
+                    .map_err(|error| error.to_string())?;
+                let staged_fingerprint = row
+                    .payload
+                    .get("source_fingerprint")
+                    .and_then(Value::as_str);
+                if row.last_authoritative_seq == current.revision
+                    && staged_fingerprint == Some(fingerprint.as_str())
+                {
+                    continue;
+                }
+
+                let recovered = RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
+                    &current,
+                    &fingerprint,
+                )
+                .map_err(|error| error.to_string())?;
+                self.store
+                    .replace_stage1_node_projection(namespace, &row.key, recovered)
+                    .map_err(|error| error.to_string())?;
+                let repaired = self
+                    .store
+                    .get_stage1_node_projection(namespace, &row.key)
+                    .map_err(|error| error.to_string())?;
+                if repaired.as_ref().map_or(true, |projection| {
+                    projection.last_authoritative_seq != current.revision
+                        || projection
+                            .payload
+                            .get("source_fingerprint")
+                            .and_then(Value::as_str)
+                            != Some(fingerprint.as_str())
+                }) {
+                    return Err("Stage-1 recovery did not persist the current canonical revision".to_owned());
+                }
+                // Never enqueue a revision that changed while the repair was
+                // being written; a later reconciliation can repair its row.
+                let latest = sqlite_canonical_entity_revision(
+                    &self.store,
+                    namespace,
+                    kind_name,
+                    &entity_id,
+                )
+                .map_err(|error| error.to_string())?;
+                if latest.as_ref().map(|revision| revision.revision) != Some(current.revision) {
+                    continue;
+                }
+                projection_store
+                    .enqueue_current_revision(&current)
+                    .map_err(|error| error.to_string())?;
+                restored_stage1.push((kind_name, entity_id));
+                affected += 1;
+            }
+        }
+
+        for (kind_name, kind) in [
+            ("node", kogwistar_store::GraphEntityKind::Node),
+            ("edge", kogwistar_store::GraphEntityKind::Edge),
+        ] {
+            let mut offset = 0_u32;
+            loop {
+                let page = graph
+                    .graph_records_of_kind_page(
+                        namespace,
+                        kind,
+                        &filter,
+                        offset,
+                        page_size as u32,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let count = page.len();
+                let record_ids = page
+                    .iter()
+                    .map(|record| record.id.clone())
+                    .collect::<Vec<_>>();
+                let latest_events = self
+                    .store
+                    .latest_entity_events(namespace, kind_name, &record_ids)
+                    .map_err(|error| error.to_string())?;
+                for record in page {
+                    if record
+                        .metadata
+                        .get("_kogwistar_stage2_ready")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+                    {
+                        continue;
+                    }
+                    let Some(projected_revision) = record
+                        .metadata
+                        .get("_kogwistar_source_revision")
+                        .and_then(Value::as_i64)
+                        .filter(|revision| *revision > 0)
+                    else {
+                        continue;
+                    };
+                    let Some(projected_fingerprint) = record
+                        .metadata
+                        .get("_kogwistar_source_fingerprint")
+                        .and_then(Value::as_str)
+                        .filter(|fingerprint| !fingerprint.is_empty())
+                    else {
+                        continue;
+                    };
+                    let current = latest_events
+                        .get(&record.id)
+                        .map(|raw| {
+                            let payload = serde_json::from_str::<Value>(&raw.payload_json)
+                                .map_err(|error| error.to_string())?;
+                            let event = kogwistar_store::EntityEvent {
+                                namespace: raw.namespace.clone(),
+                                seq: raw.seq,
+                                event_id: raw.event_id.clone(),
+                                entity_kind: raw.entity_kind.clone(),
+                                entity_id: raw.entity_id.clone(),
+                                op: raw.op.clone(),
+                                payload,
+                            };
+                            read_canonical_entity_revision(
+                                &[event],
+                                namespace,
+                                kind_name,
+                                &record.id,
+                            )
+                            .map_err(|error| error.to_string())
+                        })
+                        .transpose()?
+                        .flatten();
+                    let Some(current) = current.filter(|revision| !revision.is_deleted()) else {
+                        deleted.push((kind_name, record.id));
+                        continue;
+                    };
+                    let current_fingerprint =
+                        RevisionFencedChromaProjectionStore::canonical_fingerprint(&current)
+                            .map_err(|error| error.to_string())?;
+                    if projected_revision != current.revision
+                        || projected_fingerprint != current_fingerprint
+                    {
+                        if restored_stage1
+                            .iter()
+                            .any(|(restored_kind, restored_id)| {
+                                *restored_kind == kind_name && restored_id == &record.id
+                            })
+                        {
+                            continue;
+                        }
+                        let stage1 = RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
+                            &current,
+                            &current_fingerprint,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        self.store
+                            .replace_stage1_node_projection(
+                                namespace,
+                                &format!("{kind_name}:{}", current.entity_id),
+                                stage1,
+                            )
+                            .map_err(|error| error.to_string())?;
+                        projection_store
+                            .enqueue_current_revision(&current)
+                            .map_err(|error| error.to_string())?;
+                        affected += 1;
+                    }
+                }
+                if count < page_size {
+                    break;
+                }
+                offset = offset
+                    .checked_add(count as u32)
+                    .ok_or_else(|| "Chroma reconciliation offset overflow".to_owned())?;
+            }
+        }
+
+        // Defer deletes until paging is complete; deleting in-place would shift
+        // Chroma offsets and could silently skip later rows.
+        for (kind, id) in deleted {
+            let (_, outcome) = projection_store
+                .delete_with_revision_fence(namespace, kind, &id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if outcome == kogwistar_store::ProjectionWriteOutcome::Applied {
+                affected += 1;
+            }
+        }
+        Ok(affected)
+    }
+
     /// Project one bounded batch from the existing SQLite Stage-1 rows into
     /// Chroma. SQLite owns queue/revision state; Chroma remains an eventual
     /// projection and each read is still revision-fenced.

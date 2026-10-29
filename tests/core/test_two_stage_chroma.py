@@ -34,16 +34,37 @@ class _Backend:
         self.rows: dict[str, dict] = {}
         self.endpoint_rows: dict[str, dict] = {}
 
+    @staticmethod
+    def _matches_where(metadata, where):
+        if not isinstance(where, dict) or not where:
+            return True
+        if "$and" in where:
+            clauses = where["$and"]
+            return isinstance(clauses, list) and all(
+                _Backend._matches_where(metadata, clause) for clause in clauses
+            )
+        return all(
+            metadata.get(key)
+            == (value.get("$eq") if isinstance(value, dict) else value)
+            for key, value in where.items()
+        )
+
     def node_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
+        where = kwargs.get("where")
         rows = (
             [self.rows[value] for value in ids if value in self.rows]
-            if ids
-            else list(self.rows.values())[
-                int(kwargs.get("offset") or 0) : int(kwargs.get("offset") or 0)
-                + int(kwargs.get("limit") or len(self.rows))
-            ]
+            if ids else list(self.rows.values())
         )
+        rows = [
+            row
+            for row in rows
+            if self._matches_where(row["metadata"], where)
+        ]
+        if not ids:
+            offset = int(kwargs.get("offset") or 0)
+            limit = int(kwargs.get("limit") or len(rows))
+            rows = rows[offset : offset + limit]
         result = {
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
@@ -74,8 +95,12 @@ class _Backend:
                 self.rows[str(node_id)]["metadata"] = metadata
 
     def node_delete(self, **kwargs):
-        for node_id in kwargs.get("ids") or []:
-            self.rows.pop(str(node_id), None)
+        ids = kwargs.get("ids") or []
+        where = kwargs.get("where")
+        for node_id in ids:
+            row = self.rows.get(str(node_id))
+            if row is not None and self._matches_where(row["metadata"], where):
+                self.rows.pop(str(node_id), None)
 
     def node_query(self, **kwargs):
         rows = list(self.rows.values())
@@ -152,7 +177,8 @@ class _Indexing:
             }
         )
 
-    def canonical_revision_payloads(self, *, entity_kind: str, entity_ids):
+    def canonical_revision_payloads(self, *, entity_kind: str, entity_ids, namespace=None):
+        del namespace
         return {
             entity_id: self.canonical_revision_payload(
                 entity_kind=entity_kind, entity_id=entity_id
@@ -1016,6 +1042,118 @@ def test_chroma_reconciles_stage1_after_stage2_write_before_cleanup(tmp_path):
     assert adapter.reconcile_projection() == 1
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
     assert engine.backend.rows["n1"]["embedding"] == [1.0, 0.0]
+
+
+@two_stage_case("recovery_reconciliation")
+@pytest.mark.parametrize("canonical_state", ["missing", "tombstoned"])
+def test_chroma_reconcile_removes_orphaned_stage2_rows_by_namespace(
+    tmp_path, canonical_state
+):
+    engine, adapter = _engine(tmp_path)
+    engine.backend.edge_get = lambda **kwargs: {"ids": [], "metadatas": []}
+    node = build_entity_node(node_id="orphan", doc_id="d1")
+    adapter.add_node(node)
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "orphan")
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    engine.backend.node_upsert(
+        ids=["orphan"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="orphan",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    engine.indexing.state = canonical_state
+
+    # The same ID in another namespace is not in this scoped collection scan.
+    engine.backend.node_upsert(
+        ids=["other-tenant"],
+        documents=["must remain"],
+        metadatas=[{"namespace": "tenant-b", "_kogwistar_stage2_ready": True}],
+        embeddings=[[1.0, 0.0]],
+    )
+
+    assert adapter.reconcile_projection() == 1
+    assert "orphan" not in engine.backend.rows
+    assert engine.backend.rows["other-tenant"]["document"] == "must remain"
+
+
+@two_stage_case("recovery_reconciliation")
+def test_chroma_reconcile_restages_active_stale_stage2_rows(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    engine.backend.edge_get = lambda **kwargs: {"ids": [], "metadatas": []}
+    node = build_entity_node(node_id="stale-active", doc_id="d1")
+    adapter.add_node(node)
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "stale-active")
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    engine.backend.node_upsert(
+        ids=["stale-active"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="stale-active",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    engine.indexing.fingerprint = "fp-2"
+
+    assert adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "stale-active"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] != payload["source_fingerprint"]
+    assert engine.indexing.jobs[-1]["entity_id"] == "stale-active"
+    # The stale semantic row is left for the revision-fenced worker to replace.
+    assert engine.backend.rows["stale-active"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == "fp-1"
+
+
+@two_stage_case("recovery_reconciliation")
+def test_chroma_reconcile_restores_active_stale_stage1_without_stage2(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    node = build_entity_node(node_id="stage1-only", doc_id="d1")
+    adapter.add_node(node)
+    original = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "stage1-only"
+    )
+    assert original is not None
+    original_fingerprint = original["payload"]["source_fingerprint"]
+    engine.indexing.fingerprint = "fp-2"
+
+    assert adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "stage1-only"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] != original_fingerprint
+    assert engine.indexing.jobs[-1]["entity_id"] == "stage1-only"
+    assert engine.indexing.jobs[-1]["op"] == "UPSERT"
+    assert "stage1-only" not in engine.backend.rows
 
 
 @pytest.mark.parametrize("case", ["inactive", "stale", "promoted"])

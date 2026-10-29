@@ -309,6 +309,26 @@ impl ChromaGraphStore {
             .collect())
     }
 
+    /// Read one scoped page for projection maintenance without loading the
+    /// collection into memory or requiring a generic store-trait expansion.
+    pub async fn graph_records_of_kind_page(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        filter: &MetadataFilter,
+        offset: u32,
+        limit: u32,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        records::validate_namespace(namespace)?;
+        if limit == 0 || limit > 500 {
+            return Err(Self::backend_error(
+                "projection maintenance page limit must be in 1..=500",
+            ));
+        }
+        let http = self.http_for_kind(kind)?;
+        Self::get_page(http, namespace, filter, offset, limit).await
+    }
+
     /// Read a bounded entity-kind snapshot for callers that must apply
     /// cross-record policy such as endpoint ACL checks before returning data.
     /// The method fails rather than returning a partial snapshot when the cap

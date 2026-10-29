@@ -765,11 +765,14 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 entity_kind=entity_kind, entity_id=entity_id
             )
             staged_fp = str(payload.get("source_fingerprint") or "")
-            if staged_fp and staged_fp != current_fp:
+            if staged_fp != current_fp:
                 if self.remove_stage1(
                     entity_kind=entity_kind, entity_id=entity_id,
                     expected_last_authoritative_seq=staged_seq,
                 ):
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                     removed += 1
                 continue
             got = self._collection_call(
@@ -795,6 +798,112 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     expected_last_authoritative_seq=staged_seq,
                 ):
                     removed += 1
+
+        # Stage-1 can be lost independently of Chroma. Scan the semantic
+        # projection too, but defer deletions until after paging so offsets do
+        # not shift under the scan.
+        orphaned: list[tuple[str, str, int, str]] = []
+        stale_active: list[tuple[str, str]] = []
+        for entity_kind in ("node", "edge"):
+            observed: list[tuple[str, int, str]] = []
+            offset = 0
+            while True:
+                page = self._collection_call(
+                    entity_kind,
+                    "get",
+                    limit=500,
+                    offset=offset,
+                    where={"namespace": self._namespace()},
+                    include=["metadatas"],
+                )
+                ids = [str(value) for value in _objects(page.get("ids"))]
+                if not ids:
+                    break
+                metadatas = _objects(page.get("metadatas"))
+                for index, entity_id in enumerate(ids):
+                    metadata = (
+                        _mapping(metadatas[index]) if index < len(metadatas) else {}
+                    )
+                    if metadata.get("_kogwistar_stage2_ready") is not True:
+                        continue
+                    stored_revision = metadata.get("_kogwistar_source_revision")
+                    stored_fingerprint = metadata.get("_kogwistar_source_fingerprint")
+                    if (
+                        not isinstance(stored_revision, int)
+                        or isinstance(stored_revision, bool)
+                        or stored_revision <= 0
+                        or not isinstance(stored_fingerprint, str)
+                        or not stored_fingerprint
+                    ):
+                        continue
+                    observed.append((entity_id, stored_revision, stored_fingerprint))
+                offset += len(ids)
+                if len(ids) < 500:
+                    break
+
+            revisions = self.engine.indexing.canonical_revision_payloads(
+                entity_kind=entity_kind,
+                entity_ids=(row[0] for row in observed),
+                namespace=self._namespace(),
+            )
+            for entity_id, stored_revision, stored_fingerprint in observed:
+                try:
+                    current = json.loads(revisions[entity_id])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if current.get("source_state") != "active":
+                    orphaned.append(
+                        (entity_kind, entity_id, stored_revision, stored_fingerprint)
+                    )
+                elif (
+                    current.get("canonical_revision") != stored_revision
+                    or current.get("source_fingerprint") != stored_fingerprint
+                ):
+                    stale_active.append((entity_kind, entity_id))
+
+        for entity_kind, entity_id in stale_active:
+            if self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                removed += 1
+
+        for entity_kind, entity_id, revision, fingerprint in orphaned:
+            # The metadata predicate prevents cleanup from deleting a newer
+            # row that replaced this one after the scan.
+            self._collection_call(
+                entity_kind,
+                "delete",
+                ids=[entity_id],
+                where={
+                    "$and": [
+                        {"namespace": self._namespace()},
+                        {"_kogwistar_stage2_ready": True},
+                        {"_kogwistar_source_revision": revision},
+                        {"_kogwistar_source_fingerprint": fingerprint},
+                    ]
+                },
+            )
+            remaining = self._collection_call(
+                entity_kind,
+                "get",
+                ids=[entity_id],
+                where={"namespace": self._namespace()},
+                include=["metadatas"],
+            )
+            if _objects(remaining.get("ids")):
+                continue
+            if entity_kind == "edge":
+                self._collection_call(
+                    "edge_endpoints",
+                    "delete",
+                    where={
+                        "$and": [
+                            {"edge_id": entity_id},
+                            {"namespace": self._namespace()},
+                        ]
+                    },
+                )
+            removed += 1
         return removed
 
 
