@@ -4864,6 +4864,49 @@
             .await
             .unwrap();
 
+        let resource_snapshot = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"invoke_tool",
+                    "args":{"tool_name":"resource_snapshot"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"alice","role":"rw","ns":"conversation",
+                    "capabilities":["invoke_tool","project_view","read_security_scope"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            resource_snapshot.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&resource_snapshot.body)
+        );
+        let resource_snapshot: Value = serde_json::from_slice(&resource_snapshot.body).unwrap();
+        assert_eq!(resource_snapshot["result"]["tool_name"], "resource_snapshot");
+        let snapshot_fields = resource_snapshot["result"]["snapshot"].as_object().unwrap();
+        assert_eq!(
+            snapshot_fields
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "scheduler",
+                "runs",
+                "services",
+                "storage_usage_bytes",
+                "cost_ledger",
+                "budget_model",
+                "policy_infra",
+            ]),
+            "legacy resource snapshot keys must match Python without Rust-only diagnostics"
+        );
+
         let put_node = |id: &str,
                         event_id: &str,
                         metadata: serde_json::Map<String, Value>,

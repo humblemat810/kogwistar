@@ -1405,6 +1405,54 @@ impl PostgresRunApplicationService {
         )
     }
 
+    async fn load_resource_snapshot_rows(
+        &self,
+    ) -> Result<(Vec<ServerRun>, Vec<ProjectedLaneMessage>, Vec<ServerRunEvent>), ApiEffectResponse>
+    {
+        let runs = self
+            .store
+            .list_server_runs(None, None, None, 10_000)
+            .await
+            .map_err(|error| {
+                effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                )
+            })?;
+        let lanes = self
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                limit: 10_000,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .map_err(|error| {
+                effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                )
+            })?;
+        let mut events = Vec::new();
+        for run in &runs {
+            let mut run_events = self
+                .store
+                .list_server_run_events(&run.run_id, 0, 200)
+                .await
+                .map_err(|error| {
+                    effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    )
+                })?;
+            events.append(&mut run_events);
+        }
+        Ok((runs, lanes, events))
+    }
+
     async fn invoke_builtin_tool_syscall(
         &self,
         request: &ApiEffectRequest,
@@ -1561,11 +1609,17 @@ impl PostgresRunApplicationService {
                         format!("built-in tool {tool_name:?} requires project_view and read_security_scope"),
                     );
                 }
-                return effect_error(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "KOGWISTAR_TOOL_UNSUPPORTED",
-                    format!("built-in tool {tool_name:?} has no Rust-equivalent snapshot provider"),
-                );
+                let (runs, lanes, events) = match self.load_resource_snapshot_rows().await {
+                    Ok(rows) => rows,
+                    Err(response) => return response,
+                };
+                let usage = usage_history(&events, 10_000);
+                let mut snapshot = resource_value(&runs, &lanes, &usage, &events);
+                snapshot
+                    .as_object_mut()
+                    .expect("resource snapshot is an object")
+                    .remove("migration");
+                json!({"tool_name": tool_name, "snapshot": snapshot})
             }
             _ => {
                 return effect_error(
@@ -1856,47 +1910,11 @@ impl PostgresRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else {
-                    let runs = match self.store.list_server_runs(None, None, None, 10_000).await {
-                        Ok(runs) => runs,
-                        Err(error) => {
-                            return effect_error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "KOGWISTAR_STORE_ERROR",
-                                error.to_string(),
-                            );
-                        }
-                    };
-                    let lanes = match self
-                        .store
-                        .list_projected_lane_messages(LaneMessageFilter {
-                            namespace: Some("workflow".to_owned()),
-                            limit: 10_000,
-                            ..LaneMessageFilter::default()
-                        })
-                        .await
-                    {
-                        Ok(lanes) => lanes,
-                        Err(error) => {
-                            return effect_error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "KOGWISTAR_STORE_ERROR",
-                                error.to_string(),
-                            );
-                        }
-                    };
-                    let mut events = Vec::new();
-                    for run in &runs {
-                        match self.store.list_server_run_events(&run.run_id, 0, 200).await {
-                            Ok(mut run_events) => events.append(&mut run_events),
-                            Err(error) => {
-                                return effect_error(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "KOGWISTAR_STORE_ERROR",
-                                    error.to_string(),
-                                );
-                            }
-                        }
-                    }
+                    let (runs, lanes, events) =
+                        match self.load_resource_snapshot_rows().await {
+                            Ok(rows) => rows,
+                            Err(response) => return response,
+                        };
                     syscall_result(
                         &input.version,
                         op,
