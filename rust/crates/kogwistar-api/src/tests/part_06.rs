@@ -5242,6 +5242,10 @@
             .unwrap();
         assert!(!lanes.is_empty());
         assert!(lanes.iter().all(|lane| lane.status == "completed"));
+        assert!(
+            lanes.iter().all(|lane| lane.recipient_id != "python-worker"),
+            "Rust-only workflow must not hand a step to a Python worker"
+        );
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
