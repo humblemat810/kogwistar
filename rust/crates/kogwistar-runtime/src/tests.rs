@@ -150,6 +150,125 @@
     }
 
     #[test]
+    fn native_routed_operation_selects_only_frozen_successors() {
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register_routed("choose-route", "v1", |request| {
+                let target = if request.state.get("again").and_then(Value::as_bool) == Some(true)
+                {
+                    "retry"
+                } else {
+                    "finish"
+                };
+                Ok(NativeRoutedOperationOutput {
+                    output: NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: None,
+                    },
+                    successors: vec![RuntimeSuccessor {
+                        node_id: target.to_owned(),
+                        join_mask: 0,
+                    }],
+                })
+            })
+            .unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "choose-route".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "route".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::from_iter([(String::from("again"), json!(true))]),
+            runtime_routes: vec![
+                RuntimeStaticRoute {
+                    edge_id: "retry-edge".to_owned(),
+                    source_node_id: "route".to_owned(),
+                    target_node_id: "retry".to_owned(),
+                    aliases: Vec::new(),
+                    join_mask: 0,
+                    predicate: Some("retry_predicate".to_owned()),
+                    multiplicity: "one".to_owned(),
+                    is_default: false,
+                    priority: 0,
+                    source_fanout: false,
+                },
+                RuntimeStaticRoute {
+                    edge_id: "finish-edge".to_owned(),
+                    source_node_id: "route".to_owned(),
+                    target_node_id: "finish".to_owned(),
+                    aliases: Vec::new(),
+                    join_mask: 0,
+                    predicate: None,
+                    multiplicity: "one".to_owned(),
+                    is_default: true,
+                    priority: 100,
+                    source_fanout: false,
+                },
+            ],
+        };
+        let selected = execute_native_step_with_registry(&request, &registry).unwrap();
+        assert_eq!(selected.successors.len(), 1);
+        assert_eq!(selected.successors[0].node_id, "retry");
+        assert!(selected.route_next.is_empty());
+
+        let invalid_registry = {
+            let mut registry = NativeOperationRegistry::default();
+            registry
+                .register_routed("choose-route", "v1", |_| {
+                    Ok(NativeRoutedOperationOutput {
+                        output: NativeOperationOutput {
+                            state_update: Vec::new(),
+                            result: None,
+                        },
+                        successors: vec![RuntimeSuccessor {
+                            node_id: "unfrozen".to_owned(),
+                            join_mask: 0,
+                        }],
+                    })
+                })
+                .unwrap();
+            registry
+        };
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &invalid_registry),
+            Err(RuntimeNativeExecutionError::Routing(
+                RecordedRuntimeError::InvalidSuccessorSelection(_)
+            ))
+        ));
+
+        let mismatched_join_mask_registry = {
+            let mut registry = NativeOperationRegistry::default();
+            registry
+                .register_routed("choose-route", "v1", |_| {
+                    Ok(NativeRoutedOperationOutput {
+                        output: NativeOperationOutput {
+                            state_update: Vec::new(),
+                            result: None,
+                        },
+                        successors: vec![RuntimeSuccessor {
+                            node_id: "retry".to_owned(),
+                            join_mask: 1,
+                        }],
+                    })
+                })
+                .unwrap();
+            registry
+        };
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &mismatched_join_mask_registry),
+            Err(RuntimeNativeExecutionError::Routing(
+                RecordedRuntimeError::InvalidSuccessorSelection(_)
+            ))
+        ));
+    }
+
+    #[test]
     fn native_executor_fails_closed_for_wrong_target_and_unregistered_operations() {
         let request = RuntimeNativeStepRequest {
             executor_target: "python-worker".to_owned(),

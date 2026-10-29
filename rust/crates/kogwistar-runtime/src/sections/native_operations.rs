@@ -47,6 +47,36 @@ fn is_no_environment_id(value: &Option<String>) -> bool {
     value.is_none()
 }
 
+fn validate_native_successors(
+    request: &RuntimeNativeStepRequest,
+    successors: &[RuntimeSuccessor],
+) -> Result<(), RuntimeNativeExecutionError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for successor in successors {
+        if !seen.insert((successor.node_id.as_str(), successor.join_mask)) {
+            return Err(RuntimeNativeExecutionError::Routing(
+                RecordedRuntimeError::InvalidSuccessorSelection(format!(
+                    "native operation selected successor {:?} with join mask {} more than once",
+                    successor.node_id, successor.join_mask
+                )),
+            ));
+        }
+        if !request.runtime_routes.iter().any(|route| {
+            route.source_node_id == request.node_id
+                && route.target_node_id == successor.node_id
+                && route.join_mask == successor.join_mask
+        }) {
+            return Err(RuntimeNativeExecutionError::Routing(
+                RecordedRuntimeError::InvalidSuccessorSelection(format!(
+                    "native operation selected successor {:?} with join mask {} outside the frozen routes",
+                    successor.node_id, successor.join_mask
+                )),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Scheduler-owned payload for one Python worker step.  Keeping this wire DTO
 /// beside the reducer prevents SQLite, PostgreSQL, and API schedulers from
 /// independently hand-copying its fields.
@@ -177,7 +207,21 @@ pub struct NativeOperationOutput {
     pub result: Option<Value>,
 }
 
+/// Native state result plus typed dynamic successors. The runtime validates
+/// every target and join mask against the frozen workflow routes before recording it.
+#[derive(Clone, Debug)]
+pub struct NativeRoutedOperationOutput {
+    pub output: NativeOperationOutput,
+    pub successors: Vec<RuntimeSuccessor>,
+}
+
 type NativeOperationHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
+    + Send
+    + Sync;
+
+type NativeRoutedOperationHandler = dyn Fn(
+        &RuntimeNativeStepRequest,
+    ) -> Result<NativeRoutedOperationOutput, RuntimeNativeExecutionError>
     + Send
     + Sync;
 
@@ -205,6 +249,7 @@ type NativeGraphV2OperationHandler = dyn Fn(
 #[derive(Clone)]
 enum RegisteredNativeOperation {
     State(Arc<NativeOperationHandler>),
+    RoutedState(Arc<NativeRoutedOperationHandler>),
     Graph(Arc<NativeGraphOperationHandler>),
     GraphV2(Arc<NativeGraphV2OperationHandler>),
 }
@@ -270,6 +315,30 @@ impl NativeOperationRegistry {
             operation.into(),
             version.into(),
             RegisteredNativeOperation::State(Arc::new(handler)),
+        )
+    }
+
+    /// Register a trusted state handler that selects successors from the
+    /// frozen route set. The selected targets are revalidated by the runtime;
+    /// handlers cannot create or alter workflow routes.
+    pub fn register_routed<F>(
+        &mut self,
+        operation: impl Into<String>,
+        version: impl Into<String>,
+        handler: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+            ) -> Result<NativeRoutedOperationOutput, RuntimeNativeExecutionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_handler(
+            operation.into(),
+            version.into(),
+            RegisteredNativeOperation::RoutedState(Arc::new(handler)),
         )
     }
 
@@ -468,8 +537,12 @@ pub fn execute_native_step_with_registry(
             RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
         });
     };
-    let (output, graph_mutation_batch, graph_mutation_batch_v2) = match handler {
-        RegisteredNativeOperation::State(handler) => (handler(request)?, None, None),
+    let (output, graph_mutation_batch, graph_mutation_batch_v2, worker_selected) = match handler {
+        RegisteredNativeOperation::State(handler) => (handler(request)?, None, None, Vec::new()),
+        RegisteredNativeOperation::RoutedState(handler) => {
+            let routed = handler(request)?;
+            (routed.output, None, None, routed.successors)
+        }
         RegisteredNativeOperation::Graph(handler) => {
             let (output, batch) = handler(request)?;
             batch
@@ -478,7 +551,7 @@ pub fn execute_native_step_with_registry(
                     operation: request.operation.clone(),
                     reason: format!("invalid graph mutation batch: {error}"),
                 })?;
-            (output, Some(batch), None)
+            (output, Some(batch), None, Vec::new())
         }
         RegisteredNativeOperation::GraphV2(handler) => {
             let (output, batch) = handler(request)?;
@@ -490,12 +563,18 @@ pub fn execute_native_step_with_registry(
                         reason: format!("invalid ACL-aware graph mutation batch: {error}"),
                     })?;
             }
-            (output, None, batch)
+            (output, None, batch, Vec::new())
         }
     };
     validate_native_output_state(request, &output)?;
-    let successors =
-        authoritative_runtime_successors(&request.runtime_routes, &request.node_id, &[])?;
+    validate_native_successors(request, &worker_selected)?;
+    let successors = authoritative_runtime_successors_for_result(
+        &request.runtime_routes,
+        &request.node_id,
+        &worker_selected,
+        &[],
+        false,
+    )?;
     Ok(RecordedWorkerSuccessEffect {
         contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
         effect_id: format!(
