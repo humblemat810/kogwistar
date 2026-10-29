@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 import os
 import time
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from kogwistar.json_types import JsonValue
@@ -294,6 +294,48 @@ def _worker_graph_mutation_batch_for_entity(
             ],
             "index_jobs": [job.model_dump(mode="json") for job in index_jobs],
         }
+    )
+    return cast(dict[str, JsonValue], batch.model_dump(mode="json"))
+
+
+def _worker_graph_mutation_batch_for_entities(
+    ctx: StepContext,
+    engine: object,
+    entities: Sequence[tuple[ConversationNode | ConversationEdge, Literal["node", "edge"]]],
+) -> dict[str, JsonValue]:
+    """Combine one operation's ordered graph effects into its atomic worker batch."""
+    from kogwistar.engine_core.graph_mutation_contract import (
+        GraphMutationBatchPayload,
+        validate_graph_mutation_batch,
+    )
+
+    if not entities:
+        raise ValueError("Rust worker graph batch requires at least one entity")
+    seen: set[tuple[str, str]] = set()
+    mutations = []
+    index_jobs = []
+    for entity, entity_kind in entities:
+        entity_id = entity.safe_get_id()
+        if entity_id is None:
+            raise ValueError("Rust worker graph batch entity requires an ID")
+        identity = (entity_kind, entity_id)
+        if identity in seen:
+            raise ValueError(f"Rust worker graph batch repeats entity {identity!r}")
+        seen.add(identity)
+        single = validate_graph_mutation_batch(
+            _worker_graph_mutation_batch_for_entity(
+                ctx, engine, entity, entity_kind=entity_kind
+            )
+        )
+        mutations.extend(single.mutations)
+        index_jobs.extend(single.index_jobs)
+    batch = validate_graph_mutation_batch(
+        GraphMutationBatchPayload(
+            contract_version=1,
+            atomic=True,
+            mutations=mutations,
+            index_jobs=index_jobs,
+        )
     )
     return cast(dict[str, JsonValue], batch.model_dump(mode="json"))
 
@@ -1117,27 +1159,74 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     kg_rehydrated = _knowledge_result_from_state(state)
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
+    worker_effect_batch: dict[str, JsonValue] | None = None
     if kg_rehydrated is not None and kg_rehydrated.selected is not None:
         selected = kg_rehydrated.selected
-        pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
-            user_id=state["user_id"],
-            conversation_id=state["conversation_id"],
-            turn_node_id=state["turn_node_id"],
-            turn_index=state["turn_index"],
-            self_span=_span_from_state(state.get("self_span")),
-            selected_knowledge=selected,
-            prev_turn_meta_summary=prev_turn_meta_summary,
-        )
+        pin_kwargs = {
+            "user_id": state["user_id"],
+            "conversation_id": state["conversation_id"],
+            "turn_node_id": state["turn_node_id"],
+            "turn_index": state["turn_index"],
+            "self_span": _span_from_state(state.get("self_span")),
+            "selected_knowledge": selected,
+            "prev_turn_meta_summary": prev_turn_meta_summary,
+        }
+        if deps.get("_rust_worker_effects") is True:
+            prepared = kg_retriever._prepare_selected_pins(**pin_kwargs)
+            node_hooks = tuple(
+                getattr(deps["conversation_engine"], "pre_add_node_hooks", ()) or ()
+            )
+            edge_hooks = tuple(
+                getattr(deps["conversation_engine"], "pre_add_edge_hooks", ()) or ()
+            )
+            if len(prepared) > 1 and (node_hooks or edge_hooks):
+                raise RuntimeError(
+                    "Rust worker KG pin batch cannot preserve hooks that may observe "
+                    "preceding Python writes"
+                )
+            worker_entities: list[
+                tuple[ConversationNode | ConversationEdge, Literal["node", "edge"]]
+            ] = []
+            for entity in prepared:
+                entity_id = entity.safe_get_id()
+                if entity_id is None:
+                    raise ValueError("prepared KG pin entity must have an ID")
+                if isinstance(entity, ConversationNode):
+                    for hook in node_hooks:
+                        hook(entity)
+                    worker_entities.append((entity, "node"))
+                    pinned_ptrs.append(entity_id)
+                else:
+                    edge_rejected = False
+                    for hook in edge_hooks:
+                        if bool(hook(entity)):
+                            edge_rejected = True
+                            break
+                    if not edge_rejected:
+                        worker_entities.append((entity, "edge"))
+                    pinned_edges.append(entity_id)
+            if worker_entities:
+                worker_effect_batch = _worker_graph_mutation_batch_for_entities(
+                    ctx, deps["conversation_engine"], worker_entities
+                )
+        else:
+            pinned_ptrs, pinned_edges = kg_retriever.pin_selected(**pin_kwargs)
 
     outj = {
         "pinned_pointer_node_ids": list(pinned_ptrs),
         "pinned_edge_ids": list(pinned_edges),
     }
-    state_update: list[StateUpdate] = cast(
-        list[StateUpdate], [("u", {"kg_pin": outj})]
-    )
+    update_payload: dict[str, object] = {"kg_pin": outj}
+    if deps.get("_rust_worker_effects") is True:
+        update_payload["prev_turn_meta_summary"] = _meta_summary_payload(
+            prev_turn_meta_summary
+        )
+    state_update = [("u", update_payload)]
     # ctx.state["kg_pin"] = outj
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    result_values: dict[str, object] = {"state_update": state_update}
+    if worker_effect_batch is not None:
+        result_values["graph_mutation_batch"] = worker_effect_batch
+    return RunSuccess(conversation_node_id=None, **result_values)
 
 
 @default_resolver.register("answer", is_nested=True)
@@ -2192,32 +2281,10 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
     ]
     result_values: dict[str, object] = {"state_update": state_update}
     if worker_entities:
-        from kogwistar.engine_core.graph_mutation_contract import (
-            GraphMutationBatchPayload,
-            validate_graph_mutation_batch,
-        )
-
-        mutations = []
-        index_jobs = []
-        for entity, entity_kind in worker_entities:
-            single = validate_graph_mutation_batch(
-                _worker_graph_mutation_batch_for_entity(
-                    ctx,
-                    deps["conversation_engine"],
-                    entity,
-                    entity_kind=entity_kind,
-                )
-            )
-            mutations.extend(single.mutations)
-            index_jobs.extend(single.index_jobs)
-        batch = GraphMutationBatchPayload(
-            contract_version=1,
-            atomic=True,
-            mutations=mutations,
-            index_jobs=index_jobs,
-        )
-        result_values["graph_mutation_batch"] = cast(
-            dict[str, JsonValue], batch.model_dump(mode="json")
+        result_values["graph_mutation_batch"] = _worker_graph_mutation_batch_for_entities(
+            ctx,
+            deps["conversation_engine"],
+            worker_entities,
         )
     return RunSuccess(conversation_node_id=None, **result_values)
 
@@ -2437,31 +2504,9 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
         "state_update": state_update,
     }
     if worker_entities:
-        from kogwistar.engine_core.graph_mutation_contract import (
-            GraphMutationBatchPayload,
-            validate_graph_mutation_batch,
-        )
-
-        mutations = []
-        index_jobs = []
-        for entity, entity_kind in worker_entities:
-            single = validate_graph_mutation_batch(
-                _worker_graph_mutation_batch_for_entity(
-                    ctx,
-                    _deps(ctx)["conversation_engine"],
-                    entity,
-                    entity_kind=entity_kind,
-                )
-            )
-            mutations.extend(single.mutations)
-            index_jobs.extend(single.index_jobs)
-        batch = GraphMutationBatchPayload(
-            contract_version=1,
-            atomic=True,
-            mutations=mutations,
-            index_jobs=index_jobs,
-        )
-        result_values["graph_mutation_batch"] = cast(
-            dict[str, JsonValue], batch.model_dump(mode="json")
+        result_values["graph_mutation_batch"] = _worker_graph_mutation_batch_for_entities(
+            ctx,
+            _deps(ctx)["conversation_engine"],
+            worker_entities,
         )
     return RunSuccess(**result_values)

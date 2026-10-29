@@ -305,6 +305,168 @@ def test_rust_worker_answer_fallback_returns_materialized_node_effect():
     assert answer_update["response_node_id"] == result.conversation_node_id
 
 
+def test_rust_worker_kg_pin_returns_deterministic_ordered_graph_batch():
+    from types import SimpleNamespace
+
+    from kogwistar.conversation.models import FilteringResult, MetaFromLastSummary
+    from kogwistar.engine_core.graph_mutation_contract import (
+        GraphMutationBatchPayload,
+    )
+    from kogwistar.engine_core.models import Span
+    from kogwistar.engine_core.utils.refs import edge_doc_and_meta, node_doc_and_meta
+
+    class WorkerWrite:
+        def node_doc_and_meta(self, node):
+            document, metadata = node_doc_and_meta(node)
+            return document, {**metadata, "namespace": "conv:c1"}
+
+        def edge_doc_and_meta(self, edge):
+            document, metadata = edge_doc_and_meta(edge)
+            return document, {**metadata, "namespace": "conv:c1"}
+
+        def add_node(self, *_args, **_kwargs):
+            pytest.fail("Rust worker KG pin must return effects, not write nodes")
+
+        def add_edge(self, *_args, **_kwargs):
+            pytest.fail("Rust worker KG pin must return effects, not write edges")
+
+    ce = FakeConversationEngine()
+    ce.write = WorkerWrite()
+    ce.namespace = "conv:c1"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend = SimpleNamespace(
+        nodes=SimpleNamespace(name="gke_nodes"),
+        edges=SimpleNamespace(name="gke_edges"),
+        embedding_dim=2,
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = []
+    ce.pre_add_edge_hooks = []
+
+    kg_node = SimpleNamespace(
+        id="kg-node",
+        label="KG node",
+        metadata={"label": "KG node", "summary": "node summary", "type": "entity"},
+        safe_get_id=lambda: "kg-node",
+    )
+    kg_edge = SimpleNamespace(
+        id="kg-edge",
+        label="KG edge",
+        metadata={"label": "KG edge", "summary": "edge summary", "type": "relationship"},
+        safe_get_id=lambda: "kg-edge",
+    )
+    ref_knowledge_engine = SimpleNamespace(
+        kg_graph_type="knowledge",
+        read=SimpleNamespace(
+            get_nodes=lambda _ids, **_kwargs: [kg_node],
+            get_edges=lambda _ids, **_kwargs: [kg_edge],
+        ),
+    )
+    selected = FilteringResult(node_ids=["kg-node"], edge_ids=["kg-edge"])
+    state = {
+        "conversation_id": "c1",
+        "user_id": "u1",
+        "turn_node_id": "turn-1",
+        "turn_index": 1,
+        "self_span": Span.from_dummy_for_conversation().model_dump(
+            field_mode="backend", dump_format="json"
+        ),
+        "kg": {
+            "node_id_entry": None,
+            "candidate": None,
+            "selected": selected,
+            "reasoning": "selected both kinds",
+        },
+        "prev_turn_meta_summary": {
+            "prev_node_char_distance_from_last_summary": 12,
+            "prev_node_distance_from_last_summary": 1,
+            "tail_turn_index": 1,
+        },
+        "_deps": {
+            "conversation_engine": ce,
+            "ref_knowledge_engine": ref_knowledge_engine,
+            "llm_tasks": object(),
+            "filtering_callback": lambda *_args: None,
+            "_rust_worker_effects": True,
+            "prev_turn_meta_summary": MetaFromLastSummary(12, 1, 1),
+        },
+    }
+    ctx = FakeStepContext(state)
+    ctx.idempotency_key = "worker-kg-pin"
+    result = default_resolver.handlers["kg_pin"](ctx)
+
+    assert isinstance(result, RunSuccess)
+    batch = GraphMutationBatchPayload.model_validate(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == [
+        "node",
+        "edge",
+        "node",
+        "edge",
+    ]
+    assert len(batch.index_jobs) == 8
+    summary_update = next(
+        update["prev_turn_meta_summary"]
+        for mode, update in result.state_update
+        if mode == "u" and "prev_turn_meta_summary" in update
+    )
+    assert summary_update["prev_node_distance_from_last_summary"] == 3
+    pin_update = next(
+        update["kg_pin"]
+        for mode, update in result.state_update
+        if mode == "u" and "kg_pin" in update
+    )
+    assert len(pin_update["pinned_pointer_node_ids"]) == 2
+    assert len(pin_update["pinned_edge_ids"]) == 2
+    assert ce.nodes == {}
+    retry = default_resolver.handlers["kg_pin"](ctx)
+    retry_batch = GraphMutationBatchPayload.model_validate(retry.graph_mutation_batch)
+    assert [
+        (mutation.record.id, mutation.event_id) for mutation in retry_batch.mutations
+    ] == [(mutation.record.id, mutation.event_id) for mutation in batch.mutations]
+
+    from kogwistar.conversation.knowledge_retriever import KnowledgeRetriever
+
+    python_engine = FakeConversationEngine()
+    python_engine.nodes = {}
+    python_engine.edges = {}
+    python_engine.write = python_engine
+    python_engine.add_node = lambda node: python_engine.nodes.__setitem__(node.id, node)
+    python_engine.add_edge = lambda edge: python_engine.edges.__setitem__(edge.id, edge)
+    python_retriever = KnowledgeRetriever(
+        conversation_engine=python_engine,
+        ref_knowledge_engine=ref_knowledge_engine,
+        llm_tasks=object(),
+        filtering_callback=lambda *_args: None,
+    )
+    python_pointer_ids, python_edge_ids = python_retriever.pin_selected(
+        user_id="u1",
+        conversation_id="c1",
+        turn_node_id="turn-1",
+        turn_index=1,
+        self_span=Span.from_dummy_for_conversation(),
+        selected_knowledge=selected,
+        prev_turn_meta_summary=MetaFromLastSummary(12, 1, 1),
+    )
+    assert python_pointer_ids == [
+        mutation.record.id
+        for mutation in batch.mutations
+        if mutation.entity_kind == "node"
+    ]
+    assert python_edge_ids == [
+        mutation.record.id
+        for mutation in batch.mutations
+        if mutation.entity_kind == "edge"
+    ]
+
+    ce.pre_add_node_hooks = [lambda _node: None]
+    with pytest.raises(RuntimeError, match="cannot preserve hooks"):
+        default_resolver.handlers["kg_pin"](ctx)
+
+
 def test_decide_summarize_uses_snapshot_cost_when_available():
     ce = FakeConversationEngine()
     ctx = FakeStepContext(

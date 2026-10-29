@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from typing import Any, cast
 
 from kogwistar.conversation.agentic_answering import snapshot_hash
@@ -206,7 +205,7 @@ class KnowledgeRetriever:
                 reasoning=reasoning,
             )
 
-    def pin_selected(
+    def _prepare_selected_pins(
         self,
         *,
         user_id: str,
@@ -217,9 +216,8 @@ class KnowledgeRetriever:
         selected_knowledge: FilteringResult | None,
         selected_knowledge_nodes: RetrievalResult | None = None,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
-    ) -> tuple[list[str], list[str]]:
-        pinned_pointer_node_ids: list[str] = []
-        pinned_edge_ids: list[str] = []
+    ) -> list[ConversationNode | ConversationEdge]:
+        prepared: list[ConversationNode | ConversationEdge] = []
 
         # ref_kg_engine: GraphKnowledgeEngine
         # ref_kg_engine = self.ref_knowledge_engine
@@ -260,7 +258,6 @@ class KnowledgeRetriever:
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
 
-            # ptr_id = str(uuid.uuid4())
             meta = kg_meta
             snap = {
                 "entity_id": kg.id,
@@ -314,10 +311,8 @@ class KnowledgeRetriever:
             ptr_id = ptr_node.safe_get_id()
             if ptr_id is None:
                 raise ValueError("knowledge pointer node must have an id")
-            self.conversation_engine.write.add_node(ptr_node)
-            pinned_pointer_node_ids.append(ptr_id)
+            prepared.append(ptr_node)
 
-            # edge_id = str(uuid.uuid4())
             edge = ConversationEdge(
                 id=str(
                     stable_id(
@@ -344,11 +339,10 @@ class KnowledgeRetriever:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.write.add_edge(edge)
             edge_id_value = edge.safe_get_id()
             if edge_id_value is None:
                 raise ValueError("knowledge pin edge must have an id")
-            pinned_edge_ids.append(edge_id_value)
+            prepared.append(edge)
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 summary
             )
@@ -358,8 +352,13 @@ class KnowledgeRetriever:
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
 
-            # ptr_id = str(uuid.uuid4())
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
+            knowledge_edge_id = kg.safe_get_id()
+            if knowledge_edge_id is None:
+                raise ValueError("knowledge edge must have an id before pinning")
+            edge_pointer_id = str(
+                stable_id("knowledge_pin_edge_node", turn_node_id, knowledge_edge_id)
+            )
             edge_node_payload = cast(
                 dict[str, Any],
                 build_reference_node_payload(
@@ -371,6 +370,7 @@ class KnowledgeRetriever:
                     pointer_kind="kg_edge",
                     label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
                     summary=summary,
+                    pointer_id=edge_pointer_id,
                     extra_properties={
                         "entity_type": "knowledge_reference",
                     },
@@ -392,11 +392,10 @@ class KnowledgeRetriever:
                 domain_id=None,
                 canonical_entity_id=None,
             )
-            self.conversation_engine.write.add_node(ptr_node)
             ptr_id = cast(str, ptr_node.id)
-            pinned_pointer_node_ids.append(ptr_id)
+            prepared.append(ptr_node)
 
-            edge_id = str(uuid.uuid4())
+            edge_id = str(stable_id("knowledge_pin_edge", turn_node_id, ptr_id))
             edge = ConversationEdge(
                 id=edge_id,
                 source_ids=[turn_node_id],
@@ -419,12 +418,48 @@ class KnowledgeRetriever:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.write.add_edge(edge)
-            pinned_edge_ids.append(edge_id)
+            prepared.append(edge)
 
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 summary
             )
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
 
-        return pinned_pointer_node_ids, pinned_edge_ids
+        return prepared
+
+    def pin_selected(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        turn_index: int,
+        self_span: Span,
+        selected_knowledge: FilteringResult | None,
+        selected_knowledge_nodes: RetrievalResult | None = None,
+        prev_turn_meta_summary: MetaFromLastSummary | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Prepare and persist selected KG pointers using the Python writer."""
+        prepared = self._prepare_selected_pins(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            turn_index=turn_index,
+            self_span=self_span,
+            selected_knowledge=selected_knowledge,
+            selected_knowledge_nodes=selected_knowledge_nodes,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        pointer_ids: list[str] = []
+        edge_ids: list[str] = []
+        for entity in prepared:
+            entity_id = entity.safe_get_id()
+            if entity_id is None:
+                raise ValueError("prepared knowledge pin entity must have an id")
+            if isinstance(entity, ConversationNode):
+                self.conversation_engine.write.add_node(entity)
+                pointer_ids.append(entity_id)
+            else:
+                self.conversation_engine.write.add_edge(entity)
+                edge_ids.append(entity_id)
+        return pointer_ids, edge_ids
