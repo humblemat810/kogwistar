@@ -256,8 +256,13 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      chroma:
+        image: chromadb/chroma:1.5.9
+        ports:
+          - 8000:8000
     env:
       KOGWISTAR_TEST_PG_DSN: postgres://postgres:kogwistar@localhost:5432/kogwistar
+      KOGWISTAR_TEST_CHROMA_URL: http://localhost:8000
     defaults:
       run:
         working-directory: rust
@@ -283,6 +288,21 @@ jobs:
             echo "kogwistar-api must not depend on the PyO3 bridge or Python binding crate" >&2
             exit 1
           fi
+
+      - name: Wait for Chroma service
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if curl --silent --fail http://127.0.0.1:8000/api/v2/heartbeat >/dev/null; then
+              echo "Chroma service is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Chroma service did not become ready" >&2
+          docker ps -a
+          exit 1
 
       - name: Test Rust workspace
         run: >-

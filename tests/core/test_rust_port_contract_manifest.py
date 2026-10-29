@@ -49,6 +49,17 @@ def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
     assert "(kogwistar-python|pyo3(-[^ ]+)?|pythonize|cpython|rust-cpython(-[^ ]+)?) v" in workflow
 
 
+def test_rust_ci_provides_live_chroma_for_ignored_native_integration_tests() -> None:
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "image: chromadb/chroma:1.5.9" in workflow
+    assert "KOGWISTAR_TEST_CHROMA_URL: http://localhost:8000" in workflow
+    assert "Wait for Chroma service" in workflow
+    assert "curl --silent --fail http://127.0.0.1:8000/api/v2/heartbeat" in workflow
+    assert "cargo test --workspace --all-targets --locked --" in workflow
+    assert "--include-ignored" in workflow
+
+
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
