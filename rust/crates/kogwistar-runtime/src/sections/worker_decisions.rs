@@ -42,6 +42,11 @@ pub struct RecordedWorkerSuccessEffect {
     /// transaction as this worker result and lane acknowledgement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_mutation_batch: Option<kogwistar_contracts::GraphMutationBatchV1>,
+    /// Version-2 graph effects request host-derived default ACL rows. The
+    /// transaction owner resolves those rows from authenticated run identity
+    /// and current ACL truth; V1 remains wire-compatible and unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_mutation_batch_v2: Option<kogwistar_contracts::GraphMutationBatchV2>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

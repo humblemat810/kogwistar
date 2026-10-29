@@ -76,6 +76,7 @@ use axum::{
 include!(concat!(env!("OUT_DIR"), "/frozen_routes.rs"));
 include!("sections/contracts_and_runtime.rs");
 include!("sections/response_policy.rs");
+include!("sections/graph_acl_effects.rs");
 include!("sections/document_graph.rs");
 include!("sections/workflow_design.rs");
 include!("sections/sqlite_service.rs");

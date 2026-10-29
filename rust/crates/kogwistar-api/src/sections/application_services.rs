@@ -4,6 +4,7 @@ fn fail_inline_graph_effect(
     message: &str,
 ) {
     effect.graph_mutation_batch = None;
+    effect.graph_mutation_batch_v2 = None;
     effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
     effect.state_update.clear();
     effect.update = None;
@@ -16,6 +17,25 @@ fn fail_inline_graph_effect(
     effect.resume_payload = None;
     effect.usage = None;
     effect.trace_events.clear();
+}
+
+fn recorded_effect_has_graph_batch(effect: &kogwistar_runtime::RecordedWorkerSuccessEffect) -> bool {
+    effect.graph_mutation_batch.is_some() || effect.graph_mutation_batch_v2.is_some()
+}
+
+fn recorded_effect_graph_mutations(
+    effect: &kogwistar_runtime::RecordedWorkerSuccessEffect,
+) -> Option<&[kogwistar_contracts::GraphMutationV1]> {
+    effect
+        .graph_mutation_batch_v2
+        .as_ref()
+        .map(|batch| batch.mutations.as_slice())
+        .or_else(|| {
+            effect
+                .graph_mutation_batch
+                .as_ref()
+                .map(|batch| batch.mutations.as_slice())
+        })
 }
 
 impl PostgresRunApplicationService {
@@ -90,8 +110,7 @@ impl ApplicationService for PostgresRunApplicationService {
             let mut inline_principal = if result
                 .effect
                 .as_ref()
-                .and_then(|effect| effect.graph_mutation_batch.as_ref())
-                .is_some()
+                .is_some_and(recorded_effect_has_graph_batch)
             {
                 match self.resolve_inline_native_owner_principal(&run_id).await {
                     Ok(principal) => Some(principal),
@@ -113,15 +132,10 @@ impl ApplicationService for PostgresRunApplicationService {
             };
             let scope_denied = inline_principal
                 .as_ref()
-                .zip(
-                    result
-                        .effect
-                        .as_ref()
-                        .and_then(|effect| effect.graph_mutation_batch.as_ref()),
-                )
-                .is_some_and(|(principal, batch)| {
+                .zip(result.effect.as_ref().and_then(recorded_effect_graph_mutations))
+                .is_some_and(|(principal, mutations)| {
                     let security_scope = security_scope_value(principal);
-                    batch.mutations.iter().any(|mutation| {
+                    mutations.iter().any(|mutation| {
                         !graph_mutation_scope_allowed(
                             &GraphScope {
                                 namespace: mutation.scope.namespace.clone(),

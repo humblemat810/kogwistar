@@ -328,6 +328,48 @@
     }
 
     #[test]
+    fn native_graph_v2_registry_preserves_acl_intent_without_python_fallback() {
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register_graph_v2("app/acl-graph", "v1", |_| {
+                let batch = serde_json::from_str(include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../contracts/golden/graph-mutation-batch-v2.json"
+                )))
+                .unwrap();
+                Ok((
+                    NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"native": true})),
+                    },
+                    batch,
+                ))
+            })
+            .unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "app/acl-graph".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+        };
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        assert!(effect.graph_mutation_batch.is_none());
+        let batch = effect.graph_mutation_batch_v2.unwrap();
+        assert_eq!(batch.contract_version, 2);
+        assert_eq!(batch.default_acl.truth_graph, "conversation");
+        assert_eq!(batch.mutations[0].record.id, "node-1");
+    }
+
+    #[test]
     fn native_registry_runs_versioned_application_operation_and_preserves_builtins() {
         let mut registry = NativeOperationRegistry::default();
         let append_fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(

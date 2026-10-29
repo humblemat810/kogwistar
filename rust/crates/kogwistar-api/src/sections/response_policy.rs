@@ -1088,6 +1088,22 @@ fn graph_mutation_batch_value(
     Ok(mutations)
 }
 
+fn graph_mutation_batch_v2_value(
+    input: kogwistar_contracts::GraphMutationBatchV2,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), String> {
+    input.validate().map_err(|error| error.to_string())?;
+    let v1 = GraphMutationBatchInput {
+        contract_version: 1,
+        atomic: input.atomic,
+        mutations: input.mutations,
+        index_jobs: input.index_jobs,
+    };
+    let mutations = graph_mutation_batch_value(v1.clone())?;
+    validate_graph_mutation_envelopes(&v1, &mutations)?;
+    let index_jobs = graph_index_jobs_value(&v1, &mutations)?;
+    Ok((mutations, index_jobs))
+}
+
 fn validate_graph_mutation_envelopes(
     input: &GraphMutationBatchInput,
     mutations: &[GraphMutation],

@@ -1677,7 +1677,9 @@ impl SqliteRunApplicationService {
         if input
             .effect
             .as_ref()
-            .is_some_and(|effect| effect.graph_mutation_batch.is_some())
+            .is_some_and(|effect| {
+                effect.graph_mutation_batch.is_some() || effect.graph_mutation_batch_v2.is_some()
+            })
         {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,

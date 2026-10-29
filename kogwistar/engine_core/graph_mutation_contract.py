@@ -132,7 +132,12 @@ class GraphMutationBatchPayload(BaseModel):
 
 
 class GraphDefaultAclIntentV1(BaseModel):
-    """Request host-derived default ACLs for graph entities in an atomic batch."""
+    """Request transaction-owner-derived private ACLs for this atomic batch.
+
+    The authenticated run owner is authoritative. Entity metadata cannot widen
+    this default to public/shared access; that requires a separately authorized
+    ACL operation.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

@@ -8,6 +8,11 @@ enum RuntimeGraphCommitDenial {
     Scope,
 }
 
+enum RuntimeGraphMutationBatch<'a> {
+    V1(&'a GraphMutationBatchInput),
+    V2(&'a kogwistar_contracts::GraphMutationBatchV2),
+}
+
 fn runtime_owner_binding_v1(
     principal: &Value,
     capabilities: &SharedCapabilityState,
@@ -1792,11 +1797,28 @@ impl PostgresRunApplicationService {
                 message,
             );
         }
-        let graph_effects = if let Some(batch) = input
-            .effect
-            .as_ref()
-            .and_then(|effect| effect.graph_mutation_batch.as_ref())
-        {
+        let effect_batch: Option<Result<(RuntimeGraphMutationBatch<'_>, Option<&str>), String>> = input.effect.as_ref().and_then(|effect| {
+            match (
+                effect.graph_mutation_batch.as_ref(),
+                effect.graph_mutation_batch_v2.as_ref(),
+            ) {
+                (Some(_), Some(_)) => Some(Err("worker effect cannot carry both graph batch versions".to_owned())),
+                (Some(v1), None) => Some(Ok((RuntimeGraphMutationBatch::V1(v1), None))),
+                (None, Some(v2)) => Some(Ok((RuntimeGraphMutationBatch::V2(v2), Some(v2.default_acl.truth_graph.as_str())))),
+                (None, None) => None,
+            }
+        });
+        let graph_effects = if let Some(batch_result) = effect_batch {
+            let (batch, default_acl_truth_graph) = match batch_result {
+                Ok(value) => value,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error,
+                    );
+                }
+            };
             if !self
                 .store
                 .graph_authority_capability()
@@ -1849,31 +1871,34 @@ impl PostgresRunApplicationService {
                     "Worker graph effects require an authenticated run owner",
                 );
             };
-            if let Err(error) = batch.validate() {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_INVALID_REQUEST",
-                    error.to_string(),
-                );
-            }
-            let batch_input = batch.clone();
-            let mutations = match graph_mutation_batch_value(batch_input.clone()) {
-                Ok(value) => value,
-                Err(error) => {
-                    return effect_error(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "KOGWISTAR_INVALID_REQUEST",
-                        error,
-                    );
+            let (mutations, index_jobs) = match batch {
+                RuntimeGraphMutationBatch::V1(batch) => {
+                    if let Err(error) = batch.validate() {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
+                            error.to_string(),
+                        );
+                    }
+                    let input = batch.clone();
+                    let mutations = match graph_mutation_batch_value(input.clone()) {
+                        Ok(value) => value,
+                        Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
+                    };
+                    if let Err(error) = validate_graph_mutation_envelopes(&input, &mutations) {
+                        return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+                    }
+                    let index_jobs = match graph_index_jobs_value(&input, &mutations) {
+                        Ok(value) => value,
+                        Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
+                    };
+                    (mutations, index_jobs)
                 }
+                RuntimeGraphMutationBatch::V2(batch) => match graph_mutation_batch_v2_value((*batch).clone()) {
+                    Ok(value) => value,
+                    Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
+                },
             };
-            if let Err(error) = validate_graph_mutation_envelopes(&batch_input, &mutations) {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_INVALID_REQUEST",
-                    error,
-                );
-            }
             let security_scope = security_scope_value(principal);
             if mutations
                 .iter()
@@ -1885,22 +1910,14 @@ impl PostgresRunApplicationService {
                     "Worker graph effect scope is outside the principal storage scope",
                 );
             }
-            let index_jobs = match graph_index_jobs_value(&batch_input, &mutations) {
-                Ok(value) => value,
-                Err(error) => {
-                    return effect_error(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "KOGWISTAR_INVALID_REQUEST",
-                        error,
-                    );
-                }
-            };
             Some((
                 mutations,
                 index_jobs,
+                default_acl_truth_graph.map(str::to_owned),
                 run_owner_id.to_owned(),
                 principal.clone(),
                 inline_principal.is_some(),
+                input.effect.as_ref().map(|effect| effect.effect_id.clone()).unwrap_or_default(),
             ))
         } else {
             None
@@ -1924,7 +1941,7 @@ impl PostgresRunApplicationService {
                             message.to_owned(),
                         )
                     })?;
-                    if let Some((mutations, _, run_owner_id, principal, inline)) = graph_effects.as_ref() {
+                    if let Some((mutations, _, _, run_owner_id, principal, inline, _)) = graph_effects.as_ref() {
                         if !capability_allowed_for_principal(
                             principal,
                             &commit_capabilities,
@@ -1950,7 +1967,32 @@ impl PostgresRunApplicationService {
                             return Ok(Err(RuntimeGraphCommitDenial::Owner));
                         }
                     }
-                    if let Some((mutations, index_jobs, _, _, _)) = graph_effects {
+                    if let Some((mutations, mut index_jobs, default_acl_truth_graph, _, principal, _, effect_id)) = graph_effects {
+                        let mut mutations = mutations;
+                        if let Some(truth_graph) = default_acl_truth_graph {
+                            let scope = mutations.first().map(|mutation| mutation.scope.clone()).ok_or_else(|| {
+                                kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    "ACL-aware graph batch has no mutations".to_owned(),
+                                )
+                            })?;
+                            let owner_id = authenticated_run_owner_id(&principal).ok_or_else(|| {
+                                kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    "ACL-aware graph batch has no authenticated run owner".to_owned(),
+                                )
+                            })?.to_ascii_lowercase();
+                            let security_scope = principal.get("security_scope").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase);
+                            let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                                uow,
+                                &scope,
+                                &mutations,
+                                &truth_graph,
+                                &owner_id,
+                                security_scope.as_deref(),
+                                &effect_id,
+                            ).await?;
+                            mutations.extend(acl_mutations);
+                            index_jobs.extend(acl_jobs);
+                        }
                         for mutation in mutations {
                             uow.apply_graph_mutation(mutation).await?;
                         }

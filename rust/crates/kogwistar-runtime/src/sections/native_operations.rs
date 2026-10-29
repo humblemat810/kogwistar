@@ -190,10 +190,20 @@ type NativeGraphOperationHandler = dyn Fn(
     + Send
     + Sync;
 
+type NativeGraphV2OperationHandler = dyn Fn(
+        &RuntimeNativeStepRequest,
+    ) -> Result<
+        (NativeOperationOutput, kogwistar_contracts::GraphMutationBatchV2),
+        RuntimeNativeExecutionError,
+    >
+    + Send
+    + Sync;
+
 #[derive(Clone)]
 enum RegisteredNativeOperation {
     State(Arc<NativeOperationHandler>),
     Graph(Arc<NativeGraphOperationHandler>),
+    GraphV2(Arc<NativeGraphV2OperationHandler>),
 }
 
 /// Versioned registry for trusted Rust operation implementations. Registration
@@ -282,6 +292,31 @@ impl NativeOperationRegistry {
             operation.into(),
             version.into(),
             RegisteredNativeOperation::Graph(Arc::new(handler)),
+        )
+    }
+
+    /// Register a trusted native handler that requests host-derived default
+    /// ACL records. The API transaction owns ACL versioning and persistence.
+    pub fn register_graph_v2<F>(
+        &mut self,
+        operation: impl Into<String>,
+        version: impl Into<String>,
+        handler: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+            ) -> Result<
+                (NativeOperationOutput, kogwistar_contracts::GraphMutationBatchV2),
+                RuntimeNativeExecutionError,
+            > + Send
+            + Sync
+            + 'static,
+    {
+        self.register_handler(
+            operation.into(),
+            version.into(),
+            RegisteredNativeOperation::GraphV2(Arc::new(handler)),
         )
     }
 
@@ -425,8 +460,8 @@ pub fn execute_native_step_with_registry(
             RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
         });
     };
-    let (output, graph_mutation_batch) = match handler {
-        RegisteredNativeOperation::State(handler) => (handler(request)?, None),
+    let (output, graph_mutation_batch, graph_mutation_batch_v2) = match handler {
+        RegisteredNativeOperation::State(handler) => (handler(request)?, None, None),
         RegisteredNativeOperation::Graph(handler) => {
             let (output, batch) = handler(request)?;
             batch
@@ -435,7 +470,17 @@ pub fn execute_native_step_with_registry(
                     operation: request.operation.clone(),
                     reason: format!("invalid graph mutation batch: {error}"),
                 })?;
-            (output, Some(batch))
+            (output, Some(batch), None)
+        }
+        RegisteredNativeOperation::GraphV2(handler) => {
+            let (output, batch) = handler(request)?;
+            batch
+                .validate()
+                .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
+                    operation: request.operation.clone(),
+                    reason: format!("invalid ACL-aware graph mutation batch: {error}"),
+                })?;
+            (output, None, Some(batch))
         }
     };
     validate_native_output_state(request, &output)?;
@@ -478,6 +523,7 @@ pub fn execute_native_step_with_registry(
             trace
         }],
         graph_mutation_batch,
+        graph_mutation_batch_v2,
     })
 }
 

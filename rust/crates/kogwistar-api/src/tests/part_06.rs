@@ -649,6 +649,44 @@
                 ))
             })
             .unwrap();
+        registry
+            .register_graph_v2("app/inline-graph-v2", "v1", |request| {
+                let entity_id = "inline-v2-node-stable";
+                let batch = serde_json::from_value(json!({
+                    "contract_version": 2,
+                    "atomic": true,
+                    "mutations": [{
+                        "scope": {"namespace": "alpha"},
+                        "table": "gke_nodes",
+                        "entity_kind": "node",
+                        "event_id": format!("inline-v2-event-{}", request.run_id),
+                        "op": "ADD",
+                        "payload": {
+                            "id": entity_id,
+                            "label": "native ACL entity",
+                            "type": "entity",
+                            "summary": "native ACL entity",
+                            "doc_id": "native-acl-doc",
+                            "mentions": [],
+                            "metadata": {},
+                            "properties": {},
+                            "embedding": null
+                        },
+                        "record": {"id": entity_id, "document": "native ACL entity"},
+                        "embedding_dim": 0
+                    }],
+                    "default_acl": {"truth_graph": "conversation"}
+                }))
+                .unwrap();
+                Ok((
+                    kogwistar_runtime::NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"native_acl_graph": true})),
+                    },
+                    batch,
+                ))
+            })
+            .unwrap();
         let auth_config = AuthConfig {
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             ..AuthConfig::default()
@@ -687,6 +725,13 @@
                 "capabilities": ["workflow.run.write", "write_graph"]
             }),
         };
+        let submit_v2 = |run_id: &str| {
+            let mut request = submit(run_id);
+            let mut payload: Value = serde_json::from_slice(&request.body).unwrap();
+            payload["node_ops"]["entry"] = json!("rust-native/app/inline-graph-v2");
+            request.body = serde_json::to_vec(&payload).unwrap();
+            request
+        };
         assert_eq!(
             service.execute(submit("inline-authorized")).await.status,
             StatusCode::ACCEPTED.as_u16()
@@ -709,6 +754,67 @@
             .await
             .unwrap();
         assert_eq!(authorized.len(), 1);
+
+        assert_eq!(
+            service.execute(submit_v2("inline-acl-authorized")).await.status,
+            StatusCode::ACCEPTED.as_u16()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let acl_target_id = "inline-v2-node-stable".to_owned();
+        let acl_records = service
+            .store
+            .graph_acl_records_for_entities(
+                &GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                "conversation",
+                std::slice::from_ref(&acl_target_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(acl_records.len(), 1);
+        assert_eq!(
+            acl_records[0].metadata.get("acl_mode").and_then(Value::as_str),
+            Some("private")
+        );
+        assert_eq!(
+            acl_records[0].metadata.get("owner_id").and_then(Value::as_str),
+            Some("alice")
+        );
+        let acl_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 100)
+            .await
+            .unwrap();
+        assert!(acl_jobs.iter().any(|job| job.entity_id == acl_records[0].id));
+
+        assert_eq!(
+            service.execute(submit_v2("inline-acl-repeat")).await.status,
+            StatusCode::ACCEPTED.as_u16()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(service.execute_inline_native_work_once().await.unwrap());
+        let replayed_acl_records = service
+            .store
+            .graph_acl_records_for_entities(
+                &GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                "conversation",
+                std::slice::from_ref(&acl_target_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_acl_records.len(),
+            1,
+            "matching ACL defaults must not mint a new version"
+        );
 
         assert_eq!(
             service.execute(submit("inline-cross-scope")).await.status,

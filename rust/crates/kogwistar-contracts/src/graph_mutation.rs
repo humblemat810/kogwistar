@@ -19,11 +19,13 @@ pub struct GraphMutationBatchV1 {
     pub index_jobs: Vec<GraphIndexJobV1>,
 }
 
-/// A host-resolved default-ACL request for a version-2 graph batch.
+/// Request transaction-time private ACL defaults for a version-2 graph batch.
 ///
 /// This is intent only: it carries no principal, owner, ACL version, or
-/// authorization result. The transaction owner derives those from the
-/// authenticated run and current ACL truth at commit time.
+/// authorization result. The transaction owner uses the authenticated run
+/// owner and current ACL truth at commit time. Entity metadata cannot widen
+/// this default to public/shared access; callers needing a non-private policy
+/// require a separately authorized ACL operation.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphDefaultAclIntentV1 {
