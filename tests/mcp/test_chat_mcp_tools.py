@@ -182,6 +182,53 @@ async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_python_only_mcp_graph_read_does_not_load_rust(monkeypatch, tmp_path):
+    from kogwistar._rust_bridge import RustExtensionUnavailableError
+    from kogwistar.server import mcp_tools
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.setenv(selector, "python")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("native loader must not be called")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "python_only_mcp"),
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        embedding_function=FakeEmbeddingFunction(),
+    )
+    source = build_entity_node(node_id="python-mcp-source", doc_id="python-mcp-doc")
+    target = build_entity_node(node_id="python-mcp-target", doc_id="python-mcp-doc")
+    edge = build_relationship_edge(
+        edge_id="python-mcp-edge",
+        src=source.id,
+        tgt=target.id,
+        doc_id="python-mcp-doc",
+    )
+    engine.write.add_node(source)
+    engine.write.add_node(target)
+    engine.write.add_edge(edge)
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+
+    with _claims("rw", "knowledge", sub="python-only-mcp"):
+        neighbors = _structured(
+            await server.mcp.call_tool("kg_neighbors", {"rid": source.id})
+        )
+
+    assert neighbors == {"nodes": [target.id], "edges": [edge.id]}
+
+
+@pytest.mark.asyncio
 async def test_mcp_graph_traversal_matches_shared_golden_contract(
     monkeypatch, engine_triplet
 ):
