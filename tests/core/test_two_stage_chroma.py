@@ -1689,6 +1689,74 @@ def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
         restarted.close()
 
 
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_rust_metadata_hands_stage1_to_python_worker(
+    tmp_path, monkeypatch
+):
+    """A closed Rust metadata owner can hand durable Stage 1 to Python."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    node_id = "rust-python-stage1-handoff"
+    namespace = "rust-python-handoff"
+
+    def open_engine() -> GraphKnowledgeEngine:
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_function=build_test_embedding_function("constant", dim=2),
+        )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    rust_producer = open_engine()
+    try:
+        rust_producer.write.add_node(build_entity_node(node_id=node_id, doc_id="handoff-doc"))
+        staged = rust_producer.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        )
+        assert staged is not None
+        assert rust_producer.meta_sqlite.list_index_jobs(
+            namespace=namespace, entity_kind="node", entity_id=node_id
+        )
+    finally:
+        rust_producer.close()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    python_worker_engine = open_engine()
+    try:
+        assert python_worker_engine.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        ) is not None
+        worker = python_worker_engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=1, max_jobs_per_tick=8
+        )
+        assert worker.tick().done >= 1
+        assert python_worker_engine.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        ) is None
+        projected = python_worker_engine.backend.node_get(
+            ids=[node_id], include=["documents", "metadatas"]
+        )
+        assert projected["ids"] == [node_id]
+        assert projected["metadatas"][0]["_kogwistar_stage2_ready"] is True
+    finally:
+        python_worker_engine.close()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    rust_reader = open_engine()
+    try:
+        assert rust_reader.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        ) is None
+        hits = rust_reader.read.query_nodes(
+            query_embeddings=[[0.1, 0.2]], n_results=10
+        )
+        assert [[node.id for node in batch] for batch in hits] == [[node_id]]
+    finally:
+        rust_reader.close()
+
+
 def test_real_chroma_provider_failure_keeps_stage1_retryable(tmp_path, monkeypatch):
     """A provider failure must not acknowledge or lose the staged projection."""
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
