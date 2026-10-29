@@ -38,7 +38,7 @@ def source_map_to_wire(
 ) -> dict[str, JsonValue]:
     """Project textual chunks to the deterministic Rust-compatible payload."""
     document_id = _required_text(doc_id, field="doc_id")
-    entries: list[dict[str, JsonValue]] = []
+    entries: list[JsonValue] = []
     for chunk_id, chunk in sorted(
         chunks.items(), key=lambda item: (item[1].end_char, item[1].start_char, item[0])
     ):

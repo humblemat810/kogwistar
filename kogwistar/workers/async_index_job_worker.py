@@ -5,7 +5,7 @@ import inspect
 import json
 import logging
 import time
-from collections.abc import Awaitable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar, cast
 
@@ -324,10 +324,11 @@ class AsyncIndexJobWorker:
         )
         if not callable(repair):
             return
+        repair_fn = cast(Callable[..., int], repair)
         try:
             metrics.repaired = int(
                 await asyncio.to_thread(
-                    repair,
+                    repair_fn,
                     namespace=namespace,
                     max_entities=self.max_jobs_per_tick,
                     max_event_window=self.max_jobs_per_tick,

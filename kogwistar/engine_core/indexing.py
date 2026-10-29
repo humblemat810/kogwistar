@@ -427,6 +427,10 @@ class IndexingSubsystem:
         list_jobs = getattr(self.metadata, "list_index_jobs", None)
         if not callable(iter_events) or not callable(list_jobs):
             return 0
+        iter_events = cast(Callable[..., Iterable[object]], iter_events)
+        list_jobs = cast(Callable[..., Iterable[object]], list_jobs)
+        next_event: object | None = None
+        cursor_set_fn: Callable[..., object] | None = None
         ns = self.engine.namespace if namespace is None else str(namespace)
         if ns != self.engine.namespace:
             raise ValueError("repair namespace must match the active engine namespace")
@@ -441,8 +445,10 @@ class IndexingSubsystem:
                 raise RuntimeError(
                     "checkpointed two-stage repair requires replay cursor support"
                 )
+            cursor_get_fn = cast(Callable[..., int], cursor_get)
+            cursor_set_fn = cast(Callable[..., object], cursor_set)
             consumer = "kogwistar.two_stage_embedding_repair.v1"
-            cursor = max(0, int(cursor_get(namespace=ns, consumer=consumer)))
+            cursor = max(0, int(cursor_get_fn(namespace=ns, consumer=consumer)))
             from_seq = cursor + 1
             to_seq = from_seq + min(window, entity_limit) - 1
             page = list(
@@ -454,16 +460,17 @@ class IndexingSubsystem:
                 )
             )
             next_event = next(
-                iter_events(
-                    namespace=ns,
-                    from_seq=to_seq + 1,
-                    batch_size=1,
+                iter(
+                    iter_events(
+                        namespace=ns,
+                        from_seq=to_seq + 1,
+                        batch_size=1,
+                    )
                 ),
                 None,
             )
         else:
             page = list(iter_events(namespace=ns, from_seq=1))
-            cursor_set = None
             consumer = ""
             to_seq = 0
 
@@ -578,8 +585,8 @@ class IndexingSubsystem:
                     namespace=ns,
                 )
                 repaired += 1
-        if cursor_set is not None:
-            cursor_set(
+        if cursor_set_fn is not None:
+            cursor_set_fn(
                 namespace=ns,
                 consumer=consumer,
                 last_seq=to_seq if next_event is not None else 0,

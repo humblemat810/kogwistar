@@ -329,7 +329,7 @@ def acquire_sqlite_database(
     database: str | os.PathLike[str], implementation: str
 ) -> SQLiteDatabaseLease:
     binding = select_sqlite_implementation(implementation)
-    keys = _database_keys(database)
+    keys: set[tuple[object, ...]] = _database_keys(database)
     private_memory = next(iter(keys))[0] == "sqlite-private-memory"
     if private_memory:
         keys = {("sqlite-private-memory", binding.context_id)}
@@ -475,7 +475,9 @@ def _file_identity_authority_key(
             return f"file-id:{information.volume_serial:x}:{file_index:x}"
         finally:
             close_handle(handle)
-    return f"file-id:{int(device):x}:{int(inode):x}"
+    if not isinstance(device, int) or not isinstance(inode, int):
+        raise TypeError("SQLite file identity must contain integer device and inode")
+    return f"file-id:{device:x}:{inode:x}"
 
 
 def _authority_mutex_name(path_key: str) -> str:

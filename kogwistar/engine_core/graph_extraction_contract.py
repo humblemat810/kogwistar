@@ -8,7 +8,7 @@ the selected write owner must still rehydrate entities and validate evidence.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, model_validator
 
@@ -74,7 +74,7 @@ def _entity_text_spans(entity: JsonObject) -> list[JsonObject]:
             if isinstance(spans, list):
                 if any(not isinstance(span, dict) for span in spans):
                     raise GraphExtractionContractError("graph extraction span must be an object")
-                found.extend(spans)
+                found.extend(cast(JsonObject, span) for span in spans)
             elif isinstance(mention.get("span_ids"), list):
                 raise GraphExtractionContractError(
                     "flattened span IDs require root span records not present in this request contract"

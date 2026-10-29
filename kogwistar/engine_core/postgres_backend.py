@@ -49,7 +49,15 @@ import re
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar, cast
@@ -2511,11 +2519,16 @@ class PgVectorBackend:
     def _edge_endpoint_rows(
         rows: Sequence[object], include: list[str]
     ) -> dict[str, JsonValue]:
-        result: dict[str, JsonValue] = {"ids": [str(row.id) for row in rows]}
+        mappings = [
+            cast(Mapping[str, Any], getattr(row, "_mapping")) for row in rows
+        ]
+        result: dict[str, JsonValue] = {
+            "ids": [str(row["id"]) for row in mappings]
+        }
         if "documents" in include:
-            result["documents"] = [row.document for row in rows]
+            result["documents"] = [row["document"] for row in mappings]
         if "metadatas" in include:
-            result["metadatas"] = [dict(row.metadata or {}) for row in rows]
+            result["metadatas"] = [dict(row["metadata"] or {}) for row in mappings]
         return result
 
     def edge_delete(

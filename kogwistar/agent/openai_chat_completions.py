@@ -159,7 +159,7 @@ class OpenAIChatCompletionsProvider:
     def _payload(self, request: ProviderRequest) -> JsonObject:
         if request.previous_response_id:
             raise ValueError("Chat Completions requires history in messages, not previous_response_id")
-        messages: list[JsonObject] = []
+        messages: list[JsonValue] = []
         if request.instructions:
             messages.append({"role": "system", "content": request.instructions})
         messages.append({"role": "user", "content": request.input})

@@ -281,7 +281,7 @@ def implementation_selection_metadata(
         graph_mode=effective["KOGWISTAR_IMPL_GRAPH_STORE"],
         authority_mode=effective["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"],
     )
-    return {
+    return cast(JsonObject, {
         "schema_version": 1,
         "source": "engine_construction",
         "selectors": raw,
@@ -290,7 +290,7 @@ def implementation_selection_metadata(
             "postgres_transaction_coherent": postgres_coherent,
             "postgres_selector_alignment": postgres_selector_alignment,
         },
-    }
+    })
 
 
 @contextmanager
