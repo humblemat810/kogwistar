@@ -1055,6 +1055,108 @@
                 .status,
             "succeeded"
         );
+
+        let selector_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "run_id": "native-answer-bm25-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-bm25",
+                "start_node_id": "select",
+                "node_ops": {"select": "rust-native/aa_select_used_evidence"},
+                "initial_state": {
+                    "evidence_selector": "bm25",
+                    "question": "Explain graph vector retrieval none",
+                    "max_used": 2,
+                    "candidates": [
+                        {"id": "node-first", "label": "Graph query", "summary": "vector access"},
+                        {"id": "node-best", "label": "retrieval", "summary": "query vector graph"},
+                        {"id": "node-irrelevant", "label": "unrelated", "summary": "nothing"},
+                        {"id": "node-tied", "label": "Graph", "summary": "vector"},
+                        {"id": "node-missing-fields"}
+                    ]
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(selector_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let selector_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "run_id": "native-answer-bm25-run",
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(selector_claim.status(), StatusCode::OK);
+        let selector_work = selector_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let selector_execution = json!({
+            "handoff": {
+                "message_id": selector_work["message_id"],
+                "claimed_by": selector_work["claimed_by"],
+                "run_id": selector_work["run_id"],
+                "step_id": selector_work["step_id"],
+                "correlation_id": selector_work["correlation_id"]
+            },
+            "payload": selector_work["payload"]
+        });
+        assert_eq!(selector_execution["payload"]["executor_target"], "rust-native");
+        let selector_response = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&owner)
+            .json(&selector_execution)
+            .send()
+            .await
+            .unwrap();
+        let selector_status = selector_response.status();
+        let selector_body = selector_response.text().await.unwrap();
+        assert_eq!(selector_status, StatusCode::OK, "{selector_body}");
+        let selector_state = service
+            .store
+            .read_recorded_runtime_state(
+                "native-answer-bm25-run",
+                "wf",
+                "conv-native-bm25",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            selector_state.state["selection"]["used_node_ids"],
+            json!(["node-best", "node-first"])
+        );
+        assert_eq!(
+            selector_state.state["op_log"],
+            json!(["aa_select_used_evidence:2"])
+        );
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message(selector_work["message_id"].as_str().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            service
+                .store
+                .get_server_run("native-answer-bm25-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
         server.abort();
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let task = tokio::spawn(connection);
