@@ -47,6 +47,15 @@ RUST_SERVER = (
 )
 
 
+def _assert_worker_dependencies(
+    state: dict[str, Any], expected: dict[str, object]
+) -> None:
+    actual = state.get("_deps")
+    assert isinstance(actual, dict)
+    assert actual.get("_rust_worker_effects") is True
+    assert all(actual.get(key) is value for key, value in expected.items())
+
+
 def _test_hs256_token(secret: str, claims: dict[str, object]) -> str:
     def encode(value: object) -> str:
         raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
@@ -541,7 +550,7 @@ def test_authority_pumps_only_target_run_and_restores_process_local_deps(
 
     @resolver.register("start")
     def start(ctx):
-        assert ctx.state_view["_deps"] is deps
+        _assert_worker_dependencies(ctx.state_view, deps)
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"answer": 42})],
@@ -738,7 +747,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
     @resolver.register("start")
     def start_step(ctx):
         visited.append("start")
-        assert ctx.state_view["_deps"] is dependencies
+        _assert_worker_dependencies(ctx.state_view, dependencies)
         return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("gate")
@@ -753,7 +762,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
     def end_step(ctx):
         visited.append("end")
         assert ctx.state_view["approved"] is True
-        assert ctx.state_view["_deps"] is dependencies
+        _assert_worker_dependencies(ctx.state_view, dependencies)
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"resumed_end": True})],
@@ -820,7 +829,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
             run_id="run-sync-resume-live",
             cache_dir=tmp_path,
         )
-        assert result.status == "suspended"
+        assert result.status == "suspended", result.errors
         checkpoint = httpx.get(
             f"{base_url}/api/workflow/runs/run-sync-resume-live/checkpoints",
             timeout=10,
@@ -1866,7 +1875,7 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
     @resolver.register("start")
     async def start_step(ctx):
         visited.append("start")
-        assert ctx.state_view["_deps"] is dependencies
+        _assert_worker_dependencies(ctx.state_view, dependencies)
         return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("gate")
@@ -1881,7 +1890,7 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
     async def end_step(ctx):
         visited.append("end")
         assert ctx.state_view["approved"] is True
-        assert ctx.state_view["_deps"] is dependencies
+        _assert_worker_dependencies(ctx.state_view, dependencies)
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"resumed_end": True})],
