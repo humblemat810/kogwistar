@@ -1503,6 +1503,8 @@ impl PostgresRunApplicationService {
             ("conversation_id".to_owned(), json!(conversation_id)),
             ("user_id".to_owned(), json!(user_id)),
         ]);
+        let mut event_metadata = metadata.clone();
+        event_metadata.remove("namespace");
         let properties = json!({"status": "active"});
         let mentions = json!([{
             "spans": [{
@@ -1532,7 +1534,7 @@ impl PostgresRunApplicationService {
             "mentions": mentions,
             "embedding": null,
             "doc_id": null,
-            "metadata": metadata,
+            "metadata": event_metadata,
             "level_from_root": 0,
             "role": "system",
             "turn_index": -1,
@@ -1548,6 +1550,7 @@ impl PostgresRunApplicationService {
             );
         }
         let mut record_metadata = payload["metadata"].as_object().cloned().unwrap_or_default();
+        record_metadata.insert("namespace".to_owned(), json!(scope.namespace));
         record_metadata.insert("_class_name".to_owned(), json!("ConversationNode"));
         record_metadata.insert("label".to_owned(), json!("conversation start"));
         record_metadata.insert("type".to_owned(), json!("entity"));

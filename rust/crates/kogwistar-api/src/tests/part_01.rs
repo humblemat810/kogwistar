@@ -1700,6 +1700,11 @@
             .find(|event| event.entity_id == "conv-create-start")
             .expect("conversation start event is durable");
         assert!(start_event.payload.get("embedding").is_none());
+        let conversation_create_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-create-start-node-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(start_event.payload, conversation_create_fixture["payload"]);
 
         let details = service
             .execute(ApiEffectRequest {

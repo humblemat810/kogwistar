@@ -1,0 +1,56 @@
+{
+  "contract_version": 1,
+  "payload": {
+    "label": "conversation start",
+    "type": "entity",
+    "summary": "Start of conversation",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": {"status": "active"},
+    "mentions": [
+      {
+        "spans": [
+          {
+            "collection_page_url": "conversation/_conv:_dummy",
+            "document_page_url": "conversation/_conv:_dummy",
+            "doc_id": "_conv:_dummy",
+            "insertion_method": "system",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 1,
+            "excerpt": "",
+            "context_before": "",
+            "context_after": "",
+            "source_cluster_id": null,
+            "verification": {
+              "method": "system",
+              "is_verified": true,
+              "score": 1.0,
+              "notes": ""
+            }
+          }
+        ],
+        "multimodal_spans": []
+      }
+    ],
+    "id": "conv-create-start",
+    "doc_id": null,
+    "metadata": {
+      "level_from_root": 0,
+      "entity_type": "conversation_start",
+      "turn_index": -1,
+      "in_conversation_chain": true,
+      "in_ui_chain": true,
+      "lifecycle_status": "active",
+      "redirect_to_id": null,
+      "role": "system",
+      "conversation_id": "conv-create-test",
+      "user_id": "alice"
+    },
+    "level_from_root": 0,
+    "role": "system",
+    "turn_index": -1,
+    "conversation_id": "conv-create-test",
+    "user_id": "alice"
+  }
+}
