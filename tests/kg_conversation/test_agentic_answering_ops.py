@@ -882,6 +882,51 @@ def test_aa_evaluate_answer_writes_evaluation():
     assert state.get("evaluation", {}).get("is_sufficient") is True
 
 
+def test_answer_evaluation_matches_shared_rust_contract_fixture():
+    from kogwistar.conversation.agentic_answering import (
+        AgenticAnsweringAgent,
+        AnswerEvaluation,
+    )
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-evaluation-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["operation"] == "aa_evaluate_answer/v1"
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+
+    for case in fixture["cases"]:
+        state = case["state"]
+        evidence_pack = state.get("_rt", {}).get("evidence_pack", {})
+        answer_text = state.get("answer", {}).get("text", "")
+        used_node_ids = state.get("used_node_ids", [])
+        evaluation = AgenticAnsweringAgent._evaluate_answer(
+            agent,
+            system_prompt="",
+            question="",
+            answer_text=answer_text,
+            used_node_ids=used_node_ids,
+            evidence_pack=evidence_pack,
+            out_model_schema=AnswerEvaluation.model_json_schema(),
+            out_model=AnswerEvaluation,
+        )
+        assert evaluation.model_dump(mode="python") == case["expected"]["evaluation"]
+
+        base_candidates = int(state.get("max_candidates") or 20)
+        base_depth = str(state.get("materialize_depth") or "shallow")
+        insufficient = evaluation.needs_more_info and not evaluation.is_sufficient
+        assert case["expected"]["run_step_seq"] == int(state.get("run_step_seq") or 0) + 1
+        assert case["expected"]["max_candidates"] == (
+            min(base_candidates * 2, 200) if insufficient else base_candidates
+        )
+        assert case["expected"]["materialize_depth"] == (
+            "deep" if insufficient else base_depth
+        )
+
+
 def test_aa_project_pointers_calls_agent_projection_for_each_used_node():
     agent = _StubAgent()
     ce = _StubConversationEngine(last_user_text="Q")

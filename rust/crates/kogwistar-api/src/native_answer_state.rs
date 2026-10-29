@@ -13,7 +13,8 @@ pub(crate) fn register(
         "aa_select_used_evidence",
         "v1",
         execute_select_used_evidence,
-    )
+    )?;
+    registry.register("aa_evaluate_answer", "v1", execute_evaluate_answer)
 }
 
 fn optional_integer(state: &Map<String, Value>, field: &str) -> i64 {
@@ -101,7 +102,7 @@ fn execute_select_used_evidence(
                         .filter(|value| !value.is_null())
                         .map(|value| value_text(Some(value)))
                         .filter(|value| !value.is_empty())
-                        .ok_or_else(|| RuntimeNativeExecutionError::InvalidState {
+                        .ok_or(RuntimeNativeExecutionError::InvalidState {
                             field: "candidates.id",
                             reason: "a matching candidate must have a non-empty ID",
                         })?,
@@ -151,6 +152,110 @@ fn execute_select_used_evidence(
             RecordedStateUpdate::Pair((
                 "a".to_owned(),
                 Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn execute_evaluate_answer(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let state = &request.state;
+    let answer_text = state
+        .get("answer")
+        .and_then(Value::as_object)
+        .and_then(|answer| answer.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let used_node_ids = state
+        .get("used_node_ids")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| !ids.is_empty());
+    let evidence_nodes = state
+        .get("_rt")
+        .and_then(Value::as_object)
+        .and_then(|runtime| runtime.get("evidence_pack"))
+        .and_then(Value::as_object)
+        .and_then(|pack| pack.get("nodes"))
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| !nodes.is_empty());
+    let has_evidence = used_node_ids && evidence_nodes;
+    let is_sufficient = !answer_text.trim().is_empty() && has_evidence;
+    let needs_more_info = !is_sufficient;
+    let mut missing_aspects = Vec::new();
+    if !has_evidence {
+        missing_aspects.push("insufficient_evidence");
+    }
+    if answer_text.trim().is_empty() {
+        missing_aspects.push("empty_answer");
+    }
+    let evaluation = json!({
+        "is_sufficient": is_sufficient,
+        "needs_more_info": needs_more_info,
+        "missing_aspects": missing_aspects,
+        "notes": "heuristic_evaluation"
+    });
+
+    let run_step_seq = state
+        .get("run_step_seq")
+        .and_then(Value::as_i64)
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "run_step_seq",
+            reason: "integer value exceeds supported range",
+        })?;
+    let max_candidates = state
+        .get("max_candidates")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(20);
+    let materialize_depth = state
+        .get("materialize_depth")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("shallow");
+    let (max_candidates, materialize_depth) = if needs_more_info && !is_sufficient {
+        (
+            max_candidates
+                .checked_mul(2)
+                .ok_or(RuntimeNativeExecutionError::InvalidState {
+                    field: "max_candidates",
+                    reason: "integer value exceeds supported range",
+                })?
+                .min(200),
+            "deep",
+        )
+    } else {
+        (max_candidates, materialize_depth)
+    };
+    let log_entry = "aa_evaluate_answer";
+    let update = Map::from_iter([
+        ("evaluation".to_owned(), evaluation),
+        ("run_step_seq".to_owned(), json!(run_step_seq)),
+        ("max_candidates".to_owned(), json!(max_candidates)),
+        ("materialize_depth".to_owned(), json!(materialize_depth)),
+    ]);
+    let mut op_log = state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry.to_owned()))]),
             )),
         ],
         result: Some(json!({
@@ -409,5 +514,42 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn answer_evaluation_matches_python_shared_contract_fixture() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-evaluation-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["operation"], "aa_evaluate_answer/v1");
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut request = request(case["state"].clone());
+            request.operation = "aa_evaluate_answer".to_owned();
+            let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+            assert!(effect.graph_mutation_batch_v2.is_none());
+            let result = effect.result.unwrap();
+            let expected = &case["expected"];
+            assert_eq!(result["final_state"]["evaluation"], expected["evaluation"]);
+            assert_eq!(
+                result["final_state"]["run_step_seq"],
+                expected["run_step_seq"]
+            );
+            assert_eq!(
+                result["final_state"]["max_candidates"],
+                expected["max_candidates"]
+            );
+            assert_eq!(
+                result["final_state"]["materialize_depth"],
+                expected["materialize_depth"]
+            );
+            assert_eq!(
+                result["final_state"]["op_log"],
+                json!(["aa_evaluate_answer"]),
+                "case: {}",
+                case["name"]
+            );
+        }
     }
 }

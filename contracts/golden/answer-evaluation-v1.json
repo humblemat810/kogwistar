@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "operation": "aa_evaluate_answer/v1",
+  "cases": [
+    {
+      "name": "answer_with_selected_materialized_evidence",
+      "state": {
+        "answer": {"text": "A grounded answer."},
+        "used_node_ids": ["node-1"],
+        "_rt": {"evidence_pack": {"nodes": [{"node_id": "node-1"}]}},
+        "run_step_seq": 4,
+        "max_candidates": 20,
+        "materialize_depth": "shallow"
+      },
+      "expected": {
+        "evaluation": {
+          "is_sufficient": true,
+          "needs_more_info": false,
+          "missing_aspects": [],
+          "notes": "heuristic_evaluation"
+        },
+        "run_step_seq": 5,
+        "max_candidates": 20,
+        "materialize_depth": "shallow"
+      }
+    },
+    {
+      "name": "empty_answer_escalates_retrieval",
+      "state": {
+        "answer": {"text": "  "},
+        "used_node_ids": ["node-1"],
+        "_rt": {"evidence_pack": {"nodes": [{"node_id": "node-1"}]}},
+        "max_candidates": 12,
+        "materialize_depth": "shallow"
+      },
+      "expected": {
+        "evaluation": {
+          "is_sufficient": false,
+          "needs_more_info": true,
+          "missing_aspects": ["empty_answer"],
+          "notes": "heuristic_evaluation"
+        },
+        "run_step_seq": 1,
+        "max_candidates": 24,
+        "materialize_depth": "deep"
+      }
+    },
+    {
+      "name": "selected_ids_without_materialized_nodes_escalate",
+      "state": {
+        "answer": {"text": "A response."},
+        "used_node_ids": ["node-1"],
+        "_rt": {"evidence_pack": {"nodes": []}},
+        "run_step_seq": 0,
+        "max_candidates": 150,
+        "materialize_depth": "shallow"
+      },
+      "expected": {
+        "evaluation": {
+          "is_sufficient": false,
+          "needs_more_info": true,
+          "missing_aspects": ["insufficient_evidence"],
+          "notes": "heuristic_evaluation"
+        },
+        "run_step_seq": 1,
+        "max_candidates": 200,
+        "materialize_depth": "deep"
+      }
+    },
+    {
+      "name": "empty_answer_and_no_selected_ids_report_both_gaps",
+      "state": {
+        "answer": {"text": ""},
+        "used_node_ids": [],
+        "_rt": {"evidence_pack": {"nodes": [{"node_id": "node-1"}]}},
+        "run_step_seq": 8,
+        "max_candidates": 0,
+        "materialize_depth": ""
+      },
+      "expected": {
+        "evaluation": {
+          "is_sufficient": false,
+          "needs_more_info": true,
+          "missing_aspects": ["insufficient_evidence", "empty_answer"],
+          "notes": "heuristic_evaluation"
+        },
+        "run_step_seq": 9,
+        "max_candidates": 40,
+        "materialize_depth": "deep"
+      }
+    }
+  ]
+}

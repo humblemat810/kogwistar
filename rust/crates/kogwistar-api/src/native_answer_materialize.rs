@@ -262,14 +262,14 @@ fn execute_materialize_evidence_pack(
 
     let packed_edges = edge_ids
         .iter()
-        .filter_map(|id| {
+        .map(|id| {
             let metadata = &edges[id];
-            Some(json!({
+            json!({
                 "id": id,
                 "label": metadata.get("label").cloned().unwrap_or(Value::Null),
                 "relation": metadata.get("relation").or_else(|| metadata.get("type")).cloned().unwrap_or(Value::Null),
                 "summary": metadata.get("summary").cloned().unwrap_or(Value::Null)
-            }))
+            })
         })
         .collect::<Vec<_>>();
     let pack = json!({"nodes": packed_nodes, "edges": packed_edges});
