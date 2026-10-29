@@ -8,11 +8,157 @@ use serde_json::{Map, Value, json};
 pub(crate) fn register(
     registry: &mut NativeOperationRegistry,
 ) -> Result<(), NativeOperationRegistrationError> {
-    registry.register_routed("aa_maybe_iterate", "v1", execute_maybe_iterate)
+    registry.register_routed("aa_maybe_iterate", "v1", execute_maybe_iterate)?;
+    registry.register(
+        "aa_select_used_evidence",
+        "v1",
+        execute_select_used_evidence,
+    )
 }
 
 fn optional_integer(state: &Map<String, Value>, field: &str) -> i64 {
     state.get(field).and_then(Value::as_i64).unwrap_or_default()
+}
+
+fn value_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) | None => "None".to_owned(),
+        Some(value) => value.to_string(),
+    }
+}
+
+fn candidate_field_text(candidate: &Map<String, Value>, field: &str) -> String {
+    candidate
+        .get(field)
+        .map(|value| value_text(Some(value)))
+        .unwrap_or_default()
+}
+
+fn tokens(text: &str) -> std::collections::BTreeSet<String> {
+    let lowercase = text.to_lowercase();
+    let mut tokens = std::collections::BTreeSet::new();
+    let mut current = String::new();
+    for character in lowercase.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            current.push(character);
+        } else {
+            if current.len() >= 3 {
+                tokens.insert(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        }
+    }
+    if current.len() >= 3 {
+        tokens.insert(current);
+    }
+    tokens
+}
+
+fn execute_select_used_evidence(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let state = &request.state;
+    if state.get("evidence_selector").and_then(Value::as_str) != Some("bm25") {
+        return Err(RuntimeNativeExecutionError::InvalidState {
+            field: "evidence_selector",
+            reason: "Rust-native evidence selection requires the explicit bm25 strategy",
+        });
+    }
+    let candidates = state
+        .get("candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let question_tokens = tokens(
+        state
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    let mut scored = candidates
+        .iter()
+        .map(|candidate| {
+            let Some(candidate) = candidate.as_object() else {
+                return Err(RuntimeNativeExecutionError::InvalidState {
+                    field: "candidates",
+                    reason: "every candidate must be an object",
+                });
+            };
+            let text = format!(
+                "{} {}",
+                candidate_field_text(candidate, "label"),
+                candidate_field_text(candidate, "summary")
+            );
+            let candidate_tokens = tokens(&text);
+            let overlap = question_tokens.intersection(&candidate_tokens).count();
+            let score = overlap as f64 / (question_tokens.len() as f64 + 1e-6);
+            let id = if score > 0.0 {
+                Some(
+                    candidate
+                        .get("id")
+                        .filter(|value| !value.is_null())
+                        .map(|value| value_text(Some(value)))
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| RuntimeNativeExecutionError::InvalidState {
+                            field: "candidates.id",
+                            reason: "a matching candidate must have a non-empty ID",
+                        })?,
+                )
+            } else {
+                None
+            };
+            Ok((score, id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // Stable descending order preserves Python's candidate order for score ties.
+    scored.sort_by(|left, right| right.0.total_cmp(&left.0));
+    let selected = scored
+        .into_iter()
+        .filter_map(|(score, id)| (score > 0.0).then_some(id).flatten())
+        .collect::<Vec<_>>();
+    let max_used = state.get("max_used").and_then(Value::as_i64).unwrap_or(8);
+    let limit = if max_used < 0 {
+        selected
+            .len()
+            .saturating_sub(max_used.unsigned_abs() as usize)
+    } else {
+        selected.len().min(max_used as usize)
+    };
+    let used_node_ids = selected.into_iter().take(limit).collect::<Vec<_>>();
+    let selection = json!({
+        "used_node_ids": used_node_ids,
+        "used_edge_ids": [],
+        "reasoning": "bm25_fallback_token_overlap"
+    });
+    let mut update = Map::new();
+    update.insert("selection".to_owned(), selection.clone());
+    update.insert("used_node_ids".to_owned(), json!(used_node_ids));
+    let log_entry = format!("aa_select_used_evidence:{}", used_node_ids.len());
+    let mut op_log = state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
 }
 
 fn selected_target(
@@ -118,8 +264,8 @@ fn execute_maybe_iterate(
 #[cfg(test)]
 mod tests {
     use kogwistar_runtime::{
-        RUST_NATIVE_EXECUTOR_TARGET, RuntimeNativeStepRequest, RuntimeStaticRoute,
-        execute_native_step_with_registry,
+        RUST_NATIVE_EXECUTOR_TARGET, RuntimeNativeExecutionError, RuntimeNativeStepRequest,
+        RuntimeStaticRoute, execute_native_step_with_registry,
     };
     use serde_json::{Map, Value, json};
 
@@ -223,5 +369,55 @@ mod tests {
         }));
         request.runtime_routes.remove(0);
         assert!(execute_native_step_with_registry(&request, &registry).is_err());
+    }
+
+    #[test]
+    fn bm25_evidence_selection_matches_python_overlap_order_and_limit() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({
+            "evidence_selector": "bm25",
+            "question": "Explain graph vector retrieval none",
+            "max_used": 2,
+            "candidates": [
+                {"id": "node-first", "label": "Graph query", "summary": "vector access"},
+                {"id": "node-best", "label": "retrieval", "summary": "query vector graph"},
+                {"id": "node-irrelevant", "label": "unrelated", "summary": "nothing"},
+                {"id": "node-tied", "label": "Graph", "summary": "vector"},
+                {"id": "node-missing-fields"}
+            ]
+        }));
+        request.operation = "aa_select_used_evidence".to_owned();
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        let result = effect.result.unwrap();
+        assert_eq!(
+            result["final_state"]["selection"],
+            json!({
+                "used_node_ids": ["node-best", "node-first"],
+                "used_edge_ids": [],
+                "reasoning": "bm25_fallback_token_overlap"
+            })
+        );
+        assert_eq!(
+            result["final_state"]["op_log"],
+            json!(["aa_select_used_evidence:2"])
+        );
+    }
+
+    #[test]
+    fn bm25_evidence_selection_does_not_fallback_from_llm_mode() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({
+            "evidence_selector": "llm",
+            "question": "graph retrieval",
+            "candidates": [{"id": "node-1", "label": "graph", "summary": "retrieval"}]
+        }));
+        request.operation = "aa_select_used_evidence".to_owned();
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "evidence_selector",
+                ..
+            })
+        ));
     }
 }
