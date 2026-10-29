@@ -225,6 +225,86 @@ def test_answer_can_be_forced_to_use_answer_only():
     assert upd["response_node_id"] == "assist999"
 
 
+def test_rust_worker_answer_fallback_returns_materialized_node_effect():
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.graph_mutation_contract import (
+        GraphMutationBatchPayload,
+    )
+    from kogwistar.engine_core.utils.refs import node_doc_and_meta
+
+    class WorkerWrite:
+        def node_doc_and_meta(self, node):
+            document, metadata = node_doc_and_meta(node)
+            return document, {**metadata, "namespace": "conv:c1"}
+
+        def add_node(self, *_args, **_kwargs):
+            pytest.fail("Rust worker answer fallback must return effects, not write")
+
+    ce = FakeConversationEngine()
+    ce.write = WorkerWrite()
+    ce.namespace = "conv:c1"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend = SimpleNamespace(
+        node_get=lambda **_kwargs: {"ids": []},
+        nodes=SimpleNamespace(name="gke_nodes"),
+        embedding_dim=2,
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: (
+            '{"source_fingerprint":"answer-fallback"}'
+        )
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"prepared_by_hook": True})
+    ]
+
+    def answer_only(**_kwargs):
+        return {"text": "fallback answer"}
+
+    ctx = FakeStepContext(
+        {
+            "conversation_id": "c1",
+            "user_id": "u1",
+            "turn_node_id": "user1",
+            "turn_index": 3,
+            "_deps": {
+                "conversation_engine": ce,
+                "answer_only": answer_only,
+                "force_answer_only": True,
+                "_rust_worker_effects": True,
+                "prev_turn_meta_summary": type(
+                    "M",
+                    (),
+                    {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                        "tail_turn_index": 3,
+                    },
+                )(),
+            },
+        }
+    )
+    ctx.idempotency_key = "worker-answer-fallback"
+    result = default_resolver.handlers["answer"](ctx)
+
+    assert isinstance(result, RunSuccess)
+    batch = GraphMutationBatchPayload.model_validate(result.graph_mutation_batch)
+    assert len(batch.mutations) == 1
+    assert batch.mutations[0].entity_kind == "node"
+    assert batch.mutations[0].record.id == result.conversation_node_id
+    assert batch.mutations[0].payload["properties"]["prepared_by_hook"] is True
+    assert {job.index_kind for job in batch.index_jobs} == {"node_docs", "node_refs"}
+    answer_update = next(
+        update["answer"]
+        for mode, update in result.state_update
+        if mode == "u" and "answer" in update
+    )
+    assert answer_update["response_node_id"] == result.conversation_node_id
+
+
 def test_decide_summarize_uses_snapshot_cost_when_available():
     ce = FakeConversationEngine()
     ctx = FakeStepContext(

@@ -1169,6 +1169,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
     response_node_id: str | None = None
     llm_decision_need_summary: bool = False
     assistant_text: str = ""
+    worker_effect_batch: dict[str, JsonValue] | None = None
 
     # 1) Choose the answering capability explicitly.
     agent: AgenticAnsweringAgent | None = None if force_answer_only else deps.get("agent")
@@ -1343,8 +1344,17 @@ def _answer(ctx: StepContext) -> StepRunResult:
                         node.embedding = normalize_embedding_vector(
                             embedding, allow_none=False
                         )
-                    ce.write.add_node(node)
+                    if deps.get("_rust_worker_effects") is True:
+                        for hook in getattr(ce, "pre_add_node_hooks", ()) or ():
+                            hook(node)
+                        worker_effect_batch = _worker_graph_mutation_batch_for_entity(
+                            ctx, ce, node, entity_kind="node"
+                        )
+                    else:
+                        ce.write.add_node(node)
             except Exception:
+                if deps.get("_rust_worker_effects") is True:
+                    raise
                 # Keep previous behavior if fallback materialization fails for any reason.
                 pass
 
@@ -1359,9 +1369,13 @@ def _answer(ctx: StepContext) -> StepRunResult:
         "response_node_id": response_node_id,
         "llm_decision_need_summary": bool(llm_decision_need_summary),
     }
-    return RunSuccess(
-        conversation_node_id=response_node_id, state_update=[("u", {"answer": outj})]
-    )
+    result_values: dict[str, object] = {
+        "conversation_node_id": response_node_id,
+        "state_update": [("u", {"answer": outj})],
+    }
+    if worker_effect_batch is not None:
+        result_values["graph_mutation_batch"] = worker_effect_batch
+    return RunSuccess(**result_values)
 
 
 @default_resolver.register("decide_summarize")
