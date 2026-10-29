@@ -1050,6 +1050,36 @@
             inbox_tail_message_id: None,
             conversation_tail_message_id: None,
         };
+        let python_retry_lane = ProjectedLaneMessage {
+            recipient_id: "python-worker-env-test".to_owned(),
+            ..lane.clone()
+        };
+        let python_retry_work = runtime_claimed_work(
+            python_retry_lane,
+            "python-process-1",
+            "run-42".to_owned(),
+            json!({"kind":"workflow.step.execute"}),
+            0,
+        );
+        assert_eq!(python_retry_work.payload["attempt"], 2);
+        let python_retry_wire = serde_json::to_value(&python_retry_work).unwrap();
+        assert!(python_retry_wire.get("attempt_number").is_none());
+        assert_eq!(python_retry_wire["payload"]["attempt"], 2);
+
+        let first_python_lane = ProjectedLaneMessage {
+            recipient_id: "python-worker".to_owned(),
+            retry_count: 0,
+            ..lane.clone()
+        };
+        let first_python_work = runtime_claimed_work(
+            first_python_lane,
+            "python-process-1",
+            "run-42".to_owned(),
+            json!({"kind":"workflow.step.execute"}),
+            0,
+        );
+        assert!(first_python_work.payload.get("attempt").is_none());
+
         let work = runtime_claimed_work(
             lane,
             "rust-native-worker",

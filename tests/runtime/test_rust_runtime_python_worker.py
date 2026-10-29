@@ -1084,6 +1084,50 @@ def test_step_resolver_adapter_rejects_missing_op_and_predicate() -> None:
         )
 
 
+def test_step_resolver_adapter_uses_optional_claim_retry_attempt() -> None:
+    observed: list[dict[str, Any]] = []
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        observed.append(ctx.trace_ctx.as_fields())
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    adapter = RustStepResolverAdapter(resolver)
+    legacy_work = _adapter_work()
+    adapter(legacy_work)
+    retried_work = _adapter_work()
+    retried_work["payload"]["attempt"] = 3
+    adapter(retried_work)
+
+    assert observed == [
+        {
+            "run_id": "run-1",
+            "token_id": "run-1",
+            "step_seq": 0,
+            "node_id": "start",
+            "attempt": 1,
+            "conversation_id": "conv-1",
+            "turn_node_id": "turn-1",
+            "trace_id": "run-1",
+            "span_id": "stp:run-1:run-1:0:1:start",
+            "parent_span_id": "tok:run-1:run-1",
+        },
+        {
+            "run_id": "run-1",
+            "token_id": "run-1",
+            "step_seq": 0,
+            "node_id": "start",
+            "attempt": 3,
+            "conversation_id": "conv-1",
+            "turn_node_id": "turn-1",
+            "trace_id": "run-1",
+            "span_id": "stp:run-1:run-1:0:3:start",
+            "parent_span_id": "tok:run-1:run-1",
+        },
+    ]
+
+
 def test_worker_journals_callback_before_send_and_replays_after_restart(
     tmp_path: Path,
 ) -> None:

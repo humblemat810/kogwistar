@@ -1794,6 +1794,16 @@ fn runtime_claimed_work(
     payload: Value,
     expected_event_seq: i64,
 ) -> RuntimeClaimedWork {
+    let attempt_number = lane.retry_count.max(0).saturating_add(1) as u64;
+    let payload = if lane.recipient_id.starts_with("python-worker") && attempt_number > 1 {
+        let mut payload = payload;
+        if let Some(fields) = payload.as_object_mut() {
+            fields.insert("attempt".to_owned(), Value::from(attempt_number));
+        }
+        payload
+    } else {
+        payload
+    };
     RuntimeClaimedWork {
         message_id: lane.message_id,
         claimed_by: claimed_by.to_owned(),
@@ -1804,7 +1814,7 @@ fn runtime_claimed_work(
         expected_event_seq,
         lease_until: lane.lease_until,
         worker_effect_capabilities: Vec::new(),
-        attempt_number: lane.retry_count.max(0).saturating_add(1) as u64,
+        attempt_number,
     }
 }
 
