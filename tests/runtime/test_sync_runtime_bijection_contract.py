@@ -270,6 +270,15 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
 
     executed_nodes: list[str] = []
 
+    class _TraceCapture:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+    trace_capture = _TraceCapture()
+
     @resolver.register("increment-counter", version="v1")
     def increment(ctx):
         executed_nodes.append(ctx.workflow_node_id)
@@ -283,7 +292,7 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
         step_resolver=resolver,
         predicate_registry={},
-        trace=False,
+        sink=trace_capture,
     )
     result = runtime.run(
         workflow_id=workflow_id,
@@ -295,7 +304,19 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
 
     assert result.status == contract["expected_status"]
     assert result.final_state["counter"] == contract["expected_final_state"]["counter"]
-    assert executed_nodes == [node["id"] for node in contract["nodes"]]
+    expected_steps = contract["expected_completed_steps"]
+    assert executed_nodes == expected_steps
+    completed_steps = [
+        event
+        for event in trace_capture.events
+        if event["type"] == "step_attempt_completed"
+    ]
+    assert [event["node_id"] for event in completed_steps] == expected_steps
+    assert all(event["run_id"] == "python-shared-increment-contract" for event in completed_steps)
+    assert [json.loads(event["payload_json"])["status"] for event in completed_steps] == [
+        "ok",
+        "ok",
+    ]
 
 
 def test_sync_runtime_step_context_and_result_contract():
