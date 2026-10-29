@@ -318,6 +318,128 @@ def test_memory_pin_acl_worker_effects_supersede_and_replay_idempotently():
     ]
 
 
+def test_memory_pin_batch_commits_and_replays_through_rust_postgres(
+    monkeypatch, request, pg_dsn, pg_schema, sa_engine
+):
+    if pg_dsn is None or pg_schema is None or sa_engine is None:
+        pytest.skip("PostgreSQL test fixture is unavailable")
+
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from kogwistar.acl.graph import ACLGraph
+    from kogwistar.conversation import resolvers
+    from kogwistar.conversation.models import MetaFromLastSummary, RetrievalResult
+    from kogwistar.engine_core.indexing import IndexingSubsystem
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.engine_core.rust_postgres_session import (
+        RustEnginePostgresMetaStore,
+    )
+    from kogwistar.engine_core.subsystems.acl import ACLSubsystem
+    from kogwistar.engine_core.models import Span
+
+    for name in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(name, "rust")
+
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
+    backend.ensure_schema()
+    store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    store.ensure_initialized()
+    request.addfinalizer(store.close)
+    namespace = f"memory-pin-{uuid4().hex}"
+
+    ce = FakeConversationEngine()
+    ce.backend = backend
+    ce.namespace = namespace
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.kg_graph_type = "conversation"
+    ce.acl_enabled = True
+    ce.acl_graph = ACLGraph()
+    ce.raw_read = SimpleNamespace(get_nodes=lambda **_kwargs: [])
+    ce.acl = ACLSubsystem(ce)
+    ce.indexing = IndexingSubsystem(ce)
+    memory = SimpleNamespace(
+        selected=RetrievalResult(nodes=[], edges=[]),
+        memory_context_text="persisted memory context",
+    )
+    monkeypatch.setattr(resolvers, "_memory_result_from_state", lambda _state: memory)
+    state = {
+        "user_id": "memory-owner",
+        "conversation_id": "memory-conversation",
+        "turn_node_id": "memory-turn",
+        "turn_index": 7,
+        "mem_id": "memory-context-rust-pg",
+        "self_span": Span.from_dummy_for_conversation().model_dump(
+            field_mode="backend", dump_format="json"
+        ),
+        "prev_turn_meta_summary": {
+            "prev_node_char_distance_from_last_summary": 3,
+            "prev_node_distance_from_last_summary": 1,
+            "tail_turn_index": 6,
+        },
+        "_deps": {
+            "conversation_engine": ce,
+            "llm_tasks": object(),
+            "filtering_callback": lambda *_args: None,
+            "_rust_worker_effects": True,
+            "prev_turn_meta_summary": MetaFromLastSummary(3, 1, 6),
+        },
+    }
+    ctx = FakeStepContext(state)
+    ctx.idempotency_key = "memory-pin-rust-postgres-test"
+
+    result = default_resolver.handlers["memory_pin"](ctx)
+    assert isinstance(result, RunSuccess)
+    assert ce.nodes == {} and ce.edges == {}
+    first = store.apply_graph_mutations_atomic(result.graph_mutation_batch)
+    replay = store.apply_graph_mutations_atomic(result.graph_mutation_batch)
+
+    assert len(first) == len(replay) == 8
+    assert all(item["inserted"] and item["mutated"] for item in first)
+    assert all(not item["inserted"] and not item["mutated"] for item in replay)
+    events = list(store.iter_entity_events(namespace=namespace))
+    assert len(events) == 8
+    assert len(store.list_index_jobs(namespace=namespace)) == 16
+    node = backend.node_get(
+        ids=["memory-context-rust-pg"], include=["documents", "metadatas"]
+    )
+    assert node["ids"] == ["memory-context-rust-pg"]
+    assert node["documents"] == ["persisted memory context"]
+    edge = backend.edge_get(
+        ids=["memory-turn::hm::memory-context-rust-pg"],
+        include=["documents", "metadatas"],
+    )
+    assert edge["ids"] == ["memory-turn::hm::memory-context-rust-pg"]
+    assert edge["documents"] == ["This turn uses long-memory context"]
+    endpoints = backend.edge_endpoints_get(
+        ids=[
+            "memory-turn::hm::memory-context-rust-pg::src::node::memory-turn",
+            "memory-turn::hm::memory-context-rust-pg::tgt::node::memory-context-rust-pg",
+        ],
+        include=["metadatas"],
+    )
+    assert endpoints["ids"] == [
+        "memory-turn::hm::memory-context-rust-pg::src::node::memory-turn",
+        "memory-turn::hm::memory-context-rust-pg::tgt::node::memory-context-rust-pg",
+    ]
+    assert all(
+        endpoint["relation"] == "has_memory_context"
+        for endpoint in endpoints["metadatas"]
+    )
+    acl_events = [
+        event
+        for event in events
+        if '"entity_type":"acl_record"' in event[4]
+    ]
+    assert len(acl_events) == 6
+
+
 def test_answer_prefers_agentic_when_available():
     class FakeAgent:
         def answer_workflow_v2(

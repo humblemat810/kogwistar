@@ -80,23 +80,23 @@ pub(crate) fn vector_literal(vector: &[f32]) -> String {
 }
 
 pub(crate) fn graph_edge_endpoint_ids(
-    document: &Value,
+    payload: &Value,
     field: &str,
 ) -> PostgresStoreResult<Vec<String>> {
-    match document.get(field) {
+    match payload.get(field) {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::Array(values)) => values
             .iter()
             .map(|value| {
                 value.as_str().map(str::to_owned).ok_or_else(|| {
                     PostgresStoreError::Backend(format!(
-                        "edge document field {field:?} must contain only string ids"
+                        "edge mutation payload field {field:?} must contain only string ids"
                     ))
                 })
             })
             .collect(),
         Some(_) => Err(PostgresStoreError::Backend(format!(
-            "edge document field {field:?} must be an array of string ids"
+            "edge mutation payload field {field:?} must be an array of string ids"
         ))),
     }
 }
@@ -127,12 +127,9 @@ where
     if mutation.op == "TOMBSTONE" {
         return Ok(());
     }
-    let Some(document_json) = mutation.record.document.as_deref() else {
-        return Ok(());
-    };
-    let document: Value = serde_json::from_str(document_json)?;
-    let object = document.as_object().ok_or_else(|| {
-        PostgresStoreError::Backend("edge document must be a JSON object".to_owned())
+    let payload = &mutation.payload;
+    let object = payload.as_object().ok_or_else(|| {
+        PostgresStoreError::Backend("edge mutation payload must be a JSON object".to_owned())
     })?;
     let relation = object.get("relation").filter(|value| !value.is_null());
     let doc_id = object.get("doc_id").filter(|value| !value.is_null());
@@ -148,7 +145,7 @@ where
         ("src", "source_edge_ids", "edge"),
         ("tgt", "target_edge_ids", "edge"),
     ] {
-        for endpoint_id in graph_edge_endpoint_ids(&document, field)? {
+        for endpoint_id in graph_edge_endpoint_ids(payload, field)? {
             let row_id = format!(
                 "{}::{role}::{endpoint_type}::{endpoint_id}",
                 mutation.record.id
