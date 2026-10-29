@@ -406,7 +406,7 @@
     async fn postgres_authenticated_native_graph_operation_commits_and_replays() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_native_graph_{}", uuid::Uuid::new_v4().simple());
-        let mut registry = crate::native_memory_pin::registry().unwrap();
+        let mut registry = crate::native_answer_persist::registry().unwrap();
         registry.register_graph("app/graph", "v1", |request| {
             let batch = serde_json::from_value(json!({
                 "contract_version": 1,
@@ -781,6 +781,162 @@
             service
                 .store
                 .get_server_run("native-memory-pin-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
+
+        let answer_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "run_id": "native-answer-persist-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-answer-persist",
+                "start_node_id": "persist",
+                "node_ops": {"persist": "rust-native/aa_persist_response"},
+                "initial_state": {
+                    "conversation_id": "conv-native-answer-persist",
+                    "run_node_id": "run-node-native-answer-persist",
+                    "answer": {"text": "Native response 🌱", "claim_citations": []},
+                    "used_node_ids": ["source-node-1"],
+                    "projected_pointer_ids": ["pointer-node-1"],
+                    "evaluation": {"is_sufficient": true},
+                    "prev_turn_meta_summary": {
+                        "prev_node_char_distance_from_last_summary": 10,
+                        "prev_node_distance_from_last_summary": 2,
+                        "tail_turn_index": 4
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answer_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let answer_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "run_id": "native-answer-persist-run",
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answer_claim.status(), StatusCode::OK);
+        let answer_work = answer_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let answer_execution = json!({
+            "handoff": {
+                "message_id": answer_work["message_id"],
+                "claimed_by": answer_work["claimed_by"],
+                "run_id": answer_work["run_id"],
+                "step_id": answer_work["step_id"],
+                "correlation_id": answer_work["correlation_id"]
+            },
+            "payload": answer_work["payload"]
+        });
+        let answer_response = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&owner)
+            .json(&answer_execution)
+            .send()
+            .await
+            .unwrap();
+        let answer_status = answer_response.status();
+        let answer_body = answer_response.text().await.unwrap();
+        assert_eq!(answer_status, StatusCode::OK, "{answer_body}");
+        let answer_turn_id = "ptr:uvpzlbcvkjixsq7sbwra";
+        let answer_edge_id = "e:t7ewoy536jqdo3qakhta";
+        let answer_nodes = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![answer_turn_id.to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer_nodes.len(), 1);
+        assert_eq!(answer_nodes[0].metadata["_class_name"], "ConversationNode");
+        assert_eq!(answer_nodes[0].metadata["role"], "assistant");
+        assert_eq!(answer_nodes[0].metadata["conversation_id"], "conv-native-answer-persist");
+        assert!(answer_nodes[0]
+            .document
+            .as_deref()
+            .unwrap()
+            .contains("Native response 🌱"));
+        let answer_edges = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![answer_edge_id.to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer_edges.len(), 1);
+        assert_eq!(answer_edges[0].metadata["_class_name"], "ConversationEdge");
+        assert_eq!(answer_edges[0].metadata["doc_id"], "conv:conv-native-answer-persist");
+        let answer_entity_ids = [answer_turn_id.to_owned(), answer_edge_id.to_owned()];
+        let answer_acl = service
+            .store
+            .graph_acl_records_for_entities(
+                &GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                "conversation",
+                &answer_entity_ids,
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer_acl.len(), 6);
+        assert!(answer_acl.iter().all(|record| {
+            record.metadata["acl_mode"] == "private"
+                && record.metadata["owner_id"] == "alice"
+        }));
+        let answer_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|job| answer_entity_ids.contains(&job.entity_id))
+            .collect::<Vec<_>>();
+        assert_eq!(answer_jobs.len(), 6);
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message(answer_work["message_id"].as_str().unwrap())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            service
+                .store
+                .get_server_run("native-answer-persist-run")
                 .await
                 .unwrap()
                 .unwrap()

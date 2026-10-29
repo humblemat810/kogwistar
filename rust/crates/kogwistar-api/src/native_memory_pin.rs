@@ -45,18 +45,19 @@ fn apply_update(
     })
 }
 
-fn metadata_projection(
+pub(crate) fn metadata_projection(
     metadata: &Map<String, Value>,
     document_fields: &Map<String, Value>,
-    doc_id: &str,
+    doc_id: Option<&str>,
     model_class: &str,
 ) -> Map<String, Value> {
     let mut projected = metadata.clone();
-    projected.insert(
-        "_class_name".to_owned(),
-        Value::String(model_class.to_owned()),
-    );
-    projected.insert("doc_id".to_owned(), Value::String(doc_id.to_owned()));
+    projected
+        .entry("_class_name".to_owned())
+        .or_insert_with(|| Value::String(model_class.to_owned()));
+    if let Some(doc_id) = doc_id {
+        projected.insert("doc_id".to_owned(), Value::String(doc_id.to_owned()));
+    }
     for field in ["doc_id", "label", "type", "summary"] {
         if field != "doc_id"
             && let Some(value) = document_fields.get(field)
@@ -76,7 +77,7 @@ fn metadata_projection(
     projected
 }
 
-fn graph_mutation(
+pub(crate) fn graph_mutation(
     request: &RuntimeNativeStepRequest,
     scope: &Value,
     id: &str,
@@ -109,10 +110,7 @@ fn graph_mutation(
     };
     let document = serde_json::to_string(&document_fields)
         .map_err(|_| invalid("memory", "canonical graph document could not be serialized"))?;
-    let doc_id = payload
-        .get("doc_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("memory", "canonical graph document ID is missing"))?;
+    let doc_id = payload.get("doc_id").and_then(Value::as_str);
     let projected_metadata = metadata_projection(&metadata, &document_fields, doc_id, model_class);
     let envelope = json!({
         "schema_version": 1,

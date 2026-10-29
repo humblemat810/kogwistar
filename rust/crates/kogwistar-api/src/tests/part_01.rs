@@ -2831,7 +2831,8 @@
     }
 
     #[test]
-    fn answer_workflow_admission_requires_complete_python_executable_plan() {
+    fn answer_workflow_admission_supports_per_node_python_and_registered_rust_executors() {
+        let native_operations = crate::native_answer_persist::registry().unwrap();
         let contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
         ))
@@ -2898,9 +2899,17 @@
             let snapshot = json!({"nodes": nodes, "edges": edges});
             let plan = runtime_graph_plan_from_snapshot(&snapshot.to_string())
                 .expect("shared Python answer design contract parses as a Rust runtime graph");
-            assert!(answer_workflow_plan_is_executable(workflow_id, &plan));
-            assert!(answer_workflow_admission_ready(workflow_id, Some(&plan)));
-            assert!(!answer_workflow_admission_ready(workflow_id, None));
+            assert!(answer_workflow_plan_is_executable(workflow_id, &plan, &native_operations));
+            assert!(answer_workflow_admission_ready(
+                workflow_id,
+                Some(&plan),
+                &native_operations
+            ));
+            assert!(!answer_workflow_admission_ready(
+                workflow_id,
+                None,
+                &native_operations
+            ));
 
             let mut missing_operation = plan.clone();
             missing_operation
@@ -2908,7 +2917,8 @@
                 .remove(&format!("node-{}", required_ops[1]));
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &missing_operation
+                &missing_operation,
+                &native_operations
             ));
 
             let mut altered_route_contract = plan.clone();
@@ -2923,28 +2933,32 @@
             }
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &altered_route_contract
+                &altered_route_contract,
+                &native_operations
             ));
 
             let mut wrong_route_target = plan.clone();
             wrong_route_target.routes[0].target_node_id = "node-start".to_owned();
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &wrong_route_target
+                &wrong_route_target,
+                &native_operations
             ));
 
             let mut unexpected_fanout = plan.clone();
             unexpected_fanout.routes[0].source_fanout = true;
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &unexpected_fanout
+                &unexpected_fanout,
+                &native_operations
             ));
 
             let mut unexpected_join = plan.clone();
             unexpected_join.join_node_ids.push("node-start".to_owned());
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &unexpected_join
+                &unexpected_join,
+                &native_operations
             ));
 
             let mut incompatible_operation_version = plan.clone();
@@ -2953,21 +2967,66 @@
                 .insert("node-start".to_owned(), "v2".to_owned());
             assert!(!answer_workflow_plan_is_executable(
                 workflow_id,
-                &incompatible_operation_version
+                &incompatible_operation_version,
+                &native_operations
             ));
 
-            let mut incompatible_executor = plan.clone();
-            if let Some((node_id, _)) = plan
+            let mut unknown_executor = plan.clone();
+            let python_node = plan
                 .node_ops
                 .iter()
                 .find(|(_, op)| python_ops.contains(*op))
-            {
-                incompatible_executor
+                .unwrap()
+                .0;
+            unknown_executor
+                .node_executor_targets
+                .insert(python_node.clone(), "unknown-worker".to_owned());
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &unknown_executor,
+                &native_operations
+            ));
+
+            if workflow_id == "agentic_answering.v2" {
+                let native_node = plan
+                    .node_ops
+                    .iter()
+                    .find(|(_, op)| op.as_str() == "aa_persist_response")
+                    .unwrap()
+                    .0;
+                let mut mixed_executor_plan = plan.clone();
+                mixed_executor_plan
                     .node_executor_targets
-                    .insert(node_id.clone(), "rust-native".to_owned());
+                    .insert(native_node.clone(), "rust-native".to_owned());
+                assert!(answer_workflow_plan_is_executable(
+                    workflow_id,
+                    &mixed_executor_plan,
+                    &native_operations
+                ));
+
+                let mut rust_only_plan = plan.clone();
+                for node_id in rust_only_plan.node_ops.keys().cloned().collect::<Vec<_>>() {
+                    rust_only_plan
+                        .node_executor_targets
+                        .insert(node_id, "rust-native".to_owned());
+                }
+                assert!(
+                    !answer_workflow_plan_is_executable(
+                        workflow_id,
+                        &rust_only_plan,
+                        &native_operations
+                    ),
+                    "Rust-only admission must fail until every node operation is registered natively"
+                );
+
+                let mut unsupported_native_plan = mixed_executor_plan.clone();
+                unsupported_native_plan
+                    .node_executor_targets
+                    .insert("node-aa_generate_answer_with_citations".to_owned(), "rust-native".to_owned());
                 assert!(!answer_workflow_plan_is_executable(
                     workflow_id,
-                    &incompatible_executor
+                    &unsupported_native_plan,
+                    &native_operations
                 ));
             }
 
@@ -2975,8 +3034,16 @@
             implicit_noop
                 .node_ops
                 .insert("node-accidental".to_owned(), "noop".to_owned());
-            assert!(!answer_workflow_plan_is_executable(workflow_id, &implicit_noop));
+            assert!(!answer_workflow_plan_is_executable(
+                workflow_id,
+                &implicit_noop,
+                &native_operations
+            ));
         }
         assert!(!is_answer_workflow_id("ordinary.workflow"));
-        assert!(answer_workflow_admission_ready("ordinary.workflow", None));
+        assert!(answer_workflow_admission_ready(
+            "ordinary.workflow",
+            None,
+            &native_operations
+        ));
     }

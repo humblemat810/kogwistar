@@ -295,7 +295,7 @@ impl PostgresRunApplicationService {
             .parse::<tokio_postgres::Config>()
             .map_err(|_| "invalid PostgreSQL DSN".to_owned())?;
         let embedding_storage_scope = rust_pgvector_embedding_scope(&config, schema);
-        let native_operations = crate::native_memory_pin::registry()
+        let native_operations = crate::native_answer_persist::registry()
             .map_err(|error| format!("could not register native conversation operations: {error}"))?;
         PostgresStore::from_dsn(&dsn, schema)
             .map(|store| Self {
@@ -1178,7 +1178,11 @@ impl PostgresRunApplicationService {
             (Ok(projection), Ok(snapshot)) => exact_runtime_graph_plan(projection, snapshot),
             _ => None,
         };
-        if !answer_workflow_admission_ready(&workflow_id, graph_plan.as_ref()) {
+        if !answer_workflow_admission_ready(
+            &workflow_id,
+            graph_plan.as_ref(),
+            &self.native_operations,
+        ) {
             return effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_ANSWER_WORKFLOW_NOT_READY",

@@ -1010,14 +1010,18 @@ fn is_answer_workflow_id(workflow_id: &str) -> bool {
 fn answer_workflow_admission_ready(
     workflow_id: &str,
     plan: Option<&RuntimeGraphPlan>,
+    native_operations: &kogwistar_runtime::NativeOperationRegistry,
 ) -> bool {
     !is_answer_workflow_id(workflow_id)
-        || plan.is_some_and(|value| answer_workflow_plan_is_executable(workflow_id, value))
+        || plan.is_some_and(|value| {
+            answer_workflow_plan_is_executable(workflow_id, value, native_operations)
+        })
 }
 
 fn answer_workflow_plan_is_executable(
     workflow_id: &str,
     plan: &RuntimeGraphPlan,
+    native_operations: &kogwistar_runtime::NativeOperationRegistry,
 ) -> bool {
     let contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
@@ -1066,8 +1070,8 @@ fn answer_workflow_plan_is_executable(
         .filter_map(Value::as_str)
         .collect::<std::collections::BTreeSet<_>>();
     if required_ops.is_empty()
-        || python_executor_ops != required_ops
-        || python_op_version.is_none()
+        || !python_executor_ops.is_subset(&required_ops)
+        || (!python_executor_ops.is_empty() && python_op_version.is_none())
         || required_routes.is_empty()
     {
         return false;
@@ -1155,14 +1159,24 @@ fn answer_workflow_plan_is_executable(
         return false;
     }
     plan.node_ops.iter().all(|(node_id, op)| {
-        let python_version_matches = !python_executor_ops.contains(op.as_str())
-            || plan.node_versions.get(node_id).map(String::as_str) == python_op_version;
-        let python_target_matches = !python_executor_ops.contains(op.as_str())
-            || plan
-                .node_executor_targets
-                .get(node_id)
-                .is_none_or(|target| target == "python-worker");
-        python_version_matches && python_target_matches
+        let Some(version) = plan.node_versions.get(node_id).map(String::as_str) else {
+            return false;
+        };
+        match plan
+            .node_executor_targets
+            .get(node_id)
+            .map(String::as_str)
+            .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
+        {
+            kogwistar_runtime::PYTHON_EXECUTOR_TARGET => {
+                python_executor_ops.contains(op.as_str())
+                    && Some(version) == python_op_version
+            }
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET => {
+                native_operations.supports(op, version)
+            }
+            _ => false,
+        }
     })
 }
 
