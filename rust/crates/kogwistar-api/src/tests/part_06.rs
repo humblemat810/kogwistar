@@ -406,7 +406,7 @@
     async fn postgres_authenticated_native_graph_operation_commits_and_replays() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_native_graph_{}", uuid::Uuid::new_v4().simple());
-        let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
+        let mut registry = crate::native_memory_pin::registry().unwrap();
         registry.register_graph("app/graph", "v1", |request| {
             let batch = serde_json::from_value(json!({
                 "contract_version": 1,
@@ -577,6 +577,216 @@
         let lane = service.store.get_projected_lane_message(work["message_id"].as_str().unwrap()).await.unwrap().unwrap();
         assert_eq!(lane.status, "completed");
         assert_eq!(service.store.get_server_run("native-graph-run").await.unwrap().unwrap().status, "succeeded");
+
+        let memory_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "run_id": "native-memory-pin-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-memory-pin",
+                "turn_node_id": "turn-native-memory-pin",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/memory_pin"},
+                "initial_state": {
+                    "conversation_id": "conv-native-memory-pin",
+                    "turn_node_id": "turn-native-memory-pin",
+                    "turn_index": 7,
+                    "mem_id": "native-memory-context",
+                    "user_id": "forged-owner",
+                    "_rt_run_owner_id": "forged-owner",
+                    "_rt_graph_scope": {
+                        "storage_namespace": "beta",
+                        "security_scope": "forged-scope"
+                    },
+                    "self_span": {
+                        "collection_page_url": "conversation/1",
+                        "document_page_url": "conversation/1",
+                        "doc_id": "conv-native-memory-pin",
+                        "insertion_method": "conversation",
+                        "start_char": 0,
+                        "end_char": 3,
+                        "excerpt": "ask"
+                    },
+                    "prev_turn_meta_summary": {
+                        "prev_node_char_distance_from_last_summary": 2,
+                        "prev_node_distance_from_last_summary": 1,
+                        "tail_turn_index": 6
+                    },
+                    "memory": {
+                        "memory_context_text": "pinned context",
+                        "selected": {
+                            "nodes": [{"id": "memory-source-node"}],
+                            "edges": [{"id": "memory-source-edge"}]
+                        }
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        let memory_submit_status = memory_submit.status();
+        let memory_submit_body = memory_submit.text().await.unwrap();
+        assert_eq!(memory_submit_status, StatusCode::ACCEPTED, "{memory_submit_body}");
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let memory_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner)
+            .json(&json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "run_id": "native-memory-pin-run",
+                "recipient_ids": ["rust-native-worker"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(memory_claim.status(), StatusCode::OK);
+        let memory_work = memory_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let memory_execution = json!({
+            "handoff": {
+                "message_id": memory_work["message_id"],
+                "claimed_by": memory_work["claimed_by"],
+                "run_id": memory_work["run_id"],
+                "step_id": memory_work["step_id"],
+                "correlation_id": memory_work["correlation_id"]
+            },
+            "payload": memory_work["payload"]
+        });
+        let memory_result = client
+            .post(format!("{base}/internal/runtime/native/execute"))
+            .bearer_auth(&owner)
+            .json(&memory_execution)
+            .send()
+            .await
+            .unwrap();
+        let memory_result_status = memory_result.status();
+        let memory_result_body = memory_result.text().await.unwrap();
+        assert_eq!(memory_result_status, StatusCode::OK, "{memory_result_body}");
+
+        let memory_node = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["native-memory-context".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(memory_node.len(), 1);
+        assert_eq!(memory_node[0].metadata["user_id"], "alice");
+        assert_eq!(memory_node[0].metadata["doc_id"], "native-memory-context");
+        let spoofed_namespace_node = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "beta".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["native-memory-context".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(spoofed_namespace_node.is_empty());
+        let memory_edges = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![
+                    "turn-native-memory-pin::hm::native-memory-context".to_owned(),
+                    "native-memory-context::n::memory-source-node".to_owned(),
+                    "native-memory-context::e::memory-source-edge".to_owned(),
+                ]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(memory_edges.len(), 3);
+        assert!(memory_edges.iter().all(|edge| {
+            edge.metadata
+                .get("user_id")
+                .and_then(Value::as_str)
+                .is_none()
+                && edge.metadata["owner_agent_id"] == "alice"
+                && edge.metadata["visibility"] == "private"
+                && edge.metadata["doc_id"] == "conv:conv-native-memory-pin"
+        }));
+        let memory_acl = service
+            .store
+            .graph_acl_records_for_entities(
+                &GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                "conversation",
+                &[
+                    "native-memory-context".to_owned(),
+                    "turn-native-memory-pin::hm::native-memory-context".to_owned(),
+                    "native-memory-context::n::memory-source-node".to_owned(),
+                    "native-memory-context::e::memory-source-edge".to_owned(),
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(memory_acl.len(), 12);
+        assert!(memory_acl.iter().all(|record| {
+            record.metadata["acl_mode"] == "private"
+                && record.metadata["owner_id"] == "alice"
+                && record.metadata["created_by"] == "alice"
+        }));
+        let memory_entity_ids = [
+            "native-memory-context",
+            "turn-native-memory-pin::hm::native-memory-context",
+            "native-memory-context::n::memory-source-node",
+            "native-memory-context::e::memory-source-edge",
+        ];
+        let memory_index_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|job| memory_entity_ids.contains(&job.entity_id.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(memory_index_jobs.len(), 12);
+        assert!(memory_index_jobs.iter().any(|job| {
+            job.entity_kind == "edge" && job.index_kind == "node_embedding"
+        }));
+        let memory_lane = service
+            .store
+            .get_projected_lane_message(memory_work["message_id"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(memory_lane.status, "completed");
+        assert_eq!(
+            service
+                .store
+                .get_server_run("native-memory-pin-run")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
         server.abort();
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let task = tokio::spawn(connection);
