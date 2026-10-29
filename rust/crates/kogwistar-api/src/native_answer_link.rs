@@ -5,6 +5,8 @@ use kogwistar_runtime::{
 };
 use serde_json::{Map, Value, json};
 
+const AUTHORIZED_TURNS_KEY: &str = "authorized_turn_records";
+
 pub(crate) fn register(
     registry: &mut NativeOperationRegistry,
 ) -> Result<(), NativeOperationRegistrationError> {
@@ -100,16 +102,6 @@ fn execute_link_assistant_turn(
         ));
     }
     let user_turn_id = required_string(state, "turn_node_id")?;
-    if request
-        .turn_node_id
-        .as_deref()
-        .is_some_and(|admitted| admitted != user_turn_id)
-    {
-        return Err(invalid(
-            "turn_node_id",
-            "must match the admitted runtime turn",
-        ));
-    }
     let user_id = required_string(state, "user_id")?;
     let run_owner_id = required_string(state, "_rt_run_owner_id")?;
     if user_id != run_owner_id {
@@ -143,6 +135,7 @@ fn execute_link_assistant_turn(
             None,
         ));
     };
+    validate_authorized_turns(request, conversation_id, user_turn_id, response_id)?;
 
     let turn_index = state
         .get("turn_index")
@@ -285,9 +278,66 @@ fn execute_link_assistant_turn(
     Ok((output, Some(batch)))
 }
 
+fn validate_authorized_turns(
+    request: &RuntimeNativeStepRequest,
+    conversation_id: &str,
+    user_turn_id: &str,
+    response_id: &str,
+) -> Result<(), RuntimeNativeExecutionError> {
+    let records = request
+        .ephemeral_context
+        .get(AUTHORIZED_TURNS_KEY)
+        .filter(|value| value.is_object())
+        .ok_or_else(|| {
+            invalid(
+                AUTHORIZED_TURNS_KEY,
+                "host-authorized turn reads are required",
+            )
+        })?;
+    let nodes = records
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid(AUTHORIZED_TURNS_KEY, "authorized turn records are missing"))?;
+    if nodes.len() != 2 {
+        return Err(invalid(
+            AUTHORIZED_TURNS_KEY,
+            "both visible conversation turns are required",
+        ));
+    }
+    for (id, expected_type) in [
+        (user_turn_id, "conversation_turn"),
+        (response_id, "assistant_turn"),
+    ] {
+        let record = nodes
+            .iter()
+            .find(|record| record.get("id").and_then(Value::as_str) == Some(id))
+            .ok_or_else(|| invalid(AUTHORIZED_TURNS_KEY, "a linked turn is not visible"))?;
+        let metadata = record
+            .get("metadata")
+            .and_then(Value::as_object)
+            .ok_or_else(|| invalid(AUTHORIZED_TURNS_KEY, "turn metadata is missing"))?;
+        let actual_type = metadata.get("entity_type").and_then(Value::as_str);
+        let valid_type = actual_type == Some(expected_type)
+            || (expected_type == "assistant_turn" && actual_type == Some("conversation_turn"));
+        if metadata.get("conversation_id").and_then(Value::as_str) != Some(conversation_id)
+            || !valid_type
+            || matches!(
+                metadata.get("lifecycle_status").and_then(Value::as_str),
+                Some("tombstoned" | "deleted")
+            )
+        {
+            return Err(invalid(
+                AUTHORIZED_TURNS_KEY,
+                "turn scope, type, or lifecycle is invalid",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{execute_link_assistant_turn, python_list_repr};
+    use super::{AUTHORIZED_TURNS_KEY, execute_link_assistant_turn, python_list_repr};
     use kogwistar_runtime::{RUST_NATIVE_EXECUTOR_TARGET, RuntimeNativeStepRequest};
     use serde_json::{Map, Value, json};
 
@@ -306,7 +356,13 @@ mod tests {
             step_seq: 3,
             state: serde_json::from_value::<Map<String, Value>>(state).unwrap(),
             runtime_routes: Vec::new(),
-            ephemeral_context: Map::new(),
+            ephemeral_context: Map::from_iter([(
+                AUTHORIZED_TURNS_KEY.to_owned(),
+                json!({"nodes": [
+                    {"id":"user-turn", "metadata":{"conversation_id":"conversation-1", "entity_type":"conversation_turn"}},
+                    {"id":"assistant-turn", "metadata":{"conversation_id":"conversation-1", "entity_type":"assistant_turn"}}
+                ], "edges": []}),
+            )]),
         }
     }
 
@@ -370,12 +426,11 @@ mod tests {
         }));
         assert!(execute_link_assistant_turn(&wrong_owner).is_err());
 
-        let mut wrong_turn = request(json!({
+        let wrong_turn = request(json!({
             "conversation_id": "conversation-1", "turn_node_id": "other-turn",
             "user_id": "alice", "_rt_run_owner_id": "alice",
             "answer": {"response_node_id": "assistant-turn"}
         }));
-        wrong_turn.turn_node_id = Some("user-turn".to_owned());
         assert!(execute_link_assistant_turn(&wrong_turn).is_err());
     }
 }

@@ -686,7 +686,7 @@ impl PostgresRunApplicationService {
         };
         let node_ids = read_ids("used_node_ids")?;
         let edge_ids = read_ids("used_edge_ids")?;
-        self.authorized_evidence_records(&principal, &node_ids, &edge_ids)
+        self.authorized_evidence_records(&principal, &node_ids, &edge_ids, "knowledge")
             .await
             .map_err(|error| match error {
                 NativeEvidenceRecordError::Rejected => {
@@ -696,6 +696,100 @@ impl PostgresRunApplicationService {
                     NativeEvidenceContextError::GraphReadUnavailable
                 }
             })
+    }
+
+    async fn native_turn_link_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let Some(response_id) = request
+            .state
+            .get("answer")
+            .and_then(Value::as_object)
+            .and_then(|answer| {
+                answer
+                    .get("response_node_id")
+                    .or_else(|| answer.get("assistant_turn_node_id"))
+            })
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                request
+                    .state
+                    .get("agentic_answering_result")
+                    .and_then(Value::as_object)
+                    .and_then(|result| {
+                        result
+                            .get("assistant_turn_node_id")
+                            .or_else(|| result.get("response_node_id"))
+                    })
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+            })
+        else {
+            return Ok(json!({"nodes": [], "edges": []}));
+        };
+        let principal = self.native_read_principal(request, caller).await?;
+        let user_turn_id = request
+            .state
+            .get("turn_node_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let conversation_id = request
+            .state
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .filter(|value| *value == request.conversation_id)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let records = self
+            .authorized_evidence_records(
+                &principal,
+                &[user_turn_id.to_owned(), response_id.to_owned()],
+                &[],
+                "conversation",
+            )
+            .await
+            .map_err(|error| match error {
+                NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
+                NativeEvidenceRecordError::Unavailable => NativeEvidenceContextError::GraphReadUnavailable,
+            })?;
+        let nodes = records
+            .get("nodes")
+            .and_then(Value::as_array)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        if nodes.len() != 2 {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        for (expected_id, expected_type) in [
+            (user_turn_id, "conversation_turn"),
+            (response_id, "assistant_turn"),
+        ] {
+            let record = nodes
+                .iter()
+                .find(|record| record.get("id").and_then(Value::as_str) == Some(expected_id))
+                .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+            let metadata = record
+                .get("metadata")
+                .and_then(Value::as_object)
+                .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+            let actual_type = metadata.get("entity_type").and_then(Value::as_str);
+            let valid_type = actual_type == Some(expected_type)
+                || (expected_type == "assistant_turn" && actual_type == Some("conversation_turn"));
+            if record.get("id").and_then(Value::as_str) != Some(expected_id)
+                || !valid_type
+                || metadata.get("conversation_id").and_then(Value::as_str)
+                    != Some(conversation_id)
+                || matches!(
+                    metadata.get("lifecycle_status").and_then(Value::as_str),
+                    Some("tombstoned" | "deleted")
+                )
+            {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            }
+        }
+        Ok(records)
     }
 
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {

@@ -161,6 +161,56 @@ impl PostgresRunApplicationService {
                     );
                 }
             }
+        } else if native_request.operation == "link_assistant_turn" {
+            match self
+                .native_turn_link_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(records) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_turn_records".to_owned(), records);
+                    match native_result_from_request(
+                        handoff.clone(),
+                        native_request.clone(),
+                        &self.native_operations,
+                    ) {
+                        Ok(result) => result,
+                        Err(_) => failed_native_result(
+                            handoff,
+                            &native_request,
+                            "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                            "native assistant-turn linking rejected its bounded input",
+                        ),
+                    }
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native turn linking requires the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "native turn linking requires the run owner's current read_graph capability and admitted scope",
+                ),
+                Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_TURN_READ_FAILED",
+                    "native turn linking requires two visible, active turns in the same conversation",
+                ),
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_TURN_READ_UNAVAILABLE",
+                        "native turn storage is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
         } else {
             match native_result_from_request(handoff, native_request, &self.native_operations) {
                 Ok(result) => result,
@@ -274,6 +324,45 @@ impl ApplicationService for PostgresRunApplicationService {
                     ),
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
                         return Err("native evidence storage is temporarily unavailable".to_owned());
+                    }
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
+                        "inline native execution has no external caller principal"
+                    ),
+                }
+            } else if native_request.operation == "link_assistant_turn" {
+                match self.native_turn_link_context(&native_request, None).await {
+                    Ok(records) => {
+                        native_request
+                            .ephemeral_context
+                            .insert("authorized_turn_records".to_owned(), records);
+                        match native_result_from_request(
+                            handoff.clone(),
+                            native_request.clone(),
+                            &self.native_operations,
+                        ) {
+                            Ok(result) => result,
+                            Err(_) => failed_native_result(
+                                handoff,
+                                &native_request,
+                                "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                                "native assistant-turn linking rejected its bounded input",
+                            ),
+                        }
+                    }
+                    Err(NativeEvidenceContextError::OwnerAuthorization) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "native turn linking requires the run owner's current read_graph capability and admitted scope",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadRejected) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_TURN_READ_FAILED",
+                        "native turn linking requires two visible, active turns in the same conversation",
+                    ),
+                    Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                        return Err("native turn storage is temporarily unavailable".to_owned());
                     }
                     Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
                         "inline native execution has no external caller principal"

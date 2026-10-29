@@ -692,6 +692,196 @@
         let graph_events = service.store.replay_raw_events("alpha", 0, 100).await.unwrap();
         assert!(graph_events.iter().any(|event| event.event_id == "graph-event-native-graph-run"));
 
+        for (id, entity_type, role) in [
+            ("native-user-turn", "conversation_turn", "user"),
+            ("native-assistant-turn", "assistant_turn", "assistant"),
+        ] {
+            service
+                .store
+                .apply_graph_mutation(GraphMutation {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("assistant-link-turn-{id}"),
+                    op: "ADD".to_owned(),
+                    payload: json!({"id": id}),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(id.to_owned()),
+                        metadata: serde_json::Map::from_iter([
+                            ("entity_type".to_owned(), json!(entity_type)),
+                            ("conversation_id".to_owned(), json!("conv-native-assistant-link")),
+                            ("role".to_owned(), json!(role)),
+                            ("lifecycle_status".to_owned(), json!("active")),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+            service
+                .store
+                .apply_graph_mutation(GraphMutation {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("assistant-link-acl-{id}"),
+                    op: "ADD".to_owned(),
+                    payload: json!({"id": format!("acl-{id}")}),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: serde_json::Map::from_iter([
+                            ("entity_type".to_owned(), json!("acl_record")),
+                            ("acl_truth_graph".to_owned(), json!("conversation")),
+                            ("acl_target_grain".to_owned(), json!("node")),
+                            ("acl_target_entity_id".to_owned(), json!(id)),
+                            ("acl_version".to_owned(), json!(1)),
+                            ("acl_mode".to_owned(), json!("private")),
+                            ("owner_id".to_owned(), json!("alice")),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+        let link_submit = client
+            .post(format!("{base}/api/workflow/runs"))
+            .bearer_auth(&owner_read)
+            .json(&json!({
+                "run_id": "native-assistant-link-run",
+                "workflow_id": "wf",
+                "conversation_id": "conv-native-assistant-link",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/link_assistant_turn"},
+                "initial_state": {
+                    "conversation_id": "conv-native-assistant-link",
+                    "user_id": "alice",
+                    "turn_node_id": "native-user-turn",
+                    "turn_index": 2,
+                    "answer": {"response_node_id": "native-assistant-turn"},
+                    "prev_turn_meta_summary": {
+                        "prev_node_char_distance_from_last_summary": 18,
+                        "prev_node_distance_from_last_summary": 2,
+                        "tail_turn_index": 2
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(link_submit.status(), StatusCode::ACCEPTED);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        let link_claim = client
+            .post(format!("{base}/internal/runtime/claim"))
+            .bearer_auth(&owner)
+            .json(&json!({"claimed_by":"rust-native-worker", "limit":1, "lease_seconds":60,
+                "run_id":"native-assistant-link-run", "recipient_ids":["rust-native-worker"]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(link_claim.status(), StatusCode::OK);
+        let link_work = link_claim.json::<Value>().await.unwrap()["work"][0].clone();
+        let link_execution = json!({
+            "handoff": {
+                "message_id": link_work["message_id"],
+                "claimed_by": link_work["claimed_by"],
+                "run_id": link_work["run_id"],
+                "step_id": link_work["step_id"],
+                "correlation_id": link_work["correlation_id"]
+            },
+            "payload": link_work["payload"]
+        });
+        let mut link_response_bodies = Vec::new();
+        for _ in 0..2 {
+            let link_result = client
+                .post(format!("{base}/internal/runtime/native/execute"))
+                .bearer_auth(&owner)
+                .json(&link_execution)
+                .send()
+                .await
+                .unwrap();
+            let status = link_result.status();
+            let body = link_result.text().await.unwrap();
+            assert_eq!(status, StatusCode::OK, "{body}");
+            link_response_bodies.push(body);
+        }
+        let linked_state = service
+            .store
+            .read_recorded_runtime_state(
+                "native-assistant-link-run",
+                "wf",
+                "conv-native-assistant-link",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            linked_state.state.contains_key("assistant_turn_edge_id"),
+            "native link op failed to update run state: {:?}; responses: {:?}",
+            linked_state.state,
+            link_response_bodies
+        );
+        let linked_edge_id = linked_state.state["assistant_turn_edge_id"]
+            .as_str()
+            .unwrap();
+        let linked_edges = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![linked_edge_id.to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(linked_edges.len(), 1);
+        let linked_edge_doc: Value = serde_json::from_str(
+            linked_edges[0].document.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(linked_edge_doc["relation"], "next_turn");
+        assert_eq!(linked_edge_doc["source_ids"], json!(["native-user-turn"]));
+        assert_eq!(linked_edge_doc["target_ids"], json!(["native-assistant-turn"]));
+        let link_events = service.store.replay_raw_events("alpha", 0, 500).await.unwrap();
+        assert_eq!(
+            link_events
+                .iter()
+                .filter(|event| event.entity_id == linked_edge_id)
+                .count(),
+            1,
+            "retry must not append a duplicate assistant-turn edge event"
+        );
+        let link_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 500)
+            .await
+            .unwrap();
+        assert_eq!(
+            link_jobs
+                .iter()
+                .filter(|job| job.entity_id == linked_edge_id)
+                .count(),
+            2,
+            "the atomic edge write should create exactly the edge index intents"
+        );
+
         let add_candidate = |id: &str, level: i64, lifecycle_status: &str| {
             let mut metadata = serde_json::Map::from_iter([
                 ("entity_type".to_owned(), json!("knowledge_node")),
@@ -819,7 +1009,12 @@
             "capabilities": ["read_graph"]
         });
         assert!(service
-            .authorized_evidence_records(&foreign_principal, &["native-node".to_owned()], &[])
+            .authorized_evidence_records(
+                &foreign_principal,
+                &["native-node".to_owned()],
+                &[],
+                "knowledge",
+            )
             .await
             .is_err(), "private knowledge ACL must hide the selected node from another principal");
         let lane = service.store.get_projected_lane_message(work["message_id"].as_str().unwrap()).await.unwrap().unwrap();

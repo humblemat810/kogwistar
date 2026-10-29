@@ -33,6 +33,7 @@ impl PostgresRunApplicationService {
         principal: &Value,
         node_ids: &[String],
         edge_ids: &[String],
+        truth_graph: &str,
     ) -> Result<Value, NativeEvidenceRecordError> {
         if node_ids.len().saturating_add(edge_ids.len()) > 100 {
             return Err(NativeEvidenceRecordError::Rejected);
@@ -55,6 +56,7 @@ impl PostgresRunApplicationService {
         };
         let scope_value = scope_value.clone();
         let principal = principal.clone();
+        let truth_graph = truth_graph.to_owned();
         let node_ids = node_ids.to_vec();
         let edge_ids = edge_ids.to_vec();
         self.store
@@ -115,12 +117,12 @@ impl PostgresRunApplicationService {
                     let acl_records = uow
                         .graph_acl_records_for_entities(
                             &scope,
-                            "knowledge",
+                            &truth_graph,
                             &entity_ids.into_iter().collect::<Vec<_>>(),
                         )
                         .await?;
                     let mut acl_index = GraphAclIndex::default();
-                    acl_index.extend_from_records(&acl_records, "knowledge");
+                    acl_index.extend_from_records(&acl_records, &truth_graph);
                     let acl_principal = graph_acl_principal_from_claims(
                         &principal,
                         scope_value["security_scope"].as_str(),
