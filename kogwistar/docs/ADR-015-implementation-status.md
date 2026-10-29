@@ -143,7 +143,7 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 10 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 9 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
@@ -180,8 +180,14 @@ Only these local items remain in scope before production rollout:
   conversation-namespace checks and the syscall's atomic start-node/ACL/index
   transaction. The packaged-server live PostgreSQL test verifies the public
   response and durable start-node projection, and rejects owner spoofing;
-  SQLite remains explicitly unsupported. The remaining turn-answer route is
-  still deferred.
+  SQLite remains explicitly unsupported.
+- [x] The PostgreSQL Rust service now serves
+  `POST /api/conversations/{conversation_id}/turns:answer` by adapting the
+  public request to the existing atomic `send_message` syscall. It preserves
+  the Python queued `202` response envelope and default `debug.rag.v1`
+  workflow, while retaining owner, capability, scope, and queue-admission
+  checks. The packaged-server live PostgreSQL test verifies the queued
+  response and durable turn/run/lane admission; SQLite remains unsupported.
 - [x] Conversation summary, transcript, and latest-snapshot reads share one
   storage-scope/ACL-principal derivation and one ACL-filtered record-read
   helper. The scope/principal invariant test and both live summary/transcript

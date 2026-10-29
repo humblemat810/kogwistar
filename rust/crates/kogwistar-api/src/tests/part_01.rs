@@ -1899,6 +1899,10 @@
         assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
         assert!(service.supports_http_operation("GET", "/api/conversations"));
         assert!(service.supports_http_operation("POST", "/api/conversations"));
+        assert!(service.supports_http_operation(
+            "POST",
+            "/api/conversations/{conversation_id}/turns:answer"
+        ));
         assert!(service.supports_http_operation("GET", "/api/workflow/tools/audit"));
         assert!(service.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
         assert!(
@@ -1943,6 +1947,10 @@
         ));
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations"));
         assert!(!sqlite.supports_http_operation("POST", "/api/conversations"));
+        assert!(!sqlite.supports_http_operation(
+            "POST",
+            "/api/conversations/{conversation_id}/turns:answer"
+        ));
         drop(sqlite);
         remove_test_sqlite(&sqlite_path);
     }

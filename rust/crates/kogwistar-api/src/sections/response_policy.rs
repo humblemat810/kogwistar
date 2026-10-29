@@ -268,6 +268,18 @@ fn conversation_transcript_id(path_and_query: &str) -> Option<String> {
     (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
 }
 
+fn conversation_answer_id(path_and_query: &str) -> Option<String> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    let encoded_id = path
+        .strip_prefix("/api/conversations/")?
+        .strip_suffix("/turns:answer")?;
+    let conversation_id = percent_encoding::percent_decode_str(encoded_id)
+        .decode_utf8()
+        .ok()?
+        .into_owned();
+    (!conversation_id.is_empty() && !conversation_id.contains('/')).then_some(conversation_id)
+}
+
 fn context_snapshot_query(path_and_query: &str) -> (Option<String>, Option<String>) {
     let mut run_id = None;
     let mut stage = None;
@@ -325,6 +337,10 @@ const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/workflow/tools/audit"),
     ("GET", "/api/conversations/{conversation_id}"),
     ("GET", "/api/conversations/{conversation_id}/turns"),
+    (
+        "POST",
+        "/api/conversations/{conversation_id}/turns:answer",
+    ),
     (
         "GET",
         "/api/conversations/{conversation_id}/snapshots/latest",
@@ -906,6 +922,19 @@ struct CreateConversationHttpInput {
     conversation_id: Option<String>,
     #[serde(default)]
     start_node_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SubmitConversationAnswerHttpInput {
+    text: String,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default = "default_conversation_answer_workflow")]
+    workflow_id: String,
+}
+
+fn default_conversation_answer_workflow() -> String {
+    "debug.rag.v1".to_owned()
 }
 
 fn default_syscall_version() -> String {

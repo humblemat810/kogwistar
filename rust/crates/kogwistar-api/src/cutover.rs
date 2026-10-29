@@ -68,7 +68,6 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/viz/d3.json"),
     ("GET", "/viz/d3.bundle"),
     ("POST", "/api/add_index_entries"),
-    ("POST", "/api/conversations/{conversation_id}/turns:answer"),
     ("POST", "/api/document"),
     ("POST", "/api/document.upsert_tree"),
     ("POST", "/api/graph/upsert"),
@@ -134,7 +133,7 @@ mod tests {
 
     #[test]
     fn pending_route_matcher_handles_query_and_path_parameters() {
-        assert!(is_pending_server_cutover_route(
+        assert!(!is_pending_server_cutover_route(
             "POST",
             "/api/conversations/c-1/turns:answer?mode=sync"
         ));

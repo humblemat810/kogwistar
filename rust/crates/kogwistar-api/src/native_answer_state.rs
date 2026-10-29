@@ -11,11 +11,204 @@ pub(crate) fn register(
     registry.register_routed("aa_maybe_iterate", "v1", execute_maybe_iterate)?;
     registry.register("aa_retrieve_candidates", "v1", execute_retrieve_candidates)?;
     registry.register(
+        "aa_debug_select_top_candidates",
+        "v1",
+        execute_debug_select_top_candidates,
+    )?;
+    registry.register(
+        "aa_debug_answer_from_nodes",
+        "v1",
+        execute_debug_answer_from_nodes,
+    )?;
+    registry.register(
         "aa_select_used_evidence",
         "v1",
         execute_select_used_evidence,
     )?;
     registry.register("aa_evaluate_answer", "v1", execute_evaluate_answer)
+}
+
+fn execute_debug_select_top_candidates(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let candidates = request
+        .state
+        .get("candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let max_used = request
+        .state
+        .get("max_used")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(3)
+        .clamp(1, 5) as usize;
+    let mut selected = Vec::new();
+    let mut used_node_ids = Vec::new();
+    for candidate in candidates.iter().take(max_used) {
+        let Some(candidate) = candidate.as_object() else {
+            continue;
+        };
+        let Some(id) = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        used_node_ids.push(id.to_owned());
+        selected.push(Value::Object(candidate.clone()));
+    }
+    let update = Map::from_iter([
+        (
+            "selection".to_owned(),
+            json!({
+                "used_node_ids": used_node_ids,
+                "strategy": "top_candidates_debug"
+            }),
+        ),
+        ("used_node_ids".to_owned(), json!(used_node_ids)),
+        ("selected_candidates".to_owned(), Value::Array(selected)),
+    ]);
+    let log_entry = format!(
+        "aa_debug_select_top_candidates:{}",
+        update["used_node_ids"].as_array().map_or(0, Vec::len)
+    );
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn execute_debug_answer_from_nodes(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let question = request
+        .state
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut selected = request
+        .state
+        .get("selected_candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if selected.is_empty() {
+        selected = request
+            .state
+            .get("candidates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|candidate| {
+                candidate
+                    .as_object()
+                    .and_then(|candidate| candidate.get("id"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+            })
+            .take(3)
+            .cloned()
+            .collect();
+    }
+    let mut lines = vec![
+        "Debug RAG response".to_owned(),
+        String::new(),
+        format!("Question: {question}"),
+        String::new(),
+        "Retrieved nodes:".to_owned(),
+    ];
+    let mut selected_node_ids = Vec::new();
+    for (index, candidate) in selected.iter().enumerate() {
+        let Some(candidate) = candidate.as_object() else {
+            continue;
+        };
+        let id = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let label = candidate
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(if id.is_empty() { "(unknown)" } else { id });
+        let summary = ["summary", "doc"]
+            .iter()
+            .filter_map(|field| candidate.get(*field).and_then(Value::as_str))
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or("(no summary available)");
+        lines.push(format!("{}. {} [{}]", index + 1, label, id));
+        lines.push(format!("   {summary}"));
+        if !id.is_empty() {
+            selected_node_ids.push(id.to_owned());
+        }
+    }
+    if selected.is_empty() {
+        lines.push("No knowledge nodes were retrieved.".to_owned());
+    }
+    let answer = json!({
+        "text": lines.join("\n"),
+        "mode": "debug_rag",
+        "selected_node_ids": selected_node_ids,
+    });
+    let evaluation = json!({
+        "is_sufficient": !selected.is_empty(),
+        "needs_more_info": false,
+        "missing_aspects": if selected.is_empty() { json!(["no_retrieval_hits"]) } else { json!([]) },
+        "notes": "debug_rag_no_llm",
+    });
+    let update = Map::from_iter([
+        ("answer".to_owned(), answer),
+        ("evaluation".to_owned(), evaluation),
+    ]);
+    let log_entry = "aa_debug_answer_from_nodes".to_owned();
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
 }
 
 fn execute_retrieve_candidates(
@@ -584,6 +777,55 @@ mod tests {
             result["final_state"]["op_log"],
             json!(["aa_select_used_evidence:2"])
         );
+    }
+
+    #[test]
+    fn debug_rag_native_steps_match_python_state_and_answer_shape() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut select = request(json!({
+            "question": "where?",
+            "max_used": 1,
+            "candidates": [
+                {"id":"node-1","label":"Title","summary":"Summary here","doc":"body"},
+                {"id":"node-2","label":"Ignored","summary":"later","doc":"body"}
+            ],
+            "op_log": ["aa_retrieve_candidates:2"]
+        }));
+        select.operation = "aa_debug_select_top_candidates".to_owned();
+        let selected = execute_native_step_with_registry(&select, &registry)
+            .unwrap()
+            .result
+            .unwrap()["final_state"]
+            .clone();
+        assert_eq!(selected["selection"]["strategy"], "top_candidates_debug");
+        assert_eq!(selected["used_node_ids"], json!(["node-1"]));
+        assert_eq!(selected["selected_candidates"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            selected["op_log"],
+            json!([
+                "aa_retrieve_candidates:2",
+                "aa_debug_select_top_candidates:1"
+            ])
+        );
+
+        let mut answer = request(selected);
+        answer.operation = "aa_debug_answer_from_nodes".to_owned();
+        let final_state = execute_native_step_with_registry(&answer, &registry)
+            .unwrap()
+            .result
+            .unwrap()["final_state"]
+            .clone();
+        assert_eq!(
+            final_state["answer"]["text"],
+            "Debug RAG response\n\nQuestion: where?\n\nRetrieved nodes:\n1. Title [node-1]\n   Summary here"
+        );
+        assert_eq!(final_state["answer"]["mode"], "debug_rag");
+        assert_eq!(
+            final_state["answer"]["selected_node_ids"],
+            json!(["node-1"])
+        );
+        assert_eq!(final_state["evaluation"]["is_sufficient"], true);
+        assert_eq!(final_state["evaluation"]["needs_more_info"], false);
     }
 
     #[test]

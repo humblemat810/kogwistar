@@ -3703,6 +3703,103 @@ impl PostgresRunApplicationService {
                 ),
             };
         }
+        if request.method == "POST" {
+            if let Some(conversation_id) = conversation_answer_id(&request.path_and_query) {
+                let input: SubmitConversationAnswerHttpInput =
+                    match serde_json::from_slice(&request.body) {
+                        Ok(input) => input,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_REQUEST",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                if input.text.is_empty() {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "text must contain at least one character",
+                    );
+                }
+                // Match the Python route: an authenticated identity takes precedence
+                // over the optional compatibility field in the request body.
+                let effective_user_id = authenticated_run_owner_id(&request.principal)
+                    .map(str::to_owned)
+                    .or(input.user_id);
+                let mut args = serde_json::Map::from_iter([
+                    ("conversation_id".to_owned(), json!(conversation_id)),
+                    ("text".to_owned(), json!(input.text)),
+                    ("workflow_id".to_owned(), json!(input.workflow_id)),
+                ]);
+                if let Some(user_id) = effective_user_id {
+                    args.insert("user_id".to_owned(), json!(user_id));
+                }
+                let syscall_request = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                    body: serde_json::to_vec(&json!({
+                        "version":"v1",
+                        "op":"send_message",
+                        "args":args,
+                    }))
+                    .expect("typed answer-submission input serializes"),
+                    principal: request.principal,
+                };
+                let response = self.syscall_effect(&syscall_request, "send_message").await;
+                if !(200..300).contains(&response.status) {
+                    return response;
+                }
+                let envelope: Value = match serde_json::from_slice(&response.body) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::BAD_GATEWAY,
+                            "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let Some(result) = envelope.get("result") else {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        "send-message syscall returned no result",
+                    );
+                };
+                let Some(run_id) = result.get("run_id").and_then(Value::as_str) else {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        "send-message syscall result omitted run_id",
+                    );
+                };
+                let Some(turn_node_id) = result.get("turn_node_id").and_then(Value::as_str)
+                else {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        "send-message syscall result omitted turn_node_id",
+                    );
+                };
+                let workflow_id = result
+                    .get("workflow_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("debug.rag.v1");
+                return json_effect(
+                    StatusCode::ACCEPTED,
+                    json!({
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        "workflow_id": workflow_id,
+                        "status": "queued",
+                        "user_turn_node_id": turn_node_id,
+                    }),
+                );
+            }
+        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {

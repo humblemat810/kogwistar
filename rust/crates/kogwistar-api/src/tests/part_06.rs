@@ -4851,6 +4851,17 @@
         })
         .await
         .unwrap();
+        auth.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "conversation-owner".to_owned(),
+            email: "conversation-owner@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "conversation-owner".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "conversation".to_owned(),
+        })
+        .await
+        .unwrap();
         drop(auth);
         let auth_config = AuthConfig {
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
@@ -5245,6 +5256,65 @@
             )
             .await
             .unwrap();
+        let debug_workflow = &contract["workflows"]["debug.rag.v1"];
+        let debug_nodes = debug_workflow["required_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| {
+                let op = value.as_str().unwrap();
+                json!({"id":op,"label":op,"metadata":{
+                    "wf_op":op,"wf_version":"v1","wf_executor_target":"rust-native","wf_start":op=="start"
+                }})
+            })
+            .collect::<Vec<_>>();
+        let debug_edges = debug_workflow["required_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, route)| {
+                json!({
+                    "id":format!("debug-e2e-route-{index}"),"source_ids":[route["from"]],"target_ids":[route["to"]],
+                    "metadata":{"wf_predicate":route["predicate"],"wf_is_default":route["default"],
+                        "wf_priority":route["priority"],"wf_multiplicity":route["multiplicity"]}
+                })
+            })
+            .collect::<Vec<_>>();
+        service
+            .store
+            .replace_named_projection(
+                "workflow_design",
+                "debug.rag.v1",
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        service
+            .store
+            .put_workflow_design_snapshot(
+                "debug.rag.v1",
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(
+                        &json!({"nodes":debug_nodes,"edges":debug_edges}),
+                    )
+                    .unwrap(),
+                },
+            )
+            .await
+            .unwrap();
         let http_secret = "rust-only-answer-http-secret";
         let now_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5343,9 +5413,9 @@
         let conversation_token = jsonwebtoken::encode(
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &json!({
-                "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
+                "sub":"conversation-owner","user_id":"conversation-owner","actor_id":"conversation-owner","role":"rw","roles":["rw"],
                 "ns":"conversation","storage_ns":"conversation",
-                "capabilities":["spawn_process"],
+                "capabilities":["spawn_process","send_message"],
                 "exp": now_seconds + 300
             }),
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
@@ -5355,7 +5425,7 @@
             .post(format!("{base_url}/api/conversations"))
             .bearer_auth(&conversation_token)
             .json(&json!({
-                "user_id":"alice",
+                "user_id":"conversation-owner",
                 "conversation_id":"rust-only-rest-create-e2e",
                 "start_node_id":"rust-only-rest-create-start"
             }))
@@ -5371,7 +5441,7 @@
         );
         let created: Value = serde_json::from_str(&create_body).unwrap();
         assert_eq!(created["conversation_id"], "rust-only-rest-create-e2e");
-        assert_eq!(created["user_id"], "alice");
+        assert_eq!(created["user_id"], "conversation-owner");
         assert_eq!(created["start_node_id"], "rust-only-rest-create-start");
         assert_eq!(created["tail_node_id"], "rust-only-rest-create-start");
         assert_eq!(created["turn_count"], 0);
@@ -5397,8 +5467,89 @@
         );
         assert_eq!(
             created_record[0].metadata.get("user_id").and_then(Value::as_str),
-            Some("alice")
+            Some("conversation-owner")
         );
+        let empty_answer = client
+            .post(format!(
+                "{base_url}/api/conversations/rust-only-rest-create-e2e/turns:answer"
+            ))
+            .bearer_auth(&conversation_token)
+            .json(&json!({"text":""}))
+            .send()
+            .await
+            .unwrap();
+        let empty_status = empty_answer.status();
+        let empty_body = empty_answer.text().await.unwrap();
+        assert_eq!(
+            empty_status.as_u16(),
+            StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
+            "{empty_body}"
+        );
+        let answer_submission = client
+            .post(format!(
+                "{base_url}/api/conversations/rust-only-rest-create-e2e/turns:answer"
+            ))
+            .bearer_auth(&conversation_token)
+            .json(&json!({"user_id":"body-spoof","text":"queued native question"}))
+            .send()
+            .await
+            .unwrap();
+        let answer_status = answer_submission.status();
+        let answer_body = answer_submission.text().await.unwrap();
+        assert_eq!(
+            answer_status.as_u16(),
+            StatusCode::ACCEPTED.as_u16(),
+            "{answer_body}"
+        );
+        let answer: Value = serde_json::from_str(&answer_body).unwrap();
+        assert_eq!(answer.as_object().map(serde_json::Map::len), Some(5));
+        assert_eq!(answer["conversation_id"], "rust-only-rest-create-e2e");
+        assert_eq!(answer["workflow_id"], "debug.rag.v1");
+        assert_eq!(answer["status"], "queued");
+        let answer_run_id = answer["run_id"].as_str().unwrap();
+        let answer_turn_id = answer["user_turn_node_id"].as_str().unwrap();
+        assert!(service
+            .store
+            .get_server_run(answer_run_id)
+            .await
+            .unwrap()
+            .is_some());
+        let answer_turn = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "conversation".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![answer_turn_id.to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer_turn.len(), 1);
+        assert_eq!(
+            answer_turn[0].metadata.get("entity_type").and_then(Value::as_str),
+            Some("conversation_turn")
+        );
+        assert_eq!(
+            answer_turn[0].metadata.get("role").and_then(Value::as_str),
+            Some("user")
+        );
+        let answer_lanes = service
+            .store
+            .list_projected_lane_messages(LaneMessageFilter {
+                correlation_id: Some(answer_run_id.to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer_lanes.len(), 1);
+        assert_eq!(answer_lanes[0].msg_type, "workflow.run.execute");
+        assert_eq!(answer_lanes[0].status, "pending");
         let spoofed_create = client
             .post(format!("{base_url}/api/conversations"))
             .bearer_auth(&conversation_token)

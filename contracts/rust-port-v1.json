@@ -488,22 +488,6 @@
         ]
       },
       {
-        "name": "conversation-turn-admission",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "workflow-runtime",
-          "graph-pgvector"
-        ],
-        "exit_evidence": "turn admission/idempotency, workflow-runtime parity, snapshot replay, and REST/MCP conformance",
-        "operations": [
-          {
-            "method": "POST",
-            "path": "/api/conversations/{conversation_id}/turns:answer"
-          }
-        ]
-      },
-      {
         "name": "graph-query-and-visualization-data",
         "owner": "python",
         "status": "intentionally-deferred",
