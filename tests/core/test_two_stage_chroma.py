@@ -1537,6 +1537,80 @@ def test_real_chroma_rebuilds_lost_embedding_job_after_restart(tmp_path):
         restarted.close()
 
 
+def test_stage1_recovery_document_v2_matches_shared_python_rust_golden(tmp_path):
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Edge, Node
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "stage1-recovery-document-v2.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    source_cases = json.loads(
+        (fixture_path.parent / fixture["source_fixture"]).read_text(encoding="utf-8")
+    )["cases"]
+    node_payload = next(
+        case["payload"]
+        for case in source_cases
+        if case["kind"] == fixture["case_kind"]
+    )
+    node_payload["id"] = fixture["entity_id"]
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(Node.model_validate(node_payload))
+        engine.meta_sqlite.clear_stage1_node_projection(
+            engine.namespace, f"node:{fixture['entity_id']}"
+        )
+
+        assert engine.two_stage_projection_adapter.restore_stage1_from_canonical_event(
+            entity_kind="node", entity_id=fixture["entity_id"]
+        )
+        restored = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, f"node:{fixture['entity_id']}"
+        )
+        assert restored is not None
+        assert restored["projection_schema_version"] == 2
+        assert restored["payload"]["document"] == fixture["expected_document"]
+        assert restored["payload"]["metadata"]["namespace"] == engine.namespace
+        assert restored["payload"]["metadata"]["properties"] == (
+            '{"attributes":["unicode-雪","nested-payload"]}'
+        )
+        assert "redirect_to_id" not in restored["payload"]["metadata"]
+
+        edge_payload = next(
+            case["payload"] for case in source_cases if case["kind"] == "edge"
+        )
+        edge_payload["id"] = fixture["edge_entity_id"]
+        engine.write.add_node(
+            build_entity_node(node_id="external:target", doc_id="doc:rust-python-parity")
+        )
+        engine.write.add_edge(Edge.model_validate(edge_payload))
+        engine.meta_sqlite.clear_stage1_node_projection(
+            engine.namespace, f"edge:{fixture['edge_entity_id']}"
+        )
+        assert engine.two_stage_projection_adapter.restore_stage1_from_canonical_event(
+            entity_kind="edge", entity_id=fixture["edge_entity_id"]
+        )
+        restored_edge = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, f"edge:{fixture['edge_entity_id']}"
+        )
+        assert restored_edge is not None
+        assert restored_edge["projection_schema_version"] == 2
+        assert restored_edge["payload"]["document"] == fixture["edge_expected_document"]
+        edge_metadata = restored_edge["payload"]["metadata"]
+        assert edge_metadata["namespace"] == engine.namespace
+        assert edge_metadata["source_ids"] == '["parity-node"]'
+        assert edge_metadata["node_endpoint_count"] == 2
+    finally:
+        engine.close()
+
+
 @pytest.mark.integration
 @pytest.mark.e2e
 @pytest.mark.parametrize("kind", ["node", "edge"])

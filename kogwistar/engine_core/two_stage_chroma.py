@@ -16,6 +16,8 @@ from .canonical_events import canonical_revision_job_payload
 from .edge_endpoint_rows import edge_endpoint_rows
 from .engine import GraphKnowledgeEngine
 from .models import Edge, Node
+from ..json_types import JsonValue
+from ..runtime.serialize import stable_json_dumps
 from .storage_backend import TwoStageProjectionCapability
 from .two_stage_namespace import active_graph_namespace
 
@@ -147,14 +149,39 @@ class SQLiteChromaTwoStageProjectionAdapter:
         if entity_kind == "node":
             entity: Node | Edge = Node.model_validate(revision.payload)
             document, metadata = self.engine.write.node_doc_and_meta(entity)
+            document_payload = entity.model_dump(
+                field_mode="backend", exclude=["embedding", "metadata"]
+            )
         elif entity_kind == "edge":
             entity = Edge.model_validate(revision.payload)
-            document = entity.model_dump_json(
+            document_payload = entity.model_dump(
                 field_mode="backend", exclude=["embedding"]
             )
+            document = stable_json_dumps(cast(JsonValue, document_payload))
             metadata = self.engine.write.enrich_edge_meta(entity)
         else:
             raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+
+        if entity_kind == "node":
+            document = stable_json_dumps(cast(JsonValue, document_payload))
+        metadata = dict(metadata or {})
+        for key in (
+            "properties",
+            "mentions",
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+            "references",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, str):
+                try:
+                    metadata[key] = stable_json_dumps(
+                        cast(JsonValue, json.loads(value))
+                    )
+                except (TypeError, ValueError):
+                    pass
 
         revision_payload = json.loads(canonical_revision_job_payload(revision))
         source_fingerprint = str(revision_payload["source_fingerprint"])
@@ -162,7 +189,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
             "id": entity_id,
             "entity_kind": entity_kind,
             "document": str(document),
-            "metadata": dict(metadata or {}),
+            "metadata": metadata,
             "source_fingerprint": source_fingerprint,
         }
         replace = getattr(self._meta(), "replace_stage1_node_projection", None)
@@ -174,7 +201,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
             payload,
             last_authoritative_seq=int(revision.revision),
             last_materialized_seq=int(revision.revision),
-            projection_schema_version=1,
+            projection_schema_version=2,
             materialization_status="pending",
         )
 

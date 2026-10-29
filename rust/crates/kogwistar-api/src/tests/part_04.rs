@@ -1379,6 +1379,52 @@
         assert_eq!(error, "Rust embedding provider is not configured");
     }
 
+    #[test]
+    fn sqlite_chroma_stage1_recovery_projects_edge_and_hyperedge_fields() {
+        let model_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let recovery_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/stage1-recovery-document-v2.json"
+        ))
+        .unwrap();
+        let mut payload = model_fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "edge")
+            .unwrap()["payload"]
+            .clone();
+        let entity_id = recovery_fixture["edge_entity_id"].as_str().unwrap();
+        payload["id"] = json!(entity_id);
+        let revision = kogwistar_engine::canonical_revision::CanonicalEntityRevision {
+            namespace: "tenant-a".to_owned(),
+            entity_kind: "edge".to_owned(),
+            entity_id: entity_id.to_owned(),
+            revision: 7,
+            state: "active".to_owned(),
+            payload,
+        };
+
+        let recovered = RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
+            &revision,
+            "fixture-fingerprint",
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.payload["document"].as_str(),
+            recovery_fixture["edge_expected_document"].as_str()
+        );
+        let metadata = &recovered.payload["metadata"];
+        assert_eq!(metadata["namespace"], "tenant-a");
+        assert_eq!(metadata["node_endpoint_count"], 2);
+        assert_eq!(metadata["edge_endpoint_count"], 0);
+        assert_eq!(metadata["source_ids"], "[\"parity-node\"]");
+        assert!(metadata.get("references").and_then(Value::as_str).is_some());
+        assert_eq!(recovered.projection_schema_version, 2);
+    }
+
     #[tokio::test]
     async fn sqlite_chroma_embedding_worker_projects_revision_fenced_stage1_document() {
         use kogwistar_store::NamedProjectionWrite;
@@ -1475,8 +1521,29 @@
         .with_embedding_provider(provider);
 
         let namespace = "worker-tenant";
-        let entity_id = "worker-node";
-        let document = "canonical stage one text";
+        let recovery_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/stage1-recovery-document-v2.json"
+        ))
+        .unwrap();
+        let entity_id = recovery_fixture["entity_id"].as_str().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let mut entity_payload = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .unwrap()["payload"]
+            .clone();
+        entity_payload["id"] = json!(entity_id);
+        entity_payload["metadata"]["namespace"] = Value::Null;
+        let mut expected_document_payload = entity_payload.clone();
+        expected_document_payload.as_object_mut().unwrap().remove("embedding");
+        expected_document_payload.as_object_mut().unwrap().remove("metadata");
+        let document = kogwistar_contracts::canonical_json(&expected_document_payload, false);
+        assert_eq!(document, recovery_fixture["expected_document"].as_str().unwrap());
         let appended = service
             .store
             .append_raw_entity_event(
@@ -1486,7 +1553,7 @@
                     entity_kind: "node".to_owned(),
                     entity_id: entity_id.to_owned(),
                     op: "ADD".to_owned(),
-                    payload_json: json!({"id":entity_id,"document":document}).to_string(),
+                    payload_json: entity_payload.to_string(),
                 },
             )
             .unwrap();
@@ -1506,27 +1573,6 @@
             .as_str()
             .unwrap()
             .to_owned();
-        service
-            .store
-            .replace_stage1_node_projection(
-                namespace,
-                "node:worker-node",
-                NamedProjectionWrite {
-                    payload: json!({
-                        "document":document,
-                        "metadata":{"kind":"test"},
-                        "source_fingerprint":fingerprint
-                    })
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                    last_authoritative_seq: appended.event.seq,
-                    last_materialized_seq: appended.event.seq,
-                    projection_schema_version: 1,
-                    materialization_status: "ready".to_owned(),
-                },
-            )
-            .unwrap();
         service
             .store
             .enqueue_index_job(NewIndexJob {
@@ -1602,6 +1648,13 @@
                 .unwrap(),
         )
         .unwrap();
+        assert_eq!(metadata["namespace"], namespace);
+        assert_eq!(metadata["doc_id"], "doc:rust-python-parity");
+        assert_eq!(
+            metadata["properties"],
+            "{\"attributes\":[\"unicode-雪\",\"nested-payload\"]}"
+        );
+        assert!(metadata.get("redirect_to_id").is_none());
         assert_eq!(metadata["_kogwistar_stage2_ready"], true);
         assert_eq!(metadata["_kogwistar_source_revision"], appended.event.seq);
         assert_eq!(metadata["_kogwistar_source_fingerprint"], fingerprint);
