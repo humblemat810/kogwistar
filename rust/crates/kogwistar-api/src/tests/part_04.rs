@@ -1687,9 +1687,12 @@
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let race_store: Arc<Mutex<Option<kogwistar_store_sqlite::SqliteStore>>> =
+            Arc::new(Mutex::new(None));
+        let race_store_for_chroma = race_store.clone();
         let chroma = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1717,11 +1720,72 @@
                 let request_line = head.lines().next().unwrap().to_owned();
                 let body: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length])
                     .unwrap();
-                let response = json!({
-                    "id": format!("collection-{}", body["name"].as_str().unwrap()),
-                    "metadata": {"hnsw:space":"cosine"}
-                })
-                .to_string();
+                if request_line.contains("/upsert") {
+                    let store = race_store_for_chroma.lock().unwrap().clone().unwrap();
+                    store
+                        .append_raw_entity_event(
+                            "fenced-tenant",
+                            SqliteNewRawEntityEvent {
+                                event_id: "resurrected-node-changed-during-upsert".to_owned(),
+                                entity_kind: "node".to_owned(),
+                                entity_id: "resurrected-node".to_owned(),
+                                op: "REPLACE".to_owned(),
+                                payload_json: json!({
+                                    "id":"resurrected-node",
+                                    "document":"newer source during Chroma write"
+                                })
+                                .to_string(),
+                            },
+                        )
+                        .unwrap();
+                    let latest = sqlite_canonical_entity_revision(
+                        &store,
+                        "fenced-tenant",
+                        "node",
+                        "resurrected-node",
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let job_payload =
+                        kogwistar_engine::canonical_revision::canonical_revision_job_payload(
+                            &latest,
+                        );
+                    let fingerprint = serde_json::from_str::<Value>(&job_payload).unwrap()
+                        ["source_fingerprint"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                    store
+                        .replace_stage1_node_projection(
+                            "fenced-tenant",
+                            "node:resurrected-node",
+                            NamedProjectionWrite {
+                                payload: json!({
+                                    "document":"newer source during Chroma write",
+                                    "metadata":{},
+                                    "source_fingerprint":fingerprint
+                                })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                                last_authoritative_seq: latest.revision,
+                                last_materialized_seq: latest.revision,
+                                projection_schema_version: 1,
+                                materialization_status: "ready".to_owned(),
+                            },
+                        )
+                        .unwrap();
+                }
+                let response = body["name"].as_str().map_or_else(
+                    || json!({}).to_string(),
+                    |name| {
+                        json!({
+                            "id": format!("collection-{name}"),
+                            "metadata": {"hnsw:space":"cosine"}
+                        })
+                        .to_string()
+                    },
+                );
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     response.len(),
@@ -1770,6 +1834,7 @@
         .await
         .unwrap()
         .with_embedding_provider(provider);
+        *race_store.lock().unwrap() = Some(service.store.clone());
 
         let namespace = "fenced-tenant";
         let entity_id = "resurrected-node";
@@ -1937,8 +2002,63 @@
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].op, "UPSERT");
         assert_eq!(pending[0].payload_json.as_deref(), Some(active_job_payload.as_str()));
+
+        let active_fingerprint = serde_json::from_str::<Value>(&active_job_payload).unwrap()
+            ["source_fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let raced_upsert = kogwistar_store::GraphProjectionWriteStore::upsert_graph_projection_record_with_outcome(
+            &fenced,
+            namespace,
+            "node",
+            GraphRecord {
+                id: entity_id.to_owned(),
+                document: Some("current before Chroma race".to_owned()),
+                metadata: serde_json::from_value(json!({
+                    "_kogwistar_stage2_ready":true,
+                    "_kogwistar_source_revision":active.event.seq,
+                    "_kogwistar_source_fingerprint":active_fingerprint
+                }))
+                .unwrap(),
+                embedding: Some(vec![0.6, 0.8]),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            raced_upsert,
+            kogwistar_store::ProjectionWriteOutcome::Superseded
+        );
+        let latest = sqlite_canonical_entity_revision(
+            &service.store,
+            namespace,
+            "node",
+            entity_id,
+        )
+        .unwrap()
+        .unwrap();
+        let latest_payload =
+            kogwistar_engine::canonical_revision::canonical_revision_job_payload(&latest);
+        let pending = service
+            .store
+            .list_index_jobs(
+                Some(namespace),
+                Some("PENDING"),
+                Some("node"),
+                Some(entity_id),
+                Some("node_embedding"),
+                10,
+            )
+            .unwrap();
+        assert_eq!(pending.len(), 1, "race recovery should coalesce into one job");
+        assert_eq!(pending[0].payload_json.as_deref(), Some(latest_payload.as_str()));
         let requests = chroma.await.unwrap();
-        assert_eq!(requests.len(), 2, "stale delete must not call Chroma mutation endpoints");
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests.iter().any(|(line, _)| line.contains("/upsert")),
+            "the simulated race must occur during a real Chroma mutation"
+        );
 
         drop(service);
         let _ = std::fs::remove_file(path);

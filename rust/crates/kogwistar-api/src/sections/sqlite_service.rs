@@ -196,7 +196,8 @@ impl RevisionFencedChromaProjectionStore {
         let record_fingerprint = record
             .metadata
             .get("_kogwistar_source_fingerprint")
-            .and_then(Value::as_str);
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let stage2_ready = record
             .metadata
             .get("_kogwistar_stage2_ready")
@@ -204,11 +205,15 @@ impl RevisionFencedChromaProjectionStore {
             == Some(true);
         if !stage2_ready
             || record_revision != Some(current.revision)
-            || record_fingerprint != Some(current_fingerprint.as_str())
+            || record_fingerprint.as_deref() != Some(current_fingerprint.as_str())
         {
             self.enqueue_current_revision(&current)?;
             return Ok(ProjectionWriteOutcome::Superseded);
         }
+        let projected_revision = record_revision.expect("stage2-ready revision was validated");
+        let projected_fingerprint =
+            record_fingerprint.expect("stage2-ready fingerprint was validated");
+        let projected_id = record.id.clone();
         kogwistar_store::GraphWriteStore::upsert_graph_record_of_kind(
             &self.graph,
             namespace,
@@ -216,7 +221,29 @@ impl RevisionFencedChromaProjectionStore {
             record,
         )
         .await?;
-        Ok(ProjectionWriteOutcome::Applied)
+        match self.current_revision(namespace, entity_kind, &projected_id)? {
+            Some(latest)
+                if !latest.is_deleted()
+                    && latest.revision == projected_revision
+                    && Self::canonical_fingerprint(&latest)? == projected_fingerprint =>
+            {
+                Ok(ProjectionWriteOutcome::Applied)
+            }
+            Some(latest) => {
+                self.enqueue_current_revision(&latest)?;
+                Ok(ProjectionWriteOutcome::Superseded)
+            }
+            None => {
+                kogwistar_store::GraphWriteStore::delete_graph_record_of_kind(
+                    &self.graph,
+                    namespace,
+                    kind,
+                    &projected_id,
+                )
+                .await?;
+                Ok(ProjectionWriteOutcome::Superseded)
+            }
+        }
     }
 
     async fn delete_with_revision_fence(
@@ -241,6 +268,12 @@ impl RevisionFencedChromaProjectionStore {
             id,
         )
         .await?;
+        if let Some(current) = self.current_revision(namespace, entity_kind, id)?
+            && !current.is_deleted()
+        {
+            self.enqueue_current_revision(&current)?;
+            return Ok((deleted, ProjectionWriteOutcome::Superseded));
+        }
         Ok((deleted, ProjectionWriteOutcome::Applied))
     }
 }
