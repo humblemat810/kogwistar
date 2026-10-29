@@ -23,7 +23,7 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NotRequired, Protocol, cast
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, cast
 from typing_extensions import TypedDict
 
 from .models import (
@@ -166,12 +166,14 @@ def _span_from_state(value: object) -> Span:
     raise RuntimeError("conversation workflow state is missing a valid self_span")
 
 
-def _worker_graph_mutation_batch_for_node(
+def _worker_graph_mutation_batch_for_entity(
     ctx: StepContext,
     engine: object,
-    node: ConversationNode,
+    entity: ConversationNode | ConversationEdge,
+    *,
+    entity_kind: Literal["node", "edge"],
 ) -> dict[str, JsonValue]:
-    """Build the existing atomic Rust worker effect for one conversation node."""
+    """Build an atomic Rust worker effect for one conversation graph entity."""
     from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
     from kogwistar.engine_core.graph_mutation_contract import (
         GraphMutationBatchPayload,
@@ -196,32 +198,38 @@ def _worker_graph_mutation_batch_for_node(
     if not namespace:
         raise RuntimeError("Rust worker graph effects require an engine namespace")
     write = getattr(engine, "write", None)
-    if write is None or not callable(getattr(write, "node_doc_and_meta", None)):
+    projection_method_name = (
+        "node_doc_and_meta" if entity_kind == "node" else "edge_doc_and_meta"
+    )
+    projection_method = getattr(write, projection_method_name, None)
+    if write is None or not callable(projection_method):
         raise RuntimeError("Rust worker graph effects require the graph write projection")
-    document, raw_metadata = write.node_doc_and_meta(node)
+    document, raw_metadata = projection_method(entity)
     metadata = dict(raw_metadata)
-    metadata["_class_name"] = type(node).__name__
+    metadata["_class_name"] = type(entity).__name__
 
     backend = getattr(engine, "backend", None)
-    nodes_collection = getattr(backend, "nodes", None)
-    table = getattr(nodes_collection, "name", None)
+    collection_name = "nodes" if entity_kind == "node" else "edges"
+    collection = getattr(backend, collection_name, None)
+    table = getattr(collection, "name", None)
     embedding_dim = getattr(backend, "embedding_dim", None)
-    if table != "gke_nodes" or type(embedding_dim) is not int or embedding_dim < 0:
+    expected_table = "gke_nodes" if entity_kind == "node" else "gke_edges"
+    if table != expected_table or type(embedding_dim) is not int or embedding_dim < 0:
         raise RuntimeError("Rust worker graph effects require a PostgreSQL graph backend")
-    embedding = getattr(node, "embedding", None)
-    if embedding is None:
-        raise RuntimeError("Rust worker graph effects require the prepared node embedding")
+    embedding = getattr(entity, "embedding", None)
+    if not isinstance(embedding, list) or not embedding:
+        raise RuntimeError("Rust worker graph effects require a prepared embedding")
 
-    envelope = build_graph_model_envelope(node, field_mode="backend")
+    envelope = build_graph_model_envelope(entity, field_mode="backend")
     payload = envelope["payload"]
-    entity_id = node.safe_get_id()
+    entity_id = entity.safe_get_id()
     event_id = str(stable_id("runtime.worker.graph_event", idempotency_key, entity_id))
     indexing = getattr(engine, "indexing", None)
     source_payload_builder = getattr(indexing, "canonical_source_payload_for_projection", None)
     if not callable(source_payload_builder):
         raise RuntimeError("Rust worker graph effects require canonical index payloads")
     source_payload_json = source_payload_builder(
-        entity_kind="node",
+        entity_kind=entity_kind,
         entity_id=entity_id,
         document=str(document),
         metadata=metadata,
@@ -243,7 +251,11 @@ def _worker_graph_mutation_batch_for_node(
             op="UPSERT",
             payload_json=source_payload_json,
         )
-        for index_kind in ("node_docs", "node_refs")
+        for index_kind in (
+            ("node_docs", "node_refs")
+            if entity_kind == "node"
+            else ("edge_refs", "edge_endpoints")
+        )
     ]
     batch = GraphMutationBatchPayload.model_validate(
         {
@@ -257,7 +269,7 @@ def _worker_graph_mutation_batch_for_node(
                         "graph_space": metadata.get("graph_space"),
                     },
                     "table": table,
-                    "entity_kind": "node",
+                    "entity_kind": entity_kind,
                     "event_id": event_id,
                     "op": "ADD",
                     "payload": payload,
@@ -265,7 +277,7 @@ def _worker_graph_mutation_batch_for_node(
                         "id": entity_id,
                         "document": str(document),
                         "metadata": metadata,
-                        "embedding": [float(value) for value in embedding],
+                    "embedding": [float(value) for value in embedding],
                     },
                     "embedding_dim": embedding_dim,
                     "model_envelope": envelope,
@@ -505,7 +517,9 @@ def _add_user_turn(ctx: StepContext) -> StepRunResult:
 
     worker_effect_batch = None
     if deps.get("_rust_worker_effects") is True:
-        worker_effect_batch = _worker_graph_mutation_batch_for_node(ctx, ce, node)
+        worker_effect_batch = _worker_graph_mutation_batch_for_entity(
+            ctx, ce, node, entity_kind="node"
+        )
     else:
         ce.write.add_node(node)
 
@@ -535,7 +549,7 @@ def _add_user_turn(ctx: StepContext) -> StepRunResult:
 
     state_span: object = span
     if worker_effect_batch is not None:
-        state_span = span.model_dump(dump_format="json")
+        state_span = span.model_dump(field_mode="backend", dump_format="json")
     upd = {
         "turn_node_id": node_id,
         "turn_index": turn_index,
@@ -603,22 +617,77 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
         "conversation_edge",
     )
 
-    add_link_to_new_turn(
-        edge_id,
-        turn_node,
-        prev_node,
-        conversation_id,
-        span=span,
-        prev_turn_meta_summary=mts,
-    )
+    if deps.get("_rust_worker_effects") is True:
+        from kogwistar.engine_core.models import Grounding, Span
+
+        provenance_span = span or Span.from_dummy_for_conversation()
+        edge = ConversationEdge(
+            id=edge_id,
+            source_ids=[prev_node.id],
+            target_ids=[turn_node.id],
+            relation="next_turn",
+            label="next_turn",
+            type="relationship",
+            summary="Sequential flow",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=[provenance_span])],
+            domain_id=None,
+            canonical_entity_id=None,
+            properties={"entity_type": "conversation_edge"},
+            embedding=None,
+            metadata={
+                "relation": "next_turn",
+                "target_id": turn_node.id,
+                "char_distance_from_last_summary": (
+                    mts.prev_node_char_distance_from_last_summary
+                ),
+                "turn_distance_from_last_summary": (
+                    mts.prev_node_distance_from_last_summary
+                ),
+                "tail_turn_index": mts.tail_turn_index,
+                "causal_type": "chain",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+        document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+        embedding = None
+        embedder = getattr(getattr(ce, "embed", None), "iterative_defensive_emb", None)
+        if not callable(embedder):
+            embedder = getattr(ce, "iterative_defensive_emb", None)
+        if not callable(embedder):
+            embedder = getattr(ce, "_iterative_defensive_emb", None)
+        if callable(embedder):
+            embedding = normalize_embedding_vector(embedder(document))
+        if embedding is None:
+            raise RuntimeError(
+                "Rust worker graph effects require a prepared edge embedding"
+            )
+        edge.embedding = embedding
+        worker_effect_batch = _worker_graph_mutation_batch_for_entity(
+            ctx, ce, edge, entity_kind="edge"
+        )
+    else:
+        worker_effect_batch = None
+        add_link_to_new_turn(
+            edge_id,
+            turn_node,
+            prev_node,
+            conversation_id,
+            span=span,
+            prev_turn_meta_summary=mts,
+        )
 
     with ctx.state_write as state:
         _append_op_log(state, "link_prev_turn")
 
-    return RunSuccess(
-        conversation_node_id=edge_id,
-        state_update=[("u", {"prev_turn_edge_id": edge_id})],
-    )
+    result_values: dict[str, object] = {
+        "conversation_node_id": edge_id,
+        "state_update": [("u", {"prev_turn_edge_id": edge_id})],
+    }
+    if worker_effect_batch is not None:
+        result_values["graph_mutation_batch"] = worker_effect_batch
+    return RunSuccess(**result_values)
 
 
 @default_resolver.register("link_assistant_turn")

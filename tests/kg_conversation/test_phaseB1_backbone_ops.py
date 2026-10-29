@@ -191,6 +191,7 @@ def test_add_user_turn_creates_deterministic_node_id_and_updates_state():
 
 
 def test_add_user_turn_returns_idempotent_rust_graph_effect_without_direct_write():
+    from kogwistar._rust_bridge import validate_graph_model_family
     from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
     from kogwistar.engine_core.utils.refs import node_doc_and_meta
     from kogwistar.runtime.rust_worker import RustStepResolverAdapter
@@ -284,6 +285,7 @@ def test_add_user_turn_returns_idempotent_rust_graph_effect_without_direct_write
     assert first_batch == second_batch
     assert first_batch["mutations"][0]["payload"]["id"] == first_node_id
     assert first_batch["mutations"][0]["record"]["embedding"] == [0.0, 0.1]
+    validate_graph_model_family(first_batch["mutations"][0]["model_envelope"])
     assert {job["index_kind"] for job in first_batch["index_jobs"]} == {
         "node_docs",
         "node_refs",
@@ -346,6 +348,138 @@ def test_link_prev_turn_creates_next_turn_edge():
         "conversation_edge",
     )
     assert expected_edge_id in ce.edges
+
+
+def test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write():
+    from kogwistar._rust_bridge import validate_graph_model_family
+    from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
+    from kogwistar.engine_core.utils.refs import edge_doc_and_meta
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.rust_worker import RustStepResolverAdapter
+
+    class WorkerWrite(_WriteShim):
+        def edge_doc_and_meta(self, edge):
+            document, metadata = edge_doc_and_meta(edge)
+            return document, {**metadata, "namespace": "conv:c1"}
+
+        def add_edge(self, *_args, **_kwargs):
+            pytest.fail("Rust worker resolver must return an edge effect, not write")
+
+    class WorkerEngine(FakeConversationEngine):
+        def __init__(self):
+            super().__init__()
+            self.write = WorkerWrite(self)
+            self.namespace = "conv:c1"
+            self.persistence_mode = "single_stage"
+            self._phase1_enable_index_jobs = True
+            self._disable_event_log = False
+            self.backend = type(
+                "Backend",
+                (),
+                {
+                    "edges": type("Collection", (), {"name": "gke_edges"})(),
+                    "embedding_dim": 2,
+                },
+            )()
+            self.indexing = type(
+                "Indexing",
+                (),
+                {
+                    "canonical_source_payload_for_projection": lambda _self, **_kwargs: (
+                        '{"source_fingerprint":"stable-edge"}'
+                    ),
+                },
+            )()
+            for node_id, turn_index in (("prev", 0), ("curr", 1)):
+                self.nodes[node_id] = ConversationNode(
+                    id=node_id,
+                    label=node_id,
+                    type="entity",
+                    summary=node_id,
+                    doc_id=f"conv:c1#{node_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    metadata={
+                        "entity_type": "conversation_turn",
+                        "conversation_id": "c1",
+                        "user_id": "u1",
+                        "level_from_root": 0,
+                    },
+                    role="user",
+                    turn_index=turn_index,
+                    conversation_id="c1",
+                    user_id="u1",
+                    properties=None,
+                    embedding=[0.0, 0.1],
+                )
+
+        def _iterative_defensive_emb(self, _text: str):
+            return [0.0, 0.1]
+
+    engine = WorkerEngine()
+    worker = RustStepResolverAdapter(
+        default_resolver,
+        dependency_provider=lambda _work: {
+            "conversation_engine": engine,
+            "add_link_to_new_turn": lambda *_args, **_kwargs: pytest.fail(
+                "Rust worker resolver must not call the Python graph writer"
+            ),
+        },
+    )
+    span = Span.from_dummy_for_conversation()
+    effect = worker(
+        {
+            "message_id": "lane-link-prev-7",
+            "run_id": "run-1",
+            "step_id": "link-prev",
+            "claimed_by": "worker-1",
+            "correlation_id": "run-1",
+            "worker_effect_capabilities": ["graph_mutation_batch_v1"],
+            "payload": {
+                "workflow_id": "conversation.answer",
+                "conversation_id": "c1",
+                "run_id": "run-1",
+                "op": "link_prev_turn",
+                "node_id": "link-prev",
+                "op_version": "v1",
+                "step_seq": 1,
+                "token_id": "run-1",
+                "state": {
+                    "user_id": "u1",
+                    "conversation_id": "c1",
+                    "turn_node_id": "curr",
+                    "turn_index": 1,
+                    "prev_turn_id": "prev",
+                    "self_span": span.model_dump(
+                        field_mode="backend", dump_format="json"
+                    ),
+                    "prev_turn_meta_summary": {
+                        "prev_node_char_distance_from_last_summary": 5,
+                        "prev_node_distance_from_last_summary": 1,
+                        "tail_turn_index": 1,
+                    },
+                },
+            },
+        }
+    )
+    assert "graph_mutation_batch" in effect, effect
+    batch = GraphMutationBatchPayload.model_validate(effect["graph_mutation_batch"])
+    assert engine.edges == {}
+    mutation = batch.mutations[0]
+    validate_graph_model_family(mutation.model_envelope)
+    assert mutation.entity_kind == "edge"
+    assert mutation.op == "ADD"
+    edge_update = next(
+        update
+        for _, update in effect["state_update"]
+        if isinstance(update, dict) and "prev_turn_edge_id" in update
+    )
+    assert mutation.record.id == edge_update["prev_turn_edge_id"]
+    assert mutation.payload["source_ids"] == ["prev"]
+    assert mutation.payload["target_ids"] == ["curr"]
+    assert {job.index_kind for job in batch.index_jobs} == {
+        "edge_refs",
+        "edge_endpoints",
+    }
 
 
 def test_link_assistant_turn_creates_next_turn_edge():
