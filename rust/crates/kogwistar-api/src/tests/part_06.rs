@@ -4821,9 +4821,17 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; full Rust-native answer workflow against disposable PostgreSQL"]
     async fn postgres_agentic_answer_workflow_executes_durably_without_python_worker() {
-        use axum::{body::Body, http::Request};
-        use tower::ServiceExt;
+        use std::process::{Command, Stdio};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        struct ServerProcess(std::process::Child);
+
+        impl Drop for ServerProcess {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_answer_e2e_{}", uuid::Uuid::new_v4().simple());
@@ -4897,6 +4905,17 @@
             );
             stream.write_all(wire.as_bytes()).await.unwrap();
         });
+        let embedding_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let embedding_address = embedding_listener.local_addr().unwrap();
+        let embedding_app = axum::Router::new().route(
+            "/api/embeddings",
+            axum::routing::post(|| async {
+                axum::Json(json!({"embedding":[0.6,0.8,0.0]}))
+            }),
+        );
+        let embedding_server = tokio::spawn(async move {
+            axum::serve(embedding_listener, embedding_app).await.unwrap();
+        });
         let chat_provider = crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
             format!("http://{chat_address}/v1/chat/completions"),
             "fixture-answer-model",
@@ -4911,8 +4930,8 @@
             .unwrap()
             .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
                 profile: kogwistar_engine::embedding::EmbeddingProfile {
-                    provider: "test".to_owned(),
-                    model: "fixed-answer-e2e-v1".to_owned(),
+                    provider: "ollama".to_owned(),
+                    model: "fixture-embedding-model".to_owned(),
                     dimension: 3,
                     similarity_metric: "cosine".to_owned(),
                     endpoint_fingerprint: None,
@@ -5227,21 +5246,6 @@
             .await
             .unwrap();
         let http_secret = "rust-only-answer-http-secret";
-        let http_auth = AuthConfig {
-            mode: "jwt".to_owned(),
-            algorithm: Some("HS256".to_owned()),
-            key: Some(http_secret.to_owned()),
-            ..AuthConfig::default()
-        };
-        let http_app = router_with_application(
-            ApiState {
-                health: snapshot(),
-                required_roles: vec!["rw".to_owned()],
-                implementation: ImplementationSnapshot::default(),
-                auth: http_auth,
-            },
-            Arc::new(service.clone()),
-        );
         let now_seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -5257,59 +5261,126 @@
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
         )
         .unwrap();
-        let submit = http_app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/workflow/runs")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(Body::from(
-                        json!({
-                            "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
-                            "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                            "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                                "turn_index":0,"evidence_selector":"bm25","max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
+        let current_exe = std::env::current_exe().unwrap();
+        let server_dir = current_exe
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let server_binary = server_dir.join(if cfg!(windows) {
+            "kogwistar-server.exe"
+        } else {
+            "kogwistar-server"
+        });
+        assert!(
+            server_binary.is_file(),
+            "packaged Rust server binary is missing at {}; build all targets before this ignored integration test",
+            server_binary.display()
+        );
+        let server_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let server_port = server_listener.local_addr().unwrap().port();
+        drop(server_listener);
+        let server_log_path = std::env::temp_dir().join(format!(
+            "kogwistar-answer-e2e-server-{}.log",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let server_log = std::fs::File::create(&server_log_path).unwrap();
+        let mut server_command = Command::new(&server_binary);
+        server_command.env_clear();
+        for name in ["PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE"] {
+            if let Some(value) = std::env::var_os(name) {
+                server_command.env(name, value);
+            }
+        }
+        server_command
+            .env("KOGWISTAR_BACKEND", "pg")
+            .env("KOGWISTAR_PG_DSN", &dsn)
+            .env("KOGWISTAR_PG_SCHEMA_BASE", &schema)
+            .env("KOGWISTAR_SERVER_HOST", "127.0.0.1")
+            .env("KOGWISTAR_SERVER_PORT", server_port.to_string())
+            .env("KOGWISTAR_SERVER_REQUIRED_ROLES", "rw")
+            .env("KOGWISTAR_RUNTIME_NATIVE_INLINE", "true")
+            .env("AUTH_MODE", "jwt")
+            .env("JWT_ALG", "HS256")
+            .env("JWT_SECRET", http_secret)
+            .env("AUTH_DB_URL", format!("sqlite:///{}", auth_path.display()))
+            .env(
+                "KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT",
+                format!("http://{chat_address}/v1/chat/completions"),
             )
+            .env("KOGWISTAR_CHAT_COMPLETIONS_MODEL", "fixture-answer-model")
+            .env("KOGWISTAR_EMBEDDING_PROVIDER", "ollama")
+            .env("KOGWISTAR_EMBEDDING_MODEL", "fixture-embedding-model")
+            .env("KOGWISTAR_EMBEDDING_DIMENSION", "3")
+            .env("KOGWISTAR_EMBEDDING_ENDPOINT", format!("http://{embedding_address}"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(server_log));
+        let mut server_process = ServerProcess(server_command.spawn().unwrap());
+        let base_url = format!("http://127.0.0.1:{server_port}");
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let mut server_ready = false;
+        for _ in 0..100 {
+            if let Some(status) = server_process.0.try_wait().unwrap() {
+                let log = std::fs::read_to_string(&server_log_path).unwrap_or_default();
+                panic!("packaged Rust server exited during startup ({status}): {log}");
+            }
+            if client
+                .get(format!("{base_url}/health"))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success())
+            {
+                server_ready = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(server_ready, "packaged Rust server did not become ready");
+        let submit = client
+            .post(format!("{base_url}/api/workflow/runs"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
+                "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
+                "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
+                    "turn_index":0,"evidence_selector":"bm25","max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
+            }))
+            .send()
             .await
             .unwrap();
+        let submit_status = submit.status();
+        let submit_body = submit.text().await.unwrap();
         assert_eq!(
-            submit.status(),
+            submit_status.as_u16(),
             StatusCode::ACCEPTED.as_u16(),
             "{}",
-            String::from_utf8_lossy(
-                &to_bytes(submit.into_body(), 1_048_576).await.unwrap()
-            )
+            submit_body
         );
         let mut terminal_status = String::new();
-        let mut worker_error = None;
-        for _ in 0..40 {
-            match service.execute_inline_native_work_once().await {
-                Ok(true) => {
-                    terminal_status = service
-                        .store
-                        .get_server_run("rust-only-answer-e2e")
-                        .await
-                        .unwrap()
-                        .unwrap()
-                        .status;
-                    if matches!(
-                        terminal_status.as_str(),
-                        "succeeded" | "failed" | "cancelled"
-                    ) {
-                        break;
-                    }
-                }
-                Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
-                Err(error) => {
-                    worker_error = Some(error.to_string());
-                    break;
-                }
+        let mut run_response = Value::Null;
+        for _ in 0..300 {
+            let response = client
+                .get(format!("{base_url}/api/workflow/runs/rust-only-answer-e2e"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap();
+            let response_status = response.status();
+            let response_body = response.text().await.unwrap();
+            assert!(
+                response_status.is_success(),
+                "run inspection returned {response_status}: {response_body}"
+            );
+            run_response = serde_json::from_str(&response_body).unwrap();
+            terminal_status = run_response["status"].as_str().unwrap_or_default().to_owned();
+            if matches!(terminal_status.as_str(), "succeeded" | "failed" | "cancelled") {
+                break;
             }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
         let run = service
             .store
@@ -5327,11 +5398,15 @@
                 .await
                 .unwrap();
             chat_server.abort();
+            embedding_server.abort();
+            drop(server_process);
+            let server_log = std::fs::read_to_string(&server_log_path).unwrap_or_default();
             panic!(
-                "native workflow did not complete: status={terminal_status:?}, error={worker_error:?}, run={run:#?}, state={state:#?}"
+                "native workflow did not complete through packaged server: status={terminal_status:?}, http_run={run_response:#?}, run={run:#?}, state={state:#?}, server_log={server_log}"
             );
         }
         chat_server.await.unwrap();
+        embedding_server.abort();
         let runtime = service
             .store
             .read_recorded_runtime_state(
@@ -5490,6 +5565,7 @@
                 format!("tok:rust-only-answer-e2e:{token_id}")
             );
         }
+        drop(server_process);
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
@@ -5502,4 +5578,5 @@
         drop(cleanup);
         task.await.unwrap().unwrap();
         let _ = std::fs::remove_file(auth_path);
+        let _ = std::fs::remove_file(server_log_path);
     }
