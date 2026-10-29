@@ -193,7 +193,10 @@ type NativeGraphOperationHandler = dyn Fn(
 type NativeGraphV2OperationHandler = dyn Fn(
         &RuntimeNativeStepRequest,
     ) -> Result<
-        (NativeOperationOutput, kogwistar_contracts::GraphMutationBatchV2),
+        (
+            NativeOperationOutput,
+            Option<kogwistar_contracts::GraphMutationBatchV2>,
+        ),
         RuntimeNativeExecutionError,
     >
     + Send
@@ -297,6 +300,8 @@ impl NativeOperationRegistry {
 
     /// Register a trusted native handler that requests host-derived default
     /// ACL records. The API transaction owns ACL versioning and persistence.
+    /// A state-only result may return `None` when the operation has no graph
+    /// effects; it must not manufacture a no-op graph mutation.
     pub fn register_graph_v2<F>(
         &mut self,
         operation: impl Into<String>,
@@ -307,7 +312,10 @@ impl NativeOperationRegistry {
         F: Fn(
                 &RuntimeNativeStepRequest,
             ) -> Result<
-                (NativeOperationOutput, kogwistar_contracts::GraphMutationBatchV2),
+                (
+                    NativeOperationOutput,
+                    Option<kogwistar_contracts::GraphMutationBatchV2>,
+                ),
                 RuntimeNativeExecutionError,
             > + Send
             + Sync
@@ -474,13 +482,15 @@ pub fn execute_native_step_with_registry(
         }
         RegisteredNativeOperation::GraphV2(handler) => {
             let (output, batch) = handler(request)?;
-            batch
-                .validate()
-                .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
-                    operation: request.operation.clone(),
-                    reason: format!("invalid ACL-aware graph mutation batch: {error}"),
-                })?;
-            (output, None, Some(batch))
+            if let Some(batch) = &batch {
+                batch
+                    .validate()
+                    .map_err(|error| RuntimeNativeExecutionError::OperationFailed {
+                        operation: request.operation.clone(),
+                        reason: format!("invalid ACL-aware graph mutation batch: {error}"),
+                    })?;
+            }
+            (output, None, batch)
         }
     };
     validate_native_output_state(request, &output)?;

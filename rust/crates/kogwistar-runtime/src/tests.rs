@@ -342,7 +342,7 @@
                         state_update: Vec::new(),
                         result: Some(json!({"native": true})),
                     },
-                    batch,
+                    Some(batch),
                 ))
             })
             .unwrap();
@@ -367,6 +367,29 @@
         assert_eq!(batch.contract_version, 2);
         assert_eq!(batch.default_acl.truth_graph, "conversation");
         assert_eq!(batch.mutations[0].record.id, "node-1");
+
+        let mut no_effect_registry = NativeOperationRegistry::default();
+        no_effect_registry
+            .register_graph_v2("app/no-graph-effect", "v1", |_| {
+                Ok((
+                    NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"no_selection": true})),
+                    },
+                    None,
+                ))
+            })
+            .unwrap();
+        let mut no_effect_request = request;
+        no_effect_request.operation = "app/no-graph-effect".to_owned();
+        let no_effect = execute_native_step_with_registry(
+            &no_effect_request,
+            &no_effect_registry,
+        )
+        .unwrap();
+        assert!(no_effect.graph_mutation_batch.is_none());
+        assert!(no_effect.graph_mutation_batch_v2.is_none());
+        assert_eq!(no_effect.result, Some(json!({"no_selection": true})));
     }
 
     #[test]

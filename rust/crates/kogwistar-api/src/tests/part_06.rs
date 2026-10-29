@@ -683,7 +683,7 @@
                         state_update: Vec::new(),
                         result: Some(json!({"native_acl_graph": true})),
                     },
-                    batch,
+                    Some(batch),
                 ))
             })
             .unwrap();
