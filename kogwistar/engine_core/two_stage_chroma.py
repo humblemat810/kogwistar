@@ -862,6 +862,26 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     stale_active.append((entity_kind, entity_id))
 
         for entity_kind, entity_id in stale_active:
+            current = self.engine.indexing.canonical_entity_revision(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            current_fingerprint = self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            staged_row = self._meta().get_stage1_node_projection(
+                self._namespace(), self._stage1_key(entity_kind, entity_id)
+            )
+            staged = dict(staged_row) if isinstance(staged_row, Mapping) else None
+            staged_payload = _mapping(staged.get("payload")) if staged else {}
+            if (
+                current is not None
+                and current.state == "active"
+                and staged is not None
+                and _sequence_number(staged.get("last_authoritative_seq"))
+                == current.revision
+                and staged_payload.get("source_fingerprint") == current_fingerprint
+            ):
+                continue
             if self._restore_current_stage1(
                 entity_kind=entity_kind, entity_id=entity_id
             ):

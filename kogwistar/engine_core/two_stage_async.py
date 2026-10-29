@@ -1061,6 +1061,8 @@ class AsyncChromaTwoStageProjectionAdapter:
         return len(ids), len(updates)
 
     async def reconcile_projection(self, **_: object) -> int:
+        import asyncio
+
         removed = 0
         for row in await self.stage1_query(entity_kind="node") + await self.stage1_query(entity_kind="edge"):
             kind = str(row.get("entity_kind") or "node")
@@ -1084,13 +1086,16 @@ class AsyncChromaTwoStageProjectionAdapter:
                     )
                     removed += 1
                 continue
-            if source_fingerprint and source_fingerprint != await self._fingerprint(kind, entity_id):
-                await self.restore_stage1_from_canonical_event(
+            current_fingerprint = await self._fingerprint(kind, entity_id)
+            if source_fingerprint != current_fingerprint:
+                if await self.restore_stage1_from_canonical_event(
                     entity_kind=kind, entity_id=entity_id
-                )
+                ):
+                    removed += 1
                 continue
             ready = _row_mapping(await self.engine.backend.async_call(
                 kind, "get", ids=[entity_id],
+                where={"namespace": self._namespace()},
                 include=["documents", "metadatas", "embeddings"]
             ))
             metadatas = _object_list(ready.get("metadatas"))
@@ -1098,7 +1103,11 @@ class AsyncChromaTwoStageProjectionAdapter:
             if (
                 _object_list(ready.get("ids"))
                 and isinstance(metadata, dict)
-                and metadata.get("_kogwistar_source_fingerprint") == source_fingerprint
+                and metadata.get("_kogwistar_stage2_ready") is True
+                and metadata.get("_kogwistar_source_fingerprint") == current_fingerprint
+                and metadata.get("_kogwistar_source_revision") == int(
+                    getattr(current, "revision", 0)
+                )
             ):
                 if kind == "edge":
                     documents = _object_list(ready.get("documents"))
@@ -1117,6 +1126,132 @@ class AsyncChromaTwoStageProjectionAdapter:
                     expected_last_authoritative_seq=staged_seq,
                 ):
                     removed += 1
+
+        # Chroma is an eventual projection. Reconcile scoped pages against
+        # canonical event revisions, and defer physical deletes so offsets stay
+        # stable for the duration of each scan.
+        orphaned: list[tuple[str, str, int, str]] = []
+        stale_active: list[tuple[str, str]] = []
+        for entity_kind in ("node", "edge"):
+            observed: list[tuple[str, int, str]] = []
+            offset = 0
+            while True:
+                page = _row_mapping(await self.engine.backend.async_call(
+                    entity_kind,
+                    "get",
+                    limit=500,
+                    offset=offset,
+                    where={"namespace": self._namespace()},
+                    include=["metadatas"],
+                ))
+                ids = [str(value) for value in _object_list(page.get("ids"))]
+                if not ids:
+                    break
+                metadatas = _object_list(page.get("metadatas"))
+                for index, entity_id in enumerate(ids):
+                    metadata = (
+                        _row_mapping(metadatas[index])
+                        if index < len(metadatas)
+                        else {}
+                    )
+                    if metadata.get("_kogwistar_stage2_ready") is not True:
+                        continue
+                    revision = metadata.get("_kogwistar_source_revision")
+                    fingerprint = metadata.get("_kogwistar_source_fingerprint")
+                    if (
+                        not isinstance(revision, int)
+                        or isinstance(revision, bool)
+                        or revision <= 0
+                        or not isinstance(fingerprint, str)
+                        or not fingerprint
+                    ):
+                        continue
+                    observed.append((entity_id, revision, fingerprint))
+                offset += len(ids)
+                if len(ids) < 500:
+                    break
+
+            revisions = await asyncio.to_thread(
+                self.engine.indexing.canonical_revision_payloads,
+                entity_kind=entity_kind,
+                entity_ids=(entity_id for entity_id, _, _ in observed),
+                namespace=self._namespace(),
+            )
+            for entity_id, stored_revision, stored_fingerprint in observed:
+                try:
+                    current = json.loads(revisions[entity_id])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if current.get("source_state") != "active":
+                    orphaned.append(
+                        (entity_kind, entity_id, stored_revision, stored_fingerprint)
+                    )
+                elif (
+                    current.get("canonical_revision") != stored_revision
+                    or current.get("source_fingerprint") != stored_fingerprint
+                ):
+                    stale_active.append((entity_kind, entity_id))
+
+        for entity_kind, entity_id in stale_active:
+            current = await self._current(entity_kind, entity_id)
+            current_fingerprint = await self._fingerprint(entity_kind, entity_id)
+            staged = _optional_row_mapping(
+                await self._meta(
+                    "get_stage1_node_projection",
+                    self._namespace(),
+                    self._key(entity_kind, entity_id),
+                )
+            )
+            staged_payload = _row_mapping(staged.get("payload")) if staged else {}
+            if (
+                current is not None
+                and current.state == "active"
+                and staged is not None
+                and _sequence_number(staged.get("last_authoritative_seq"))
+                == current.revision
+                and staged_payload.get("source_fingerprint") == current_fingerprint
+            ):
+                continue
+            if await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                removed += 1
+
+        for entity_kind, entity_id, revision, fingerprint in orphaned:
+            await self.engine.backend.async_call(
+                entity_kind,
+                "delete",
+                ids=[entity_id],
+                where={
+                    "$and": [
+                        {"namespace": self._namespace()},
+                        {"_kogwistar_stage2_ready": True},
+                        {"_kogwistar_source_revision": revision},
+                        {"_kogwistar_source_fingerprint": fingerprint},
+                    ]
+                },
+            )
+            remaining = _row_mapping(await self.engine.backend.async_call(
+                entity_kind,
+                "get",
+                ids=[entity_id],
+                where={"namespace": self._namespace()},
+                include=["metadatas"],
+            ))
+            if _object_list(remaining.get("ids")):
+                continue
+            if entity_kind == "edge":
+                await self.engine.backend.async_call(
+                    "edge_endpoints",
+                    "delete",
+                    where={
+                        "$and": [
+                            {"edge_id": entity_id},
+                            {"namespace": self._namespace()},
+                        ]
+                    },
+                )
+            removed += 1
         return removed
 
 

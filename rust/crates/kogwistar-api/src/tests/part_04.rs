@@ -1748,7 +1748,8 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let chroma = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..7 {
+            let mut orphan_deleted = false;
+            for _ in 0..9 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1801,12 +1802,21 @@
                             "embedding": [0.2, 0.8]
                         })
                     };
-                    let rows = if body.get("ids").is_some() {
-                        vec![row("orphan", 1)]
-                    } else if body["offset"] == 0 {
-                        vec![row("orphan", 1), row("stale-active", 1)]
+                    let rows = if let Some(ids) = body.get("ids").and_then(Value::as_array) {
+                        ids.iter()
+                            .filter_map(Value::as_str)
+                            .filter(|id| *id != "orphan" || !orphan_deleted)
+                            .map(|id| row(id, 1))
+                            .collect::<Vec<_>>()
                     } else {
-                        Vec::new()
+                        let mut all_rows = Vec::new();
+                        if !orphan_deleted {
+                            all_rows.push(row("orphan", 1));
+                        }
+                        all_rows.push(row("stale-active", 1));
+                        let offset = body["offset"].as_u64().unwrap_or(0) as usize;
+                        let limit = body["limit"].as_u64().unwrap_or(2) as usize;
+                        all_rows.into_iter().skip(offset).take(limit).collect()
                     };
                     json!({
                         "ids": rows.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(),
@@ -1817,6 +1827,9 @@
                 } else {
                     json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
                 };
+                if request_line.contains("/delete") && body["ids"] == json!(["orphan"]) {
+                    orphan_deleted = true;
+                }
                 let response = response.to_string();
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -1920,6 +1933,21 @@
             .unwrap();
 
         assert_eq!(service.reconcile_chroma_projection(namespace, 2).await.unwrap(), 3);
+        let pending_jobs = service
+            .store
+            .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap()
+            .len();
+        assert_eq!(service.reconcile_chroma_projection(namespace, 2).await.unwrap(), 0);
+        assert_eq!(
+            service
+                .store
+                .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+                .unwrap()
+                .len(),
+            pending_jobs,
+            "repeat reconciliation must not enqueue an already-staged current revision"
+        );
         let recovered_stage1 = service
             .store
             .get_stage1_node_projection(namespace, "node:stage1-only-stale")

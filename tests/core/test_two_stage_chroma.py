@@ -251,6 +251,19 @@ def _engine(tmp_path: Path):
     return engine, adapter
 
 
+def _async_chroma_adapter(engine):
+    from kogwistar.engine_core.two_stage_async import AsyncChromaTwoStageProjectionAdapter
+
+    store = engine.backend
+    store.edge_get = lambda **kwargs: {"ids": [], "metadatas": []}
+
+    async def async_call(entity_kind: str, method: str, **kwargs):
+        return getattr(store, f"{entity_kind}_{method}")(**kwargs)
+
+    engine.backend = SimpleNamespace(async_call=async_call)
+    return AsyncChromaTwoStageProjectionAdapter(engine), store
+
+
 @two_stage_case("pending_visibility")
 @two_stage_case("promotion_handoff")
 def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tmp_path):
@@ -860,6 +873,123 @@ async def test_async_chroma_late_delete_after_resurrection_restages_current_revi
     assert "async-delete" not in store.rows
 
 
+@pytest.mark.asyncio
+@pytest.mark.ci
+@two_stage_case("recovery_reconciliation")
+@pytest.mark.parametrize("canonical_state", ["missing", "deleted"])
+async def test_async_chroma_reconcile_removes_orphaned_stage2_by_namespace(
+    tmp_path, canonical_state
+):
+    engine, _ = _engine(tmp_path)
+    adapter, store = _async_chroma_adapter(engine)
+    await adapter.add_node(build_entity_node(node_id="async-orphan", doc_id="d1"))
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-orphan"
+    )
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    store.node_upsert(
+        ids=["async-orphan"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    await adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="async-orphan",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    store.node_upsert(
+        ids=["other-tenant"],
+        documents=["must remain"],
+        metadatas=[{"namespace": "tenant-b", "_kogwistar_stage2_ready": True}],
+        embeddings=[[1.0, 0.0]],
+    )
+    engine.indexing.state = canonical_state
+
+    assert await adapter.reconcile_projection() == 1
+    assert "async-orphan" not in store.rows
+    assert store.rows["other-tenant"]["document"] == "must remain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.ci
+@two_stage_case("recovery_reconciliation")
+async def test_async_chroma_reconcile_restages_stale_stage2_idempotently(tmp_path):
+    engine, _ = _engine(tmp_path)
+    adapter, store = _async_chroma_adapter(engine)
+    await adapter.add_node(build_entity_node(node_id="async-stale", doc_id="d1"))
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stale"
+    )
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    store.node_upsert(
+        ids=["async-stale"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    await adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="async-stale",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    engine.indexing.fingerprint = "fp-2"
+
+    assert await adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stale"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] == "fp-2"
+    job_count = len(engine.indexing.jobs)
+    assert await adapter.reconcile_projection() == 0
+    assert len(engine.indexing.jobs) == job_count
+    assert store.rows["async-stale"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == payload["source_fingerprint"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.ci
+@two_stage_case("recovery_reconciliation")
+async def test_async_chroma_reconcile_restores_stale_stage1_without_stage2(tmp_path):
+    engine, _ = _engine(tmp_path)
+    adapter, store = _async_chroma_adapter(engine)
+    await adapter.add_node(build_entity_node(node_id="async-stage1-only", doc_id="d1"))
+    original = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stage1-only"
+    )
+    original_fingerprint = original["payload"]["source_fingerprint"]
+    engine.indexing.fingerprint = "fp-2"
+
+    assert await adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stage1-only"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] != original_fingerprint
+    assert engine.indexing.jobs[-1]["entity_id"] == "async-stage1-only"
+    assert "async-stage1-only" not in store.rows
+
+
 def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")
@@ -1131,6 +1261,27 @@ def test_chroma_reconcile_restages_active_stale_stage2_rows(tmp_path):
     assert engine.backend.rows["stale-active"]["metadata"][
         "_kogwistar_source_fingerprint"
     ] == "fp-1"
+    job_count = len(engine.indexing.jobs)
+    canonical_payload = engine.indexing.canonical_revision_payload
+
+    def canonical_payload_with_restored_fingerprint(*, entity_kind, entity_id):
+        result = json.loads(
+            canonical_payload(entity_kind=entity_kind, entity_id=entity_id)
+        )
+        current_stage1 = engine.meta_sqlite.get_stage1_node_projection(
+            "tenant-a", f"{entity_kind}:{entity_id}"
+        )
+        if current_stage1 is not None:
+            result["source_fingerprint"] = current_stage1["payload"][
+                "source_fingerprint"
+            ]
+        return json.dumps(result)
+
+    engine.indexing.canonical_revision_payload = (
+        canonical_payload_with_restored_fingerprint
+    )
+    assert adapter.reconcile_projection() == 0
+    assert len(engine.indexing.jobs) == job_count
 
 
 @two_stage_case("recovery_reconciliation")

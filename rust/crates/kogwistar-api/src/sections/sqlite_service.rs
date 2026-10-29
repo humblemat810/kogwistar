@@ -1346,6 +1346,23 @@ impl SqliteRunApplicationService {
                     if projected_revision != current.revision
                         || projected_fingerprint != current_fingerprint
                     {
+                        let stage1 = self
+                            .store
+                            .get_stage1_node_projection(
+                                namespace,
+                                &format!("{kind_name}:{}", current.entity_id),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        if stage1.as_ref().is_some_and(|projection| {
+                            projection.last_authoritative_seq == current.revision
+                                && projection
+                                    .payload
+                                    .get("source_fingerprint")
+                                    .and_then(Value::as_str)
+                                    == Some(current_fingerprint.as_str())
+                        }) {
+                            continue;
+                        }
                         if restored_stage1
                             .iter()
                             .any(|(restored_kind, restored_id)| {
