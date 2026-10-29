@@ -800,6 +800,7 @@ impl ApplicationService for SqliteRunApplicationService {
         }
         name != "workflow.tool_audit"
             && name != "conversation.ask"
+            && name != "conversation.get_transcript"
             && rust_mcp_tool_supported(surface, name)
     }
 

@@ -215,6 +215,27 @@ async fn mcp_handler(
                         }
                     })
             }
+            "conversation.get_transcript" => {
+                let conversation_id = arguments
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                conversation_id
+                    .filter(|_| arguments.len() == 1)
+                    .map(|conversation_id| ApiEffectRequest {
+                        contract_version: 1,
+                        method: "GET".to_owned(),
+                        path_and_query: format!(
+                            "/api/conversations/{}/turns",
+                            percent_encoding::utf8_percent_encode(
+                                conversation_id,
+                                percent_encoding::NON_ALPHANUMERIC
+                            )
+                        ),
+                        body: Vec::new(),
+                        principal: principal.clone(),
+                    })
+            }
             "kg_find_edges" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
@@ -732,6 +753,38 @@ async fn mcp_handler(
         let mut result = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
         if tool_name == "conversation.ask" {
             result = result.get("result").cloned().unwrap_or(result);
+        } else if tool_name == "conversation.get_transcript" {
+            let conversation_id = arguments.get("conversation_id").and_then(Value::as_str);
+            let transcript_id = result.get("conversation_id").and_then(Value::as_str);
+            let turns = result.get("turns").and_then(Value::as_array);
+            let (Some(conversation_id), Some(transcript_id), Some(turns)) =
+                (conversation_id, transcript_id, turns)
+            else {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Invalid transcript response from Rust application service"},
+                }))
+                .into_response();
+            };
+            if conversation_id != transcript_id {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Transcript response conversation does not match request"},
+                }))
+                .into_response();
+            }
+            let mut turns = turns.clone();
+            for turn in &mut turns {
+                if let Some(turn) = turn.as_object_mut() {
+                    turn.remove("schema_version");
+                }
+            }
+            result = json!({
+                "conversation_id": conversation_id,
+                "turns": turns,
+            });
         }
         return Json(mcp_result(id, result)).into_response();
     }

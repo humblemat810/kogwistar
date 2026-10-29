@@ -182,7 +182,10 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
         ),
         "conversation" => matches!(
             name,
-            "conversation.ask" | "conversation.run_status" | "conversation.cancel_run"
+            "conversation.ask"
+                | "conversation.get_transcript"
+                | "conversation.run_status"
+                | "conversation.cancel_run"
         ),
         "root" => matches!(
             name,

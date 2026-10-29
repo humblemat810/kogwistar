@@ -1568,6 +1568,10 @@
         assert!(postgres.supports_mcp_tool("workflow", "workflow.run_status"));
         assert!(postgres.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(postgres.supports_mcp_tool("conversation", "conversation.ask"));
+        assert!(postgres.supports_mcp_tool(
+            "conversation",
+            "conversation.get_transcript"
+        ));
 
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-mcp-authority-{}.sqlite",
@@ -1578,6 +1582,10 @@
         assert!(sqlite.supports_mcp_tool("workflow", "workflow.run_status"));
         assert!(!sqlite.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(!sqlite.supports_mcp_tool("conversation", "conversation.ask"));
+        assert!(!sqlite.supports_mcp_tool(
+            "conversation",
+            "conversation.get_transcript"
+        ));
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations"));
         drop(sqlite);
         remove_test_sqlite(&sqlite_path);
