@@ -767,3 +767,78 @@ async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_availa
         .map_err(backend)?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn unit_of_work_reads_acl_truth_from_its_own_transaction() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("uow_acl_read");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let scope = kogwistar_store::GraphScope {
+        namespace: format!("uow-acl-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let entity_id = "uow-acl-target";
+    let acl_id = "uow-acl-record";
+    let metadata = serde_json::json!({
+        "entity_type": "acl_record",
+        "acl_truth_graph": "conversation",
+        "acl_target_entity_id": entity_id,
+        "acl_target_grain": "node",
+        "acl_target_item_id": "",
+        "acl_version": 1,
+        "acl_mode": "private"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let mutation = kogwistar_store::GraphMutation {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: "uow-acl-event".to_owned(),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": acl_id}),
+        record: kogwistar_store::GraphRecord {
+            id: acl_id.to_owned(),
+            document: Some("ACL record".to_owned()),
+            metadata,
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+
+    let entity_id = entity_id.to_owned();
+    let expected_acl_id = acl_id.to_owned();
+    store
+        .transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_graph_mutation(mutation).await?;
+                let records = uow
+                    .graph_acl_records_for_entities(&scope, "conversation", &[entity_id.to_owned()])
+                    .await?;
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].id, expected_acl_id);
+                assert_eq!(records[0].metadata["acl_version"], 1);
+                Ok(())
+            })
+        })
+        .await?;
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}

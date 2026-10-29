@@ -153,6 +153,25 @@ impl PostgresUnitOfWork<'_> {
             .await
     }
 
+    /// Read ACL truth through this unit of work's transaction. Callers that
+    /// derive graph effects from ACL state must not use the store-level read
+    /// helper, which may observe a different committed snapshot.
+    pub async fn graph_acl_records_for_entities(
+        &self,
+        scope: &GraphScope,
+        truth_graph: &str,
+        entity_ids: &[String],
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        graph_acl_records_for_entities(
+            &self.transaction,
+            &self.tables,
+            scope,
+            truth_graph,
+            entity_ids,
+        )
+        .await
+    }
+
     pub async fn graph_projection_vector_query(
         &self,
         query: GraphProjectionVectorQuery,
