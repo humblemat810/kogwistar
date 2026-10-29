@@ -1582,6 +1582,21 @@ impl PostgresRunApplicationService {
                     )
                 }
             }
+            "send_message" => {
+                if !syscall_allowed_in_namespace(
+                    request,
+                    &self.capabilities,
+                    op,
+                    true,
+                    &["send_message"],
+                    "conversation",
+                ) {
+                    syscall_forbidden(op)
+                } else {
+                    let response = self.send_message_syscall(request, &input).await;
+                    syscall_result(&input.version, op, response)
+                }
+            }
             "mount_memory" => {
                 if !syscall_allowed_in_namespace(
                     request,

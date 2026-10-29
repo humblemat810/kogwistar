@@ -18,6 +18,25 @@ struct RuntimeOwnerBindingV1 {
     admitted_scope: Value,
 }
 
+#[derive(Clone)]
+struct PreparedConversationAdmission {
+    conversation_id: String,
+    owner_id: String,
+    expected_tail_id: Option<String>,
+    scope: GraphScope,
+    acl_principal: GraphAclPrincipal,
+    mutations: Vec<(GraphMutation, kogwistar_contracts::GraphModelEnvelope)>,
+    index_jobs: Vec<NewIndexJob>,
+    actor_user_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeAdmissionOutcome {
+    Queued,
+    QueueFull,
+    ConversationChanged,
+}
+
 fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1, String> {
     let payload = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let input = graph_neighbors_request_from_str(payload).map_err(|error| error.to_string())?;
