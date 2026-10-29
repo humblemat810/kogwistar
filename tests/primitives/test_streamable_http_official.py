@@ -105,25 +105,56 @@ def _preseed_chroma_dir(persist_dir: str):
 
 
 @pytest.mark.asyncio
-async def test_streamable_http_e2e(tmp_path):
+async def test_streamable_http_e2e(monkeypatch, tmp_path):
+    selectors = (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    )
+    for selector in selectors:
+        monkeypatch.setenv(selector, "python")
+
+    from kogwistar._rust_bridge import RustExtensionUnavailableError
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("Python-only MCP smoke loaded Rust")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
     chroma_dir = str(tmp_path / "chroma")
     seed_node_id = _preseed_chroma_dir(chroma_dir)  # seed BEFORE starting the server
 
     port = _free_port()
-    env = {**os.environ, "PYTHONUNBUFFERED": "1", "MCP_CHROMA_DIR": chroma_dir}
+    env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "MCP_CHROMA_DIR": chroma_dir,
+        **{selector: "python" for selector in selectors},
+    }
     creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    python_only_bootstrap = f"""
+import kogwistar._rust_bridge as bridge
+def unavailable():
+    raise RuntimeError("Python-only MCP server attempted to load Rust")
+bridge._load_extension = unavailable
+import uvicorn
+uvicorn.run(
+    "server_mcp:mcp.streamable_http_app",
+    factory=True,
+    host="127.0.0.1",
+    port={port},
+    log_level="warning",
+)
+"""
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as server_log:
         srv = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "uvicorn",
-                "server_mcp:mcp.streamable_http_app",
-                "--factory",
-                "--port",
-                str(port),
-                "--log-level",
-                "warning",
+                "-c",
+                python_only_bootstrap,
             ],
             cwd=str(ROOT),
             env=env,
