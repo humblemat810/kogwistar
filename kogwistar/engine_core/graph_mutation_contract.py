@@ -131,11 +131,61 @@ class GraphMutationBatchPayload(BaseModel):
         return self
 
 
+class GraphDefaultAclIntentV1(BaseModel):
+    """Request host-derived default ACLs for graph entities in an atomic batch."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    truth_graph: str
+
+    @model_validator(mode="after")
+    def validate_truth_graph(self) -> "GraphDefaultAclIntentV1":
+        if not self.truth_graph.strip():
+            raise GraphMutationContractError("default ACL truth_graph must not be empty")
+        return self
+
+
+class GraphMutationBatchV2Payload(BaseModel):
+    """V2 graph batch with transaction-owner-derived default ACL effects."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal[2]
+    atomic: Literal[True]
+    mutations: list[GraphMutationPayload] = Field(min_length=1)
+    index_jobs: list[IndexJobIntentPayload] = Field(default_factory=list)
+    default_acl: GraphDefaultAclIntentV1
+
+    @model_validator(mode="after")
+    def validate_batch(self) -> "GraphMutationBatchV2Payload":
+        first_scope = self.mutations[0].scope
+        if any(mutation.scope != first_scope for mutation in self.mutations[1:]):
+            raise GraphMutationContractError(
+                "all atomic graph mutations must share one graph scope"
+            )
+        if any(job.namespace != first_scope.namespace for job in self.index_jobs):
+            raise GraphMutationContractError(
+                "index job namespace must match graph mutation namespace"
+            )
+        return self
+
+
 def validate_graph_mutation_batch(payload: object) -> GraphMutationBatchPayload:
     """Validate and return an immutable, typed batch for either implementation."""
 
     try:
         return GraphMutationBatchPayload.model_validate(payload)
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, GraphMutationContractError):
+            raise
+        raise GraphMutationContractError(str(exc)) from exc
+
+
+def validate_graph_mutation_batch_v2(payload: object) -> GraphMutationBatchV2Payload:
+    """Validate the ACL-aware contract without changing V1 batch semantics."""
+
+    try:
+        return GraphMutationBatchV2Payload.model_validate(payload)
     except (TypeError, ValueError) as exc:
         if isinstance(exc, GraphMutationContractError):
             raise

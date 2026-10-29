@@ -53,8 +53,8 @@ pub use graph_model::{
     round_trip_raw_graph_model_envelope_from_str, validate_graph_model_family_from_str,
 };
 pub use graph_mutation::{
-    GraphIndexJobV1, GraphMutationBatchV1, GraphMutationV1, GraphMutationValidationError,
-    GraphRecordV1, GraphScopeV1,
+    GraphDefaultAclIntentV1, GraphIndexJobV1, GraphMutationBatchV1, GraphMutationBatchV2,
+    GraphMutationV1, GraphMutationValidationError, GraphRecordV1, GraphScopeV1,
 };
 pub use graph_read::{
     GRAPH_NEIGHBORS_REQUEST_VERSION, GraphNeighborsRequestV1, graph_neighbors_request_from_str,

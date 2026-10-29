@@ -19,6 +19,30 @@ pub struct GraphMutationBatchV1 {
     pub index_jobs: Vec<GraphIndexJobV1>,
 }
 
+/// A host-resolved default-ACL request for a version-2 graph batch.
+///
+/// This is intent only: it carries no principal, owner, ACL version, or
+/// authorization result. The transaction owner derives those from the
+/// authenticated run and current ACL truth at commit time.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphDefaultAclIntentV1 {
+    pub truth_graph: String,
+}
+
+/// ACL-aware extension of the graph mutation contract. Version 1 remains
+/// unchanged; consumers that do not understand this contract must reject it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphMutationBatchV2 {
+    pub contract_version: u32,
+    pub atomic: bool,
+    pub mutations: Vec<GraphMutationV1>,
+    #[serde(default)]
+    pub index_jobs: Vec<GraphIndexJobV1>,
+    pub default_acl: GraphDefaultAclIntentV1,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphIndexJobV1 {
@@ -79,6 +103,10 @@ pub struct GraphRecordV1 {
 pub enum GraphMutationValidationError {
     #[error("graph mutation contract_version must be 1")]
     ContractVersion,
+    #[error("ACL-aware graph mutation contract_version must be 2")]
+    AclBatchContractVersion,
+    #[error("default ACL truth_graph must not be empty")]
+    AclTruthGraphEmpty,
     #[error("graph mutation batch must be atomic")]
     AtomicRequired,
     #[error("graph mutation batch must contain at least one mutation")]
@@ -200,9 +228,28 @@ impl GraphMutationBatchV1 {
     }
 }
 
+impl GraphMutationBatchV2 {
+    /// Validate the graph batch using V1 invariants plus the mandatory ACL intent.
+    pub fn validate(&self) -> Result<(), GraphMutationValidationError> {
+        if self.contract_version != 2 {
+            return Err(GraphMutationValidationError::AclBatchContractVersion);
+        }
+        if self.default_acl.truth_graph.trim().is_empty() {
+            return Err(GraphMutationValidationError::AclTruthGraphEmpty);
+        }
+        GraphMutationBatchV1 {
+            contract_version: 1,
+            atomic: self.atomic,
+            mutations: self.mutations.clone(),
+            index_jobs: self.index_jobs.clone(),
+        }
+        .validate()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{GraphMutationBatchV1, GraphMutationValidationError};
+    use super::{GraphMutationBatchV1, GraphMutationBatchV2, GraphMutationValidationError};
     use serde_json::Value;
 
     #[test]
@@ -313,6 +360,29 @@ mod tests {
         assert_eq!(
             physical_delete.validate(),
             Err(GraphMutationValidationError::MutationOperation)
+        );
+    }
+
+    #[test]
+    fn acl_aware_graph_batch_v2_is_explicit_and_v1_stays_strict() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v2.json"
+        ));
+        let batch: GraphMutationBatchV2 = serde_json::from_str(fixture).unwrap();
+        assert_eq!(batch.validate(), Ok(()));
+        assert_eq!(batch.default_acl.truth_graph, "conversation");
+
+        let v1_error = serde_json::from_str::<GraphMutationBatchV1>(fixture);
+        assert!(
+            v1_error.is_err(),
+            "V1 must not silently accept V2 semantics"
+        );
+        let mut invalid = batch;
+        invalid.default_acl.truth_graph.clear();
+        assert_eq!(
+            invalid.validate(),
+            Err(GraphMutationValidationError::AclTruthGraphEmpty)
         );
     }
 

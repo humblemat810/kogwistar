@@ -9,6 +9,7 @@ import pytest
 from kogwistar.engine_core import (
     GraphMutationContractError,
     validate_graph_mutation_batch,
+    validate_graph_mutation_batch_v2,
 )
 
 
@@ -71,6 +72,39 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     assert batch.atomic is True
     assert batch.mutations[0].record.embedding == [1.0, 0.0]
     assert batch.index_jobs == []
+
+
+def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
+    root = Path(__file__).resolve().parents[2]
+    payload = json.loads(
+        (root / "contracts/golden/graph-mutation-batch-v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    batch = validate_graph_mutation_batch_v2(payload)
+
+    assert batch.contract_version == 2
+    assert batch.default_acl.truth_graph == "conversation"
+    assert batch.mutations[0].record.id == "node-1"
+    with pytest.raises(GraphMutationContractError):
+        validate_graph_mutation_batch(payload)
+
+
+@pytest.mark.parametrize("truth_graph", ["", "   "])
+def test_python_acl_aware_graph_batch_v2_rejects_empty_truth_graph(
+    truth_graph: str,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    payload = json.loads(
+        (root / "contracts/golden/graph-mutation-batch-v2.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    payload["default_acl"]["truth_graph"] = truth_graph
+
+    with pytest.raises(GraphMutationContractError, match="truth_graph"):
+        validate_graph_mutation_batch_v2(payload)
 
 
 @pytest.mark.parametrize("mutation_change", [

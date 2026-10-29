@@ -37,9 +37,12 @@ from kogwistar.engine_core.graph_contracts import (
     graph_model_class_for,
 )
 from kogwistar.engine_core.graph_mutation_contract import (
+    GraphDefaultAclIntentV1,
     GraphMutationBatchPayload,
+    GraphMutationBatchV2Payload,
     GraphMutationContractError,
     validate_graph_mutation_batch,
+    validate_graph_mutation_batch_v2,
 )
 from kogwistar.engine_core.graph_extraction_contract import (
     GRAPH_EXTRACTION_WIRE_VERSION,
@@ -213,7 +216,9 @@ __all__ = [
     "ExtractSubsystem",
     "ExtractionSchemaMode",
     "GraphKnowledgeEngine",
+    "GraphDefaultAclIntentV1",
     "GraphMutationBatchPayload",
+    "GraphMutationBatchV2Payload",
     "GraphMutationContractError",
     "GRAPH_EXTRACTION_WIRE_VERSION",
     "GraphExtractionContractError",
@@ -289,6 +294,7 @@ __all__ = [
     "graph_model_class_for",
     "project_with_manifest",
     "validate_graph_mutation_batch",
+    "validate_graph_mutation_batch_v2",
     "require_acl_protocols",
     "similarity_from_distance",
 ]
