@@ -1560,6 +1560,11 @@
             .unwrap();
         assert_eq!(summary.claimed, 1);
         assert_eq!(summary.projected, 1);
+        assert!(service
+            .store
+            .get_stage1_node_projection(namespace, &format!("node:{entity_id}"))
+            .unwrap()
+            .is_none());
         assert_eq!(
             calls.lock().unwrap().as_slice(),
             &[vec![document.to_owned()]]
@@ -1692,7 +1697,7 @@
         let race_store_for_chroma = race_store.clone();
         let chroma = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1776,16 +1781,25 @@
                         )
                         .unwrap();
                 }
-                let response = body["name"].as_str().map_or_else(
-                    || json!({}).to_string(),
-                    |name| {
-                        json!({
-                            "id": format!("collection-{name}"),
-                            "metadata": {"hnsw:space":"cosine"}
-                        })
-                        .to_string()
-                    },
-                );
+                let response = if request_line.contains("/get") && body["ids"].is_array() {
+                    json!({
+                        "ids":body["ids"],
+                        "documents":[null],
+                        "metadatas":[{}]
+                    })
+                    .to_string()
+                } else {
+                    body["name"].as_str().map_or_else(
+                        || json!({}).to_string(),
+                        |name| {
+                            json!({
+                                "id": format!("collection-{name}"),
+                                "metadata": {"hnsw:space":"cosine"}
+                            })
+                            .to_string()
+                        },
+                    )
+                };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     response.len(),
@@ -2053,12 +2067,44 @@
             .unwrap();
         assert_eq!(pending.len(), 1, "race recovery should coalesce into one job");
         assert_eq!(pending[0].payload_json.as_deref(), Some(latest_payload.as_str()));
+
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: "resurrected-node-delete-after-race".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: entity_id.to_owned(),
+                    op: "DELETE".to_owned(),
+                    payload_json: json!({"id":entity_id}).to_string(),
+                },
+            )
+            .unwrap();
+        let deleted_outcome = kogwistar_store::GraphProjectionWriteStore::delete_graph_projection_record_with_outcome(
+            &fenced,
+            namespace,
+            "node",
+            entity_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            deleted_outcome,
+            kogwistar_store::ProjectionWriteOutcome::Applied
+        );
+        assert!(service
+            .store
+            .get_stage1_node_projection(namespace, &format!("node:{entity_id}"))
+            .unwrap()
+            .is_none());
         let requests = chroma.await.unwrap();
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 5);
         assert!(
             requests.iter().any(|(line, _)| line.contains("/upsert")),
             "the simulated race must occur during a real Chroma mutation"
         );
+        assert!(requests.iter().any(|(line, _)| line.contains("/delete")));
 
         drop(service);
         let _ = std::fs::remove_file(path);

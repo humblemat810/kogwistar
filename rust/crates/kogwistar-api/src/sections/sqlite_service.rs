@@ -136,6 +136,52 @@ impl RevisionFencedChromaProjectionStore {
         Ok(())
     }
 
+    fn clear_stage1_if_current(
+        &self,
+        revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
+    ) -> Result<(), StoreError> {
+        self.queue
+            .clear_stage1_node_projection_if_current(
+                &revision.namespace,
+                &format!("{}:{}", revision.entity_kind, revision.entity_id),
+                revision.revision,
+            )
+            .map_err(|error| StoreError::Backend {
+                backend: "sqlite-chroma-projection".to_owned(),
+                message: error.to_string(),
+            })?;
+        Ok(())
+    }
+
+    fn clear_stage1_through_deleted_revision(
+        &self,
+        revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
+    ) -> Result<(), StoreError> {
+        let key = format!("{}:{}", revision.entity_kind, revision.entity_id);
+        let stage1 = self
+            .queue
+            .get_stage1_node_projection(&revision.namespace, &key)
+            .map_err(|error| StoreError::Backend {
+                backend: "sqlite-chroma-projection".to_owned(),
+                message: error.to_string(),
+            })?;
+        if let Some(stage1) = stage1
+            && stage1.last_authoritative_seq <= revision.revision
+        {
+            self.queue
+                .clear_stage1_node_projection_if_current(
+                    &revision.namespace,
+                    &key,
+                    stage1.last_authoritative_seq,
+                )
+                .map_err(|error| StoreError::Backend {
+                    backend: "sqlite-chroma-projection".to_owned(),
+                    message: error.to_string(),
+                })?;
+        }
+        Ok(())
+    }
+
     fn canonical_fingerprint(
         revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
     ) -> Result<String, StoreError> {
@@ -227,6 +273,7 @@ impl RevisionFencedChromaProjectionStore {
                     && latest.revision == projected_revision
                     && Self::canonical_fingerprint(&latest)? == projected_fingerprint =>
             {
+                self.clear_stage1_if_current(&latest)?;
                 Ok(ProjectionWriteOutcome::Applied)
             }
             Some(latest) => {
@@ -268,11 +315,12 @@ impl RevisionFencedChromaProjectionStore {
             id,
         )
         .await?;
-        if let Some(current) = self.current_revision(namespace, entity_kind, id)?
-            && !current.is_deleted()
-        {
-            self.enqueue_current_revision(&current)?;
-            return Ok((deleted, ProjectionWriteOutcome::Superseded));
+        if let Some(current) = self.current_revision(namespace, entity_kind, id)? {
+            if !current.is_deleted() {
+                self.enqueue_current_revision(&current)?;
+                return Ok((deleted, ProjectionWriteOutcome::Superseded));
+            }
+            self.clear_stage1_through_deleted_revision(&current)?;
         }
         Ok((deleted, ProjectionWriteOutcome::Applied))
     }
