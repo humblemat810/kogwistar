@@ -492,7 +492,8 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("conversation", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(conversation_supported, 2);
+        assert_eq!(conversation_supported, 3);
+        assert!(rust_mcp_tool_supported("conversation", "conversation.ask"));
         let workflow = contract["surfaces"]["workflow"].as_array().unwrap();
         let supported = workflow
             .iter()

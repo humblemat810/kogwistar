@@ -2747,6 +2747,10 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
     async fn postgres_send_message_admission_is_one_graph_run_event_lane_transaction() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_send_message_{}", uuid::Uuid::new_v4().simple());
@@ -2987,11 +2991,72 @@
         drop(cleanup_client);
         connection_task.await.unwrap().unwrap();
 
-        let accepted = service
-            .execute(make_request(Some("conversation-owner")))
-            .await;
-        assert_eq!(accepted.status, StatusCode::OK.as_u16());
-        let response: Value = serde_json::from_slice(&accepted.body).unwrap();
+        let http_secret = "send-message-mcp-test-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["rw".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(http_secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let now_seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"conversation-owner@example.test",
+                "user_id":"conversation-owner",
+                "actor_id":"conversation-owner",
+                "role":"rw",
+                "roles":["rw"],
+                "ns":"conversation",
+                "storage_ns":"alpha",
+                "capabilities":["send_message"],
+                "exp":now_seconds + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+        )
+        .unwrap();
+        let accepted = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"send-message-ask",
+                            "method":"tools/call",
+                            "params":{
+                                "name":"conversation.ask",
+                                "arguments":{
+                                    "conversation_id":conversation_id,
+                                    "text":"A user question",
+                                    "user_id":"conversation-owner",
+                                    "workflow_id":"send-message-admission-test"
+                                }
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let accepted_body = to_bytes(accepted.into_body(), 65_536).await.unwrap();
+        let response: Value = serde_json::from_slice(&accepted_body).unwrap();
         let run_id = response["result"]["run_id"].as_str().unwrap();
         let turn_id = response["result"]["turn_node_id"].as_str().unwrap();
         let nodes = service
@@ -3040,7 +3105,7 @@
         let events = service.store.list_server_run_events(run_id, 0, 10).await.unwrap();
         assert_eq!(events.len(), 1);
         let created: Value = serde_json::from_str(&events[0].payload_json).unwrap();
-        assert_eq!(created["admission_actor"]["user_id"], "request-actor");
+        assert_eq!(created["admission_actor"]["user_id"], "conversation-owner");
         let lanes = service
             .store
             .list_projected_lane_messages(LaneMessageFilter {

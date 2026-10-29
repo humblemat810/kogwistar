@@ -798,7 +798,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
                 );
         }
-        name != "workflow.tool_audit" && rust_mcp_tool_supported(surface, name)
+        name != "workflow.tool_audit"
+            && name != "conversation.ask"
+            && rust_mcp_tool_supported(surface, name)
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {

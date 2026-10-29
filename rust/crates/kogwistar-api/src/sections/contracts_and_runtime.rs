@@ -180,7 +180,10 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.tool_audit"
                 | "workflow.visibility_snapshot"
         ),
-        "conversation" => matches!(name, "conversation.run_status" | "conversation.cancel_run"),
+        "conversation" => matches!(
+            name,
+            "conversation.ask" | "conversation.run_status" | "conversation.cancel_run"
+        ),
         "root" => matches!(
             name,
             "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"

@@ -187,6 +187,127 @@
     }
 
     #[tokio::test]
+    async fn mcp_conversation_ask_uses_authorized_send_message_syscall() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        #[derive(Clone)]
+        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
+
+        impl ApplicationService for RequestRecorder {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "conversation" && name == "conversation.ask"
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let seen = Arc::clone(&self.0);
+                Box::pin(async move {
+                    *seen.lock().unwrap() = Some(request);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: br#"{"version":"v1","op":"send_message","status":"ok","result":{"run_id":"run-1","turn_node_id":"turn-1"}}"#.to_vec(),
+                    }
+                })
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(RequestRecorder(Arc::clone(&seen))),
+        );
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"list-1","method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let listed_body = to_bytes(listed.into_body(), 4096).await.unwrap();
+        let listed_value: Value = serde_json::from_slice(&listed_body).unwrap();
+        assert_eq!(
+            listed_value["result"]["tools"][0]["name"],
+            "conversation.ask"
+        );
+
+        let malformed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"ask-invalid","method":"tools/call","params":{"name":"conversation.ask","arguments":{"conversation_id":"conv-1","text":"hello","unexpected":true}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let malformed_body = to_bytes(malformed.into_body(), 4096).await.unwrap();
+        let malformed_value: Value = serde_json::from_slice(&malformed_body).unwrap();
+        assert_eq!(malformed_value["error"]["code"], -32602);
+        assert!(seen.lock().unwrap().is_none());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"ask-1","method":"tools/call","params":{"name":"conversation.ask","arguments":{"conversation_id":"conv-1","text":"hello","user_id":"alice"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"], json!({"run_id":"run-1","turn_node_id":"turn-1"}));
+
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path_and_query, "/api/syscall/v1/send_message");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            json!({
+                "version":"v1",
+                "op":"send_message",
+                "args": {
+                    "conversation_id":"conv-1",
+                    "text":"hello",
+                    "user_id":"alice",
+                    "workflow_id":"agentic_answering.v2"
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn sqlite_run_service_handles_get_events_and_cancel() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;

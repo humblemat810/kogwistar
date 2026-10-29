@@ -164,6 +164,57 @@ async fn mcp_handler(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let request = match tool_name {
+            "conversation.ask" => {
+                let conversation_id = arguments
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let text = arguments
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty());
+                let user_id_valid = arguments
+                    .get("user_id")
+                    .is_none_or(|value| value.is_null() || value.is_string());
+                let workflow_id = arguments
+                    .get("workflow_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("agentic_answering.v2");
+                let known_arguments = ["conversation_id", "text", "user_id", "workflow_id"];
+                conversation_id
+                    .zip(text)
+                    .filter(|_| {
+                        user_id_valid
+                            && arguments
+                                .get("workflow_id")
+                                .is_none_or(Value::is_string)
+                            && arguments
+                                .keys()
+                                .all(|argument| known_arguments.contains(&argument.as_str()))
+                    })
+                    .map(|(conversation_id, text)| {
+                        let mut syscall_args = json!({
+                            "conversation_id": conversation_id,
+                            "text": text,
+                            "workflow_id": workflow_id,
+                        });
+                        if let Some(user_id) = arguments.get("user_id") {
+                            syscall_args["user_id"] = user_id.clone();
+                        }
+                        ApiEffectRequest {
+                            contract_version: 1,
+                            method: "POST".to_owned(),
+                            path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                            body: serde_json::to_vec(&json!({
+                                "version": "v1",
+                                "op": "send_message",
+                                "args": syscall_args,
+                            }))
+                            .expect("conversation ask syscall serializes"),
+                            principal: principal.clone(),
+                        }
+                    })
+            }
             "kg_find_edges" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
@@ -678,7 +729,10 @@ async fn mcp_handler(
             }))
             .into_response();
         }
-        let result = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
+        let mut result = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
+        if tool_name == "conversation.ask" {
+            result = result.get("result").cloned().unwrap_or(result);
+        }
         return Json(mcp_result(id, result)).into_response();
     }
     (
