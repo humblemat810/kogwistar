@@ -7,6 +7,7 @@ from typing import Protocol
 
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
+from ..implementation_selection import assert_transaction_entry_allowed
 from .storage_backend import (
     AsyncTwoStageProjectionAdapter,
     AtomicMutationCapability,
@@ -24,6 +25,7 @@ _VECTOR_COLLECTION_NAMES = (
     "node_docs",
 )
 _CHROMA_JSON_METADATA_PREFIX = "__kogwistar_json_v1__:"
+_CHROMA_MUTATION_METHODS = frozenset({"add", "upsert", "update", "delete"})
 
 
 class ChromaCollection(Protocol):
@@ -330,6 +332,8 @@ class ChromaBackend:
             raise KeyError(f"Unknown collection_key={key!r}") from e
 
     def call(self, collection_key: str, method: str, **kwargs: object) -> object:
+        if method in _CHROMA_MUTATION_METHODS:
+            assert_transaction_entry_allowed()
         coll = self._c(collection_key)
         fn = getattr(coll, method)
         result = run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs)))
@@ -516,6 +520,8 @@ class AsyncChromaBackend(ChromaBackend):
     is_async_backend = True
 
     async def async_call(self, collection_key: str, method: str, **kwargs: object) -> object:
+        if method in _CHROMA_MUTATION_METHODS:
+            assert_transaction_entry_allowed()
         coll = self._c(collection_key)
         result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
         if hasattr(result, "__await__"):

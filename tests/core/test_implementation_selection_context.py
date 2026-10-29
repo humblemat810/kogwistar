@@ -901,6 +901,44 @@ def test_backend_collection_mutations_cannot_run_from_worker_callback() -> None:
     assert memory.node.count() == 0
 
 
+def test_chroma_collection_mutations_cannot_run_from_worker_callback() -> None:
+    from kogwistar.engine_core.chroma_backend import (
+        AsyncChromaBackend,
+        ChromaBackend,
+    )
+
+    calls: list[dict[str, object]] = []
+
+    async def upsert(**kwargs: object) -> None:
+        calls.append(kwargs)
+
+    collection = SimpleNamespace(
+        upsert=upsert,
+        get=lambda **_kwargs: {"ids": []},
+    )
+    backend = object.__new__(ChromaBackend)
+    backend._collections = {"node": collection}
+    async_backend = object.__new__(AsyncChromaBackend)
+    async_backend._collections = {"node": collection}
+
+    backend.call("node", "upsert", ids=["outside-callback"])
+    assert len(calls) == 1
+    assert backend.call("node", "get")["ids"] == []  # type: ignore[index]
+
+    expected = "transaction authority cannot be opened from a worker callback"
+    with callback_execution_scope():
+        with pytest.raises(RuntimeError, match=expected):
+            backend.call("node", "upsert", ids=["blocked"])
+
+        async def attempt_async_write() -> None:
+            with pytest.raises(RuntimeError, match=expected):
+                await async_backend.async_call("node", "upsert", ids=["blocked"])
+
+        asyncio.run(attempt_async_write())
+
+    assert len(calls) == 1
+
+
 def test_native_store_bridges_cannot_be_called_from_worker_callback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
