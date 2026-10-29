@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 pub(crate) fn registry() -> Result<NativeOperationRegistry, NativeOperationRegistrationError> {
     let mut registry = crate::native_memory_pin::registry()?;
+    crate::native_answer_lifecycle::register(&mut registry)?;
     crate::native_answer_generation::register(&mut registry)?;
     crate::native_answer_prepare::register(&mut registry)?;
     crate::native_answer_state::register(&mut registry)?;

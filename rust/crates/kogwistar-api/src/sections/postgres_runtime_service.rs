@@ -1226,6 +1226,64 @@ impl PostgresRunApplicationService {
         native_result_from_request(handoff, request, &self.native_operations)
     }
 
+    async fn execute_native_citation_repair(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        mut request: kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<RuntimeWorkerResultRequest, String> {
+        let needs_repair = crate::native_answer_generation::answer_needs_citation_repair(&request)
+            .map_err(|_| "native answer citations could not be validated".to_owned())?;
+        if needs_repair
+            && let Some(provider) = self.chat_completion_provider.as_ref()
+        {
+            let runtime = request
+                .state
+                .get("_rt")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "native citation repair requires runtime context".to_owned())?;
+            let evidence_pack = runtime
+                .get("evidence_pack")
+                .ok_or_else(|| "native citation repair requires evidence".to_owned())?;
+            let answer = request
+                .state
+                .get("answer")
+                .ok_or_else(|| "native citation repair requires an answer".to_owned())?;
+            let question = request
+                .state
+                .get("question")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "native citation repair requires a question".to_owned())?;
+            let system_prompt = request
+                .state
+                .get("system_prompt")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "native citation repair requires a system prompt".to_owned())?;
+            let used_node_ids = request
+                .state
+                .get("used_node_ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "native citation repair requires selected evidence IDs".to_owned())?
+                .iter()
+                .map(|id| {
+                    id.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "selected evidence IDs must be strings".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let repaired = provider
+                .repair(system_prompt, question, evidence_pack, &used_node_ids, answer)
+                .await?;
+            request
+                .ephemeral_context
+                .insert("repaired_answer".to_owned(), repaired);
+            request.ephemeral_context.insert(
+                "provider_model".to_owned(),
+                json!(provider.model()),
+            );
+        }
+        native_result_from_request(handoff, request, &self.native_operations)
+    }
+
     /// Run one bounded batch of durable embedding jobs entirely through the
     /// Rust-owned PostgreSQL queue, canonical projection reads, and promotion
     /// transaction. Other index-job kinds remain unclaimed.

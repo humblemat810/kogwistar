@@ -3026,14 +3026,11 @@
                         .node_executor_targets
                         .insert(node_id, "rust-native".to_owned());
                 }
-                assert!(
-                    !answer_workflow_plan_is_executable(
-                        workflow_id,
-                        &rust_only_plan,
-                        &native_operations
-                    ),
-                    "Rust-only admission must fail until every node operation is registered natively"
-                );
+                assert!(answer_workflow_plan_is_executable(
+                    workflow_id,
+                    &rust_only_plan,
+                    &native_operations
+                ), "the complete answer workflow must support an all-Rust path");
 
                 let mut native_answer_plan = mixed_executor_plan.clone();
                 native_answer_plan.node_executor_targets.insert(
@@ -3046,10 +3043,21 @@
                     &native_operations
                 ));
 
-                let mut unsupported_native_plan = mixed_executor_plan.clone();
-                unsupported_native_plan.node_executor_targets.insert(
+                let mut native_repair_plan = mixed_executor_plan.clone();
+                native_repair_plan.node_executor_targets.insert(
                     "node-aa_validate_or_repair_citations".to_owned(),
                     "rust-native".to_owned(),
+                );
+                assert!(answer_workflow_plan_is_executable(
+                    workflow_id,
+                    &native_repair_plan,
+                    &native_operations
+                ));
+
+                let mut unsupported_native_plan = mixed_executor_plan.clone();
+                unsupported_native_plan.node_ops.insert(
+                    "node-aa_validate_or_repair_citations".to_owned(),
+                    "unregistered_citation_operation".to_owned(),
                 );
                 assert!(!answer_workflow_plan_is_executable(
                     workflow_id,

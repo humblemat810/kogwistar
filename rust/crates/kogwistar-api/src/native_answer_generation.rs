@@ -33,7 +33,212 @@ pub(crate) fn register(
         "aa_generate_answer_with_citations",
         "v1",
         execute_generate_answer,
+    )?;
+    registry.register(
+        "aa_validate_or_repair_citations",
+        "v1",
+        execute_validate_or_repair_citations,
     )
+}
+
+pub(crate) fn answer_needs_citation_repair(
+    request: &RuntimeNativeStepRequest,
+) -> Result<bool, RuntimeNativeExecutionError> {
+    let evidence_pack = request
+        .state
+        .get("_rt")
+        .and_then(Value::as_object)
+        .and_then(|runtime| runtime.get("evidence_pack"))
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "_rt.evidence_pack",
+            reason: "materialized evidence pack is required",
+        })?;
+    let used_node_ids = selected_node_ids(request)?;
+    let answer: AnswerWithCitations =
+        serde_json::from_value(request.state.get("answer").cloned().ok_or(
+            RuntimeNativeExecutionError::InvalidState {
+                field: "answer",
+                reason: "generated answer is required",
+            },
+        )?)
+        .map_err(|_| RuntimeNativeExecutionError::InvalidState {
+            field: "answer",
+            reason: "answer does not match the structured answer contract",
+        })?;
+    Ok(!answer_citations_are_valid(
+        &answer,
+        evidence_pack,
+        &used_node_ids,
+    ))
+}
+
+fn execute_validate_or_repair_citations(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let needs_repair = answer_needs_citation_repair(request)?;
+    let original: AnswerWithCitations =
+        serde_json::from_value(request.state.get("answer").cloned().ok_or(
+            RuntimeNativeExecutionError::InvalidState {
+                field: "answer",
+                reason: "generated answer is required",
+            },
+        )?)
+        .map_err(|_| RuntimeNativeExecutionError::InvalidState {
+            field: "answer",
+            reason: "answer does not match the structured answer contract",
+        })?;
+    let repaired = if needs_repair {
+        request
+            .ephemeral_context
+            .get("repaired_answer")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<AnswerWithCitations>(value).ok())
+    } else {
+        None
+    };
+    let evidence_pack = request
+        .state
+        .get("_rt")
+        .and_then(Value::as_object)
+        .and_then(|runtime| runtime.get("evidence_pack"))
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "_rt.evidence_pack",
+            reason: "materialized evidence pack is required",
+        })?;
+    let selected = selected_node_ids(request)?;
+    let repaired_is_valid = repaired
+        .as_ref()
+        .is_some_and(|answer| answer_citations_are_valid(answer, evidence_pack, &selected));
+    let answer = if let Some(repaired) = repaired.filter(|_| repaired_is_valid) {
+        serde_json::to_value(repaired)
+    } else if needs_repair {
+        let mut stripped = original;
+        for claim in &mut stripped.claims {
+            claim.citations.clear();
+        }
+        stripped.reasoning.push_str(" | citation_repair_failed");
+        serde_json::to_value(stripped)
+    } else {
+        serde_json::to_value(original)
+    }
+    .map_err(|_| RuntimeNativeExecutionError::InvalidState {
+        field: "answer",
+        reason: "answer could not be serialized",
+    })?;
+    let mut runtime = request
+        .state
+        .get("_rt")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if needs_repair {
+        if let Some(model) = request
+            .ephemeral_context
+            .get("provider_model")
+            .and_then(Value::as_str)
+        {
+            runtime.insert(
+                "answer_repair_provider".to_owned(),
+                json!({"protocol": "openai_compatible_chat_completions", "model": model}),
+            );
+        }
+    }
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!("aa_validate_or_repair_citations"));
+    let update = serde_json::Map::from_iter([
+        ("answer".to_owned(), answer.clone()),
+        ("_rt".to_owned(), Value::Object(runtime)),
+    ]);
+    let auxiliary = serde_json::Map::from_iter([(
+        "op_log".to_owned(),
+        json!("aa_validate_or_repair_citations"),
+    )]);
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair(("a".to_owned(), auxiliary)),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn selected_node_ids(
+    request: &RuntimeNativeStepRequest,
+) -> Result<BTreeSet<String>, RuntimeNativeExecutionError> {
+    request
+        .state
+        .get("used_node_ids")
+        .and_then(Value::as_array)
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "used_node_ids",
+            reason: "selected evidence IDs are required",
+        })?
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .map(str::to_owned)
+                .ok_or(RuntimeNativeExecutionError::InvalidState {
+                    field: "used_node_ids",
+                    reason: "selected evidence IDs must be strings",
+                })
+        })
+        .collect()
+}
+
+fn answer_citations_are_valid(
+    answer: &AnswerWithCitations,
+    evidence_pack: &Value,
+    used_node_ids: &BTreeSet<String>,
+) -> bool {
+    for claim in &answer.claims {
+        for citation in &claim.citations {
+            if !used_node_ids.contains(&citation.source_node_id) {
+                return false;
+            }
+            let Some(node) = evidence_pack
+                .get("nodes")
+                .and_then(Value::as_array)
+                .and_then(|nodes| {
+                    nodes.iter().find(|node| {
+                        node.get("node_id").and_then(Value::as_str)
+                            == Some(citation.source_node_id.as_str())
+                    })
+                })
+            else {
+                return false;
+            };
+            let Some(span) = node
+                .get("mentions")
+                .and_then(Value::as_array)
+                .and_then(|mentions| mentions.get(citation.mention_index))
+                .and_then(|mention| mention.get("spans"))
+                .and_then(Value::as_array)
+                .and_then(|spans| spans.get(citation.span_index))
+            else {
+                return false;
+            };
+            if span
+                .get("excerpt")
+                .and_then(Value::as_str)
+                .map_or(true, |excerpt| excerpt.trim().is_empty())
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn execute_generate_answer(
@@ -192,21 +397,82 @@ impl OpenAiCompatibleChatConfig {
         used_node_ids: &[String],
     ) -> Result<Value, String> {
         let (evidence_text, aliases) = evidence_text_and_aliases(evidence_pack)?;
+        let user_prompt = format!(
+            concat!(
+                "Answer the question using only the supplied evidence for factual claims. ",
+                "The reasoning field must be a brief rationale summary, not private chain-of-thought. ",
+                "Return the required JSON object. Each citation must reference an exact ",
+                "node alias and mention/span index from the evidence.\n\nQuestion:\n",
+                "{}\n\nEvidence:\n{}"
+            ),
+            question, evidence_text
+        );
+        for _ in 0..3 {
+            if let Some(answer) = self.complete_answer(system_prompt, &user_prompt).await? {
+                return restore_answer_aliases(answer, &aliases, used_node_ids);
+            }
+        }
+        Err(
+            "structured chat provider did not return a valid answer object after bounded retries"
+                .to_owned(),
+        )
+    }
+
+    pub(crate) async fn repair(
+        &self,
+        system_prompt: &str,
+        question: &str,
+        evidence_pack: &Value,
+        used_node_ids: &[String],
+        original_answer: &Value,
+    ) -> Result<Value, String> {
+        let (evidence_text, aliases) = evidence_text_and_aliases(evidence_pack)?;
+        let original: AnswerWithCitations = serde_json::from_value(original_answer.clone())
+            .map_err(|_| "answer to repair does not match the answer contract".to_owned())?;
+        let user_prompt = format!(
+            concat!(
+                "Repair the answer's citations using only the supplied evidence. Preserve its ",
+                "answer text and claims where possible. The reasoning field must be a brief ",
+                "rationale summary, not private chain-of-thought. Every citation must use a node ",
+                "alias and exact mention/span index from the evidence.\n\nQuestion:\n{}",
+                "\n\nEvidence:\n{}\n\nAnswer to repair:\n{}"
+            ),
+            question, evidence_text, original.text
+        );
+        let selected = used_node_ids.iter().cloned().collect::<BTreeSet<_>>();
+        for _ in 0..3 {
+            if let Some(repaired) = self.complete_answer(system_prompt, &user_prompt).await? {
+                let Ok(restored) = restore_answer_aliases(repaired, &aliases, used_node_ids) else {
+                    continue;
+                };
+                let Ok(restored) = serde_json::from_value::<AnswerWithCitations>(restored) else {
+                    continue;
+                };
+                if answer_citations_are_valid(&restored, evidence_pack, &selected) {
+                    return serde_json::to_value(restored)
+                        .map_err(|_| "could not encode repaired answer".to_owned());
+                }
+            }
+        }
+        let mut stripped = original;
+        for claim in &mut stripped.claims {
+            claim.citations.clear();
+        }
+        stripped.reasoning.push_str(" | citation_repair_failed");
+        serde_json::to_value(stripped)
+            .map_err(|_| "could not encode answer after failed citation repair".to_owned())
+    }
+
+    async fn complete_answer(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<Option<AnswerWithCitations>, String> {
         let request_body = json!({
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": format!(
-                    concat!(
-                        "Answer the question using only the supplied evidence for factual claims. ",
-                        "The reasoning field must be a brief rationale summary, not private chain-of-thought. ",
-                        "Return the required JSON object. Each citation must reference an exact ",
-                        "node alias and mention/span index from the evidence.\n\nQuestion:\n",
-                        "{}\n\nEvidence:\n{}"
-                    ),
-                    question,
-                    evidence_text
-                )}
+                {"role": "user", "content": user_prompt}
             ],
             "response_format": {
                 "type": "json_schema",
@@ -222,7 +488,6 @@ impl OpenAiCompatibleChatConfig {
         if request_bytes.len() > MAX_REQUEST_BYTES {
             return Err("structured chat request exceeds the configured size limit".to_owned());
         }
-
         let client = reqwest::Client::builder()
             .timeout(self.timeout)
             .build()
@@ -265,17 +530,18 @@ impl OpenAiCompatibleChatConfig {
             }
             response_bytes.extend_from_slice(&chunk);
         }
-        let response: ChatCompletionResponse = serde_json::from_slice(&response_bytes)
-            .map_err(|_| "structured chat provider returned invalid JSON".to_owned())?;
-        let content = response
+        let Ok(response) = serde_json::from_slice::<ChatCompletionResponse>(&response_bytes) else {
+            return Ok(None);
+        };
+        let Some(content) = response
             .choices
             .into_iter()
             .next()
             .and_then(|choice| choice.message.content)
-            .ok_or_else(|| "structured chat provider returned no message content".to_owned())?;
-        let answer: AnswerWithCitations = serde_json::from_str(&content)
-            .map_err(|_| "structured chat provider returned an invalid answer object".to_owned())?;
-        restore_answer_aliases(answer, &aliases, used_node_ids)
+        else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_str(&content).ok())
     }
 }
 
@@ -659,6 +925,79 @@ mod tests {
         assert_eq!(
             success.result.unwrap()["final_state"]["answer"]["text"],
             "Answer"
+        );
+    }
+
+    #[test]
+    fn native_citation_repair_revalidates_repaired_span_coordinates() {
+        let mut registry = NativeOperationRegistry::default();
+        register(&mut registry).unwrap();
+        let mut request = RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "aa_validate_or_repair_citations".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-1".to_owned(),
+            workflow_id: "agentic_answering.v2".to_owned(),
+            node_id: "repair".to_owned(),
+            conversation_id: "conv-1".to_owned(),
+            turn_node_id: None,
+            token_id: "token-1".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: serde_json::from_value(json!({
+                "used_node_ids": ["allowed-node"],
+                "answer": {
+                    "text": "Answer", "reasoning": "", "claims": [{
+                        "claim": "Fact", "citations": [{
+                            "source_node_id": "allowed-node", "mention_index": 8, "span_index": 0
+                        }]
+                    }]
+                },
+                "_rt": {"evidence_pack": {"nodes": [{
+                    "node_id": "allowed-node",
+                    "mentions": [{"spans": [{"excerpt": "Grounded"}]}]
+                }]}}
+            }))
+            .unwrap(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: serde_json::from_value(json!({
+                "repaired_answer": {
+                    "text": "Answer", "reasoning": "", "claims": [{
+                        "claim": "Fact", "citations": [{
+                            "source_node_id": "allowed-node", "mention_index": 4, "span_index": 0
+                        }]
+                    }]
+                }
+            }))
+            .unwrap(),
+        };
+        let rejected =
+            kogwistar_runtime::execute_native_step_with_registry(&request, &registry).unwrap();
+        let rejected_answer = &rejected.result.unwrap()["final_state"]["answer"];
+        assert_eq!(rejected_answer["text"], "Answer");
+        assert_eq!(rejected_answer["claims"][0]["citations"], json!([]));
+        assert!(
+            rejected_answer["reasoning"]
+                .as_str()
+                .unwrap()
+                .contains("citation_repair_failed")
+        );
+
+        request.ephemeral_context.insert(
+            "repaired_answer".to_owned(),
+            json!({
+                "text": "Answer", "reasoning": "", "claims": [{
+                    "claim": "Fact", "citations": [{
+                        "source_node_id": "allowed-node", "mention_index": 0, "span_index": 0
+                    }]
+                }]
+            }),
+        );
+        let accepted =
+            kogwistar_runtime::execute_native_step_with_registry(&request, &registry).unwrap();
+        assert_eq!(
+            accepted.result.unwrap()["final_state"]["answer"]["claims"][0]["citations"][0]["source_node_id"],
+            "allowed-node"
         );
     }
 }

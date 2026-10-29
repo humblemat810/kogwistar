@@ -870,6 +870,89 @@ def test_aa_generate_answer_with_citations_writes_answer():
     assert state.get("answer", {}).get("text") == "ok"
 
 
+def test_citation_repair_retries_invalid_span_and_restores_valid_node_alias():
+    from kogwistar.conversation.agentic_answering import (
+        AgenticAnsweringAgent,
+        AnswerWithCitations,
+    )
+
+    responses = iter(
+        [
+            {
+                "text": "Answer",
+                "reasoning": "",
+                "claims": [{
+                    "claim": "Fact",
+                    "citations": [{
+                        "source_node_id": "N1",
+                        "mention_index": 3,
+                        "span_index": 0,
+                    }],
+                }],
+            },
+            {
+                "text": "Answer",
+                "reasoning": "",
+                "claims": [{
+                    "claim": "Fact",
+                    "citations": [{
+                        "source_node_id": "N1",
+                        "mention_index": 0,
+                        "span_index": 0,
+                    }],
+                }],
+            },
+        ]
+    )
+    calls = 0
+
+    def repair_citations(_request):
+        nonlocal calls
+        calls += 1
+        return RepairCitationsTaskResult(
+            answer_payload=next(responses), raw=None, parsing_error=None
+        )
+
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+    agent.max_retry = 2
+    agent.llm_tasks = SimpleNamespace(repair_citations=repair_citations)
+    evidence_pack = {
+        "nodes": [{
+            "node_id": "node-1",
+            "mentions": [{"spans": [{"excerpt": "grounded excerpt"}]}],
+        }],
+        "edges": [],
+    }
+
+    result = AgenticAnsweringAgent._validate_or_repair_citations(
+        agent,
+        system_prompt="system",
+        question="question",
+        evidence_pack=evidence_pack,
+        used_node_ids=["node-1"],
+        answer={
+            "text": "Answer",
+            "reasoning": "",
+            "claims": [{
+                "claim": "Fact",
+                "citations": [{
+                    "source_node_id": "node-1",
+                    "mention_index": 7,
+                    "span_index": 0,
+                }],
+            }],
+        },
+        answer_in_model=AnswerWithCitations,
+    )
+
+    assert calls == 2
+    assert result["claims"][0]["citations"] == [{
+        "source_node_id": "node-1",
+        "mention_index": 0,
+        "span_index": 0,
+    }]
+
+
 def test_aa_evaluate_answer_writes_evaluation():
     agent = _StubAgent()
     ce = _StubConversationEngine(last_user_text="Q")

@@ -1423,12 +1423,21 @@ class AgenticAnsweringAgent:
             if parsed is None:
                 continue
             repaired = AnswerWithCitations.model_validate(parsed)
-            # If still bad, return repaired anyway (best effort) to avoid looping.
-            return _restore_citation_node_ids(
-                repaired.model_dump(mode="python"),
-                model=answer_in_model,
-                book=alias_book,
-            )
+            try:
+                restored = _restore_citation_node_ids(
+                    repaired.model_dump(mode="python"),
+                    model=answer_in_model,
+                    book=alias_book,
+                )
+                restored_answer = answer_in_model.model_validate(restored)
+            except (KeyError, ValueError):
+                continue
+            if all(
+                is_valid_ref(reference)
+                for claim in restored_answer.claims
+                for reference in claim.citations
+            ):
+                return restored_answer.model_dump()
 
         # If repair cannot parse, fall back to the original (but mark citations empty).
         stripped = answer_validated.model_copy(deep=True)
