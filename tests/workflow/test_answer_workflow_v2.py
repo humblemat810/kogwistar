@@ -28,6 +28,27 @@ from kogwistar.llm_tasks import (
 pytestmark = pytest.mark.ci_full
 
 
+@pytest.fixture(autouse=True)
+def _require_python_only_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.setenv(selector, "python")
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only answer workflow attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+
+
 def _fixed_llm_tasks(answer: AnswerWithCitations) -> LLMTaskSet:
     payload = answer.model_dump(mode="python")
     return LLMTaskSet(
