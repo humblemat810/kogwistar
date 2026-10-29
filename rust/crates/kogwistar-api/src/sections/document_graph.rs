@@ -380,11 +380,67 @@ fn usage_history(events: &[ServerRunEvent], limit: usize) -> Vec<Value> {
     values
 }
 
+pub(crate) fn persisted_directory_bytes(paths: &[std::path::PathBuf]) -> u64 {
+    fn directory_bytes(root: &std::path::Path) -> u64 {
+        let mut pending = vec![root.to_path_buf()];
+        let mut total = 0_u64;
+        while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    pending.push(entry.path());
+                } else if file_type.is_file() {
+                    if let Ok(metadata) = entry.metadata() {
+                        total = total.saturating_add(metadata.len());
+                    }
+                } else if file_type.is_symlink()
+                    && entry
+                        .metadata()
+                        .is_ok_and(|metadata| metadata.is_file())
+                {
+                    if let Ok(metadata) = entry.metadata() {
+                        total = total.saturating_add(metadata.len());
+                    }
+                }
+            }
+        }
+        total
+    }
+
+    paths.iter().fold(0_u64, |total, path| {
+        total.saturating_add(directory_bytes(path))
+    })
+}
+
+pub(crate) fn configured_storage_usage_bytes() -> u64 {
+    let configured = |name: &str, default: &str| {
+        std::env::var(name).unwrap_or_else(|_| default.to_owned())
+    };
+    let directories = [
+        configured("KOGWISTAR_PERSIST_DIRECTORY", ".kogwistar"),
+        configured(
+            "KOGWISTAR_CONVERSATION_PERSIST_DIRECTORY",
+            ".kogwistar/conversation",
+        ),
+        configured("KOGWISTAR_WORKFLOW_PERSIST_DIRECTORY", ".kogwistar/workflow"),
+    ]
+    .into_iter()
+    .map(std::path::PathBuf::from)
+    .collect::<Vec<_>>();
+    persisted_directory_bytes(&directories)
+}
+
 fn resource_value(
     runs: &[ServerRun],
     lanes: &[ProjectedLaneMessage],
     usage: &[Value],
     events: &[ServerRunEvent],
+    storage_usage_bytes: u64,
 ) -> Value {
     let run_counts = status_counts(runs.iter().map(|run| run.status.as_str()));
     let lane_counts = status_counts(lanes.iter().map(|lane| lane.status.as_str()));
@@ -430,7 +486,7 @@ fn resource_value(
             "terminal_runs": runs.iter().filter(|run| matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled")).count(),
         },
         "services": {"total_services": 0, "by_health": {}},
-        "storage_usage_bytes": 0,
+        "storage_usage_bytes": storage_usage_bytes,
         "cost_ledger": {
             "workspace_id": "workflow",
             "event_count": usage.len(),
@@ -457,6 +513,37 @@ fn resource_value(
     })
 }
 
+#[cfg(test)]
+mod storage_usage_tests {
+    use super::{persisted_directory_bytes, resource_value};
+
+    #[test]
+    fn persisted_directory_bytes_sums_files_and_ignores_missing_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "kogwistar-storage-usage-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(root.join("one.bin"), [1_u8; 7]).unwrap();
+        std::fs::write(nested.join("two.bin"), [2_u8; 11]).unwrap();
+
+        let bytes = persisted_directory_bytes(&[
+            root.clone(),
+            root.join("missing"),
+        ]);
+
+        assert_eq!(bytes, 18);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_snapshot_keeps_storage_usage_as_an_integer() {
+        let snapshot = resource_value(&[], &[], &[], &[], 18);
+        assert_eq!(snapshot["storage_usage_bytes"], 18);
+    }
+}
+
 fn resource_service_value(services: &[Value]) -> Value {
     let mut by_health = BTreeMap::<String, usize>::new();
     for service in services {
@@ -480,7 +567,21 @@ fn operational_effect(
 ) -> ApiEffectResponse {
     let limit = query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
     let usage = usage_history(&events, limit.max(1));
-    let mut resources = resource_value(&runs, &lanes, &usage, &events);
+    let storage_usage_bytes = if matches!(
+        path,
+        "/api/workflow/resources" | "/api/workflow/operator/dashboard"
+    ) {
+        configured_storage_usage_bytes()
+    } else {
+        0
+    };
+    let mut resources = resource_value(
+        &runs,
+        &lanes,
+        &usage,
+        &events,
+        storage_usage_bytes,
+    );
     resources["services"] = resource_service_value(&services);
     match path {
         "/api/workflow/catalog/ops" => json_effect(

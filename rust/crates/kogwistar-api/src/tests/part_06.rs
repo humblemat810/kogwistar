@@ -4997,6 +4997,7 @@
             json!({"total_services":1,"by_health":{"degraded":1}})
         );
         let snapshot_fields = resource_snapshot["result"]["snapshot"].as_object().unwrap();
+        assert!(snapshot_fields["storage_usage_bytes"].is_u64());
         assert_eq!(
             snapshot_fields
                 .keys()

@@ -1628,7 +1628,13 @@ impl PostgresRunApplicationService {
                     .map(|row| Value::Object(row.payload))
                     .collect::<Vec<_>>();
                 let usage = usage_history(&events, 10_000);
-                let mut snapshot = resource_value(&runs, &lanes, &usage, &events);
+                let mut snapshot = resource_value(
+                    &runs,
+                    &lanes,
+                    &usage,
+                    &events,
+                    configured_storage_usage_bytes(),
+                );
                 snapshot["services"] = resource_service_value(&services);
                 snapshot
                     .as_object_mut()
