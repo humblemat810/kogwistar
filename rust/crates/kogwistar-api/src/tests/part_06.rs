@@ -4918,12 +4918,37 @@
         });
         let embedding_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let embedding_address = embedding_listener.local_addr().unwrap();
-        let embedding_app = axum::Router::new().route(
-            "/api/embeddings",
-            axum::routing::post(|| async {
-                axum::Json(json!({"embedding":[0.6,0.8,0.0]}))
-            }),
-        );
+        let batch_embedding_requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let batch_requests = Arc::clone(&batch_embedding_requests);
+        let legacy_embedding_requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let legacy_requests = Arc::clone(&legacy_embedding_requests);
+        let embedding_app = axum::Router::new()
+            .route(
+                "/api/embed",
+                axum::routing::post(move |axum::Json(request): axum::Json<Value>| {
+                    let requests = Arc::clone(&batch_requests);
+                    async move {
+                        let input_count = request["input"]
+                            .as_array()
+                            .expect("Ollama batch input is an array")
+                            .len();
+                        requests.lock().unwrap().push(request);
+                        axum::Json(json!({
+                            "embeddings":vec![vec![0.6,0.8,0.0]; input_count]
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/api/embeddings",
+                axum::routing::post(move |axum::Json(request): axum::Json<Value>| {
+                    let requests = Arc::clone(&legacy_requests);
+                    async move {
+                        requests.lock().unwrap().push(request);
+                        axum::Json(json!({"embedding":[0.6,0.8,0.0]}))
+                    }
+                }),
+            );
         let embedding_server = tokio::spawn(async move {
             axum::serve(embedding_listener, embedding_app).await.unwrap();
         });
@@ -5734,6 +5759,25 @@
         }
         chat_server.await.unwrap();
         embedding_server.abort();
+        let batch_requests = batch_embedding_requests.lock().unwrap();
+        assert!(!batch_requests.is_empty(), "native retrieval must embed its query");
+        assert!(batch_requests.iter().all(|request| {
+            request["model"] == "fixture-embedding-model"
+                && request["input"].as_array().is_some_and(|inputs| !inputs.is_empty())
+        }));
+        assert!(
+            batch_requests.iter().any(|request| {
+                request["input"]
+                    .as_array()
+                    .is_some_and(|inputs| inputs.iter().any(|input| input == "Where is workflow runtime state stored?"))
+            }),
+            "the packaged Rust server must embed the agentic workflow's query"
+        );
+        drop(batch_requests);
+        assert!(
+            legacy_embedding_requests.lock().unwrap().is_empty(),
+            "the current Rust provider must not silently pass via Ollama's legacy endpoint"
+        );
         let runtime = service
             .store
             .read_recorded_runtime_state(
