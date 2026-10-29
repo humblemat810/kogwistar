@@ -1,5 +1,6 @@
 # tests/test_streamable_http_e2e.py
 import asyncio
+import json
 import os
 import pathlib
 import socket
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 import pytest
 
@@ -222,6 +224,175 @@ uvicorn.run(
             raise AssertionError(
                 f"MCP protocol test failed: {exc}; server log tail:\n"
                 f"{_server_log_tail(server_log)}"
+            ) from exc
+        finally:
+            if srv.poll() is None:
+                srv.terminate()
+            try:
+                srv.wait(timeout=2)
+            except Exception:
+                srv.kill()
+                srv.wait(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_python_only_rest_upsert_to_authenticated_mcp_http(monkeypatch, tmp_path):
+    selectors = (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    )
+    for selector in selectors:
+        monkeypatch.setenv(selector, "python")
+
+    port = _free_port()
+    data_dir = tmp_path / "authenticated-python-server"
+    data_dir.mkdir(parents=True)
+    auth_database = (data_dir / "auth.sqlite").as_posix()
+    env = {
+        **os.environ,
+        "PYTHONUNBUFFERED": "1",
+        "GKE_BACKEND": "chroma",
+        "GKE_PERSIST_DIRECTORY": str(data_dir),
+        "AUTH_DB_URL": f"sqlite:///{auth_database}",
+        "AUTH_MODE": "dev",
+        "JWT_SECRET": "python-only-mcp-test-secret",
+        "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT": (
+            "tests._helpers.embeddings:build_default_test_embedding_function"
+        ),
+        **{selector: "python" for selector in selectors},
+    }
+    python_only_bootstrap = f"""
+import kogwistar._rust_bridge as bridge
+def unavailable():
+    raise RuntimeError("Python-only authenticated server attempted to load Rust")
+bridge._load_extension = unavailable
+import uvicorn
+uvicorn.run(
+    "kogwistar.server_mcp_with_admin:app",
+    host="127.0.0.1",
+    port={port},
+    log_level="warning",
+)
+"""
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as server_log:
+        srv = subprocess.Popen(
+            [sys.executable, "-c", python_only_bootstrap],
+            cwd=str(ROOT),
+            env=env,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+        )
+        try:
+            base_url = f"http://127.0.0.1:{port}"
+            await asyncio.wait_for(
+                _wait(f"{base_url}/health", srv, timeout=STARTUP_TIMEOUT_S),
+                timeout=STARTUP_TIMEOUT_S + 5,
+            )
+            async with httpx.AsyncClient(timeout=CALL_TIMEOUT_S) as client:
+                token_response = await client.post(
+                    f"{base_url}/auth/dev-token",
+                    json={"username": "python-e2e", "role": "rw", "ns": "docs"},
+                )
+                token_response.raise_for_status()
+                headers = {"Authorization": f"Bearer {token_response.json()['token']}"}
+
+                doc_id = f"python-mcp-{uuid.uuid4().hex}"
+                content = "Alpha connects to Beta."
+                page = {
+                    "collection_page_url": f"document_collection/{doc_id}",
+                    "document_page_url": f"document/{doc_id}",
+                    "doc_id": doc_id,
+                    "insertion_method": "python_only_http_smoke",
+                    "start_page": 1,
+                    "end_page": 1,
+                }
+                payload = {
+                    "doc_id": doc_id,
+                    "content": content,
+                    "doc_type": "text",
+                    "insertion_method": "python_only_http_smoke",
+                    "nodes": [
+                        {
+                            "id": "nn:alpha",
+                            "label": "Alpha",
+                            "type": "entity",
+                            "summary": "Source concept",
+                            "references": [
+                                {**page, "start_char": 0, "end_char": 5, "excerpt": "Alpha"}
+                            ],
+                        },
+                        {
+                            "id": "nn:beta",
+                            "label": "Beta",
+                            "type": "entity",
+                            "summary": "Target concept",
+                            "references": [
+                                {**page, "start_char": 18, "end_char": 22, "excerpt": "Beta"}
+                            ],
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "id": "ne:connects",
+                            "label": "Alpha connects to Beta",
+                            "type": "relationship",
+                            "relation": "connects_to",
+                            "summary": "Connects Alpha to Beta",
+                            "source_ids": ["nn:alpha"],
+                            "target_ids": ["nn:beta"],
+                            "source_edge_ids": [],
+                            "target_edge_ids": [],
+                            "references": [
+                                {
+                                    **page,
+                                    "start_char": 0,
+                                    "end_char": len(content) - 1,
+                                    "excerpt": content[:-1],
+                                }
+                            ],
+                        }
+                    ],
+                }
+                upsert = await client.post(
+                    f"{base_url}/api/graph/upsert", json=payload, headers=headers
+                )
+                upsert.raise_for_status()
+                persisted = upsert.json()
+                assert persisted["nodes_added"] == 2
+                assert persisted["edges_added"] == 1
+
+            async with httpx.AsyncClient(
+                headers=headers, timeout=CALL_TIMEOUT_S
+            ) as mcp_http:
+                async with streamable_http_client(
+                    f"{base_url}/mcp", http_client=mcp_http
+                ) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await asyncio.wait_for(session.initialize(), timeout=CALL_TIMEOUT_S)
+                        tools = await asyncio.wait_for(
+                            session.list_tools(), timeout=CALL_TIMEOUT_S
+                        )
+                        assert "kg_neighbors" in {tool.name for tool in tools.tools}
+                        result = await asyncio.wait_for(
+                            session.call_tool(
+                                "kg_neighbors", {"rid": persisted["node_ids"][0]}
+                            ),
+                            timeout=CALL_TIMEOUT_S,
+                        )
+                        neighbors = json.loads(result.content[0].text)
+                        assert persisted["node_ids"][1] in neighbors["nodes"]
+                        assert persisted["edge_ids"][0] in neighbors["edges"]
+        except (RuntimeError, TimeoutError) as exc:
+            raise AssertionError(
+                f"Authenticated Python-only REST-to-MCP smoke failed: {exc}; "
+                f"server log tail:\n{_server_log_tail(server_log)}"
             ) from exc
         finally:
             if srv.poll() is None:
