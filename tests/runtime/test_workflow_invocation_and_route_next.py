@@ -37,6 +37,7 @@ def _node(
     start: bool = False,
     terminal: bool = False,
     fanout: bool = False,
+    version: str = "v_test",
 ) -> WorkflowNode:
     return WorkflowNode(
         id=node_id,
@@ -52,7 +53,7 @@ def _node(
             "wf_start": bool(start),
             "wf_terminal": bool(terminal),
             "wf_fanout": bool(fanout),
-            "wf_version": "v_test",
+            "wf_version": version,
         },
         mentions=[
             Grounding(
