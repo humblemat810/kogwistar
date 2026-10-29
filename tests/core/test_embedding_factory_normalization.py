@@ -1,3 +1,4 @@
+import json
 import math
 import sys
 import tomllib
@@ -48,11 +49,17 @@ def test_l2_normalize_rejects_non_finite_values() -> None:
 def test_ollama_embedding_batches_inputs_and_preserves_normalized_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, list[str]]] = []
+    root = Path(__file__).resolve().parents[2]
+    fixture = json.loads(
+        (root / "contracts/golden/ollama-embedding-batch-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    calls: list[dict[str, object]] = []
 
-    def embed(*, model: str, input: list[str]) -> SimpleNamespace:
-        calls.append((model, input))
-        return SimpleNamespace(embeddings=[[3.0, 4.0], [0.0, 0.0]])
+    def embed(**request: object) -> SimpleNamespace:
+        calls.append(request)
+        return SimpleNamespace(**fixture["response"])
 
     def legacy_embed(**kwargs: object) -> None:
         raise AssertionError(f"legacy endpoint unexpectedly used: {kwargs}")
@@ -64,10 +71,10 @@ def test_ollama_embedding_batches_inputs_and_preserves_normalized_results(
     )
     monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
 
-    result = OllamaEmbeddingFunction("example-model")(["first", "second"])
+    result = OllamaEmbeddingFunction(fixture["model"])(fixture["inputs"])
 
-    assert calls == [("example-model", ["first", "second"])]
-    assert result == [[0.6, 0.8], [0.0, 0.0]]
+    assert calls == [fixture["request"]]
+    assert result == fixture["normalized_embeddings"]
 
 
 @pytest.mark.ci

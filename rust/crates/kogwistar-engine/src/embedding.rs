@@ -589,17 +589,23 @@ mod tests {
         assert!(normalize_embeddings(vec![vec![f64::INFINITY, 0.0]], 1, 2).is_err());
     }
 
-    async fn read_request_body(stream: &mut tokio::net::TcpStream) -> Value {
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> (String, Value) {
         use tokio::io::AsyncReadExt;
 
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 1024];
-        let (header_end, content_length) = loop {
+        let (path, header_end, content_length) = loop {
             let count = stream.read(&mut buffer).await.unwrap();
             assert_ne!(count, 0, "client closed before sending the request body");
             bytes.extend_from_slice(&buffer[..count]);
             if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
                 let header_text = String::from_utf8_lossy(&bytes[..header_end]);
+                let path = header_text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap()
+                    .to_owned();
                 let content_length = header_text
                     .lines()
                     .find_map(|line| {
@@ -608,7 +614,7 @@ mod tests {
                             .then(|| value.trim().parse::<usize>().unwrap())
                     })
                     .unwrap();
-                break (header_end + 4, content_length);
+                break (path, header_end + 4, content_length);
             }
         };
         while bytes.len() < header_end + content_length {
@@ -616,24 +622,35 @@ mod tests {
             assert_ne!(count, 0, "client closed before sending the request body");
             bytes.extend_from_slice(&buffer[..count]);
         }
-        serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap()
+        (
+            path,
+            serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap(),
+        )
     }
 
     #[tokio::test]
     async fn ollama_provider_uses_python_compatible_request_and_normalized_result() {
         use tokio::io::AsyncWriteExt;
 
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/ollama-embedding-batch-v1.json"
+        ))
+        .unwrap();
+        let model = fixture["model"].as_str().unwrap().to_owned();
+        let texts: Vec<String> = serde_json::from_value(fixture["inputs"].clone()).unwrap();
+        let expected: Vec<Vec<f64>> =
+            serde_json::from_value(fixture["normalized_embeddings"].clone()).unwrap();
+        let request_fixture = fixture["request"].clone();
+        let response_fixture = fixture["response"].clone();
+
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let request = read_request_body(&mut stream).await;
-            assert_eq!(request["model"], "all-minilm:l6-v2");
-            assert_eq!(request["input"], json!(["three-four", "zero"]));
-            let body = serde_json::to_vec(&json!({
-                "embeddings": [[3.0, 4.0], [0.0, 0.0]]
-            }))
-            .unwrap();
+            let (path, request) = read_request(&mut stream).await;
+            assert_eq!(path, fixture["route"]);
+            assert_eq!(request, request_fixture);
+            let body = serde_json::to_vec(&response_fixture).unwrap();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -644,8 +661,8 @@ mod tests {
 
         let profile = EmbeddingProfile {
             provider: "ollama".to_owned(),
-            model: "all-minilm:l6-v2".to_owned(),
-            dimension: 2,
+            model,
+            dimension: expected[0].len(),
             similarity_metric: "cosine".to_owned(),
             endpoint_fingerprint: None,
             max_sequence_length: None,
@@ -663,11 +680,9 @@ mod tests {
             Duration::from_secs(5),
         )
         .unwrap();
-        let texts = vec!["three-four".to_owned(), "zero".to_owned()];
         let result = provider.embed(&texts).await.unwrap();
         server.await.unwrap();
-        assert_eq!(result[0], vec![0.6, 0.8]);
-        assert_eq!(result[1], vec![0.0, 0.0]);
+        assert_eq!(result, expected);
     }
 
     #[tokio::test]
@@ -678,7 +693,8 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let request = read_request_body(&mut stream).await;
+            let (path, request) = read_request(&mut stream).await;
+            assert_eq!(path, "/api/embed");
             assert_eq!(request["input"], json!(["first", "second"]));
             let body = b"{}";
             let response = format!(
@@ -690,7 +706,8 @@ mod tests {
 
             for (prompt, embedding) in [("first", vec![3.0, 4.0]), ("second", vec![0.0, 0.0])] {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let request = read_request_body(&mut stream).await;
+                let (path, request) = read_request(&mut stream).await;
+                assert_eq!(path, "/api/embeddings");
                 assert_eq!(request["prompt"], prompt);
                 let body = serde_json::to_vec(&json!({"embedding": embedding})).unwrap();
                 let response = format!(
