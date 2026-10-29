@@ -1,15 +1,53 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import cast
 
 import pytest
 
 from kogwistar.engine_core.acl_protocol import CreateOnceWriteProtocol
-from kogwistar.engine_core.canonical_events import read_canonical_entity_revision
+from kogwistar.engine_core.canonical_events import (
+    canonical_revision_job_payload,
+    read_canonical_entity_revision,
+)
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests._helpers.fake_backend import build_fake_backend
 from tests._helpers.graph_builders import build_entity_node
 from tests._helpers.engine_factories import FakeEmbeddingFunction
+
+
+def test_canonical_revision_and_job_payload_match_shared_rust_golden() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    fixture = json.loads(
+        (repo_root / "contracts/golden/canonical-entity-revision-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    for case in fixture["cases"]:
+        events = [
+            (
+                row["seq"],
+                row["entity_kind"],
+                row["entity_id"],
+                row["op"],
+                json.dumps(row["payload"], separators=(",", ":")),
+            )
+            for row in case["events"]
+            if row["namespace"] == case["namespace"]
+        ]
+        revision = read_canonical_entity_revision(
+            events=events,
+            namespace=case["namespace"],
+            entity_kind=case["entity_kind"],
+            entity_id=case["entity_id"],
+        )
+        assert revision is not None
+        expected = case["expected"]
+        assert revision.revision == expected["revision"]
+        assert revision.state == expected["state"]
+        assert revision.payload == expected["payload"]
+        assert canonical_revision_job_payload(revision) == expected["job_payload"]
 
 
 def test_canonical_revision_folds_active_delete_and_reactivation() -> None:

@@ -22,6 +22,7 @@ license = "MIT"
 [workspace.dependencies]
 axum = "0.8"
 base64 = "0.22"
+blake2 = "0.10"
 hex = "0.4"
 jsonwebtoken = "9"
 fs2 = "0.4"

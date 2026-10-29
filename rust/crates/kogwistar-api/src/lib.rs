@@ -21,6 +21,7 @@ use kogwistar_contracts::{
     GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1, ToolAuditResponseV1,
     attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
 };
+use kogwistar_engine::canonical_revision::read_canonical_entity_revision;
 use kogwistar_engine::embedding::EmbeddingProvider;
 use kogwistar_runtime::{
     RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRuntimeState, RecordedRuntimeTransition,

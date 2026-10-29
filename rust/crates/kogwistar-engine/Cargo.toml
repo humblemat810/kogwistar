@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+blake2.workspace = true
 hex.workspace = true
 kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-store = { path = "../kogwistar-store" }

@@ -74,20 +74,32 @@ impl SqliteRunApplicationService {
                 if event.seq != source_revision {
                     return false;
                 }
-                match event.op.to_ascii_uppercase().as_str() {
-                    "ADD" | "REPLACE" => serde_json::from_str::<Value>(&event.payload_json)
-                        .ok()
-                        .is_some_and(|payload| {
-                            payload.is_object()
-                                && payload
-                                    .get("lifecycle_patch")
-                                    .and_then(|patch| patch.get("lifecycle_status"))
-                                    .and_then(Value::as_str)
-                                    != Some("tombstoned")
-                        }),
-                    "TOMBSTONE" | "DELETE" => false,
-                    _ => false,
+                let Ok(payload) = serde_json::from_str::<Value>(&event.payload_json) else {
+                    return false;
+                };
+                if !payload.is_object() {
+                    return false;
                 }
+                let event = EntityEvent {
+                    namespace: event.namespace.clone(),
+                    seq: event.seq,
+                    event_id: event.event_id.clone(),
+                    entity_kind: event.entity_kind.clone(),
+                    entity_id: event.entity_id.clone(),
+                    op: event.op.clone(),
+                    payload,
+                };
+                let namespace = event.namespace.clone();
+                let entity_kind = event.entity_kind.clone();
+                read_canonical_entity_revision(
+                    &[event],
+                    &namespace,
+                    &entity_kind,
+                    &record.id,
+                )
+                .ok()
+                .flatten()
+                .is_some_and(|revision| revision.revision == source_revision && !revision.is_deleted())
             }
             Some(Value::Bool(false)) | Some(_) => false,
         }
