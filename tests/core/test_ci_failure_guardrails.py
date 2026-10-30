@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -84,6 +85,29 @@ def test_ci_declares_the_supported_interpreter_matrix() -> None:
 
     for cell in expected_cells:
         assert cell in matrix, f"missing required CI interpreter cell: {cell!r}"
+
+
+def test_rust_backend_interop_ci_node_ids_exist() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    handoff_step = _between(
+        workflow,
+        "      - name: Verify sequential Python-Rust backend handoffs",
+        '          python - "$report" <<\'PY\'',
+    )
+    selectors = re.findall(r"(tests/[^\s]+)::(test_[A-Za-z0-9_]+)", handoff_step)
+
+    assert len(selectors) == 3
+    for relative_path, test_name in selectors:
+        test_path = ROOT / relative_path
+        tree = ast.parse(test_path.read_text(encoding="utf-8"))
+        test_names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert test_name in test_names, (
+            f"Rust backend interop CI selects missing test {relative_path}::{test_name}"
+        )
 
 
 def test_sqlite_native_extension_cases_are_marked_requires_rust() -> None:

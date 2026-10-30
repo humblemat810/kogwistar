@@ -334,7 +334,7 @@ jobs:
           python -m pytest -q -p no:cacheprovider --junitxml="$report" \
             tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server \
             tests/server/test_rust_api_chroma_interop_live.py::test_python_stage1_is_promoted_by_rust_native_worker \
-            tests/server/test_rust_api_postgres_worker_interop_live.py::test_python_postgres_stage1_is_promoted_by_rust_native_worker
+            tests/server/test_rust_api_postgres_worker_interop_live.py::test_rust_native_promotion_and_python_recovery_are_both_available
           python - "$report" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
