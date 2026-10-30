@@ -4944,6 +4944,16 @@
                 .as_str()
                 .unwrap()
                 .contains("Where is workflow runtime state stored?"));
+            let conversation_context: Value = serde_json::from_str(
+                snapshot_document["properties"]["conversation_context_messages"]
+                    .as_str()
+                    .expect("snapshot records authorized conversation context"),
+            )
+            .unwrap();
+            assert_eq!(conversation_context.as_array().unwrap().len(), 3);
+            assert_eq!(conversation_context[1]["content"], "Earlier user question");
+            assert_eq!(conversation_context[1]["node_id"], "answer-prior-turn");
+            assert_eq!(conversation_context[2]["node_id"], "answer-user-turn");
             let dependency_edges = snapshot_reader
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
@@ -5203,8 +5213,8 @@
         };
         for mutation in [
             put_node(
-                "answer-user-turn",
-                "e2e-user-turn",
+                "answer-prior-turn",
+                "e2e-prior-turn",
                 serde_json::Map::from_iter([
                     ("entity_type".to_owned(), json!("conversation_turn")),
                     (
@@ -5217,9 +5227,71 @@
                     ("lifecycle_status".to_owned(), json!("active")),
                 ]),
                 Some(
+                    json!({"summary":"Earlier user question","metadata":{
+                        "entity_type":"conversation_turn","conversation_id":"answer-e2e-conversation",
+                        "role":"user","turn_index":0,"lifecycle_status":"active"
+                    }})
+                    .to_string(),
+                ),
+                None,
+            ),
+            acl("answer-prior-turn", "conversation", "private"),
+            put_node(
+                "answer-hidden-turn",
+                "e2e-hidden-turn",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("conversation_turn")),
+                    (
+                        "conversation_id".to_owned(),
+                        json!("answer-e2e-conversation"),
+                    ),
+                    ("role".to_owned(), json!("assistant")),
+                    ("turn_index".to_owned(), json!(0)),
+                    ("in_conversation_chain".to_owned(), json!(true)),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
+                    json!({"summary":"Not visible to Alice","metadata":{
+                        "entity_type":"conversation_turn","conversation_id":"answer-e2e-conversation",
+                        "role":"assistant","turn_index":0,"lifecycle_status":"active"
+                    }})
+                    .to_string(),
+                ),
+                None,
+            ),
+            put_node(
+                "acl-answer-hidden-turn",
+                "e2e-acl-hidden-turn",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!("conversation")),
+                    ("acl_target_grain".to_owned(), json!("node")),
+                    ("acl_target_entity_id".to_owned(), json!("answer-hidden-turn")),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("acl_mode".to_owned(), json!("private")),
+                    ("owner_id".to_owned(), json!("bob")),
+                ]),
+                None,
+                None,
+            ),
+            put_node(
+                "answer-user-turn",
+                "e2e-user-turn",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("conversation_turn")),
+                    (
+                        "conversation_id".to_owned(),
+                        json!("answer-e2e-conversation"),
+                    ),
+                    ("role".to_owned(), json!("user")),
+                    ("turn_index".to_owned(), json!(1)),
+                    ("in_conversation_chain".to_owned(), json!(true)),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
                     json!({"summary":"Where is workflow runtime state stored?","metadata":{
                         "entity_type":"conversation_turn","conversation_id":"answer-e2e-conversation",
-                        "role":"user","lifecycle_status":"active"
+                        "role":"user","turn_index":1,"lifecycle_status":"active"
                     }})
                     .to_string(),
                 ),

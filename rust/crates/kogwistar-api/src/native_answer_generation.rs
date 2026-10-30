@@ -632,6 +632,14 @@ pub(crate) fn answer_context_snapshot_batch(
         .get("evidence_pack_hash")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let conversation_context_messages = state
+        .get("conversation_context_messages")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let conversation_context_node_ids = state
+        .get("conversation_context_node_ids")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
     let llm_input_payload = json!({"system_prompt": system_prompt, "question": question});
     let extra_hash_payload = json!({
         "question": question,
@@ -640,6 +648,8 @@ pub(crate) fn answer_context_snapshot_batch(
     });
     let rendered_payload = json!({
         "messages": messages,
+        "conversation_context_messages": conversation_context_messages,
+        "conversation_context_node_ids": conversation_context_node_ids,
         "llm_input_payload": llm_input_payload,
         "evidence_pack_digest": evidence_pack_digest,
         "extra_hash_payload": extra_hash_payload
@@ -672,6 +682,14 @@ pub(crate) fn answer_context_snapshot_batch(
     .to_string();
     let prompt_messages = serde_json::to_string(&messages)
         .map_err(|_| "native answer snapshot could not serialize prompt messages".to_owned())?;
+    let conversation_context_messages = serde_json::to_string(&conversation_context_messages)
+        .map_err(|_| {
+            "native answer snapshot could not serialize conversation context".to_owned()
+        })?;
+    let conversation_context_node_ids = serde_json::to_string(&conversation_context_node_ids)
+        .map_err(|_| {
+            "native answer snapshot could not serialize conversation context IDs".to_owned()
+        })?;
     let llm_input_payload = serde_json::to_string(&llm_input_payload)
         .map_err(|_| "native answer snapshot could not serialize provider input".to_owned())?;
     let evidence_pack_digest = serde_json::to_string(&evidence_pack_digest)
@@ -679,6 +697,8 @@ pub(crate) fn answer_context_snapshot_batch(
     let properties = json!({
         "entity_type": "context_snapshot",
         "prompt_messages": prompt_messages,
+        "conversation_context_messages": conversation_context_messages,
+        "conversation_context_node_ids": conversation_context_node_ids,
         "llm_input_payload": llm_input_payload,
         "evidence_pack_digest": evidence_pack_digest
     });
@@ -1102,6 +1122,11 @@ mod tests {
                 "question": "question",
                 "system_prompt": "system instructions",
                 "used_node_ids": ["canonical-node-secret"],
+                "conversation_context_messages": [
+                    {"role":"system","content":"context system","source":"system","node_id":null},
+                    {"role":"user","content":"prior turn","source":"history_turn","node_id":"prior-turn"}
+                ],
+                "conversation_context_node_ids": ["prior-turn"],
                 "evidence_pack_digest": {
                     "node_ids": ["canonical-node-secret"],
                     "edge_ids": [],
@@ -1126,6 +1151,22 @@ mod tests {
         let saved_messages: Value =
             serde_json::from_str(properties["prompt_messages"].as_str().unwrap()).unwrap();
         assert_eq!(saved_messages, json!(messages));
+        let saved_conversation_context: Value = serde_json::from_str(
+            properties["conversation_context_messages"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved_conversation_context[1]["node_id"], "prior-turn");
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                properties["conversation_context_node_ids"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap(),
+            json!(["prior-turn"])
+        );
         assert!(
             saved_messages[1]["content"]
                 .as_str()

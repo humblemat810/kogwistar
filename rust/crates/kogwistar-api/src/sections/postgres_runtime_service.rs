@@ -550,12 +550,14 @@ impl PostgresRunApplicationService {
         self.store
             .transaction(move |uow| {
                 Box::pin(async move {
+                    let mut metadata = BTreeMap::new();
+                    metadata.insert("conversation_id".to_owned(), json!(conversation_id));
                     let read = GraphProjectionRead {
                         scope: scope.clone(),
                         table: "gke_nodes".to_owned(),
-                        ids: Some(vec![turn_id.clone()]),
-                        metadata: MetadataFilter::default(),
-                        limit: 1,
+                        ids: None,
+                        metadata: MetadataFilter { equals: metadata },
+                        limit: 20_000,
                     };
                     let nodes = uow.graph_projection_records(read).await?;
                     let ids = nodes
@@ -573,6 +575,34 @@ impl PostgresRunApplicationService {
                         &acl_index,
                         &acl_principal,
                     );
+                    let context_nodes = visible
+                        .iter()
+                        .filter(|record| {
+                            record
+                                .document
+                                .as_deref()
+                                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                                .and_then(|document| {
+                                    document
+                                        .get("conversation_id")
+                                        .or_else(|| {
+                                            document
+                                                .get("metadata")
+                                                .and_then(|metadata| metadata.get("conversation_id"))
+                                        })
+                                        .and_then(Value::as_str)
+                                        .map(|value| value == conversation_id)
+                                })
+                                .unwrap_or(false)
+                        })
+                        .map(|record| {
+                            json!({
+                                "id": record.id,
+                                "document": record.document,
+                                "metadata": record.metadata
+                            })
+                        })
+                        .collect::<Vec<_>>();
                     let Some(record) = visible.iter().find(|record| record.id == turn_id) else {
                         return Ok(Err(NativeEvidenceRecordError::Rejected));
                     };
@@ -606,7 +636,8 @@ impl PostgresRunApplicationService {
                             "id": record.id,
                             "document": record.document,
                             "metadata": record.metadata
-                        }
+                        },
+                        "context_nodes": context_nodes
                     })))
                 })
             })
