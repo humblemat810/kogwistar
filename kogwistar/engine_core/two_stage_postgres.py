@@ -631,23 +631,71 @@ class PostgresTwoStageProjectionAdapter:
             return True
 
         accepted_metadata = dict(record.metadata)
-        expected_fingerprint = accepted_metadata.get(
-            "_kogwistar_source_fingerprint"
+        stage1_marker_names = (
+            "_kogwistar_stage1_source_fingerprint",
+            "_kogwistar_stage1_expected_fingerprint",
+            "_kogwistar_stage1_revision",
+            "_kogwistar_stage1_expected_revision",
         )
-        if (
-            accepted_metadata.get("_kogwistar_stage2_ready") is not True
-            or not isinstance(expected_fingerprint, str)
-            or not expected_fingerprint
-        ):
-            return False
-        if expected_fingerprint != self._current_fingerprint(
-            entity_kind=entity_kind, entity_id=entity_id
-        ):
-            return True
+        has_stage1_marker = any(name in accepted_metadata for name in stage1_marker_names)
+        if has_stage1_marker:
+            source_fingerprint = accepted_metadata.pop(
+                "_kogwistar_stage1_source_fingerprint", None
+            )
+            expected_fingerprint = accepted_metadata.pop(
+                "_kogwistar_stage1_expected_fingerprint", None
+            )
+            source_revision = accepted_metadata.pop(
+                "_kogwistar_stage1_revision", None
+            )
+            expected_revision = accepted_metadata.pop(
+                "_kogwistar_stage1_expected_revision", None
+            )
+            if (
+                not isinstance(source_fingerprint, str)
+                or not source_fingerprint
+                or not isinstance(expected_fingerprint, str)
+                or not expected_fingerprint
+                or type(source_revision) is not int
+                or type(expected_revision) is not int
+            ):
+                return False
+            if (
+                source_fingerprint != expected_fingerprint
+                or source_revision != expected_revision
+            ):
+                return False
+            if (
+                expected_fingerprint
+                != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                or expected_revision != current.revision
+            ):
+                return True
+            expected_fingerprint = source_fingerprint
+            source_metadata = dict(accepted_metadata)
+        else:
+            expected_fingerprint = accepted_metadata.get(
+                "_kogwistar_source_fingerprint"
+            )
+            if (
+                accepted_metadata.get("_kogwistar_stage2_ready") is not True
+                or not isinstance(expected_fingerprint, str)
+                or not expected_fingerprint
+            ):
+                return False
+            if expected_fingerprint != self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                return True
+            source_metadata = dict(accepted_metadata)
+            source_metadata.pop("_kogwistar_stage2_ready", None)
+            source_metadata.pop("_kogwistar_source_fingerprint", None)
 
-        source_metadata = dict(accepted_metadata)
-        source_metadata.pop("_kogwistar_stage2_ready", None)
-        source_metadata.pop("_kogwistar_source_fingerprint", None)
+        accepted_metadata = dict(source_metadata)
+        accepted_metadata["_kogwistar_stage2_ready"] = True
+        accepted_metadata["_kogwistar_source_fingerprint"] = expected_fingerprint
         staged = self._backend().stage1_projection_get(
             namespace=self._namespace(), entity_kind=entity_kind, entity_id=entity_id
         )
@@ -657,6 +705,10 @@ class PostgresTwoStageProjectionAdapter:
                 or dict(staged.get("metadata") or {}) != source_metadata
                 or str(staged.get("source_fingerprint") or "")
                 != expected_fingerprint
+                or (
+                    has_stage1_marker
+                    and int(staged.get("revision") or -1) != expected_revision
+                )
             ):
                 return False
             with self.engine.uow():
@@ -676,6 +728,8 @@ class PostgresTwoStageProjectionAdapter:
                     entity_kind=entity_kind, entity_id=entity_id
                 )
                 if latest_fingerprint != expected_fingerprint:
+                    return True
+                if has_stage1_marker and latest.revision != expected_revision:
                     return True
                 getattr(self._backend(), f"{entity_kind}_upsert")(
                     ids=[entity_id], documents=[record.document],

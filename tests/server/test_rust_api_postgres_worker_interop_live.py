@@ -60,7 +60,7 @@ def _wait_for_http_process(
 def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Prove Python -> Rust-native PostgreSQL worker -> Python visibility."""
+    """Prove Python Stage-1 -> durable Rust result -> Python recovery/readback."""
     dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
     if not dsn:
         pytest.skip("set KOGWISTAR_TEST_PG_DSN to run PostgreSQL interoperability")
@@ -153,6 +153,26 @@ def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
         finally:
             writer.close()
 
+        # Fail only the vector projection. Rust should durably admit the
+        # provider result, requeue the action, and avoid another provider call.
+        with sql_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    f"CREATE FUNCTION \"{schema}\".fail_embedding_projection() "
+                    "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                    f"IF NEW.id = '{entity_id}' AND NEW.embedding IS NOT NULL THEN "
+                    "RAISE EXCEPTION 'injected projection failure'; END IF; "
+                    "RETURN NEW; END $$"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    f"CREATE TRIGGER fail_embedding_projection BEFORE INSERT OR UPDATE "
+                    f"ON \"{schema}\".gke_nodes FOR EACH ROW EXECUTE FUNCTION "
+                    f"\"{schema}\".fail_embedding_projection()"
+                )
+            )
+
         port = _port()
         env = os.environ.copy()
         for name in (
@@ -194,6 +214,7 @@ def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
         assert health.get("embedding_inline_worker_enabled") is True, health
 
         metadata = EnginePostgresMetaStore(engine=sql_engine, schema=schema)
+        index_jobs_table = f'"{schema}"."{metadata.index_jobs_table}"'
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             jobs = metadata.list_index_jobs(
@@ -206,8 +227,25 @@ def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
                 entity_kind="node",
                 entity_id=entity_id,
             )
-            if jobs and jobs[0].status == "DONE" and staged is None:
-                break
+            if (
+                jobs
+                and jobs[0].status == "PENDING"
+                and jobs[0].accepted_result_json is not None
+                and jobs[0].accepted_result_sha256 is not None
+                and staged is not None
+            ):
+                with sql_engine.begin() as connection:
+                    parked = connection.execute(
+                        sa.text(
+                            f"UPDATE {index_jobs_table} "
+                            "SET next_run_at=NOW() + INTERVAL '5 minutes' "
+                            "WHERE job_id=:job_id AND status='PENDING' "
+                            "AND accepted_result_json IS NOT NULL"
+                        ),
+                        {"job_id": jobs[0].job_id},
+                    )
+                if parked.rowcount == 1:
+                    break
             if rust_process.poll() is not None:
                 raise AssertionError(
                     f"Rust server exited before promotion: {rust_process.returncode}"
@@ -217,29 +255,94 @@ def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
             log_file.flush()
             details = log_path.read_text(encoding="utf-8", errors="replace")[-5000:]
             raise AssertionError(
-                "Rust worker did not promote PostgreSQL Stage-1; "
+                "Rust worker did not durably accept the PostgreSQL projection; "
                 f"embedding_requests={embedding_requests!r}; jobs={jobs!r}; "
                 f"stage1={staged!r}; server_log_tail={details!r}"
             )
 
         assert embedding_requests, "Rust worker did not call the configured provider"
-        promoted = backend.node_get(ids=[entity_id], include=["embeddings", "metadatas"])
-        assert promoted["ids"] == [entity_id], promoted
-        assert promoted["embeddings"][0] == pytest.approx([0.6, 0.8]), promoted
-        assert promoted["metadatas"][0].get("_kogwistar_stage2_ready") is True
-
         rust_process.terminate()
         rust_process.wait(timeout=10)
         rust_process = None
+
+        with sql_engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    f'DROP TRIGGER fail_embedding_projection ON "{schema}".gke_nodes'
+                )
+            )
+            connection.execute(
+                sa.text(
+                    f'DROP FUNCTION "{schema}".fail_embedding_projection()'
+                )
+            )
+            connection.execute(
+                sa.text(
+                    f"UPDATE {index_jobs_table} SET next_run_at=NOW() "
+                    "WHERE namespace=:namespace AND entity_id=:entity_id "
+                    "AND accepted_result_json IS NOT NULL AND status='PENDING'"
+                ),
+                {"namespace": namespace, "entity_id": entity_id},
+            )
+
+        def fail_if_embedded(_texts: list[str]) -> list[list[float]]:
+            raise AssertionError("Python recovery must replay the accepted vector")
 
         reopened = GraphKnowledgeEngine(
             backend=PgVectorBackend(engine=sql_engine, embedding_dim=2, schema=schema),
             namespace=namespace,
             persistence_mode="two_stage",
             embedding_profile_mode="inspect",
-            embedding_function=lambda texts: [[0.01, 0.01] for _ in texts],
+            embedding_function=fail_if_embedded,
         )
         try:
+            pending = reopened.backend.stage1_projection_get(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=entity_id,
+            )
+            assert pending is not None
+            accepted = reopened.metadata.list_index_jobs(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=entity_id,
+            )
+            assert accepted and accepted[0].accepted_result_json is not None, accepted
+            accepted_wire = json.loads(accepted[0].accepted_result_json)
+            accepted_record = accepted_wire["record"]
+            accepted_source_metadata = dict(accepted_record["metadata"])
+            accepted_stage1_fingerprint = accepted_source_metadata.pop(
+                "_kogwistar_stage1_source_fingerprint"
+            )
+            expected_fingerprint = accepted_source_metadata.pop(
+                "_kogwistar_stage1_expected_fingerprint"
+            )
+            accepted_stage1_revision = accepted_source_metadata.pop(
+                "_kogwistar_stage1_revision"
+            )
+            expected_revision = accepted_source_metadata.pop(
+                "_kogwistar_stage1_expected_revision"
+            )
+            assert accepted_record["document"] == pending["document"]
+            assert accepted_source_metadata == pending["metadata"], (
+                accepted_source_metadata,
+                pending["metadata"],
+            )
+            assert accepted_stage1_fingerprint == pending["source_fingerprint"]
+            assert expected_fingerprint == pending["source_fingerprint"]
+            assert accepted_stage1_revision == pending["revision"]
+            assert type(expected_revision) is int
+            worker = reopened.indexing.make_index_job_worker(max_jobs_per_tick=10)
+            assert worker.projection_store is reopened.two_stage_projection_adapter
+            metrics = worker.tick()
+            attempted = reopened.metadata.list_index_jobs(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=entity_id,
+            )
+            assert metrics.done >= 1 and metrics.retried == 0, (
+                f"{metrics}; jobs={[(job.status, job.last_error) for job in attempted]!r}"
+            )
             assert reopened.backend.stage1_projection_get(
                 namespace=namespace,
                 entity_kind="node",
@@ -252,8 +355,9 @@ def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
             )
             assert completed and completed[0].status == "DONE", completed
             assert reopened.backend.node_get(
-                ids=[entity_id], include=["embeddings"]
+                ids=[entity_id], include=["embeddings", "metadatas"]
             )["embeddings"][0] == pytest.approx([0.6, 0.8])
+            assert embedding_requests == [[staged["document"]]]
         finally:
             reopened.close()
     finally:
