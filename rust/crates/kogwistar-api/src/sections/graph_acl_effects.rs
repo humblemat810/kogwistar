@@ -159,6 +159,8 @@ fn default_acl_matches(record: &GraphRecord, owner_id: &str, security_scope: Opt
         && record.metadata.get("tombstoned").and_then(Value::as_bool) != Some(true)
 }
 
+// These parameters are the independent authority and identity fields of the ACL record.
+#[allow(clippy::too_many_arguments)]
 fn acl_record_mutation(
     scope: &GraphScope,
     truth_graph: &str,
@@ -243,6 +245,8 @@ fn acl_record_mutation(
     }
 }
 
+// Keep the two entity identities and the target tuple explicit in the edge payload.
+#[allow(clippy::too_many_arguments)]
 fn acl_supersedes_mutation(
     scope: &GraphScope,
     truth_graph: &str,

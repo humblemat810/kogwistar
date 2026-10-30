@@ -822,7 +822,11 @@ async fn unit_of_work_reads_acl_truth_from_its_own_transaction() -> PostgresStor
             Box::pin(async move {
                 uow.apply_graph_mutation(mutation).await?;
                 let records = uow
-                    .graph_acl_records_for_entities(&scope, "conversation", &[entity_id.to_owned()])
+                    .graph_acl_records_for_entities(
+                        &scope,
+                        "conversation",
+                        std::slice::from_ref(&entity_id),
+                    )
                     .await?;
                 assert_eq!(records.len(), 1);
                 assert_eq!(records[0].id, expected_acl_id);

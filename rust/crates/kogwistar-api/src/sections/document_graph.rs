@@ -394,18 +394,14 @@ pub(crate) fn persisted_directory_bytes(paths: &[std::path::PathBuf]) -> u64 {
                 };
                 if file_type.is_dir() {
                     pending.push(entry.path());
-                } else if file_type.is_file() {
-                    if let Ok(metadata) = entry.metadata() {
-                        total = total.saturating_add(metadata.len());
-                    }
-                } else if file_type.is_symlink()
-                    && entry
-                        .metadata()
-                        .is_ok_and(|metadata| metadata.is_file())
+                } else if (file_type.is_file()
+                    || (file_type.is_symlink()
+                        && entry
+                            .metadata()
+                            .is_ok_and(|metadata| metadata.is_file())))
+                    && let Ok(metadata) = entry.metadata()
                 {
-                    if let Ok(metadata) = entry.metadata() {
-                        total = total.saturating_add(metadata.len());
-                    }
+                    total = total.saturating_add(metadata.len());
                 }
             }
         }

@@ -103,7 +103,7 @@ fn checked_add(
         .ok_or_else(|| invalid(field, "integer value exceeds supported range"))
 }
 
-fn object_or_empty<'a>(state: &'a Map<String, Value>, field: &str) -> Map<String, Value> {
+fn object_or_empty(state: &Map<String, Value>, field: &str) -> Map<String, Value> {
     state
         .get(field)
         .and_then(Value::as_object)

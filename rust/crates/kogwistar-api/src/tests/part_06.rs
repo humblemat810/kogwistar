@@ -6103,7 +6103,7 @@
         }
         chat_server.await.unwrap();
         embedding_server.abort();
-        let batch_requests = batch_embedding_requests.lock().unwrap();
+        let batch_requests = batch_embedding_requests.lock().unwrap().clone();
         assert!(!batch_requests.is_empty(), "native retrieval must embed its query");
         assert!(batch_requests.iter().all(|request| {
             request["model"] == "fixture-embedding-model"
@@ -6117,7 +6117,6 @@
             }),
             "the packaged Rust server must embed the agentic workflow's query"
         );
-        drop(batch_requests);
         assert!(
             legacy_embedding_requests.lock().unwrap().is_empty(),
             "the current Rust provider must not silently pass via Ollama's legacy endpoint"

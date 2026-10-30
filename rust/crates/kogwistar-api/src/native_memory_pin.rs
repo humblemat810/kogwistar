@@ -77,6 +77,8 @@ pub(crate) fn metadata_projection(
     projected
 }
 
+// Keep the canonical graph fields explicit at this serialization boundary.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn graph_mutation(
     request: &RuntimeNativeStepRequest,
     scope: &Value,

@@ -492,6 +492,8 @@ impl RevisionFencedChromaProjectionStore {
 }
 
 impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjectionStore {
+    // Preserve the trait's explicit opaque-future + Send contract at this adapter.
+    #[allow(clippy::manual_async_fn)]
     fn upsert_graph_projection_record(
         &self,
         namespace: &str,
@@ -505,6 +507,8 @@ impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjecti
         }
     }
 
+    // Preserve the trait's explicit opaque-future + Send contract at this adapter.
+    #[allow(clippy::manual_async_fn)]
     fn delete_graph_projection_record(
         &self,
         namespace: &str,
@@ -518,6 +522,8 @@ impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjecti
         }
     }
 
+    // Preserve the trait's explicit opaque-future + Send contract at this adapter.
+    #[allow(clippy::manual_async_fn)]
     fn upsert_graph_projection_record_with_outcome(
         &self,
         namespace: &str,
@@ -531,6 +537,8 @@ impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjecti
         }
     }
 
+    // Preserve the trait's explicit opaque-future + Send contract at this adapter.
+    #[allow(clippy::manual_async_fn)]
     fn delete_graph_projection_record_with_outcome(
         &self,
         namespace: &str,
@@ -1232,7 +1240,7 @@ impl SqliteRunApplicationService {
                     .store
                     .get_stage1_node_projection(namespace, &row.key)
                     .map_err(|error| error.to_string())?;
-                if repaired.as_ref().map_or(true, |projection| {
+                if repaired.as_ref().is_none_or(|projection| {
                     projection.last_authoritative_seq != current.revision
                         || projection
                             .payload
@@ -2362,7 +2370,7 @@ impl SqliteRunApplicationService {
                 .ok()
                 .flatten(),
         );
-        if is_answer_workflow_id(&workflow_id) {
+        if is_answer_workflow_id(workflow_id) {
             return effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_ANSWER_WORKFLOW_NOT_READY",

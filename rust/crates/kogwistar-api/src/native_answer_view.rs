@@ -710,7 +710,7 @@ mod tests {
                 "id": id,
                 "document": json!({
                     "summary": format!("message {index}"),
-                    "role": if index == 9 || index % 2 == 0 { "user" } else { "assistant" },
+                    "role": if index == 9 || index.is_multiple_of(2) { "user" } else { "assistant" },
                     "turn_index": index,
                     "metadata": {
                         "entity_type": "conversation_turn",

@@ -133,17 +133,16 @@ fn execute_validate_or_repair_citations(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    if needs_repair {
-        if let Some(model) = request
+    if needs_repair
+        && let Some(model) = request
             .ephemeral_context
             .get("provider_model")
             .and_then(Value::as_str)
-        {
-            runtime.insert(
-                "answer_repair_provider".to_owned(),
-                json!({"protocol": "openai_compatible_chat_completions", "model": model}),
-            );
-        }
+    {
+        runtime.insert(
+            "answer_repair_provider".to_owned(),
+            json!({"protocol": "openai_compatible_chat_completions", "model": model}),
+        );
     }
     let mut op_log = request
         .state
@@ -234,7 +233,7 @@ fn answer_citations_are_valid(
             if span
                 .get("excerpt")
                 .and_then(Value::as_str)
-                .map_or(true, |excerpt| excerpt.trim().is_empty())
+                .is_none_or(|excerpt| excerpt.trim().is_empty())
             {
                 return false;
             }

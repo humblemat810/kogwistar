@@ -4013,8 +4013,8 @@ impl PostgresRunApplicationService {
                 ),
             };
         }
-        if request.method == "POST" {
-            if let Some(conversation_id) = conversation_answer_id(&request.path_and_query) {
+        if request.method == "POST"
+            && let Some(conversation_id) = conversation_answer_id(&request.path_and_query) {
                 let input: SubmitConversationAnswerHttpInput =
                     match serde_json::from_slice(&request.body) {
                         Ok(input) => input,
@@ -4109,7 +4109,6 @@ impl PostgresRunApplicationService {
                     }),
                 );
             }
-        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {
