@@ -1198,6 +1198,134 @@ impl PostgresRunApplicationService {
             .await
     }
 
+    async fn persist_native_answer_context_snapshot(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<(), String> {
+        let model = self
+            .chat_completion_provider
+            .as_ref()
+            .ok_or_else(|| "Rust-native structured-answer provider is not configured".to_owned())?
+            .model()
+            .to_owned();
+        let batch = crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
+        let principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
+            .await?;
+        if !capability_allowed_for_principal(
+            &principal,
+            &self.capabilities,
+            "write_graph",
+            &["write_graph"],
+        ) || !principal_strings(&principal, "capabilities")
+            .iter()
+            .any(|capability| capability == "write_graph")
+        {
+            return Err("native answer snapshot requires the run owner's current write_graph capability".to_owned());
+        }
+        if !self
+            .store
+            .graph_authority_capability()
+            .supports_atomic_index_jobs()
+        {
+            return Err("native answer snapshot requires atomic graph authority".to_owned());
+        }
+        let (mutations, index_jobs) = graph_mutation_batch_v2_value(batch)
+            .map_err(|_| "native answer snapshot graph mutation is invalid".to_owned())?;
+        let security_scope = security_scope_value(&principal);
+        if mutations.iter().any(|mutation| {
+            !graph_mutation_scope_allowed(&mutation.scope, &security_scope)
+        }) {
+            return Err("native answer snapshot scope is outside the run owner's admitted scope".to_owned());
+        }
+        let run_id = request.run_id.clone();
+        let expected_owner = authenticated_run_owner_id(&principal)
+            .ok_or_else(|| "native answer snapshot requires an authenticated run owner".to_owned())?
+            .to_owned();
+        let owner_id = expected_owner.to_ascii_lowercase();
+        let acl_scope = principal
+            .get("security_scope")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_ascii_lowercase);
+        let effect_id = format!(
+            "native-context-snapshot|{}|{}|{}",
+            request.run_id, request.step_seq, request.token_id
+        );
+        let commit_capabilities = self.capabilities.clone();
+        self.store
+            .transaction(move |uow| {
+                let mutations = mutations.clone();
+                let index_jobs = index_jobs.clone();
+                let principal = principal.clone();
+                let run_id = run_id.clone();
+                let expected_owner = expected_owner.clone();
+                let owner_id = owner_id.clone();
+                let acl_scope = acl_scope.clone();
+                let effect_id = effect_id.clone();
+                let commit_capabilities = commit_capabilities.clone();
+                Box::pin(async move {
+                    let run = uow.get_server_run(&run_id).await?;
+                    if !run.is_some_and(|run| {
+                        run.user_id.as_deref() == Some(expected_owner.as_str())
+                    }) {
+                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            "native answer snapshot run owner changed before commit".to_owned(),
+                        ));
+                    }
+                    if !capability_allowed_for_principal(
+                        &principal,
+                        &commit_capabilities,
+                        "write_graph.commit",
+                        &["write_graph"],
+                    ) || !principal_strings(&principal, "capabilities")
+                        .iter()
+                        .any(|capability| capability == "write_graph")
+                    {
+                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            "native answer snapshot write_graph capability was revoked before commit".to_owned(),
+                        ));
+                    }
+                    let commit_scope = security_scope_value(&principal);
+                    if mutations.iter().any(|mutation| {
+                        !graph_mutation_scope_allowed(&mutation.scope, &commit_scope)
+                    }) {
+                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            "native answer snapshot scope changed before commit".to_owned(),
+                        ));
+                    }
+                    let scope = mutations.first().map(|mutation| mutation.scope.clone()).ok_or_else(|| {
+                        kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                            "native answer snapshot has no graph mutation".to_owned(),
+                        )
+                    })?;
+                    let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                        uow,
+                        &scope,
+                        &mutations,
+                        "conversation",
+                        &owner_id,
+                        acl_scope.as_deref(),
+                        &effect_id,
+                    )
+                    .await?;
+                    for mutation in mutations {
+                        uow.apply_graph_mutation(mutation).await?;
+                    }
+                    for mutation in acl_mutations {
+                        uow.apply_graph_mutation(mutation).await?;
+                    }
+                    for job in index_jobs.into_iter().chain(acl_jobs) {
+                        uow.enqueue_index_job(job).await?;
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|_| "native answer context snapshot could not be committed".to_owned())
+    }
+
     async fn execute_native_answer_generation(
         &self,
         handoff: RecordedWorkerHandoff,
@@ -1211,6 +1339,7 @@ impl PostgresRunApplicationService {
                 "Rust-native answer generation requires a configured structured chat provider",
             ));
         }
+        self.persist_native_answer_context_snapshot(&request).await?;
         let answer = self.native_generate_answer(&request).await?;
         request
             .ephemeral_context

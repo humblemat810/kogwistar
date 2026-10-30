@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use kogwistar_contracts::{GraphDefaultAclIntentV1, GraphMutationBatchV2, stable_id};
 use kogwistar_runtime::{
     NativeOperationOutput, NativeOperationRegistrationError, NativeOperationRegistry,
     RecordedStateUpdate, RuntimeNativeExecutionError, RuntimeNativeStepRequest,
@@ -8,6 +9,7 @@ use kogwistar_runtime::{
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -396,17 +398,7 @@ impl OpenAiCompatibleChatConfig {
         evidence_pack: &Value,
         used_node_ids: &[String],
     ) -> Result<Value, String> {
-        let (evidence_text, aliases) = evidence_text_and_aliases(evidence_pack)?;
-        let user_prompt = format!(
-            concat!(
-                "Answer the question using only the supplied evidence for factual claims. ",
-                "The reasoning field must be a brief rationale summary, not private chain-of-thought. ",
-                "Return the required JSON object. Each citation must reference an exact ",
-                "node alias and mention/span index from the evidence.\n\nQuestion:\n",
-                "{}\n\nEvidence:\n{}"
-            ),
-            question, evidence_text
-        );
+        let (user_prompt, aliases) = answer_user_prompt(question, evidence_pack)?;
         for _ in 0..3 {
             if let Some(answer) = self.complete_answer(system_prompt, &user_prompt).await? {
                 return restore_answer_aliases(answer, &aliases, used_node_ids);
@@ -543,6 +535,290 @@ impl OpenAiCompatibleChatConfig {
         };
         Ok(serde_json::from_str(&content).ok())
     }
+}
+
+fn answer_prompt_messages(
+    system_prompt: &str,
+    question: &str,
+    evidence_pack: &Value,
+) -> Result<(Vec<Value>, BTreeMap<String, String>), String> {
+    let (user_prompt, aliases) = answer_user_prompt(question, evidence_pack)?;
+    Ok((
+        vec![
+            json!({"role": "system", "content": system_prompt}),
+            json!({"role": "user", "content": user_prompt}),
+        ],
+        aliases,
+    ))
+}
+
+fn answer_user_prompt(
+    question: &str,
+    evidence_pack: &Value,
+) -> Result<(String, BTreeMap<String, String>), String> {
+    let (evidence_text, aliases) = evidence_text_and_aliases(evidence_pack)?;
+    let user_prompt = format!(
+        concat!(
+            "Answer the question using only the supplied evidence for factual claims. ",
+            "The reasoning field must be a brief rationale summary, not private chain-of-thought. ",
+            "Return the required JSON object. Each citation must reference an exact ",
+            "node alias and mention/span index from the evidence.\n\nQuestion:\n",
+            "{}\n\nEvidence:\n{}"
+        ),
+        question, evidence_text
+    );
+    Ok((user_prompt, aliases))
+}
+
+pub(crate) fn answer_context_snapshot_batch(
+    request: &RuntimeNativeStepRequest,
+    model_name: &str,
+) -> Result<GraphMutationBatchV2, String> {
+    let state = &request.state;
+    let string_field = |field: &'static str| {
+        state
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("native answer snapshot requires {field}"))
+    };
+    let conversation_id = string_field("conversation_id")?;
+    if conversation_id != request.conversation_id {
+        return Err("native answer snapshot conversation does not match admitted run".to_owned());
+    }
+    let run_id = state
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&request.run_id);
+    let question = string_field("question")?;
+    let system_prompt = string_field("system_prompt")?;
+    let evidence_pack = state
+        .get("_rt")
+        .and_then(Value::as_object)
+        .and_then(|runtime| runtime.get("evidence_pack"))
+        .ok_or_else(|| "native answer snapshot requires materialized evidence".to_owned())?;
+    let (messages, _) = answer_prompt_messages(system_prompt, question, evidence_pack)?;
+    let used_node_ids = state
+        .get("used_node_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "native answer snapshot requires selected evidence IDs".to_owned())?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "native answer snapshot evidence IDs must be strings".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let run_step_seq = state
+        .get("run_step_seq")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| u64::try_from(request.step_seq).unwrap_or_default());
+    let attempt_seq = state
+        .get("attempt_seq")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let tail_turn_index = state
+        .get("prev_turn_meta_summary")
+        .and_then(|summary| summary.get("tail_turn_index"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let evidence_pack_digest = state
+        .get("evidence_pack_digest")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let evidence_pack_hash = evidence_pack_digest
+        .get("evidence_pack_hash")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let llm_input_payload = json!({"system_prompt": system_prompt, "question": question});
+    let extra_hash_payload = json!({
+        "question": question,
+        "used_node_ids": used_node_ids,
+        "evidence_pack_hash": evidence_pack_hash
+    });
+    let rendered_payload = json!({
+        "messages": messages,
+        "llm_input_payload": llm_input_payload,
+        "evidence_pack_digest": evidence_pack_digest,
+        "extra_hash_payload": extra_hash_payload
+    });
+    let rendered_context_hash = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&rendered_payload).map_err(|_| {
+            "native answer snapshot could not serialize rendered context".to_owned()
+        })?)
+    );
+    let char_count = messages
+        .iter()
+        .filter_map(|message| message.get("content").and_then(Value::as_str))
+        .map(|content| content.chars().count())
+        .sum::<usize>();
+    let budget_tokens = state
+        .get("context_budget_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let snapshot_id = stable_id(
+        "conversation.context_snapshot",
+        &[
+            conversation_id.to_owned(),
+            run_id.to_owned(),
+            "generate_answer_with_citations".to_owned(),
+            run_step_seq.to_string(),
+            attempt_seq.to_string(),
+        ],
+    )
+    .to_string();
+    let prompt_messages = serde_json::to_string(&messages)
+        .map_err(|_| "native answer snapshot could not serialize prompt messages".to_owned())?;
+    let llm_input_payload = serde_json::to_string(&llm_input_payload)
+        .map_err(|_| "native answer snapshot could not serialize provider input".to_owned())?;
+    let evidence_pack_digest = serde_json::to_string(&evidence_pack_digest)
+        .map_err(|_| "native answer snapshot could not serialize evidence digest".to_owned())?;
+    let properties = json!({
+        "entity_type": "context_snapshot",
+        "prompt_messages": prompt_messages,
+        "llm_input_payload": llm_input_payload,
+        "evidence_pack_digest": evidence_pack_digest
+    });
+    let metadata = json!({
+        "entity_type": "context_snapshot",
+        "level_from_root": 0,
+        "in_conversation_chain": false,
+        "in_ui_chain": false,
+        "run_id": run_id,
+        "run_step_seq": run_step_seq,
+        "attempt_seq": attempt_seq,
+        "stage": "generate_answer_with_citations",
+        "model_name": model_name,
+        "budget_tokens": budget_tokens,
+        "tail_turn_index": tail_turn_index,
+        "used_node_ids": used_node_ids,
+        "rendered_context_hash": rendered_context_hash,
+        "cost.char_count": char_count,
+        "cost.token_count": Value::Null
+    });
+    let scope = state
+        .get("_rt_graph_scope")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| "native answer snapshot trusted graph scope is missing".to_owned())?;
+    let graph_scope = json!({
+        "storage_namespace": scope.get("storage_namespace").cloned().unwrap_or(Value::Null),
+        "workspace": scope.get("workspace").cloned().unwrap_or(Value::Null),
+        "graph_space": scope.get("graph_space").cloned().unwrap_or(Value::Null)
+    });
+    let span = crate::native_answer_persist::span_payload();
+    let node_payload = json!({
+        "id": snapshot_id,
+        "label": "Context Snapshot",
+        "type": "entity",
+        "summary": "",
+        "domain_id": null,
+        "canonical_entity_id": null,
+        "properties": properties,
+        "mentions": [{"spans": [span], "multimodal_spans": []}],
+        "embedding": null,
+        "doc_id": format!("conv:{conversation_id}"),
+        "metadata": metadata,
+        "level_from_root": 0,
+        "role": "system",
+        "turn_index": null,
+        "conversation_id": conversation_id,
+        "user_id": null
+    });
+    let node_id = snapshot_id.as_str();
+    let node_document = crate::native_answer_persist::model_document_fields(
+        &node_payload,
+        &["embedding", "metadata"],
+    );
+    let mut node_metadata = metadata.as_object().cloned().unwrap_or_default();
+    node_metadata.insert("_class_name".to_owned(), json!("ConversationNode"));
+    let (node_mutation, _) = crate::native_memory_pin::graph_mutation(
+        request,
+        &graph_scope,
+        node_id,
+        format!("native-context-snapshot|{run_id}|{run_step_seq}|{attempt_seq}|node"),
+        "node",
+        "conversation_node",
+        node_payload,
+        node_document,
+        node_metadata,
+    )
+    .map_err(|_| "native answer snapshot node mutation is invalid".to_owned())?;
+    let mut mutations = vec![node_mutation];
+    for (ordinal, target_id) in used_node_ids.iter().enumerate() {
+        let ordinal_text = ordinal.to_string();
+        let edge_id = stable_id(
+            "conversation.edge",
+            &[
+                format!("conv:{conversation_id}"),
+                "depends_on".to_owned(),
+                snapshot_id.clone(),
+                target_id.clone(),
+                ordinal_text.clone(),
+            ],
+        )
+        .to_string();
+        let edge_payload = json!({
+            "id": edge_id,
+            "source_ids": [snapshot_id],
+            "target_ids": [target_id],
+            "relation": "depends_on",
+            "label": format!("depends_on:{snapshot_id}->{target_id}"),
+            "type": "relationship",
+            "summary": format!("Context snapshot {snapshot_id} depends on node {target_id}"),
+            "doc_id": format!("conv:{conversation_id}"),
+            "mentions": [{"spans": [crate::native_answer_persist::span_payload()], "multimodal_spans": []}],
+            "domain_id": null,
+            "canonical_entity_id": null,
+            "properties": {"entity_type": "conversation_edge", "ordinal": ordinal},
+            "embedding": null,
+            "metadata": {
+                "entity_type": "conversation_edge",
+                "ordinal": ordinal,
+                "run_id": run_id,
+                "run_step_seq": run_step_seq,
+                "attempt_seq": attempt_seq,
+                "tail_turn_index": tail_turn_index
+            },
+            "source_edge_ids": [],
+            "target_edge_ids": []
+        });
+        let edge_id = edge_id.as_str();
+        let edge_document = crate::native_answer_persist::model_document_fields(&edge_payload, &[]);
+        let mut edge_metadata = edge_payload["metadata"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        edge_metadata.insert("_class_name".to_owned(), json!("ConversationEdge"));
+        let (edge_mutation, _) = crate::native_memory_pin::graph_mutation(
+            request,
+            &graph_scope,
+            edge_id,
+            format!("native-context-snapshot|{run_id}|{run_step_seq}|{attempt_seq}|edge|{ordinal}"),
+            "edge",
+            "conversation_edge",
+            edge_payload,
+            edge_document,
+            edge_metadata,
+        )
+        .map_err(|_| "native answer snapshot dependency mutation is invalid".to_owned())?;
+        mutations.push(edge_mutation);
+    }
+    let batch = GraphMutationBatchV2 {
+        contract_version: 2,
+        atomic: true,
+        mutations,
+        index_jobs: Vec::new(),
+        default_acl: GraphDefaultAclIntentV1 {
+            truth_graph: "conversation".to_owned(),
+        },
+    };
+    batch
+        .validate()
+        .map_err(|_| "native answer snapshot graph batch is invalid".to_owned())?;
+    Ok(batch)
 }
 
 fn restore_answer_aliases(
@@ -792,6 +1068,82 @@ mod tests {
     fn configuration_rejects_non_http_endpoint_and_blank_model() {
         assert!(OpenAiCompatibleChatConfig::new("file:///tmp/x", "model", None).is_err());
         assert!(OpenAiCompatibleChatConfig::new("http://localhost:1", " ", None).is_err());
+    }
+
+    #[test]
+    fn native_answer_snapshot_records_the_exact_aliased_provider_messages() {
+        let evidence = json!({
+            "nodes": [{
+                "node_id": "canonical-node-secret",
+                "label": "Label",
+                "mentions": [{"spans": [{"excerpt": "Verified evidence text"}]}]
+            }],
+            "edges": []
+        });
+        let (messages, _) =
+            answer_prompt_messages("system instructions", "question", &evidence).unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "aa_generate_answer_with_citations".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-snapshot".to_owned(),
+            workflow_id: "agentic_answering.v2".to_owned(),
+            node_id: "answer".to_owned(),
+            conversation_id: "conv-snapshot".to_owned(),
+            turn_node_id: None,
+            token_id: "token-snapshot".to_owned(),
+            parent_token_id: None,
+            step_seq: 6,
+            state: serde_json::from_value(json!({
+                "run_id": "run-snapshot",
+                "conversation_id": "conv-snapshot",
+                "run_step_seq": 12,
+                "attempt_seq": 2,
+                "question": "question",
+                "system_prompt": "system instructions",
+                "used_node_ids": ["canonical-node-secret"],
+                "evidence_pack_digest": {
+                    "node_ids": ["canonical-node-secret"],
+                    "edge_ids": [],
+                    "evidence_pack_hash": "fixture-evidence-hash"
+                },
+                "_rt_graph_scope": {
+                    "storage_namespace": "alpha",
+                    "workspace": "workspace-a",
+                    "graph_space": "space-a"
+                },
+                "_rt": {"evidence_pack": evidence}
+            }))
+            .unwrap(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Default::default(),
+        };
+        let batch = answer_context_snapshot_batch(&request, "fixture-model").unwrap();
+        assert!(batch.validate().is_ok());
+        assert_eq!(batch.mutations.len(), 2);
+        let snapshot = &batch.mutations[0].payload;
+        let properties = &snapshot["properties"];
+        let saved_messages: Value =
+            serde_json::from_str(properties["prompt_messages"].as_str().unwrap()).unwrap();
+        assert_eq!(saved_messages, json!(messages));
+        assert!(
+            saved_messages[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("NODE N1 | Label")
+        );
+        assert!(
+            !saved_messages[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("canonical-node-secret")
+        );
+        assert_eq!(batch.mutations[1].payload["relation"], "depends_on");
+        assert_eq!(
+            batch.mutations[1].payload["target_ids"],
+            json!(["canonical-node-secret"])
+        );
+        assert_eq!(batch.default_acl.truth_graph, "conversation");
     }
 
     #[tokio::test]

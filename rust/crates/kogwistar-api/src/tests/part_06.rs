@@ -4870,6 +4870,8 @@
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let chat_address = listener.local_addr().unwrap();
+        let snapshot_dsn = dsn.clone();
+        let snapshot_schema = schema.clone();
         let chat_server = tokio::spawn(async move {
             let (mut stream, _) =
                 tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
@@ -4903,6 +4905,70 @@
             let request: Value =
                 serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
             assert_eq!(request["response_format"]["type"], "json_schema");
+            let snapshot_reader =
+                PostgresStore::from_dsn(&snapshot_dsn, &snapshot_schema).unwrap();
+            let snapshots = snapshot_reader
+                .graph_projection_records(GraphProjectionRead {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    ids: None,
+                    metadata: MetadataFilter::default(),
+                    limit: 10,
+                })
+                .await
+                .unwrap();
+            let snapshot = snapshots.iter().find(|record| {
+                record.metadata.get("entity_type").and_then(Value::as_str)
+                    == Some("context_snapshot")
+                    && record.metadata.get("run_id").and_then(Value::as_str)
+                        == Some("rust-only-answer-e2e")
+            });
+            let snapshot = snapshot.expect(
+                "the model request must not start before its prompt snapshot is durable",
+            );
+            let snapshot_document: Value = serde_json::from_str(
+                snapshot.document.as_deref().expect("snapshot has document"),
+            )
+            .unwrap();
+            let prompt_messages: Value = serde_json::from_str(
+                snapshot_document["properties"]["prompt_messages"]
+                    .as_str()
+                    .expect("snapshot records provider prompt messages"),
+            )
+            .unwrap();
+            assert!(prompt_messages[1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Where is workflow runtime state stored?"));
+            let dependency_edges = snapshot_reader
+                .graph_projection_records(GraphProjectionRead {
+                    scope: GraphScope {
+                        namespace: "alpha".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_edges".to_owned(),
+                    ids: None,
+                    metadata: MetadataFilter::default(),
+                    limit: 10_000,
+                })
+                .await
+                .unwrap();
+            assert!(dependency_edges.iter().any(|record| {
+                record
+                    .document
+                    .as_deref()
+                    .and_then(|document| serde_json::from_str::<Value>(document).ok())
+                    .is_some_and(|document| {
+                        document["relation"] == "depends_on"
+                            && document["source_ids"] == json!([snapshot.id])
+                            && document["target_ids"] == json!(["answer-evidence-node"])
+                    })
+            }), "snapshot evidence dependency must commit before the provider call");
             let answer = json!({
                     "text":"The workflow runtime state is stored in the graph.",
                     "reasoning":"The selected evidence states this directly.",
