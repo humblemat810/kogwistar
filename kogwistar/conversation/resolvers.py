@@ -202,7 +202,14 @@ def _worker_graph_mutation_batch_for_entity(
     projection_method = getattr(write, projection_method_name, None)
     if write is None or not callable(projection_method):
         raise RuntimeError("Rust worker graph effects require the graph write projection")
-    document, raw_metadata = projection_method(entity)
+    projection = projection_method(entity)
+    if not isinstance(projection, (tuple, list)) or len(projection) != 2:
+        raise RuntimeError("Rust worker graph effects require a document/metadata pair")
+    document, raw_metadata = projection
+    if not isinstance(document, str):
+        raise RuntimeError("Rust worker graph effects require a string document")
+    if not isinstance(raw_metadata, Mapping):
+        raise RuntimeError("Rust worker graph effects require mapping projection metadata")
     metadata = dict(raw_metadata)
     metadata["_class_name"] = type(entity).__name__
 
@@ -224,8 +231,15 @@ def _worker_graph_mutation_batch_for_entity(
             embedder = getattr(engine, "_iterative_defensive_emb", None)
         if not callable(embedder):
             raise RuntimeError("Rust worker graph effects require an embedding provider")
-        embedding = normalize_embedding_vector(embedder(str(document)), allow_none=False)
+        normalized_embedding = normalize_embedding_vector(
+            embedder(str(document)), allow_none=False
+        )
+        if normalized_embedding is None:
+            raise RuntimeError("Rust worker graph effects require a valid embedding")
+        embedding = normalized_embedding
         entity.embedding = embedding
+    if not isinstance(embedding, list) or not embedding:
+        raise RuntimeError("Rust worker graph effects require a non-empty embedding")
 
     envelope = build_graph_model_envelope(entity, field_mode="backend")
     payload = envelope["payload"]
@@ -241,6 +255,8 @@ def _worker_graph_mutation_batch_for_entity(
         document=str(document),
         metadata=metadata,
     )
+    if not isinstance(source_payload_json, str):
+        raise RuntimeError("Rust worker graph effects require a serialized source payload")
     index_jobs = [
         IndexJobIntentPayload(
             job_id=str(
@@ -372,6 +388,14 @@ def _memory_pin_worker_entities(
                 or entity.metadata.get("agent_id")
                 or user_id
             )
+            security_scope = entity.metadata.get("security_scope")
+            if security_scope is not None and not isinstance(security_scope, str):
+                raise RuntimeError("Rust memory pin requires a string security scope")
+            shared_with = entity.metadata.get("shared_with", [])
+            if not isinstance(shared_with, list) or not all(
+                isinstance(value, str) for value in shared_with
+            ):
+                raise RuntimeError("Rust memory pin requires a list of shared principals")
             records = (
                 ACLRecord(
                     target=ACLTarget(
@@ -383,9 +407,9 @@ def _memory_pin_worker_entities(
                     mode=cast(Any, entity.metadata.get("visibility", "private")),
                     created_by=owner_id,
                     owner_id=owner_id,
-                    security_scope=entity.metadata.get("security_scope") or None,
+                    security_scope=security_scope or None,
                     shared_with_principals=tuple(
-                        str(value) for value in entity.metadata.get("shared_with", ())
+                        value for value in shared_with if isinstance(value, str)
                     ),
                 ),
             )
@@ -729,7 +753,7 @@ def _add_user_turn(ctx: StepContext) -> StepRunResult:
     }
     if worker_effect_batch is not None:
         result_values["graph_mutation_batch"] = worker_effect_batch
-    return RunSuccess(**result_values)
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("link_prev_turn")
@@ -780,6 +804,7 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
         "conversation_edge",
     )
 
+    worker_effect_batch: dict[str, JsonValue] | None = None
     if deps.get("_rust_worker_effects") is True:
         from kogwistar.engine_core.models import Grounding, Span
 
@@ -856,7 +881,7 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     }
     if worker_effect_batch is not None:
         result_values["graph_mutation_batch"] = worker_effect_batch
-    return RunSuccess(**result_values)
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("link_assistant_turn")
@@ -960,6 +985,10 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
                 ctx, ce, edge, entity_kind="edge"
             )
     else:
+        if not callable(add_link_to_new_turn):
+            raise RuntimeError(
+                "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
+            )
         add_link_to_new_turn(
             edge_id,
             resp_turn,
@@ -980,7 +1009,7 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     }
     if worker_effect_batch is not None:
         result_values["graph_mutation_batch"] = worker_effect_batch
-    return RunSuccess(**result_values)
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("context_snapshot")
@@ -1196,6 +1225,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
 
     out = None
     worker_effect_batch: dict[str, JsonValue] | None = None
+    updated_summary: MetaFromLastSummary | None = None
     selected_memory = mem_rehydrated.selected if mem_rehydrated else None
     memory_context_text = (
         mem_rehydrated.memory_context_text if mem_rehydrated else None
@@ -1273,12 +1303,18 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     state_update: list[StateUpdate] = cast(list[StateUpdate], [("u", update_payload)])
     result_values: dict[str, object] = {"state_update": state_update}
     if deps.get("_rust_worker_effects") is True:
+        summary_to_save = prev_turn_meta_summary
+        if out is not None:
+            if updated_summary is None:
+                raise RuntimeError("Rust memory pin is missing its summary update")
+            summary_to_save = updated_summary
         update_payload["prev_turn_meta_summary"] = _meta_summary_payload(
-            updated_summary if out is not None else prev_turn_meta_summary
+            summary_to_save
         )
     if worker_effect_batch is not None:
         result_values["graph_mutation_batch"] = worker_effect_batch
-    return RunSuccess(conversation_node_id=None, **result_values)
+    result_values["conversation_node_id"] = None
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("kg_pin")
@@ -1371,7 +1407,8 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     result_values: dict[str, object] = {"state_update": state_update}
     if worker_effect_batch is not None:
         result_values["graph_mutation_batch"] = worker_effect_batch
-    return RunSuccess(conversation_node_id=None, **result_values)
+    result_values["conversation_node_id"] = None
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("answer", is_nested=True)
@@ -1609,7 +1646,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
     }
     if worker_effect_batch is not None:
         result_values["graph_mutation_batch"] = worker_effect_batch
-    return RunSuccess(**result_values)
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("decide_summarize")
@@ -1851,7 +1888,7 @@ def _aa_prepare(ctx: StepContext) -> StepRunResult:
     }
     if run_anchor_batch is not None:
         result_values["graph_mutation_batch"] = run_anchor_batch
-    return RunSuccess(**result_values)
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("aa_get_view_and_question")
@@ -2431,7 +2468,8 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
             deps["conversation_engine"],
             worker_entities,
         )
-    return RunSuccess(conversation_node_id=None, **result_values)
+    result_values["conversation_node_id"] = None
+    return RunSuccess.model_validate(result_values)
 
 
 @default_resolver.register("aa_debug_select_top_candidates")
@@ -2654,4 +2692,4 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
             _deps(ctx)["conversation_engine"],
             worker_entities,
         )
-    return RunSuccess(**result_values)
+    return RunSuccess.model_validate(result_values)

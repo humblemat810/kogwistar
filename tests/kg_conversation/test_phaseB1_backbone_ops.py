@@ -481,6 +481,34 @@ def test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write
         "edge_endpoints",
     }
 
+    engine.pre_add_edge_hooks = [lambda _edge: True]
+    rejected_ctx = FakeStepContext(
+        {
+            "user_id": "u1",
+            "conversation_id": "c1",
+            "prev_turn_id": "prev",
+            "turn_node_id": "curr",
+            "turn_index": 1,
+            "self_span": span.model_dump(field_mode="backend", dump_format="json"),
+            "prev_turn_meta_summary": {
+                "prev_node_char_distance_from_last_summary": 5,
+                "prev_node_distance_from_last_summary": 1,
+                "tail_turn_index": 1,
+            },
+            "_deps": {
+                "conversation_engine": engine,
+                "_rust_worker_effects": True,
+                "add_link_to_new_turn": lambda *_args, **_kwargs: pytest.fail(
+                    "Rust worker resolver must not call the Python graph writer"
+                ),
+            },
+        }
+    )
+    rejected_ctx.idempotency_key = "lane-link-prev-rejected"
+    rejected = default_resolver.handlers["link_prev_turn"](rejected_ctx)
+    assert isinstance(rejected, RunSuccess)
+    assert "graph_mutation_batch" not in rejected.model_dump()
+
 
 def test_link_assistant_turn_creates_next_turn_edge():
     ce = FakeConversationEngine()

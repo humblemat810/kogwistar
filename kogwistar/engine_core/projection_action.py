@@ -13,7 +13,8 @@ import json
 import math
 import struct
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Literal, Protocol, cast
 
 from typing_extensions import TypedDict
 
@@ -254,7 +255,8 @@ async def apply_projection_action_async(
     action = decode_projection_action(job, result_json, result_sha256)
     apply_typed = getattr(graph, "apply_projection_action", None)
     if callable(apply_typed):
-        applied = await apply_typed(action)
+        typed_apply = cast(Callable[[ProjectionAction], Awaitable[object]], apply_typed)
+        applied = await typed_apply(action)
         if applied is False:
             raise _fail("graph store rejected projection action")
         return action

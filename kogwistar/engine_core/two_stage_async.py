@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
     AbstractContextManager,
@@ -43,7 +43,11 @@ class _IndexingLike(Protocol):
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str: ...
 
     def canonical_revision_payloads(
-        self, *, entity_kind: str, entity_ids: Sequence[str]
+        self,
+        *,
+        entity_kind: str,
+        entity_ids: Iterable[str],
+        namespace: str | None = None,
     ) -> Mapping[str, str]: ...
 
     def canonical_entity_revision(

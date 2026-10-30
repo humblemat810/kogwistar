@@ -258,12 +258,17 @@ class PostgresTwoStageProjectionAdapter:
         document = str(row["document"])
         embedding = self.engine.embed.iterative_defensive_emb(document)
         if native_projection:
+            normalized_embedding = normalize_embedding_vector(
+                embedding, allow_none=False
+            )
+            if normalized_embedding is None:
+                raise RuntimeError("PostgreSQL Stage-1 promotion requires an embedding")
             self._promote_native_projection_stage1(
                 entity_kind=entity_kind,
                 entity_id=entity_id,
                 original=row,
                 expected_fingerprint=expected,
-                embedding=normalize_embedding_vector(embedding, allow_none=False),
+                embedding=normalized_embedding,
             )
             return
         metadata = dict(row.get("metadata") or {})
@@ -638,6 +643,7 @@ class PostgresTwoStageProjectionAdapter:
             "_kogwistar_stage1_expected_revision",
         )
         has_stage1_marker = any(name in accepted_metadata for name in stage1_marker_names)
+        expected_revision: int | None = None
         if has_stage1_marker:
             source_fingerprint = accepted_metadata.pop(
                 "_kogwistar_stage1_source_fingerprint", None
@@ -648,7 +654,7 @@ class PostgresTwoStageProjectionAdapter:
             source_revision = accepted_metadata.pop(
                 "_kogwistar_stage1_revision", None
             )
-            expected_revision = accepted_metadata.pop(
+            expected_revision_raw = accepted_metadata.pop(
                 "_kogwistar_stage1_expected_revision", None
             )
             if (
@@ -657,14 +663,16 @@ class PostgresTwoStageProjectionAdapter:
                 or not isinstance(expected_fingerprint, str)
                 or not expected_fingerprint
                 or type(source_revision) is not int
-                or type(expected_revision) is not int
+                or type(expected_revision_raw) is not int
             ):
                 return False
+            expected_revision = expected_revision_raw
             if (
                 source_fingerprint != expected_fingerprint
                 or source_revision != expected_revision
             ):
                 return False
+            assert expected_revision is not None
             if (
                 expected_fingerprint
                 != self._current_fingerprint(

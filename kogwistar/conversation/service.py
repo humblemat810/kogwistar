@@ -1111,7 +1111,7 @@ class ConversationService:
             return (
                 _json_int(metadata.get("run_step_seq")),
                 _json_int(metadata.get("attempt_seq")),
-                n.id,
+                str(n.id or ""),
             )
 
         return max(snaps, key=_k)
