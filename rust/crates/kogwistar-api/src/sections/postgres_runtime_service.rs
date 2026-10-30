@@ -560,8 +560,25 @@ impl PostgresRunApplicationService {
                         limit: 20_000,
                     };
                     let nodes = uow.graph_projection_records(read).await?;
+                    let mut edge_metadata = BTreeMap::new();
+                    edge_metadata.insert(
+                        "doc_id".to_owned(),
+                        json!(format!("conv:{conversation_id}")),
+                    );
+                    let edges = uow
+                        .graph_projection_records(GraphProjectionRead {
+                            scope: scope.clone(),
+                            table: "gke_edges".to_owned(),
+                            ids: None,
+                            metadata: MetadataFilter {
+                                equals: edge_metadata,
+                            },
+                            limit: 20_000,
+                        })
+                        .await?;
                     let ids = nodes
                         .iter()
+                        .chain(edges.iter())
                         .map(|record| record.id.clone())
                         .collect::<Vec<_>>();
                     let acl_records = uow
@@ -569,9 +586,9 @@ impl PostgresRunApplicationService {
                         .await?;
                     let mut acl_index = GraphAclIndex::default();
                     acl_index.extend_from_records(&acl_records, "conversation");
-                    let (visible, _) = graph_records_visible_by_acl_with_index(
+                    let (visible, visible_edges) = graph_records_visible_by_acl_with_index(
                         &nodes,
-                        &[],
+                        &edges,
                         &acl_index,
                         &acl_principal,
                     );
@@ -595,6 +612,16 @@ impl PostgresRunApplicationService {
                                 })
                                 .unwrap_or(false)
                         })
+                        .map(|record| {
+                            json!({
+                                "id": record.id,
+                                "document": record.document,
+                                "metadata": record.metadata
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let context_edges = visible_edges
+                        .iter()
                         .map(|record| {
                             json!({
                                 "id": record.id,
@@ -637,7 +664,8 @@ impl PostgresRunApplicationService {
                             "document": record.document,
                             "metadata": record.metadata
                         },
-                        "context_nodes": context_nodes
+                        "context_nodes": context_nodes,
+                        "context_edges": context_edges
                     })))
                 })
             })

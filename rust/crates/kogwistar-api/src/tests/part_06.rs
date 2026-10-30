@@ -4954,6 +4954,22 @@
             assert_eq!(conversation_context[1]["content"], "Earlier user question");
             assert_eq!(conversation_context[1]["node_id"], "answer-prior-turn");
             assert_eq!(conversation_context[2]["node_id"], "answer-user-turn");
+            assert!(conversation_context[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Conversation summary:\nEarlier conversation summary"));
+            assert!(conversation_context[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Memory context:\nPinned memory detail"));
+            assert!(conversation_context[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Pinned knowledge references:\n- Architecture reference | A pinned graph reference"));
+            assert!(!conversation_context[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Bob-private reference"));
             let dependency_edges = snapshot_reader
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
@@ -5193,6 +5209,58 @@
                 None,
             )
         };
+        let acl_edge = |target: &str, owner: &str| {
+            put_node(
+                &format!("acl-edge-{target}"),
+                &format!("e2e-acl-edge-{target}"),
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!("conversation")),
+                    ("acl_target_grain".to_owned(), json!("edge")),
+                    ("acl_target_entity_id".to_owned(), json!(target)),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("acl_mode".to_owned(), json!("private")),
+                    ("owner_id".to_owned(), json!(owner)),
+                ]),
+                None,
+                None,
+            )
+        };
+        let put_edge = |id: &str, relation: &str, source: &str, target: &str| {
+            let payload = json!({
+                "id": id,
+                "relation": relation,
+                "source_ids": [source],
+                "target_ids": [target],
+                "doc_id": "conv:answer-e2e-conversation"
+            });
+            GraphMutation {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                entity_kind: "edge".to_owned(),
+                event_id: format!("e2e-{id}"),
+                op: "ADD".to_owned(),
+                payload: payload.clone(),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(payload.to_string()),
+                    metadata: serde_json::Map::from_iter([
+                        ("entity_type".to_owned(), json!("conversation_edge")),
+                        ("doc_id".to_owned(), json!("conv:answer-e2e-conversation")),
+                        ("relation".to_owned(), json!(relation)),
+                        ("source_ids".to_owned(), json!([source])),
+                        ("target_ids".to_owned(), json!([target])),
+                        ("lifecycle_status".to_owned(), json!("active")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }
+        };
         let item_acl = |target: &str, truth_graph: &str, grain: &str, item_id: &str, mode: &str| {
             put_node(
                 &format!("acl-{grain}-{item_id}"),
@@ -5298,6 +5366,125 @@
                 None,
             ),
             acl("answer-user-turn", "conversation", "private"),
+            put_node(
+                "answer-memory-summary",
+                "e2e-memory-summary",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("memory_summary")),
+                    ("conversation_id".to_owned(), json!("answer-e2e-conversation")),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
+                    json!({"type":"memory_summary","summary":"Earlier conversation summary","turn_index":0,"metadata":{
+                        "entity_type":"memory_summary","conversation_id":"answer-e2e-conversation",
+                        "lifecycle_status":"active"
+                    }})
+                    .to_string(),
+                ),
+                None,
+            ),
+            acl("answer-memory-summary", "conversation", "private"),
+            put_node(
+                "answer-memory-context",
+                "e2e-memory-context",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("memory_context")),
+                    (
+                        "conversation_id".to_owned(),
+                        json!("answer-e2e-conversation"),
+                    ),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
+                    json!({"summary":"Pinned memory detail","metadata":{
+                        "entity_type":"memory_context","conversation_id":"answer-e2e-conversation",
+                        "lifecycle_status":"active"
+                    }})
+                    .to_string(),
+                ),
+                None,
+            ),
+            acl("answer-memory-context", "conversation", "private"),
+            put_node(
+                "answer-knowledge-pointer",
+                "e2e-knowledge-pointer",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("knowledge_reference")),
+                    (
+                        "conversation_id".to_owned(),
+                        json!("answer-e2e-conversation"),
+                    ),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
+                    json!({
+                        "label":"Architecture reference",
+                        "summary":"A pinned graph reference",
+                        "properties":{"refers_to_id":"answer-evidence-node"},
+                        "metadata":{
+                            "entity_type":"knowledge_reference",
+                            "conversation_id":"answer-e2e-conversation",
+                            "lifecycle_status":"active"
+                        }
+                    })
+                    .to_string(),
+                ),
+                None,
+            ),
+            acl("answer-knowledge-pointer", "conversation", "private"),
+            put_node(
+                "answer-hidden-knowledge-pointer",
+                "e2e-hidden-knowledge-pointer",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("knowledge_reference")),
+                    ("conversation_id".to_owned(), json!("answer-e2e-conversation")),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                Some(
+                    json!({"label":"Bob-private reference","summary":"Must not enter Alice's prompt","metadata":{
+                        "entity_type":"knowledge_reference","conversation_id":"answer-e2e-conversation",
+                        "lifecycle_status":"active"
+                    }})
+                    .to_string(),
+                ),
+                None,
+            ),
+            put_node(
+                "acl-node-answer-hidden-knowledge-pointer",
+                "e2e-acl-hidden-knowledge-pointer",
+                serde_json::Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!("conversation")),
+                    ("acl_target_grain".to_owned(), json!("node")),
+                    ("acl_target_entity_id".to_owned(), json!("answer-hidden-knowledge-pointer")),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("acl_mode".to_owned(), json!("private")),
+                    ("owner_id".to_owned(), json!("bob")),
+                ]),
+                None,
+                None,
+            ),
+            put_edge(
+                "answer-memory-edge",
+                "has_memory_context",
+                "answer-user-turn",
+                "answer-memory-context",
+            ),
+            acl_edge("answer-memory-edge", "alice"),
+            put_edge(
+                "answer-reference-edge",
+                "references",
+                "answer-user-turn",
+                "answer-knowledge-pointer",
+            ),
+            acl_edge("answer-reference-edge", "alice"),
+            put_edge(
+                "answer-hidden-reference-edge",
+                "references",
+                "answer-user-turn",
+                "answer-hidden-knowledge-pointer",
+            ),
+            acl_edge("answer-hidden-reference-edge", "bob"),
             put_node(
                 "answer-evidence-node",
                 "e2e-evidence-node",
