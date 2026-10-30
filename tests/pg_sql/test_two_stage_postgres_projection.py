@@ -1396,11 +1396,13 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
         engine.close()
 
 
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
 def test_postgres_rust_native_stage1_is_promoted_by_python_worker(
-    sa_engine, pg_schema, monkeypatch
+    sa_engine, pg_schema, monkeypatch, entity_kind: str
 ) -> None:
-    """A Python worker can consume Rust-native PostgreSQL Stage-1 state."""
+    """A Python worker can promote Rust-native node and edge Stage-1 state."""
     _require_postgres(sa_engine, pg_schema)
+    entity_id = f"rust-to-python-stage1-{entity_kind}"
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
@@ -1410,18 +1412,40 @@ def test_postgres_rust_native_stage1_is_promoted_by_python_worker(
         embedding_function=ConstantEmbeddingFunction(dim=3),
     )
     try:
-        rust_engine.write.add_node(
-            build_entity_node(
-                node_id="rust-to-python-stage1", doc_id="d1", embedding=None
+        if entity_kind == "node":
+            entity = build_entity_node(
+                node_id=entity_id, doc_id="d1", embedding=None
             )
-        )
-        pending = rust_engine.backend.node_get(
-            ids=["rust-to-python-stage1"], include=["embeddings", "metadatas"]
+            rust_engine.write.add_node(entity)
+        else:
+            for node_id in ("rust-to-python-source", "rust-to-python-target"):
+                rust_engine.write.add_node(
+                    build_entity_node(
+                        node_id=node_id,
+                        doc_id="d1",
+                        embedding=[0.1, 0.2, 0.3],
+                    )
+                )
+            seed_metrics = rust_engine.indexing.make_index_job_worker(
+                max_jobs_per_tick=10
+            ).tick()
+            assert seed_metrics.done == 2, seed_metrics
+            entity = build_relationship_edge(
+                edge_id=entity_id,
+                src="rust-to-python-source",
+                tgt="rust-to-python-target",
+                doc_id="d1",
+                embedding=None,
+            )
+            rust_engine.write.add_edge(entity)
+        getter = getattr(rust_engine.backend, f"{entity_kind}_get")
+        pending = getter(
+            ids=[entity_id], include=["embeddings", "metadatas"]
         )
         assert pending["embeddings"] == [None]
         assert pending["metadatas"][0].get("_kogwistar_stage2_ready") is not True
         queued = rust_engine.meta_sqlite.list_index_jobs(
-            namespace="default", entity_kind="node", entity_id="rust-to-python-stage1"
+            namespace="default", entity_kind=entity_kind, entity_id=entity_id
         )
         assert any(
             job.index_kind == "node_embedding" and job.status == "PENDING"
@@ -1447,18 +1471,22 @@ def test_postgres_rust_native_stage1_is_promoted_by_python_worker(
             batch_size=4, max_inflight=4, max_jobs_per_tick=4
         ).tick()
         assert metrics.claimed == 1 and metrics.done == 1, metrics
-        promoted = python_engine.backend.node_get(
-            ids=["rust-to-python-stage1"], include=["embeddings", "metadatas"]
-        )
+        getter = getattr(python_engine.backend, f"{entity_kind}_get")
+        promoted = getter(ids=[entity_id], include=["embeddings", "metadatas"])
         assert promoted["embeddings"][0] == pytest.approx([0.01, 0.01, 0.01])
         assert promoted["metadatas"][0]["_kogwistar_stage2_ready"] is True
         assert (
             python_engine.backend.stage1_projection_get(
                 namespace="default",
-                entity_kind="node",
-                entity_id="rust-to-python-stage1",
+                entity_kind=entity_kind,
+                entity_id=entity_id,
             )
             is None
         )
+        if entity_kind == "edge":
+            endpoints = python_engine.backend.edge_endpoints_get(
+                where={"edge_id": entity_id}, include=["metadatas"]
+            )
+            assert len(endpoints["ids"]) == 2
     finally:
         python_engine.close()
