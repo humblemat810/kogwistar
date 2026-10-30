@@ -304,6 +304,9 @@ jobs:
           docker ps -a
           exit 1
 
+      - name: Build Rust API server for PostgreSQL integration tests
+        run: cargo build -p kogwistar-api --bin kogwistar-server --locked
+
       - name: Test Rust workspace
         run: >-
           cargo test --workspace --all-targets --locked --
@@ -321,9 +324,6 @@ jobs:
       - name: Install live Chroma interoperability dependencies
         working-directory: .
         run: python -m pip install -e ".[test,server,chroma,pgvector]"
-
-      - name: Build Rust API server for live backend interoperability
-        run: cargo build -p kogwistar-api --bin kogwistar-server --locked
 
       - name: Verify sequential Python-Rust backend handoffs
         working-directory: .

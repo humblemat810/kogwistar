@@ -18,16 +18,30 @@ def test_rust_postgres_tests_are_explicitly_gated_and_ci_runs_them() -> None:
     for path in rust_root.rglob("*.rs"):
         source = path.read_text(encoding="utf-8")
         declarations = list(
-            re.finditer(r"(?m)^[ \t]*(?:async[ \t]+)?fn[ \t]+([A-Za-z_]\w*)[ \t]*\(", source)
+            re.finditer(
+                r"(?m)^(?P<indent>[ \t]*)(?:async[ \t]+)?fn[ \t]+([A-Za-z_]\w*)[ \t]*\(",
+                source,
+            )
         )
         for occurrence in re.finditer(
             rf'(?:std::)?env::var\(\s*"{DSN_ENV}"\s*\)', source
         ):
             postgres_references += 1
-            declaration = next(
-                (item for item in reversed(declarations) if item.start() < occurrence.start()),
-                None,
-            )
+            preceding = [item for item in declarations if item.start() < occurrence.start()]
+            declaration = preceding[-1] if preceding else None
+            if declaration is not None:
+                # A Rust test may contain local helper methods (for example a
+                # Drop implementation). Attribute their DSN use to the outer
+                # test rather than requiring the local method to be ignored.
+                nested_indent = len(declaration.group("indent"))
+                declaration = next(
+                    (
+                        item
+                        for item in reversed(preceding[:-1])
+                        if len(item.group("indent")) < nested_indent
+                    ),
+                    declaration,
+                )
             assert declaration is not None, f"{path}: DSN reference is outside a function"
 
             preceding_lines = source[: declaration.start()].splitlines()
