@@ -40,12 +40,20 @@ def _conversation_tree():
     ]
     edges = [
         build_relationship_edge(
-            edge_id="pg-conv-root-child", src="pg-conv-root", tgt="pg-conv-child",
-            doc_id="pg-conv", relation="next_turn", embedding=None,
+            edge_id="pg-conv-root-child",
+            src="pg-conv-root",
+            tgt="pg-conv-child",
+            doc_id="pg-conv",
+            relation="next_turn",
+            embedding=None,
         ),
         build_relationship_edge(
-            edge_id="pg-conv-child-leaf", src="pg-conv-child", tgt="pg-conv-leaf",
-            doc_id="pg-conv", relation="next_turn", embedding=None,
+            edge_id="pg-conv-child-leaf",
+            src="pg-conv-child",
+            tgt="pg-conv-leaf",
+            doc_id="pg-conv",
+            relation="next_turn",
+            embedding=None,
         ),
     ]
     return nodes, edges
@@ -54,8 +62,11 @@ def _conversation_tree():
 def _conversation_tree_snapshot(engine: GraphKnowledgeEngine) -> dict[str, object]:
     graph = GraphQuery(engine)
     ids = [
-        "pg-conv-root", "pg-conv-child", "pg-conv-leaf",
-        "pg-conv-root-child", "pg-conv-child-leaf",
+        "pg-conv-root",
+        "pg-conv-child",
+        "pg-conv-leaf",
+        "pg-conv-root-child",
+        "pg-conv-child-leaf",
     ]
     return {
         "neighbors": {
@@ -69,18 +80,21 @@ def _conversation_tree_snapshot(engine: GraphKnowledgeEngine) -> dict[str, objec
     }
 
 
-async def _conversation_tree_snapshot_async(engine: GraphKnowledgeEngine) -> dict[str, object]:
+async def _conversation_tree_snapshot_async(
+    engine: GraphKnowledgeEngine,
+) -> dict[str, object]:
     graph = GraphQuery(engine)
     ids = [
-        "pg-conv-root", "pg-conv-child", "pg-conv-leaf",
-        "pg-conv-root-child", "pg-conv-child-leaf",
+        "pg-conv-root",
+        "pg-conv-child",
+        "pg-conv-leaf",
+        "pg-conv-root-child",
+        "pg-conv-child-leaf",
     ]
     neighbors = {}
     for item in ids:
         got = await graph.neighbors_async(item)
-        neighbors[item] = {
-            "nodes": sorted(got["nodes"]), "edges": sorted(got["edges"])
-        }
+        neighbors[item] = {"nodes": sorted(got["nodes"]), "edges": sorted(got["edges"])}
     return {"neighbors": neighbors, "root_to_leaf": []}
 
 
@@ -147,7 +161,11 @@ async def test_async_postgres_conversation_tree_preserves_links_during_promotion
         pending = await _conversation_tree_snapshot_async(engine)
         jobs = engine.meta_sqlite.list_index_jobs(namespace="default")
         for job in jobs:
-            if job.entity_id not in {"pg-conv-root", "pg-conv-root-child", "pg-conv-leaf"}:
+            if job.entity_id not in {
+                "pg-conv-root",
+                "pg-conv-root-child",
+                "pg-conv-leaf",
+            }:
                 continue
             await engine.async_two_stage_projection_adapter.apply_embedding_job(
                 entity_kind=job.entity_kind,
@@ -215,7 +233,9 @@ def test_rust_postgres_conversation_tree_preserves_links_during_promotion(
 
 @two_stage_case("pending_visibility")
 @two_stage_case("promotion_handoff")
-def test_postgres_two_stage_pending_then_same_store_promotion(sa_engine, pg_schema) -> None:
+def test_postgres_two_stage_pending_then_same_store_promotion(
+    sa_engine, pg_schema
+) -> None:
     _require_postgres(sa_engine, pg_schema)
     engine = _engine(sa_engine, pg_schema)
     node = build_entity_node(node_id="n1", doc_id="d1", embedding=None)
@@ -227,9 +247,9 @@ def test_postgres_two_stage_pending_then_same_store_promotion(sa_engine, pg_sche
     )
     assert [row["entity_id"] for row in stage1] == ["n1"]
     assert engine.backend.node_get(ids=["n1"], include=["embeddings"])["ids"] == []
-    assert engine.backend.node_query(
-        query_embeddings=[[1.0, 0.0, 0.0]], n_results=10
-    )["ids"] == [[]]
+    assert engine.backend.node_query(query_embeddings=[[1.0, 0.0, 0.0]], n_results=10)[
+        "ids"
+    ] == [[]]
 
     assert engine.indexing.reconcile_indexes(max_jobs=10) == 1
 
@@ -237,9 +257,12 @@ def test_postgres_two_stage_pending_then_same_store_promotion(sa_engine, pg_sche
     assert promoted["ids"] == ["n1"]
     assert promoted["embeddings"][0] is not None
     assert promoted["metadatas"][0]["_kogwistar_stage2_ready"] is True
-    assert engine.backend.stage1_projection_get(
-        namespace="default", entity_kind="node", entity_id="n1"
-    ) is None
+    assert (
+        engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id="n1"
+        )
+        is None
+    )
 
 
 def test_postgres_two_stage_old_job_cannot_promote_current_revision(
@@ -276,14 +299,24 @@ def test_postgres_two_stage_event_and_stage1_admission_roll_back_together(
         original(*args, **kwargs)
         raise RuntimeError("injected Stage-1 failure")
 
-    monkeypatch.setattr(engine.two_stage_projection_adapter, "add_node", fail_after_stage1)
+    monkeypatch.setattr(
+        engine.two_stage_projection_adapter, "add_node", fail_after_stage1
+    )
     with pytest.raises(RuntimeError, match="injected Stage-1 failure"):
-        engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
+        engine.write.add_node(
+            build_entity_node(node_id="n1", doc_id="d1", embedding=None)
+        )
 
-    assert engine.backend.stage1_projection_get(
-        namespace="default", entity_kind="node", entity_id="n1"
-    ) is None
-    assert list(engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1)) == []
+    assert (
+        engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id="n1"
+        )
+        is None
+    )
+    assert (
+        list(engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1))
+        == []
+    )
 
 
 def test_postgres_two_stage_delete_before_promotion_cleans_stage1(
@@ -294,9 +327,12 @@ def test_postgres_two_stage_delete_before_promotion_cleans_stage1(
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
 
     assert engine.tombstone_node("n1") is True
-    assert engine.backend.stage1_projection_get(
-        namespace="default", entity_kind="node", entity_id="n1"
-    ) is None
+    assert (
+        engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id="n1"
+        )
+        is None
+    )
     assert engine.backend.node_get(ids=["n1"], include=["embeddings"])["ids"] == []
 
 
@@ -315,13 +351,19 @@ def test_postgres_two_stage_reconciliation_cleans_stage1_after_stage2_write(
     metadata["_kogwistar_stage2_ready"] = True
     metadata["_kogwistar_source_fingerprint"] = row["source_fingerprint"]
     engine.backend.node_upsert(
-        ids=["n1"], documents=[row["document"]], metadatas=[metadata], embeddings=[[1, 0, 0]]
+        ids=["n1"],
+        documents=[row["document"]],
+        metadatas=[metadata],
+        embeddings=[[1, 0, 0]],
     )
 
     assert engine.two_stage_projection_adapter.reconcile_projection() == 1
-    assert engine.backend.stage1_projection_get(
-        namespace="default", entity_kind="node", entity_id="n1"
-    ) is None
+    assert (
+        engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id="n1"
+        )
+        is None
+    )
 
 
 @two_stage_case("delete_race")
@@ -348,9 +390,12 @@ def test_postgres_two_stage_delete_during_embedding_cannot_resurrect(
         entity_kind="node", entity_id="n1", op="UPSERT", payload_json=job.payload_json
     )
     assert engine.backend.node_get(ids=["n1"], include=["embeddings"])["ids"] == []
-    assert engine.backend.stage1_projection_get(
-        namespace="default", entity_kind="node", entity_id="n1"
-    ) is None
+    assert (
+        engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id="n1"
+        )
+        is None
+    )
 
 
 def test_postgres_two_stage_python_authority_rejects_stale_inflight_promotion(
@@ -424,9 +469,12 @@ def test_postgres_two_stage_python_authority_rejects_stale_inflight_promotion(
             namespace="default", entity_kind="node", entity_id="python-stale-race"
         )
         assert staged is not None and "new canonical revision" in staged["document"]
-        assert engine.backend.node_get(
-            ids=["python-stale-race"], include=["embeddings"]
-        )["ids"] == []
+        assert (
+            engine.backend.node_get(ids=["python-stale-race"], include=["embeddings"])[
+                "ids"
+            ]
+            == []
+        )
 
         new_job = max(
             (
@@ -520,9 +568,11 @@ async def test_postgres_two_stage_async_python_authority_rejects_stale_inflight_
             namespace="default", entity_kind="node", entity_id="async-python-stale-race"
         )
         assert staged is not None and "new canonical revision" in staged["document"]
-        assert (await async_pg_backend.node_get(
-            ids=["async-python-stale-race"], include=["embeddings"]
-        ))["ids"] == []
+        assert (
+            await async_pg_backend.node_get(
+                ids=["async-python-stale-race"], include=["embeddings"]
+            )
+        )["ids"] == []
 
         new_job = max(
             (
@@ -585,22 +635,25 @@ async def test_postgres_two_stage_async_admission_rolls_back_event_and_stage1_to
             engine.metadata.iter_entity_events(namespace="default", from_seq=1)
         )
         assert events == []
-        assert await async_pg_backend.stage1_projection_get_async(
-            namespace="default",
-            entity_kind="node",
-            entity_id="async-admission-rollback",
-        ) is None
-        assert (await async_pg_backend.node_get(
-            ids=["async-admission-rollback"], include=["embeddings"]
-        ))["ids"] == []
+        assert (
+            await async_pg_backend.stage1_projection_get_async(
+                namespace="default",
+                entity_kind="node",
+                entity_id="async-admission-rollback",
+            )
+            is None
+        )
+        assert (
+            await async_pg_backend.node_get(
+                ids=["async-admission-rollback"], include=["embeddings"]
+            )
+        )["ids"] == []
     finally:
         engine.close()
 
 
 @two_stage_case("stale_revision")
-def test_postgres_two_stage_late_v1_cannot_overwrite_v2(
-    sa_engine, pg_schema
-) -> None:
+def test_postgres_two_stage_late_v1_cannot_overwrite_v2(sa_engine, pg_schema) -> None:
     _require_postgres(sa_engine, pg_schema)
     engine = _engine(sa_engine, pg_schema)
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="v1", embedding=None))
@@ -612,32 +665,44 @@ def test_postgres_two_stage_late_v1_cannot_overwrite_v2(
     current = engine.backend.node_get(ids=["n1"], include=["metadatas"])
     current_fp = current["metadatas"][0]["_kogwistar_source_fingerprint"]
     engine.two_stage_projection_adapter.apply_embedding_job(
-        entity_kind="node", entity_id="n1", op="UPSERT", payload_json=old_job.payload_json
+        entity_kind="node",
+        entity_id="n1",
+        op="UPSERT",
+        payload_json=old_job.payload_json,
     )
-    assert engine.backend.node_get(ids=["n1"], include=["metadatas"])["metadatas"][0][
-        "_kogwistar_source_fingerprint"
-    ] == current_fp
+    assert (
+        engine.backend.node_get(ids=["n1"], include=["metadatas"])["metadatas"][0][
+            "_kogwistar_source_fingerprint"
+        ]
+        == current_fp
+    )
 
 
-def test_postgres_two_stage_scanner_repairs_lost_enqueue(
-    sa_engine, pg_schema
-) -> None:
+def test_postgres_two_stage_scanner_repairs_lost_enqueue(sa_engine, pg_schema) -> None:
     _require_postgres(sa_engine, pg_schema)
     engine = _engine(sa_engine, pg_schema)
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
     job = engine.meta_sqlite.list_index_jobs(
         namespace="default", entity_kind="node", entity_id="n1"
     )[0]
-    claimed = engine.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=60, namespace="default")
+    claimed = engine.meta_sqlite.claim_index_jobs(
+        limit=1, lease_seconds=60, namespace="default"
+    )
     assert len(claimed) == 1
-    assert engine.meta_sqlite.mark_index_job_done(
-        claimed[0].job_id, claim_token=claimed[0].claim_token
-    ) is True
+    assert (
+        engine.meta_sqlite.mark_index_job_done(
+            claimed[0].job_id, claim_token=claimed[0].claim_token
+        )
+        is True
+    )
     assert engine.indexing.repair_missing_two_stage_embedding_jobs(max_entities=10) == 1
     repaired = engine.meta_sqlite.list_index_jobs(
         namespace="default", entity_kind="node", entity_id="n1"
     )
-    assert any(item.status == "PENDING" and item.index_kind == "node_embedding" for item in repaired)
+    assert any(
+        item.status == "PENDING" and item.index_kind == "node_embedding"
+        for item in repaired
+    )
 
 
 @pytest.mark.parametrize("entity_kind", ["node", "edge"])
@@ -658,19 +723,29 @@ def test_postgres_designated_worker_repairs_lost_enqueue(
     )
     assert engine.two_stage_projection_adapter.__class__.__name__ == expected_adapter
     if entity_kind == "node":
-        engine.write.add_node(build_entity_node(node_id="worker-repair", doc_id="d1", embedding=None))
+        engine.write.add_node(
+            build_entity_node(node_id="worker-repair", doc_id="d1", embedding=None)
+        )
     else:
         engine.write.add_node(build_entity_node(node_id="source", doc_id="d1"))
         engine.write.add_node(build_entity_node(node_id="target", doc_id="d1"))
         engine.indexing.make_index_job_worker(max_jobs_per_tick=10).tick()
         engine.write.add_edge(
             build_relationship_edge(
-                edge_id="worker-repair", src="source", tgt="target", doc_id="d1", embedding=None
+                edge_id="worker-repair",
+                src="source",
+                tgt="target",
+                doc_id="d1",
+                embedding=None,
             )
         )
-    claimed = engine.meta_sqlite.claim_index_jobs(limit=10, lease_seconds=60, namespace="default")
+    claimed = engine.meta_sqlite.claim_index_jobs(
+        limit=10, lease_seconds=60, namespace="default"
+    )
     for job in claimed:
-        assert engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+        assert engine.meta_sqlite.mark_index_job_done(
+            job.job_id, claim_token=job.claim_token
+        )
 
     metrics = engine.indexing.make_index_job_worker(
         max_jobs_per_tick=10, repair_scan_interval_s=30
@@ -680,7 +755,10 @@ def test_postgres_designated_worker_repairs_lost_enqueue(
     assert metrics.repair_scan_failures == 0
     assert metrics.done >= 1
     getter = getattr(engine.backend, f"{entity_kind}_get")
-    assert getter(ids=["worker-repair"], include=["embeddings"])["embeddings"][0] is not None
+    assert (
+        getter(ids=["worker-repair"], include=["embeddings"])["embeddings"][0]
+        is not None
+    )
 
 
 def test_postgres_two_stage_public_api_and_batch_claim_isolate_failure(
@@ -690,7 +768,9 @@ def test_postgres_two_stage_public_api_and_batch_claim_isolate_failure(
     engine = _engine(sa_engine, pg_schema)
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
     engine.write.add_node(build_entity_node(node_id="n2", doc_id="d2", embedding=None))
-    public = engine.get_nodes(ids=["n1"], include=["documents", "metadatas", "embeddings"])
+    public = engine.get_nodes(
+        ids=["n1"], include=["documents", "metadatas", "embeddings"]
+    )
     assert [node.id for node in public] == ["n1"]
     assert public[0].embedding is None
     assert [node.id for node in engine.get_nodes(where={"label": "Node n1"})] == ["n1"]
@@ -715,7 +795,9 @@ def test_postgres_two_stage_public_api_and_batch_claim_isolate_failure(
         return original(document)
 
     monkeypatch.setattr(engine.embed, "iterative_defensive_emb", one_bad)
-    worker = engine.indexing.make_index_job_worker(batch_size=2, max_inflight=2, max_jobs_per_tick=2)
+    worker = engine.indexing.make_index_job_worker(
+        batch_size=2, max_inflight=2, max_jobs_per_tick=2
+    )
     metrics = worker.tick()
     assert metrics.claimed == 2
     assert metrics.done == 1
@@ -726,7 +808,9 @@ def test_postgres_two_stage_public_api_and_batch_claim_isolate_failure(
     assert {node.id for row in semantic for node in row} == {"n1"}
 
 
-def test_postgres_two_stage_edges_follow_same_promotion_contract(sa_engine, pg_schema) -> None:
+def test_postgres_two_stage_edges_follow_same_promotion_contract(
+    sa_engine, pg_schema
+) -> None:
     _require_postgres(sa_engine, pg_schema)
     engine = _engine(sa_engine, pg_schema)
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
@@ -741,17 +825,20 @@ def test_postgres_two_stage_edges_follow_same_promotion_contract(sa_engine, pg_s
         namespace="default", entity_kind="edge", entity_id="e1"
     )
     assert staged is not None
-    assert engine.backend.edge_query(
-        query_embeddings=[[1.0, 0.0, 0.0]], n_results=10
-    )["ids"] == [[]]
+    assert engine.backend.edge_query(query_embeddings=[[1.0, 0.0, 0.0]], n_results=10)[
+        "ids"
+    ] == [[]]
 
     assert engine.indexing.reconcile_indexes(max_jobs=10) == 3
     promoted = engine.backend.edge_get(ids=["e1"], include=["embeddings", "metadatas"])
     assert promoted["ids"] == ["e1"]
     assert promoted["embeddings"][0] is not None
-    assert engine.backend.stage1_projection_get(
-        namespace="default", entity_kind="edge", entity_id="e1"
-    ) is None
+    assert (
+        engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="edge", entity_id="e1"
+        )
+        is None
+    )
 
 
 @two_stage_case("batch_embedding")
@@ -786,7 +873,9 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
 
     assert len(embedding_calls) == 1
     assert len(embedding_calls[0]) == contract["batch_size"]
-    assert set(outcomes) == {job.job_id for job in jobs if job.index_kind == "node_embedding"}
+    assert set(outcomes) == {
+        job.job_id for job in jobs if job.index_kind == "node_embedding"
+    }
     assert all(value is None for value in outcomes.values())
     promoted = engine.backend.node_get(ids=["n1", "n2"], include=["embeddings"])
     assert promoted["ids"] == ["n1", "n2"]
@@ -794,7 +883,9 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
 
 
 @pytest.mark.asyncio
-async def test_postgres_single_stage_async_writes_embedding_directly(async_pg_backend) -> None:
+async def test_postgres_single_stage_async_writes_embedding_directly(
+    async_pg_backend,
+) -> None:
     main_thread = threading.get_ident()
     call_threads: list[int] = []
 
@@ -811,9 +902,7 @@ async def test_postgres_single_stage_async_writes_embedding_directly(async_pg_ba
     try:
         node = build_entity_node(node_id="async-pg-single", doc_id="d1")
         await engine.async_add_node(node)
-        got = await async_pg_backend.node_get(
-            ids=[node.id], include=["embeddings"]
-        )
+        got = await async_pg_backend.node_get(ids=[node.id], include=["embeddings"])
         assert got["ids"] == [node.id]
         assert got["embeddings"] == [[1.0, 0.0, 0.0]]
         assert call_threads and call_threads[0] == main_thread
@@ -869,6 +958,7 @@ async def test_postgres_two_stage_async_reconciles_edge_endpoints_after_stage2_w
     async_pg_backend,
 ):
     """Async recovery rebuilds structural endpoints before Stage-1 cleanup."""
+
     async def provider(texts):
         return [[1.0, 0.0, 0.0] for _ in texts]
 
@@ -879,8 +969,10 @@ async def test_postgres_two_stage_async_reconciles_edge_endpoints_after_stage2_w
     )
     try:
         edge = build_relationship_edge(
-            edge_id="async-pg-recovery-edge", src="async-pg-recovery-src",
-            tgt="async-pg-recovery-tgt", doc_id="async-pg-recovery",
+            edge_id="async-pg-recovery-edge",
+            src="async-pg-recovery-src",
+            tgt="async-pg-recovery-tgt",
+            doc_id="async-pg-recovery",
             embedding=None,
         )
         for node_id in ("async-pg-recovery-src", "async-pg-recovery-tgt"):
@@ -897,21 +989,28 @@ async def test_postgres_two_stage_async_reconciles_edge_endpoints_after_stage2_w
         metadata["_kogwistar_stage2_ready"] = True
         metadata["_kogwistar_source_fingerprint"] = staged["source_fingerprint"]
         await async_pg_backend.edge_upsert(
-            ids=[edge.safe_get_id()], documents=[staged["document"]],
-            metadatas=[metadata], embeddings=[[1.0, 0.0, 0.0]],
+            ids=[edge.safe_get_id()],
+            documents=[staged["document"]],
+            metadatas=[metadata],
+            embeddings=[[1.0, 0.0, 0.0]],
         )
         await async_pg_backend.edge_endpoints_delete(
             where={"edge_id": edge.safe_get_id()}
         )
 
-        assert await engine.async_two_stage_projection_adapter.reconcile_projection() == 1
+        assert (
+            await engine.async_two_stage_projection_adapter.reconcile_projection() == 1
+        )
         endpoints = await async_pg_backend.edge_endpoints_get(
             where={"edge_id": edge.safe_get_id()}, include=["documents"]
         )
         assert len(endpoints["ids"]) == 2
-        assert await async_pg_backend.stage1_projection_get_async(
-            namespace="default", entity_kind="edge", entity_id=edge.safe_get_id()
-        ) is None
+        assert (
+            await async_pg_backend.stage1_projection_get_async(
+                namespace="default", entity_kind="edge", entity_id=edge.safe_get_id()
+            )
+            is None
+        )
     finally:
         engine.close()
 
@@ -1037,18 +1136,26 @@ async def test_postgres_two_stage_async_rust_authority_rolls_back_event_and_stag
     monkeypatch.setattr(adapter, "add_node", fail_after_stage1)
     entity_id = "async-rust-authority-admission-rollback"
     try:
-        with pytest.raises(RuntimeError, match="injected Rust-authority async Stage-1 failure"):
+        with pytest.raises(
+            RuntimeError, match="injected Rust-authority async Stage-1 failure"
+        ):
             await engine.async_add_node(
                 build_entity_node(node_id=entity_id, doc_id="d1", embedding=None)
             )
 
-        assert list(engine.metadata.iter_entity_events(namespace="default", from_seq=1)) == []
-        assert await async_pg_backend.stage1_projection_get_async(
-            namespace="default", entity_kind="node", entity_id=entity_id
-        ) is None
-        assert (await async_pg_backend.node_get(
-            ids=[entity_id], include=["embeddings"]
-        ))["ids"] == []
+        assert (
+            list(engine.metadata.iter_entity_events(namespace="default", from_seq=1))
+            == []
+        )
+        assert (
+            await async_pg_backend.stage1_projection_get_async(
+                namespace="default", entity_kind="node", entity_id=entity_id
+            )
+            is None
+        )
+        assert (
+            await async_pg_backend.node_get(ids=[entity_id], include=["embeddings"])
+        )["ids"] == []
     finally:
         engine.close()
 
@@ -1168,8 +1275,12 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
         assert engine.two_stage_projection_adapter.__class__.__name__ == (
             "RustPostgresTwoStageProjectionAdapter"
         )
-        engine.write.add_node(build_entity_node(node_id="rust-n1", doc_id="d1", embedding=None))
-        engine.write.add_node(build_entity_node(node_id="rust-n2", doc_id="d1", embedding=None))
+        engine.write.add_node(
+            build_entity_node(node_id="rust-n1", doc_id="d1", embedding=None)
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="rust-n2", doc_id="d1", embedding=None)
+        )
         assert engine.backend.node_get(
             ids=["rust-n1", "rust-n2"], include=["embeddings"]
         )["embeddings"] == [None, None]
@@ -1190,12 +1301,17 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
             ids=["rust-n1", "rust-n2"], include=["embeddings"]
         )["embeddings"] == [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]]
 
-        engine.write.add_node(build_entity_node(node_id="rust-stale", doc_id="d1", embedding=None))
+        engine.write.add_node(
+            build_entity_node(node_id="rust-stale", doc_id="d1", embedding=None)
+        )
         stale_job = next(
-            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
             if job.entity_id == "rust-stale" and job.index_kind == "node_embedding"
         )
-        replacement = build_entity_node(node_id="rust-stale", doc_id="d2", embedding=None)
+        replacement = build_entity_node(
+            node_id="rust-stale", doc_id="d2", embedding=None
+        )
         engine.write.add_node(replacement)
         engine.two_stage_projection_adapter.apply_embedding_job(
             entity_kind=stale_job.entity_kind,
@@ -1203,11 +1319,16 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
             op=stale_job.op,
             payload_json=stale_job.payload_json,
         )
-        assert engine.backend.node_get(ids=["rust-stale"], include=["embeddings"])["embeddings"] == [None]
+        assert engine.backend.node_get(ids=["rust-stale"], include=["embeddings"])[
+            "embeddings"
+        ] == [None]
 
-        engine.write.add_node(build_entity_node(node_id="rust-delete", doc_id="d1", embedding=None))
+        engine.write.add_node(
+            build_entity_node(node_id="rust-delete", doc_id="d1", embedding=None)
+        )
         upsert_job = next(
-            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
             if job.entity_id == "rust-delete" and job.index_kind == "node_embedding"
         )
         engine.two_stage_projection_adapter.apply_embedding_job(
@@ -1216,12 +1337,16 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
             op=upsert_job.op,
             payload_json=upsert_job.payload_json,
         )
-        assert engine.backend.node_get(
-            ids=["rust-delete"], include=["embeddings"]
-        )["embeddings"][0] is not None
+        assert (
+            engine.backend.node_get(ids=["rust-delete"], include=["embeddings"])[
+                "embeddings"
+            ][0]
+            is not None
+        )
         assert engine.lifecycle.tombstone_node("rust-delete") is True
         delete_job = next(
-            job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
             if job.entity_id == "rust-delete"
             and job.index_kind == "node_embedding"
             and job.op == "DELETE"
@@ -1243,7 +1368,9 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
         )
         assert "rust-delete" not in semantic["ids"][0]
 
-        engine.write.add_node(build_entity_node(node_id="rust-repair", doc_id="d1", embedding=None))
+        engine.write.add_node(
+            build_entity_node(node_id="rust-repair", doc_id="d1", embedding=None)
+        )
         claimed = engine.meta_sqlite.claim_index_jobs(
             limit=10, lease_seconds=60, namespace="default"
         )
@@ -1251,11 +1378,87 @@ def test_postgres_two_stage_rust_authority_uses_native_two_stage_adapter(
         engine.meta_sqlite.mark_index_job_done(
             repair_job.job_id, claim_token=repair_job.claim_token
         )
-        assert engine.indexing.repair_missing_two_stage_embedding_jobs(max_entities=10) >= 1
+        assert (
+            engine.indexing.repair_missing_two_stage_embedding_jobs(max_entities=10)
+            >= 1
+        )
         repaired = engine.indexing.make_index_job_worker(
             batch_size=10, max_inflight=10, max_jobs_per_tick=10
         ).tick()
         assert repaired.done >= 1
-        assert engine.backend.node_get(ids=["rust-repair"], include=["embeddings"])["embeddings"][0] is not None
+        assert (
+            engine.backend.node_get(ids=["rust-repair"], include=["embeddings"])[
+                "embeddings"
+            ][0]
+            is not None
+        )
     finally:
         engine.close()
+
+
+def test_postgres_rust_native_stage1_is_promoted_by_python_worker(
+    sa_engine, pg_schema, monkeypatch
+) -> None:
+    """A Python worker can consume Rust-native PostgreSQL Stage-1 state."""
+    _require_postgres(sa_engine, pg_schema)
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    rust_engine = GraphKnowledgeEngine(
+        backend=PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema),
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    try:
+        rust_engine.write.add_node(
+            build_entity_node(
+                node_id="rust-to-python-stage1", doc_id="d1", embedding=None
+            )
+        )
+        pending = rust_engine.backend.node_get(
+            ids=["rust-to-python-stage1"], include=["embeddings", "metadatas"]
+        )
+        assert pending["embeddings"] == [None]
+        assert pending["metadatas"][0].get("_kogwistar_stage2_ready") is not True
+        queued = rust_engine.meta_sqlite.list_index_jobs(
+            namespace="default", entity_kind="node", entity_id="rust-to-python-stage1"
+        )
+        assert any(
+            job.index_kind == "node_embedding" and job.status == "PENDING"
+            for job in queued
+        )
+    finally:
+        rust_engine.close()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    python_engine = GraphKnowledgeEngine(
+        backend=PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema),
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    try:
+        assert python_engine.two_stage_projection_adapter is not None
+        assert python_engine.two_stage_projection_adapter.__class__.__name__ == (
+            "PostgresTwoStageProjectionAdapter"
+        )
+        metrics = python_engine.indexing.make_index_job_worker(
+            batch_size=4, max_inflight=4, max_jobs_per_tick=4
+        ).tick()
+        assert metrics.claimed == 1 and metrics.done == 1, metrics
+        promoted = python_engine.backend.node_get(
+            ids=["rust-to-python-stage1"], include=["embeddings", "metadatas"]
+        )
+        assert promoted["embeddings"][0] == pytest.approx([0.01, 0.01, 0.01])
+        assert promoted["metadatas"][0]["_kogwistar_stage2_ready"] is True
+        assert (
+            python_engine.backend.stage1_projection_get(
+                namespace="default",
+                entity_kind="node",
+                entity_id="rust-to-python-stage1",
+            )
+            is None
+        )
+    finally:
+        python_engine.close()

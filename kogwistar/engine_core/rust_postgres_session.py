@@ -4,8 +4,8 @@ import contextvars
 import math
 import threading
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from typing import NoReturn, cast
 
 from kogwistar._rust_bridge import store_postgres
@@ -50,8 +50,7 @@ def _valid_graph_projection_record(record: object) -> bool:
     if embedding is None:
         return True
     return isinstance(embedding, list) and all(
-        _finite_projection_number(value)
-        for value in embedding
+        _finite_projection_number(value) for value in embedding
     )
 
 
@@ -68,10 +67,9 @@ def _valid_graph_projection_match(match: object) -> bool:
     if not isinstance(match, dict):
         return False
     distance = match.get("distance")
-    return (
-        _valid_graph_projection_record(match.get("record"))
-        and _finite_projection_number(distance)
-    )
+    return _valid_graph_projection_record(
+        match.get("record")
+    ) and _finite_projection_number(distance)
 
 
 def _decode_graph_projection_match_rows(value: JsonValue) -> list[list[JsonObject]]:
@@ -80,7 +78,9 @@ def _decode_graph_projection_match_rows(value: JsonValue) -> list[list[JsonObjec
     rows: list[list[JsonObject]] = []
     for row in value:
         if not isinstance(row, list):
-            raise RuntimeError("native batched graph vector query returned invalid matches")
+            raise RuntimeError(
+                "native batched graph vector query returned invalid matches"
+            )
         matches: list[JsonObject] = []
         for match in row:
             if not _valid_graph_projection_match(match):
@@ -105,10 +105,8 @@ class RustPostgresSession:
                 f"kogwistar_rust_postgres_transaction_{id(self)}", default=None
             )
         )
-        self._transaction_depth: contextvars.ContextVar[int] = (
-            contextvars.ContextVar(
-                f"kogwistar_rust_postgres_transaction_depth_{id(self)}", default=0
-            )
+        self._transaction_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+            f"kogwistar_rust_postgres_transaction_depth_{id(self)}", default=0
         )
         self._session_lock = threading.RLock()
         self._active_sessions = 0
@@ -151,7 +149,9 @@ class RustPostgresSession:
     def graph_authority_capability(self) -> JsonObject:
         result = self.call("graph_authority_capability")
         if not isinstance(result, dict):
-            raise RuntimeError("native graph authority capability returned invalid data")
+            raise RuntimeError(
+                "native graph authority capability returned invalid data"
+            )
         return cast(JsonObject, result)
 
     def close(self) -> None:
@@ -184,9 +184,7 @@ class RustPostgresSession:
     def _transaction_impl(self) -> Iterator[_RustPostgresTransactionToken]:
         current = self._transaction_id.get()
         if current is not None:
-            depth_token = self._transaction_depth.set(
-                self._transaction_depth.get() + 1
-            )
+            depth_token = self._transaction_depth.set(self._transaction_depth.get() + 1)
             try:
                 yield _RustPostgresTransactionToken(current, self.context_id)
             finally:
@@ -246,6 +244,19 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         with self._native_session.execution_session():
             yield self
 
+    @asynccontextmanager
+    async def async_transaction(
+        self, *, immediate: bool = True
+    ) -> AsyncIterator[_TransactionToken]:
+        """Expose the PostgreSQL session's transaction owner to async engines.
+
+        This facade inherits the SQLite surface for API compatibility, but its
+        transaction identity and lifecycle belong to RustPostgresSession.
+        """
+        del immediate
+        with self._native_session.transaction() as token:
+            yield cast(_TransactionToken, token)
+
     def apply_graph_mutation(self, **values: JsonValue) -> JsonObject:
         result = self._call("graph_mutation", **values)
         if not isinstance(result, dict):
@@ -301,15 +312,11 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
             not isinstance(result, list)
             or len(result) != len(operations)
             or not all(
-                isinstance(item, dict)
-                for item in result[: len(validated.mutations)]
+                isinstance(item, dict) for item in result[: len(validated.mutations)]
             )
         ):
             raise RuntimeError("native graph mutation batch returned invalid results")
-        return [
-            cast(JsonObject, item)
-            for item in result[: len(validated.mutations)]
-        ]
+        return [cast(JsonObject, item) for item in result[: len(validated.mutations)]]
 
     def graph_authority_capability(self) -> JsonObject:
         return self._native_session.graph_authority_capability()
@@ -421,7 +428,9 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         self._native_session.connect()
 
     @contextmanager
-    def transaction(self, *, immediate: bool = True) -> Iterator[_RustPostgresTransactionToken]:
+    def transaction(
+        self, *, immediate: bool = True
+    ) -> Iterator[_RustPostgresTransactionToken]:
         del immediate
         with self._native_session.transaction() as token:
             yield token
@@ -442,7 +451,9 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
 
     def _require_token(self, conn: _TransactionToken) -> None:
         if not isinstance(conn, _RustPostgresTransactionToken):
-            raise RustPostgresConnectionUnavailable("invalid Rust PostgreSQL transaction token")
+            raise RustPostgresConnectionUnavailable(
+                "invalid Rust PostgreSQL transaction token"
+            )
         self._native_session.require_token(cast(_RustPostgresTransactionToken, conn))
 
     def next_scoped_seq(self, scope_id: str) -> int:
@@ -458,9 +469,7 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     def set_scoped_seq(self, scope_id: str, value: int) -> None:
         self.set_user_seq(scope_id, value)
 
-    def next_user_seq_conn(
-        self, conn: _TransactionToken, user_id: str
-    ) -> int:
+    def next_user_seq_conn(self, conn: _TransactionToken, user_id: str) -> int:
         self._require_token(conn)
         return self.next_user_seq(user_id)
 
