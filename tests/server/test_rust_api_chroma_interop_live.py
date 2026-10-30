@@ -9,8 +9,10 @@ import shutil
 import socket
 import subprocess
 import sysconfig
+import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
@@ -485,5 +487,224 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
         finally:
             writer.close()
     finally:
+        chroma_process.terminate()
+        chroma_process.wait(timeout=10)
+
+
+@pytest.mark.manual
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_python_stage1_is_promoted_by_rust_native_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Rust-only server resumes Python's closed SQLite Stage-1 work."""
+    script_name = "chroma.exe" if os.name == "nt" else "chroma"
+    interpreter_chroma = Path(sysconfig.get_path("scripts")) / script_name
+    chroma_command = (
+        str(interpreter_chroma)
+        if interpreter_chroma.is_file()
+        else shutil.which("chroma")
+    )
+    if chroma_command is None:
+        pytest.skip("install the Chroma extra and CLI to run this manual integration")
+    if not _server_is_current():
+        pytest.skip("build the current Rust kogwistar-server binary first")
+
+    embedding_requests: list[list[str]] = []
+
+    class OllamaEmbedHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/api/embed":
+                self.send_error(404)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(size))
+            texts = request.get("input")
+            if not isinstance(texts, list):
+                self.send_error(400)
+                return
+            embedding_requests.append([str(text) for text in texts])
+            body = json.dumps({"embeddings": [[0.6, 0.8] for _ in texts]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    chroma_port = _port()
+    chroma_endpoint = f"http://127.0.0.1:{chroma_port}"
+    chroma_process = subprocess.Popen(
+        [
+            chroma_command,
+            "run",
+            "--path",
+            str(tmp_path / "chroma-data"),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(chroma_port),
+        ],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    embedding_server = ThreadingHTTPServer(("127.0.0.1", 0), OllamaEmbedHandler)
+    embedding_thread = threading.Thread(target=embedding_server.serve_forever, daemon=True)
+    embedding_thread.start()
+    embedding_endpoint = f"http://127.0.0.1:{embedding_server.server_port}"
+    rust_process: subprocess.Popen[bytes] | None = None
+    rust_log_path = tmp_path / "rust-server.log"
+    rust_log = rust_log_path.open("wb")
+    try:
+        _wait_for_http_process(
+            chroma_process, f"{chroma_endpoint}/api/v2/heartbeat", "Chroma"
+        )
+
+        import chromadb
+
+        import kogwistar.engine_core.engine as engine_module
+        from kogwistar.engine_core.engine import GraphKnowledgeEngine
+        from tests._helpers.graph_builders import build_entity_node
+
+        monkeypatch.setattr(
+            engine_module,
+            "_import_chroma_client",
+            lambda: (
+                lambda _settings: chromadb.HttpClient(
+                    host="127.0.0.1", port=chroma_port
+                ),
+                chromadb.config.Settings,
+            ),
+        )
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+        namespace = f"python-rust-worker-{uuid.uuid4().hex}"
+        entity_id = f"{namespace}-node"
+        data_path = tmp_path / "shared-meta"
+        writer = GraphKnowledgeEngine(
+            persist_directory=str(data_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda texts: [[0.01, 0.01] for _ in texts],
+        )
+        try:
+            writer.write.add_node(
+                build_entity_node(
+                    node_id=entity_id,
+                    doc_id="cross-language-worker-doc",
+                    label="Python staged node",
+                )
+            )
+            assert writer.meta_sqlite.get_stage1_node_projection(
+                namespace, entity_id
+            ) is not None
+            jobs = writer.meta_sqlite.list_index_jobs(
+                namespace=namespace, entity_kind="node", entity_id=entity_id
+            )
+            assert jobs and jobs[0].status == "PENDING"
+        finally:
+            writer.close()
+
+        rust_port = _port()
+        secret = uuid.uuid4().hex
+        env = os.environ.copy()
+        for name in (
+            "JWT_SECRET",
+            "JWT_ALG",
+            "JWT_ISS",
+            "JWT_AUD",
+            "KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S",
+            "KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE",
+        ):
+            env.pop(name, None)
+        env.update(
+            {
+                "AUTH_MODE": "jwt",
+                "JWT_SECRET": secret,
+                "JWT_ALG": "HS256",
+                "KOGWISTAR_BACKEND": "sqlite",
+                "KOGWISTAR_META_SQLITE_PATH": str(data_path / "meta.sqlite"),
+                "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
+                "KOGWISTAR_CHROMA_NODE_COLLECTION": "nodes",
+                "KOGWISTAR_CHROMA_EDGE_COLLECTION": "edges",
+                "KOGWISTAR_EMBEDDING_WORKER_INLINE": "true",
+                "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
+                "KOGWISTAR_EMBEDDING_MODEL": "fixture-embedding-v1",
+                "KOGWISTAR_EMBEDDING_DIMENSION": "2",
+                "KOGWISTAR_EMBEDDING_ENDPOINT": embedding_endpoint,
+                "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+                "KOGWISTAR_SERVER_PORT": str(rust_port),
+            }
+        )
+        rust_process = subprocess.Popen(
+            [str(SERVER)],
+            cwd=ROOT,
+            env=env,
+            stdout=rust_log,
+            stderr=subprocess.STDOUT,
+        )
+        base = f"http://127.0.0.1:{rust_port}"
+        _wait_for_http_process(rust_process, f"{base}/health", "Rust API")
+        health = httpx.get(f"{base}/health", timeout=2).json()
+        assert health.get("embedding_inline_worker_enabled") is True, health
+        deadline = time.monotonic() + 30
+        client = chromadb.HttpClient(host="127.0.0.1", port=chroma_port)
+        collection = client.get_collection("nodes")
+        projected = None
+        while time.monotonic() < deadline:
+            result = collection.get(
+                ids=[entity_id], include=["embeddings", "metadatas"]
+            )
+            if result["ids"]:
+                projected = result
+                break
+            if rust_process.poll() is not None:
+                raise AssertionError(
+                    f"Rust API exited before projection: {rust_process.returncode}"
+                )
+            time.sleep(0.1)
+        if projected is None:
+            rust_log.flush()
+            details = rust_log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
+            raise AssertionError(
+                "Rust inline worker did not promote Stage-1; "
+                f"embedding_requests={embedding_requests!r}; server_log_tail={details!r}"
+            )
+        assert projected["metadatas"][0]["_kogwistar_stage2_ready"] is True
+        assert projected["metadatas"][0]["namespace"] == namespace
+        assert projected["embeddings"][0] == pytest.approx([0.6, 0.8])
+
+        rust_process.terminate()
+        rust_process.wait(timeout=10)
+        rust_process = None
+
+        verifier = GraphKnowledgeEngine(
+            persist_directory=str(data_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda texts: [[0.01, 0.01] for _ in texts],
+        )
+        try:
+            assert verifier.meta_sqlite.get_stage1_node_projection(
+                namespace, entity_id
+            ) is None
+            completed = verifier.meta_sqlite.list_index_jobs(
+                namespace=namespace, entity_kind="node", entity_id=entity_id
+            )
+            assert completed and completed[0].status == "DONE"
+        finally:
+            verifier.close()
+    finally:
+        if rust_process is not None:
+            rust_process.terminate()
+            rust_process.wait(timeout=10)
+        embedding_server.shutdown()
+        embedding_server.server_close()
+        embedding_thread.join(timeout=5)
+        rust_log.close()
         chroma_process.terminate()
         chroma_process.wait(timeout=10)
