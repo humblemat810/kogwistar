@@ -795,6 +795,14 @@ class IndexingSubsystem:
         # local import to avoid subsystem importing workers at module import time if you want
         from ..workers.index_job_worker import IndexJobWorker
 
+        projection_adapter = getattr(
+            self.engine, "two_stage_projection_adapter", None
+        )
+        projection_store = (
+            projection_adapter
+            if callable(getattr(projection_adapter, "apply_projection_action", None))
+            else None
+        )
         return IndexJobWorker(
             engine=self.engine,
             max_inflight=max_inflight,
@@ -802,6 +810,7 @@ class IndexingSubsystem:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            projection_store=projection_store,
             repair_scan_interval_s=repair_scan_interval_s,
             reconcile_scan_interval_s=reconcile_scan_interval_s,
         )

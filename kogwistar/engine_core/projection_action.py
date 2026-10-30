@@ -228,6 +228,12 @@ def apply_projection_action(
 ) -> ProjectionAction:
     """Validate and apply a durable action using a Python graph-store adapter."""
     action = decode_projection_action(job, result_json, result_sha256)
+    apply_typed = getattr(graph, "apply_projection_action", None)
+    if callable(apply_typed):
+        applied = apply_typed(action)
+        if applied is False:
+            raise _fail("graph store rejected projection action")
+        return action
     if action.operation == "DELETE":
         graph.delete_graph_record(action.namespace, action.entity_id)
     else:
@@ -246,6 +252,12 @@ async def apply_projection_action_async(
 ) -> ProjectionAction:
     """Async counterpart that does not hide blocking graph writes."""
     action = decode_projection_action(job, result_json, result_sha256)
+    apply_typed = getattr(graph, "apply_projection_action", None)
+    if callable(apply_typed):
+        applied = await apply_typed(action)
+        if applied is False:
+            raise _fail("graph store rejected projection action")
+        return action
     if action.operation == "DELETE":
         await graph.delete_graph_record(action.namespace, action.entity_id)
     else:

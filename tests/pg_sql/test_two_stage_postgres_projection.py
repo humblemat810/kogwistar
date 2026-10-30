@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 from pathlib import Path
@@ -9,6 +10,10 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.projection_action import (
+    ProjectionJobIdentity,
+    decode_projection_action,
+)
 from kogwistar.graph_query import GraphQuery
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from tests._helpers.embeddings import ConstantEmbeddingFunction
@@ -1467,9 +1472,11 @@ def test_postgres_rust_native_stage1_is_promoted_by_python_worker(
         assert python_engine.two_stage_projection_adapter.__class__.__name__ == (
             "PostgresTwoStageProjectionAdapter"
         )
-        metrics = python_engine.indexing.make_index_job_worker(
+        worker = python_engine.indexing.make_index_job_worker(
             batch_size=4, max_inflight=4, max_jobs_per_tick=4
-        ).tick()
+        )
+        assert worker.projection_store is python_engine.two_stage_projection_adapter
+        metrics = worker.tick()
         assert metrics.claimed == 1 and metrics.done == 1, metrics
         getter = getattr(python_engine.backend, f"{entity_kind}_get")
         promoted = getter(ids=[entity_id], include=["embeddings", "metadatas"])
@@ -1490,3 +1497,103 @@ def test_postgres_rust_native_stage1_is_promoted_by_python_worker(
             assert len(endpoints["ids"]) == 2
     finally:
         python_engine.close()
+
+
+def test_postgres_python_stage1_replays_rust_accepted_projection_action(
+    sa_engine, pg_schema
+) -> None:
+    """Replay a durable Rust result after simulated worker loss, without re-embed."""
+    _require_postgres(sa_engine, pg_schema)
+    entity_id = "rust-accepted-projection-replay"
+
+    def fail_if_embedded(_texts: list[str]) -> list[list[float]]:
+        raise AssertionError("accepted projection replay must not call the embedder")
+
+    engine = GraphKnowledgeEngine(
+        backend=PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema),
+        persistence_mode="two_stage",
+        embedding_function=fail_if_embedded,
+    )
+    try:
+        engine.write.add_node(
+            build_entity_node(
+                node_id=entity_id, doc_id="accepted-replay-doc", label="replay"
+            )
+        )
+        staged = engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id=entity_id
+        )
+        assert staged is not None
+        fingerprint = str(staged["source_fingerprint"])
+        metadata = dict(staged["metadata"])
+        metadata["_kogwistar_stage2_ready"] = True
+        metadata["_kogwistar_source_fingerprint"] = fingerprint
+        adapter = engine.two_stage_projection_adapter
+        assert adapter is not None
+        jobs = engine.meta_sqlite.claim_index_jobs(
+            limit=1, lease_seconds=60, namespace="default"
+        )
+        job = next(job for job in jobs if job.entity_id == entity_id)
+        assert job.claim_token
+        action = {
+            "version": 1,
+            "job_id": job.job_id,
+            "namespace": "default",
+            "entity_kind": "node",
+            "entity_id": entity_id,
+            "index_kind": "node_embedding",
+            "operation": "UPSERT",
+            "record": {
+                "id": entity_id,
+                "document": str(staged["document"]),
+                "metadata": metadata,
+                "embedding": [0.6, 0.8, 0.0],
+            },
+        }
+        action_json = json.dumps(action, separators=(",", ":"), sort_keys=True)
+        admitted = engine.meta_sqlite.accept_index_job_result(
+            job.job_id,
+            claim_token=job.claim_token,
+            result_json=action_json,
+            result_sha256=hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        )
+        assert admitted["status"] == "accepted", admitted
+        # Simulate a process dying after durable acceptance but before projection.
+        engine.meta_sqlite.bump_retry_and_requeue(
+            job.job_id,
+            "simulated worker interruption",
+            next_run_at_seconds=0,
+            claim_token=job.claim_token,
+        )
+
+        worker = engine.indexing.make_index_job_worker(max_jobs_per_tick=2)
+        assert worker.projection_store is adapter
+        metrics = worker.tick()
+        assert metrics.done == 1 and metrics.retried == 0, metrics
+        assert engine.backend.stage1_projection_get(
+            namespace="default", entity_kind="node", entity_id=entity_id
+        ) is None
+        projected = engine.backend.node_get(
+            ids=[entity_id], include=["documents", "metadatas", "embeddings"]
+        )
+        assert projected["embeddings"][0] == pytest.approx([0.6, 0.8, 0.0])
+        assert projected["metadatas"][0]["_kogwistar_source_fingerprint"] == fingerprint
+        assert projected["metadatas"][0] == metadata
+        assert projected["documents"][0] == staged["document"]
+
+        # Replaying the exact accepted result after commit is idempotent.
+        decoded_action = decode_projection_action(
+            ProjectionJobIdentity(
+                job_id=job.job_id,
+                namespace=job.namespace,
+                entity_kind=job.entity_kind,
+                entity_id=job.entity_id,
+                index_kind=job.index_kind,
+                op=job.op,
+            ),
+            action_json,
+            hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        )
+        assert adapter.apply_projection_action(decoded_action)
+    finally:
+        engine.close()
