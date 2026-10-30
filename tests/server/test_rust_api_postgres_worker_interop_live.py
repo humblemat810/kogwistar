@@ -57,10 +57,10 @@ def _wait_for_http_process(
 @pytest.mark.manual
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
+def test_rust_native_promotion_and_python_recovery_are_both_available(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Prove Python Stage-1 -> durable Rust result -> Python recovery/readback."""
+    """Prove Rust-native promotion and optional Python recovery from Rust output."""
     dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
     if not dsn:
         pytest.skip("set KOGWISTAR_TEST_PG_DSN to run PostgreSQL interoperability")
@@ -360,6 +360,83 @@ def test_python_postgres_stage1_is_promoted_by_rust_native_worker(
             assert embedding_requests == [[staged["document"]]]
         finally:
             reopened.close()
+
+        # Also retain the native success path: a fresh Python Stage-1 item is
+        # completed by a newly started Rust worker without Python participation.
+        rust_success_id = f"{namespace}-rust-success-node"
+        success_writer = GraphKnowledgeEngine(
+            backend=PgVectorBackend(engine=sql_engine, embedding_dim=2, schema=schema),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda texts: [[0.01, 0.01] for _ in texts],
+        )
+        try:
+            success_writer.write.add_node(
+                build_entity_node(
+                    node_id=rust_success_id,
+                    doc_id="postgres-rust-worker-success-doc",
+                    label="Rust native promotion node",
+                )
+            )
+            success_staged = success_writer.backend.stage1_projection_get(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=rust_success_id,
+            )
+            assert success_staged is not None
+        finally:
+            success_writer.close()
+
+        env["KOGWISTAR_SERVER_PORT"] = str(_port())
+        rust_process = subprocess.Popen(
+            [str(SERVER)],
+            cwd=ROOT,
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+        )
+        success_base = f"http://127.0.0.1:{env['KOGWISTAR_SERVER_PORT']}"
+        _wait_for_http_process(
+            rust_process, f"{success_base}/health", "Rust PostgreSQL API restart"
+        )
+        success_metadata = EnginePostgresMetaStore(engine=sql_engine, schema=schema)
+        success_deadline = time.monotonic() + 30
+        while time.monotonic() < success_deadline:
+            success_jobs = success_metadata.list_index_jobs(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=rust_success_id,
+            )
+            success_pending = backend.stage1_projection_get(
+                namespace=namespace,
+                entity_kind="node",
+                entity_id=rust_success_id,
+            )
+            if success_jobs and success_jobs[0].status == "DONE" and success_pending is None:
+                break
+            if rust_process.poll() is not None:
+                raise AssertionError(
+                    f"Rust server exited before native promotion: "
+                    f"{rust_process.returncode}; jobs={success_jobs!r}; "
+                    f"stage1={success_pending!r}"
+                )
+            time.sleep(0.1)
+        else:
+            log_file.flush()
+            details = log_path.read_text(encoding="utf-8", errors="replace")[-5000:]
+            raise AssertionError(
+                "Rust worker did not finish native PostgreSQL promotion; "
+                f"jobs={success_jobs!r}; stage1={success_pending!r}; "
+                f"server_log_tail={details!r}"
+            )
+        rust_process.terminate()
+        rust_process.wait(timeout=10)
+        rust_process = None
+        assert backend.node_get(
+            ids=[rust_success_id], include=["embeddings", "metadatas"]
+        )["embeddings"][0] == pytest.approx([0.6, 0.8])
+        assert embedding_requests == [[staged["document"]], [success_staged["document"]]]
     finally:
         if rust_process is not None:
             rust_process.terminate()
