@@ -4995,6 +4995,25 @@
                             && document["target_ids"] == json!(["answer-evidence-node"])
                     })
             }), "snapshot evidence dependency must commit before the provider call");
+            for context_node_id in [
+                "answer-memory-summary",
+                "answer-prior-turn",
+                "answer-user-turn",
+                "answer-memory-context",
+                "answer-knowledge-pointer",
+            ] {
+                assert!(dependency_edges.iter().any(|record| {
+                    record
+                        .document
+                        .as_deref()
+                        .and_then(|document| serde_json::from_str::<Value>(document).ok())
+                        .is_some_and(|document| {
+                            document["relation"] == "depends_on"
+                                && document["source_ids"] == json!([snapshot.id])
+                                && document["target_ids"] == json!([context_node_id])
+                        })
+                }), "snapshot must durably depend on context node {context_node_id}");
+            }
             let answer = json!({
                     "text":"The workflow runtime state is stored in the graph.",
                     "reasoning":"The selected evidence states this directly.",

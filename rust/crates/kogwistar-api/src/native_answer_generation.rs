@@ -611,6 +611,29 @@ pub(crate) fn answer_context_snapshot_batch(
                 .ok_or_else(|| "native answer snapshot evidence IDs must be strings".to_owned())
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let conversation_context_node_ids = state
+        .get("conversation_context_node_ids")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "native answer context node IDs must be strings".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut dependency_node_ids = Vec::new();
+    let mut seen_dependency_node_ids = BTreeSet::new();
+    for node_id in conversation_context_node_ids
+        .iter()
+        .chain(used_node_ids.iter())
+    {
+        if seen_dependency_node_ids.insert(node_id.as_str()) {
+            dependency_node_ids.push(node_id);
+        }
+    }
     let run_step_seq = state
         .get("run_step_seq")
         .and_then(Value::as_u64)
@@ -636,10 +659,7 @@ pub(crate) fn answer_context_snapshot_batch(
         .get("conversation_context_messages")
         .cloned()
         .unwrap_or_else(|| json!([]));
-    let conversation_context_node_ids = state
-        .get("conversation_context_node_ids")
-        .cloned()
-        .unwrap_or_else(|| json!([]));
+    let conversation_context_node_ids = json!(conversation_context_node_ids);
     let llm_input_payload = json!({"system_prompt": system_prompt, "question": question});
     let extra_hash_payload = json!({
         "question": question,
@@ -767,7 +787,7 @@ pub(crate) fn answer_context_snapshot_batch(
     )
     .map_err(|_| "native answer snapshot node mutation is invalid".to_owned())?;
     let mut mutations = vec![node_mutation];
-    for (ordinal, target_id) in used_node_ids.iter().enumerate() {
+    for (ordinal, target_id) in dependency_node_ids.iter().enumerate() {
         let ordinal_text = ordinal.to_string();
         let edge_id = stable_id(
             "conversation.edge",
@@ -775,7 +795,7 @@ pub(crate) fn answer_context_snapshot_batch(
                 format!("conv:{conversation_id}"),
                 "depends_on".to_owned(),
                 snapshot_id.clone(),
-                target_id.clone(),
+                target_id.to_string(),
                 ordinal_text.clone(),
             ],
         )
@@ -783,7 +803,7 @@ pub(crate) fn answer_context_snapshot_batch(
         let edge_payload = json!({
             "id": edge_id,
             "source_ids": [snapshot_id],
-            "target_ids": [target_id],
+                "target_ids": [target_id],
             "relation": "depends_on",
             "label": format!("depends_on:{snapshot_id}->{target_id}"),
             "type": "relationship",
@@ -1126,7 +1146,7 @@ mod tests {
                     {"role":"system","content":"context system","source":"system","node_id":null},
                     {"role":"user","content":"prior turn","source":"history_turn","node_id":"prior-turn"}
                 ],
-                "conversation_context_node_ids": ["prior-turn"],
+                "conversation_context_node_ids": ["prior-turn", "canonical-node-secret"],
                 "evidence_pack_digest": {
                     "node_ids": ["canonical-node-secret"],
                     "edge_ids": [],
@@ -1145,7 +1165,7 @@ mod tests {
         };
         let batch = answer_context_snapshot_batch(&request, "fixture-model").unwrap();
         assert!(batch.validate().is_ok());
-        assert_eq!(batch.mutations.len(), 2);
+        assert_eq!(batch.mutations.len(), 3);
         let snapshot = &batch.mutations[0].payload;
         let properties = &snapshot["properties"];
         let saved_messages: Value =
@@ -1165,7 +1185,7 @@ mod tests {
                     .unwrap()
             )
             .unwrap(),
-            json!(["prior-turn"])
+            json!(["prior-turn", "canonical-node-secret"])
         );
         assert!(
             saved_messages[1]["content"]
@@ -1182,6 +1202,11 @@ mod tests {
         assert_eq!(batch.mutations[1].payload["relation"], "depends_on");
         assert_eq!(
             batch.mutations[1].payload["target_ids"],
+            json!(["prior-turn"])
+        );
+        assert_eq!(batch.mutations[2].payload["relation"], "depends_on");
+        assert_eq!(
+            batch.mutations[2].payload["target_ids"],
             json!(["canonical-node-secret"])
         );
         assert_eq!(batch.default_acl.truth_graph, "conversation");
