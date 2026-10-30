@@ -58,6 +58,15 @@ def test_rust_ci_provides_live_chroma_for_ignored_native_integration_tests() -> 
     assert "curl --silent --fail http://127.0.0.1:8000/api/v2/heartbeat" in workflow
     assert "cargo test --workspace --all-targets --locked --" in workflow
     assert "--include-ignored" in workflow
+    assert (
+        "tests/server/test_rust_api_chroma_interop_live.py::"
+        "test_python_chroma_projection_is_read_and_reconciled_by_rust_server"
+    ) in workflow
+    assert (
+        "tests/server/test_rust_api_chroma_interop_live.py::"
+        "test_python_stage1_is_promoted_by_rust_native_worker"
+    ) in workflow
+    assert "if tests != 2 or skipped:" in workflow
 
 
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:
