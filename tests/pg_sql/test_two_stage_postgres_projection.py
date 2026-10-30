@@ -500,7 +500,7 @@ def test_postgres_two_stage_python_authority_rejects_stale_inflight_promotion(
             ids=["python-stale-race"], include=["documents", "embeddings"]
         )
         assert "new canonical revision" in ready["documents"][0]
-        assert ready["embeddings"] == [[0.4, 0.5, 0.6]]
+        assert ready["embeddings"] == [pytest.approx([0.4, 0.5, 0.6])]
     finally:
         release_embedding.set()
         engine.close()
@@ -598,7 +598,7 @@ async def test_postgres_two_stage_async_python_authority_rejects_stale_inflight_
             ids=["async-python-stale-race"], include=["documents", "embeddings"]
         )
         assert "new canonical revision" in ready["documents"][0]
-        assert ready["embeddings"] == [[0.4, 0.5, 0.6]]
+        assert ready["embeddings"] == [pytest.approx([0.4, 0.5, 0.6])]
     finally:
         release_embedding.set()
         engine.close()
@@ -884,7 +884,7 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
     assert all(value is None for value in outcomes.values())
     promoted = engine.backend.node_get(ids=["n1", "n2"], include=["embeddings"])
     assert promoted["ids"] == ["n1", "n2"]
-    assert promoted["embeddings"] == [expected_embedding, expected_embedding]
+    assert promoted["embeddings"] == [pytest.approx(expected_embedding), pytest.approx(expected_embedding)]
 
 
 @pytest.mark.asyncio
@@ -909,7 +909,7 @@ async def test_postgres_single_stage_async_writes_embedding_directly(
         await engine.async_add_node(node)
         got = await async_pg_backend.node_get(ids=[node.id], include=["embeddings"])
         assert got["ids"] == [node.id]
-        assert got["embeddings"] == [[1.0, 0.0, 0.0]]
+        assert got["embeddings"] == [pytest.approx([1.0, 0.0, 0.0])]
         assert call_threads and call_threads[0] == main_thread
         events = list(
             engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1)
@@ -1597,3 +1597,5 @@ def test_postgres_python_stage1_replays_rust_accepted_projection_action(
         assert adapter.apply_projection_action(decoded_action)
     finally:
         engine.close()
+
+
