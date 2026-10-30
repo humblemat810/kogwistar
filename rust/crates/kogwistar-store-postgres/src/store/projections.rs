@@ -1,6 +1,48 @@
 use super::super::*;
 
 impl PostgresStore {
+    /// Read Python-compatible Stage-1 content for native PostgreSQL workers.
+    pub async fn stage1_graph_projection(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        entity_id: &str,
+    ) -> PostgresStoreResult<Option<Stage1GraphProjection>> {
+        require_namespace(namespace)?;
+        if !matches!(entity_kind, "node" | "edge") || entity_id.trim().is_empty() {
+            return Err(PostgresStoreError::Backend(
+                "Stage-1 lookup requires node/edge kind and non-empty entity id".to_owned(),
+            ));
+        }
+        let client = self.client().await?;
+        let row = client
+            .query_opt(
+                &format!(
+                    "SELECT namespace, entity_kind, entity_id, document, metadata::TEXT, \
+                            source_fingerprint, revision, materialization_status \
+                     FROM {} WHERE namespace=$1 AND entity_kind=$2 AND entity_id=$3",
+                    self.tables.stage1_projections
+                ),
+                &[&namespace, &entity_kind, &entity_id],
+            )
+            .await
+            .map_err(backend)?;
+        row.map(|row| {
+            let metadata_json: String = row.try_get(4).map_err(backend)?;
+            Ok(Stage1GraphProjection {
+                namespace: row.try_get(0).map_err(backend)?,
+                entity_kind: row.try_get(1).map_err(backend)?,
+                entity_id: row.try_get(2).map_err(backend)?,
+                document: row.try_get(3).map_err(backend)?,
+                metadata: serde_json::from_str(&metadata_json)?,
+                source_fingerprint: row.try_get(5).map_err(backend)?,
+                revision: row.try_get(6).map_err(backend)?,
+                materialization_status: row.try_get(7).map_err(backend)?,
+            })
+        })
+        .transpose()
+    }
+
     pub async fn get_index_applied_fingerprint(
         &self,
         namespace: &str,

@@ -153,6 +153,19 @@ pub struct GraphProjectionUpsert {
     pub embedding_dim: usize,
 }
 
+/// PostgreSQL Stage-1 row shared with Python's two-stage projection adapter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stage1GraphProjection {
+    pub namespace: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub document: String,
+    pub metadata: Map<String, Value>,
+    pub source_fingerprint: String,
+    pub revision: i64,
+    pub materialization_status: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphProjectionMetadataPatch {
     pub scope: GraphScope,

@@ -49,7 +49,7 @@ def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
     assert "(kogwistar-python|pyo3(-[^ ]+)?|pythonize|cpython|rust-cpython(-[^ ]+)?) v" in workflow
 
 
-def test_rust_ci_provides_live_chroma_for_ignored_native_integration_tests() -> None:
+def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "image: chromadb/chroma:1.5.9" in workflow
@@ -66,7 +66,9 @@ def test_rust_ci_provides_live_chroma_for_ignored_native_integration_tests() -> 
         "tests/server/test_rust_api_chroma_interop_live.py::"
         "test_python_stage1_is_promoted_by_rust_native_worker"
     ) in workflow
-    assert "if tests != 2 or skipped:" in workflow
+    assert "tests/server/test_rust_api_postgres_worker_interop_live.py::" in workflow
+    assert "test_python_postgres_stage1_is_promoted_by_rust_native_worker" in workflow
+    assert "if tests != 3 or skipped:" in workflow
 
 
 def test_ci_uses_persisted_inspectable_python_smoke_scripts() -> None:

@@ -1527,29 +1527,90 @@ impl PostgresRunApplicationService {
                                     message: "unsupported embedding job contract".to_owned(),
                                 });
                             }
-                            let table = kogwistar_store::graph_projection_table(&input.entity_kind)?;
-                            let mut records = store
-                                .graph_projection_records(GraphProjectionRead {
-                                    scope: GraphScope {
-                                        namespace: input.namespace.clone(),
-                                        workspace_id: None,
-                                        graph_space: None,
-                                    },
-                                    table: table.to_owned(),
-                                    ids: Some(vec![input.entity_id.clone()]),
-                                    metadata: MetadataFilter::default(),
-                                    limit: 1,
-                                })
+                            let record = if let Some(staged) = store
+                                .stage1_graph_projection(
+                                    &input.namespace,
+                                    &input.entity_kind,
+                                    &input.entity_id,
+                                )
                                 .await
                                 .map_err(|_| kogwistar_store::StoreError::Backend {
                                     backend: "postgres-embedding-worker".to_owned(),
-                                    message: "canonical graph projection read failed".to_owned(),
-                                })?;
-                            let Some(record) = records.pop() else {
-                                return Err(kogwistar_store::StoreError::Backend {
+                                    message: "PostgreSQL Stage-1 read failed".to_owned(),
+                                })?
+                            {
+                                let expected: serde_json::Value = serde_json::from_str(
+                                    input.payload_json.as_deref().unwrap_or("{}"),
+                                )
+                                .map_err(|_| kogwistar_store::StoreError::Backend {
                                     backend: "postgres-embedding-worker".to_owned(),
-                                    message: "canonical graph projection is missing".to_owned(),
-                                });
+                                    message: "embedding job revision payload is invalid".to_owned(),
+                                })?;
+                                let expected_fingerprint = expected
+                                    .get("source_fingerprint")
+                                    .and_then(serde_json::Value::as_str)
+                                    .filter(|value| !value.is_empty())
+                                    .ok_or_else(|| kogwistar_store::StoreError::Backend {
+                                        backend: "postgres-embedding-worker".to_owned(),
+                                        message: "embedding job has no source fingerprint".to_owned(),
+                                    })?;
+                                let expected_revision = expected
+                                    .get("canonical_revision")
+                                    .and_then(serde_json::Value::as_i64)
+                                    .ok_or_else(|| kogwistar_store::StoreError::Backend {
+                                        backend: "postgres-embedding-worker".to_owned(),
+                                        message: "embedding job has no canonical revision".to_owned(),
+                                    })?;
+                                let mut metadata = staged.metadata;
+                                metadata.insert(
+                                    "_kogwistar_stage1_source_fingerprint".to_owned(),
+                                    serde_json::Value::String(staged.source_fingerprint),
+                                );
+                                metadata.insert(
+                                    "_kogwistar_stage1_expected_fingerprint".to_owned(),
+                                    serde_json::Value::String(expected_fingerprint.to_owned()),
+                                );
+                                metadata.insert(
+                                    "_kogwistar_stage1_revision".to_owned(),
+                                    serde_json::Value::from(staged.revision),
+                                );
+                                metadata.insert(
+                                    "_kogwistar_stage1_expected_revision".to_owned(),
+                                    serde_json::Value::from(expected_revision),
+                                );
+                                kogwistar_store::GraphRecord {
+                                    id: staged.entity_id,
+                                    document: Some(staged.document),
+                                    metadata,
+                                    embedding: None,
+                                }
+                            } else {
+                                let table =
+                                    kogwistar_store::graph_projection_table(&input.entity_kind)?;
+                                let mut records = store
+                                    .graph_projection_records(GraphProjectionRead {
+                                        scope: GraphScope {
+                                            namespace: input.namespace.clone(),
+                                            workspace_id: None,
+                                            graph_space: None,
+                                        },
+                                        table: table.to_owned(),
+                                        ids: Some(vec![input.entity_id.clone()]),
+                                        metadata: MetadataFilter::default(),
+                                        limit: 1,
+                                    })
+                                    .await
+                                    .map_err(|_| kogwistar_store::StoreError::Backend {
+                                        backend: "postgres-embedding-worker".to_owned(),
+                                        message: "canonical graph projection read failed".to_owned(),
+                                    })?;
+                                let Some(record) = records.pop() else {
+                                    return Err(kogwistar_store::StoreError::Backend {
+                                        backend: "postgres-embedding-worker".to_owned(),
+                                        message: "canonical graph projection is missing".to_owned(),
+                                    });
+                                };
+                                record
                             };
                             if record.id != input.entity_id {
                                 return Err(kogwistar_store::StoreError::Backend {

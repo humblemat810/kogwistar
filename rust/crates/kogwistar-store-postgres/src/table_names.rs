@@ -2,7 +2,7 @@
 
 use super::{
     EDGE_ENDPOINTS_TABLE, EDGE_REFS_TABLE, NODE_DOCS_TABLE, NODE_REFS_TABLE, PostgresStoreResult,
-    qualified, quote_identifier,
+    STAGE1_PROJECTIONS_TABLE, qualified, quote_identifier,
 };
 
 #[derive(Clone, Debug)]
@@ -32,6 +32,7 @@ pub(super) struct Tables {
     pub(super) index_jobs_entity_index: String,
     pub(super) index_jobs_namespace_index: String,
     pub(super) index_jobs_pending_index: String,
+    pub(super) stage1_projections: String,
     pub(super) projected_lane_messages: String,
     pub(super) lane_messages_namespace_inbox_seq_index: String,
     pub(super) lane_messages_claim_index: String,
@@ -76,6 +77,7 @@ impl Tables {
             index_jobs_entity_index: quote_identifier("idx_index_jobs_entity")?,
             index_jobs_namespace_index: quote_identifier("idx_index_jobs_namespace")?,
             index_jobs_pending_index: quote_identifier("uq_index_jobs_pending_ns_ck")?,
+            stage1_projections: qualified(&quoted_schema, STAGE1_PROJECTIONS_TABLE)?,
             projected_lane_messages: qualified(&quoted_schema, "projected_lane_messages")?,
             lane_messages_namespace_inbox_seq_index: quote_identifier(
                 "idx_lane_messages_namespace_inbox_seq",

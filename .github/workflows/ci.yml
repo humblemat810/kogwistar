@@ -322,18 +322,19 @@ jobs:
         working-directory: .
         run: python -m pip install -e ".[test,server,chroma,pgvector]"
 
-      - name: Build Rust API server for live Chroma interoperability
+      - name: Build Rust API server for live backend interoperability
         run: cargo build -p kogwistar-api --bin kogwistar-server --locked
 
-      - name: Verify sequential Python-Rust Chroma handoffs
+      - name: Verify sequential Python-Rust backend handoffs
         working-directory: .
         shell: bash
         run: |
           set -euo pipefail
-          report="$RUNNER_TEMP/chroma-rust-interop.xml"
+          report="$RUNNER_TEMP/rust-backend-interop.xml"
           python -m pytest -q -p no:cacheprovider --junitxml="$report" \
             tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server \
-            tests/server/test_rust_api_chroma_interop_live.py::test_python_stage1_is_promoted_by_rust_native_worker
+            tests/server/test_rust_api_chroma_interop_live.py::test_python_stage1_is_promoted_by_rust_native_worker \
+            tests/server/test_rust_api_postgres_worker_interop_live.py::test_python_postgres_stage1_is_promoted_by_rust_native_worker
           python - "$report" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
@@ -341,9 +342,9 @@ jobs:
           suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
           tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
           skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          if tests != 2 or skipped:
+          if tests != 3 or skipped:
               raise SystemExit(
-                  f"both live Chroma interop tests must run without skips: "
+                  f"all live backend interop tests must run without skips: "
                   f"tests={tests}, skipped={skipped}"
               )
           PY

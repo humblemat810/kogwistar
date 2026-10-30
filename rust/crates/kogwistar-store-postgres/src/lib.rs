@@ -50,6 +50,7 @@ const EDGE_ENDPOINTS_TABLE: &str = "gke_edge_endpoints";
 const NODE_DOCS_TABLE: &str = "gke_node_docs";
 const NODE_REFS_TABLE: &str = "gke_node_refs";
 const EDGE_REFS_TABLE: &str = "gke_edge_refs";
+const STAGE1_PROJECTIONS_TABLE: &str = "gke_stage1_projections";
 
 /// Future accepted by [`PostgresStore::transaction`]. The lifetime is tied to
 /// the UoW borrow, so a pooled client cannot escape its transaction.
@@ -60,6 +61,7 @@ pub use types::{
     AppendedRawEvent, GraphDeleteMutation, GraphIndexTableNames, GraphMetadataPatchMutation,
     GraphProjectionMetadataPatch, GraphProjectionUpsert, GraphTableNames, NamedProjectionCas,
     NewRawEntityEvent, PostgresStoreError, PostgresStoreResult, RawEntityEvent,
+    Stage1GraphProjection,
 };
 
 /// Cloneable async store backed by `deadpool-postgres` and `tokio-postgres`.
