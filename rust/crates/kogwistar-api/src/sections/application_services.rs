@@ -962,6 +962,31 @@ impl ApplicationService for SqliteRunApplicationService {
             && rust_mcp_tool_supported(surface, name)
     }
 
+    fn supports_mcp_tool_for_principal(
+        &self,
+        surface: &str,
+        name: &str,
+        principal: &Value,
+    ) -> bool {
+        if name != "wisdom.kg_upsert_graph" {
+            return self.supports_mcp_tool(surface, name);
+        }
+        if surface != "root"
+            || principal_role(principal) != "rw"
+            || !principal_strings(principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "wisdom" || namespace == "*")
+        {
+            return false;
+        }
+        let state = self
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        effective_capabilities(principal, &state).contains("write_graph")
+            && self.supports_mcp_tool(surface, name)
+    }
+
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
         let is_composed_graph_read = self.chroma_graph.is_some()
             && method == "POST"

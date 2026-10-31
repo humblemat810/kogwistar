@@ -2561,6 +2561,27 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
         "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
         "capabilities": ["write_graph"]
     });
+    assert!(service.supports_mcp_tool_for_principal(
+        "root",
+        "wisdom.kg_upsert_graph",
+        &principal,
+    ));
+    for denied_principal in [
+        json!({"sub":"alice", "role":"ro", "ns":["wisdom"], "capabilities":["write_graph"]}),
+        json!({"sub":"alice", "role":"rw", "ns":["docs"], "capabilities":["write_graph"]}),
+        json!({"sub":"alice", "role":"rw", "ns":["wisdom"], "capabilities":["read_graph"]}),
+    ] {
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.kg_upsert_graph",
+            &denied_principal,
+        ));
+    }
+    assert!(!service.supports_mcp_tool_for_principal(
+        "workflow",
+        "wisdom.kg_upsert_graph",
+        &principal,
+    ));
     let denied = service.execute(ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
