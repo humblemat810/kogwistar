@@ -2070,13 +2070,20 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
     let edges = payload["edges"].as_array()?;
     let node_ids = nodes
         .iter()
-        .filter_map(|node| node["id"].as_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    let start_node_id = nodes
+        .map(|node| node["id"].as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()?;
+    let node_id_set = node_ids.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    if node_id_set.len() != node_ids.len() {
+        return None;
+    }
+    let start_nodes = nodes
         .iter()
-        .find(|node| node["metadata"]["wf_start"].as_bool() == Some(true))?["id"]
-        .as_str()?
-        .to_owned();
+        .filter(|node| node["metadata"]["wf_start"].as_bool() == Some(true))
+        .collect::<Vec<_>>();
+    if start_nodes.len() != 1 {
+        return None;
+    }
+    let start_node_id = start_nodes[0]["id"].as_str()?.to_owned();
     let node_ops = nodes
         .iter()
         .filter_map(|node| {
@@ -2163,6 +2170,7 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         .collect::<std::collections::BTreeSet<_>>();
     let mut topology_edges = Vec::new();
     let mut route_metadata = Vec::new();
+    let mut adjacency = std::collections::BTreeMap::<String, Vec<String>>::new();
     for edge in edges {
         let edge_id = edge["id"].as_str().unwrap_or_default().to_owned();
         let edge_label = edge["label"]
@@ -2179,35 +2187,64 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
             .to_owned();
         let is_default = edge["metadata"]["wf_is_default"].as_bool().unwrap_or(false);
         let priority = edge["metadata"]["wf_priority"].as_i64().unwrap_or(100);
-        for source in string_list(&edge["source_ids"]) {
-            for target in string_list(&edge["target_ids"]) {
-                topology_edges.push([source.clone(), target.clone()]);
-                let mut aliases = node_aliases.get(&target).cloned().unwrap_or_else(|| {
-                    vec![
-                        target.clone(),
-                        target.split('|').next_back().unwrap_or(&target).to_owned(),
-                    ]
-                });
-                if let Some(label) = edge_label.as_ref()
-                    && !aliases.contains(label)
-                {
-                    aliases.push(label.clone());
-                }
-                aliases.sort();
-                aliases.dedup();
-                route_metadata.push((
-                    edge_id.clone(),
-                    source.clone(),
-                    target.clone(),
-                    aliases,
-                    predicate.clone(),
-                    multiplicity.clone(),
-                    is_default,
-                    priority,
-                    fanout_nodes.contains(&source),
-                ));
+        // Python's workflow loader treats each design edge as a single transition
+        // using its first source and first target. Keep Rust routing identical.
+        let source = edge["source_ids"].as_array()?.first()?.as_str()?.to_owned();
+        let target = edge["target_ids"].as_array()?.first()?.as_str()?.to_owned();
+        if !node_id_set.contains(&source) || !node_id_set.contains(&target) {
+            return None;
+        }
+        topology_edges.push([source.clone(), target.clone()]);
+        adjacency
+            .entry(source.clone())
+            .or_default()
+            .push(target.clone());
+        let mut aliases = node_aliases.get(&target).cloned().unwrap_or_else(|| {
+            vec![
+                target.clone(),
+                target.split('|').next_back().unwrap_or(&target).to_owned(),
+            ]
+        });
+        if let Some(label) = edge_label.as_ref()
+            && !aliases.contains(label)
+        {
+            aliases.push(label.clone());
+        }
+        aliases.sort();
+        aliases.dedup();
+        route_metadata.push((
+            edge_id,
+            source.clone(),
+            target,
+            aliases,
+            predicate,
+            multiplicity,
+            is_default,
+            priority,
+            fanout_nodes.contains(&source),
+        ));
+    }
+    let reachable = {
+        let mut visited = std::collections::BTreeSet::new();
+        let mut pending = vec![start_node_id.clone()];
+        while let Some(node_id) = pending.pop() {
+            if visited.insert(node_id.clone()) {
+                pending.extend(adjacency.get(&node_id).into_iter().flatten().cloned());
             }
         }
+        visited
+    };
+    let terminal_reachable = nodes.iter().any(|node| {
+        let Some(node_id) = node["id"].as_str() else {
+            return false;
+        };
+        let explicit_terminal = node["metadata"]["wf_terminal"].as_bool() == Some(true)
+            || node["metadata"]["terminal"].as_bool() == Some(true);
+        let sink = adjacency.get(node_id).is_none_or(Vec::is_empty);
+        (explicit_terminal || sink) && reachable.contains(node_id)
+    });
+    if !terminal_reachable {
+        return None;
     }
     let may_reach_json = kogwistar_contracts::workflow_may_reach_join_from_str(
         &serde_json::to_string(&json!({

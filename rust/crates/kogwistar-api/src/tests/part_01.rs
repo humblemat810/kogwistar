@@ -2589,6 +2589,70 @@
         .is_none());
     }
 
+    #[test]
+    fn runtime_graph_plan_matches_python_design_topology_invariants() {
+        let snapshot = json!({
+            "nodes": [
+                {"id": "start", "metadata": {"wf_start": true}},
+                {"id": "end", "metadata": {"wf_terminal": true}},
+                {"id": "unused", "metadata": {}}
+            ],
+            "edges": [{
+                "id": "route",
+                "source_ids": ["start", "unused"],
+                "target_ids": ["end", "unused"],
+                "metadata": {}
+            }]
+        });
+        let plan = runtime_graph_plan_from_snapshot(&snapshot.to_string())
+            .expect("first source/target form the Python-compatible transition");
+        assert_eq!(plan.routes.len(), 1);
+        assert_eq!(plan.routes[0].source_node_id, "start");
+        assert_eq!(plan.routes[0].target_node_id, "end");
+
+        let duplicate_start = json!({
+            "nodes": [
+                {"id": "start", "metadata": {"wf_start": true}},
+                {"id": "second", "metadata": {"wf_start": true}}
+            ],
+            "edges": []
+        });
+        assert!(runtime_graph_plan_from_snapshot(&duplicate_start.to_string()).is_none());
+
+        let missing_node_id = json!({
+            "nodes": [
+                {"id": "start", "metadata": {"wf_start": true}},
+                {"metadata": {}}
+            ],
+            "edges": []
+        });
+        assert!(runtime_graph_plan_from_snapshot(&missing_node_id.to_string()).is_none());
+
+        let dangling_edge = json!({
+            "nodes": [{"id": "start", "metadata": {"wf_start": true}}],
+            "edges": [{"id": "bad", "source_ids": ["start"], "target_ids": ["missing"]}]
+        });
+        assert!(runtime_graph_plan_from_snapshot(&dangling_edge.to_string()).is_none());
+
+        let empty_endpoints = json!({
+            "nodes": [{"id": "start", "metadata": {"wf_start": true}}],
+            "edges": [{"id": "bad", "source_ids": [], "target_ids": ["start"]}]
+        });
+        assert!(runtime_graph_plan_from_snapshot(&empty_endpoints.to_string()).is_none());
+
+        let no_reachable_terminal = json!({
+            "nodes": [
+                {"id": "start", "metadata": {"wf_start": true}},
+                {"id": "loop", "metadata": {}}
+            ],
+            "edges": [
+                {"id": "to-loop", "source_ids": ["start"], "target_ids": ["loop"]},
+                {"id": "to-start", "source_ids": ["loop"], "target_ids": ["start"]}
+            ]
+        });
+        assert!(runtime_graph_plan_from_snapshot(&no_reachable_terminal.to_string()).is_none());
+    }
+
     #[tokio::test]
     async fn sqlite_native_runtime_route_uses_shared_result_reducer() {
         use std::time::{SystemTime, UNIX_EPOCH};
