@@ -87,6 +87,9 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
     assert batch.contract_version == 2
     assert batch.default_acl.truth_graph == "conversation"
     assert batch.mutations[0].record.id == "node-1"
+    assert batch.mutations[0].scope.namespace == "tenant-a"
+    assert batch.mutations[0].scope.workspace_id == "ws"
+    assert batch.mutations[0].scope.graph_space == "facts"
     with pytest.raises(GraphMutationContractError):
         validate_graph_mutation_batch(payload)
 

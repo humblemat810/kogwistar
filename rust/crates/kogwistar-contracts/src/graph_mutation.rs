@@ -374,6 +374,10 @@ mod tests {
         let batch: GraphMutationBatchV2 = serde_json::from_str(fixture).unwrap();
         assert_eq!(batch.validate(), Ok(()));
         assert_eq!(batch.default_acl.truth_graph, "conversation");
+        let scope = &batch.mutations[0].scope;
+        assert_eq!(scope.namespace, "tenant-a");
+        assert_eq!(scope.workspace_id.as_deref(), Some("ws"));
+        assert_eq!(scope.graph_space.as_deref(), Some("facts"));
 
         let v1_error = serde_json::from_str::<GraphMutationBatchV1>(fixture);
         assert!(
