@@ -621,6 +621,19 @@ async fn provider_event_ack_and_runtime_transition_share_one_transaction() -> Po
             .state["answer"],
         "handled"
     );
+    store
+        .transaction(|uow| {
+            Box::pin(async move {
+                let steps = uow.recorded_runtime_steps("event-run", &[0]).await?;
+                assert_eq!(steps.len(), 1);
+                assert_eq!(steps[0].event_type, "workflow.recorded_transition.v1");
+                let payload: Value = serde_json::from_str(&steps[0].payload_json).unwrap();
+                assert_eq!(payload["reduced"]["state"]["last_step_seq"], 0);
+                assert_eq!(payload["reduced"]["state"]["conversation_id"], "conv-1");
+                Ok(())
+            })
+        })
+        .await?;
 
     let client = store.client().await?;
     client

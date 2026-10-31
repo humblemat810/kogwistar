@@ -4088,6 +4088,49 @@ impl PostgresRunApplicationService {
                                     ),
                                 );
                             }
+                            let event = event.ok_or_else(|| {
+                                kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    "provider event payload is unavailable for causal linkage".to_owned(),
+                                )
+                            })?;
+                            let handler_step_seq = applied
+                                .reduced
+                                .state
+                                .state
+                                .get("agent_event_handling_step_seq")
+                                .and_then(Value::as_i64)
+                                .filter(|step_seq| *step_seq >= 0)
+                                .ok_or_else(|| {
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event has no valid durable handler step sequence".to_owned(),
+                                    )
+                                })?;
+                            let mut referenced_step_seqs = vec![handler_step_seq];
+                            if let Some(producer_step_seq) = event.trace.producer_step_seq {
+                                if producer_step_seq < 0 {
+                                    return Err(
+                                        kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                            "provider event has an invalid producer step sequence".to_owned(),
+                                        ),
+                                    );
+                                }
+                                referenced_step_seqs.push(producer_step_seq);
+                            }
+                            referenced_step_seqs.sort_unstable();
+                            referenced_step_seqs.dedup();
+                            let recorded_steps = uow
+                                .recorded_runtime_steps(&runtime_run_id, &referenced_step_seqs)
+                                .await?;
+                            let step_snapshots = provider_event_step_snapshots(
+                                recorded_steps,
+                                &runtime_run_id,
+                                &lane.conversation_id,
+                                &applied.reduced.state.workflow_id,
+                                &referenced_step_seqs,
+                            )
+                            .map_err(
+                                kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict,
+                            )?;
                             let workflow_node_id = applied
                                 .reduced
                                 .state
@@ -4104,6 +4147,18 @@ impl PostgresRunApplicationService {
                                 return Err(
                                     kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
                                         "provider event handling step has an invalid sequence".to_owned(),
+                                    ),
+                                );
+                            }
+                            if handler_step_seq >= step_seq
+                                || event
+                                    .trace
+                                    .producer_step_seq
+                                    .is_some_and(|producer_step_seq| producer_step_seq >= step_seq)
+                            {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event causal steps must precede the acknowledgement step".to_owned(),
                                     ),
                                 );
                             }
@@ -4133,9 +4188,19 @@ impl PostgresRunApplicationService {
                                 &effect_id,
                                 &graph_scope,
                             );
-                            if !linked_step_nodes.insert(causal_mutations[0].record.id.clone()) {
-                                causal_mutations.remove(0);
-                            }
+                            causal_mutations.extend(provider_event_step_link_mutations(
+                                &acknowledgement.event_id,
+                                &runtime_run_id,
+                                &lane.conversation_id,
+                                event.trace.producer_step_seq,
+                                handler_step_seq,
+                                &step_snapshots,
+                                &graph_scope,
+                            ));
+                            causal_mutations.retain(|mutation| {
+                                mutation.entity_kind != "node"
+                                    || linked_step_nodes.insert(mutation.record.id.clone())
+                            });
                             let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
                                 uow,
                                 &graph_scope,

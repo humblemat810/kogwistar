@@ -26,6 +26,7 @@ pub(super) struct Tables {
     pub(super) server_runs_status_index: String,
     pub(super) server_run_events_run_seq_index: String,
     pub(super) server_run_events_transition_id_index: String,
+    pub(super) server_run_events_runtime_step_index: String,
     pub(super) index_jobs: String,
     pub(super) index_jobs_status_lease_index: String,
     pub(super) index_jobs_status_next_run_index: String,
@@ -70,6 +71,9 @@ impl Tables {
             server_run_events_run_seq_index: quote_identifier("idx_server_run_events_run_seq")?,
             server_run_events_transition_id_index: quote_identifier(
                 "idx_server_run_events_recorded_transition_id",
+            )?,
+            server_run_events_runtime_step_index: quote_identifier(
+                "idx_server_run_events_runtime_step_seq",
             )?,
             index_jobs: qualified(&quoted_schema, "index_jobs")?,
             index_jobs_status_lease_index: quote_identifier("idx_index_jobs_status_lease")?,

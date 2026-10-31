@@ -77,6 +77,9 @@ pub(super) fn schema_sql(tables: &Tables) -> String {
          CREATE INDEX IF NOT EXISTS {server_run_events_run_seq_index} ON {server_run_events}(run_id, seq);\
          CREATE UNIQUE INDEX IF NOT EXISTS {server_run_events_transition_id_index}\
             ON {server_run_events} ((payload_json::jsonb->>'transition_id')) WHERE event_type='workflow.recorded_transition.v1';\
+         CREATE INDEX IF NOT EXISTS {server_run_events_runtime_step_index}\
+            ON {server_run_events}(run_id, (payload_json::jsonb #>> '{{reduced,state,last_step_seq}}'))\
+            WHERE event_type='workflow.recorded_transition.v1';\
          CREATE TABLE IF NOT EXISTS {index_jobs} (\
             job_id TEXT PRIMARY KEY,namespace TEXT NOT NULL DEFAULT 'default',entity_kind TEXT NOT NULL,entity_id TEXT NOT NULL,\
             index_kind TEXT NOT NULL,coalesce_key TEXT NOT NULL,op TEXT NOT NULL,status TEXT NOT NULL,lease_until TIMESTAMPTZ NULL,\
@@ -124,6 +127,7 @@ pub(super) fn schema_sql(tables: &Tables) -> String {
         server_runs_status_index = tables.server_runs_status_index,
         server_run_events_run_seq_index = tables.server_run_events_run_seq_index,
         server_run_events_transition_id_index = tables.server_run_events_transition_id_index,
+        server_run_events_runtime_step_index = tables.server_run_events_runtime_step_index,
         index_jobs = tables.index_jobs,
         index_jobs_status_lease_index = tables.index_jobs_status_lease_index,
         index_jobs_status_next_run_index = tables.index_jobs_status_next_run_index,

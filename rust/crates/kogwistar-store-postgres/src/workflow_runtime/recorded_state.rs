@@ -30,6 +30,37 @@ where
     rows.iter().map(server_run_event_from_row).collect()
 }
 
+pub(crate) async fn recorded_runtime_steps<C>(
+    client: &C,
+    tables: &Tables,
+    run_id: &str,
+    step_seqs: &[i64],
+) -> PostgresStoreResult<Vec<ServerRunEvent>>
+where
+    C: GenericClient + Sync,
+{
+    if step_seqs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let step_seqs = step_seqs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let rows = client
+        .query(
+            &format!(
+                "SELECT seq,run_id,event_type,payload_json,created_at_ms FROM {} WHERE run_id=$1 AND event_type=$2 \
+                 AND (payload_json::jsonb #>> '{{reduced,state,last_step_seq}}') = ANY($3) \
+                 ORDER BY seq ASC",
+                tables.server_run_events
+            ),
+            &[&run_id, &RECORDED_RUNTIME_EVENT_TYPE, &step_seqs],
+        )
+        .await
+        .map_err(backend)?;
+    rows.iter().map(server_run_event_from_row).collect()
+}
+
 pub(crate) async fn latest_server_run_event_seq<C>(
     client: &C,
     tables: &Tables,

@@ -1,5 +1,205 @@
 use kogwistar_contracts::{DurableProviderEventPublicationV1, DurableProviderEventV1};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProviderEventStepSnapshot {
+    pub step_seq: i64,
+    pub workflow_id: String,
+    pub workflow_node_id: String,
+    pub status: String,
+    pub result_json: String,
+    pub event_seq: i64,
+    pub transition_id: String,
+}
+
+pub(crate) fn provider_event_step_snapshots(
+    events: Vec<ServerRunEvent>,
+    run_id: &str,
+    conversation_id: &str,
+    workflow_id: &str,
+    requested_step_seqs: &[i64],
+) -> Result<BTreeMap<i64, ProviderEventStepSnapshot>, String> {
+    let requested = requested_step_seqs.iter().copied().collect::<BTreeSet<_>>();
+    let mut snapshots = BTreeMap::new();
+    for event in events {
+        if event.event_type != "workflow.recorded_transition.v1" {
+            return Err("workflow-step evidence came from a non-transition event".to_owned());
+        }
+        let payload: Value = serde_json::from_str(&event.payload_json)
+            .map_err(|_| "workflow-step evidence has malformed transition JSON".to_owned())?;
+        let reduced = payload
+            .get("reduced")
+            .ok_or_else(|| "workflow-step evidence has no reduced transition".to_owned())?;
+        let state = reduced
+            .get("state")
+            .ok_or_else(|| "workflow-step evidence has no runtime state".to_owned())?;
+        let step_seq = state
+            .get("last_step_seq")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| "workflow-step evidence has no valid step sequence".to_owned())?;
+        if !requested.contains(&step_seq) {
+            continue;
+        }
+        if state.get("run_id").and_then(Value::as_str) != Some(run_id)
+            || state.get("conversation_id").and_then(Value::as_str) != Some(conversation_id)
+            || state.get("workflow_id").and_then(Value::as_str) != Some(workflow_id)
+        {
+            return Err("workflow-step evidence is outside the active run scope".to_owned());
+        }
+        let workflow_node_id = state
+            .get("last_node_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "workflow-step evidence has no workflow node identity".to_owned())?
+            .to_owned();
+        let errors = reduced
+            .get("errors")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let result_json = serde_json::to_string(
+            reduced.get("result").unwrap_or(&Value::Null),
+        )
+        .map_err(|_| "workflow-step result could not be serialized".to_owned())?;
+        let transition_id = payload
+            .get("transition_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "workflow-step evidence has no transition identity".to_owned())?
+            .to_owned();
+        let snapshot = ProviderEventStepSnapshot {
+            step_seq,
+            workflow_id: workflow_id.to_owned(),
+            workflow_node_id,
+            status: if errors.is_empty() { "success" } else { "failure" }.to_owned(),
+            result_json,
+            event_seq: event.seq,
+            transition_id,
+        };
+        if let Some(previous) = snapshots.insert(step_seq, snapshot.clone())
+            && previous != snapshot
+        {
+            return Err("workflow step sequence resolves to conflicting transitions".to_owned());
+        }
+    }
+    if requested.iter().any(|step_seq| !snapshots.contains_key(step_seq)) {
+        return Err("a referenced provider-event workflow step is not durable".to_owned());
+    }
+    Ok(snapshots)
+}
+
+pub(crate) fn provider_event_step_link_mutations(
+    event_id: &str,
+    run_id: &str,
+    conversation_id: &str,
+    producer_step_seq: Option<i64>,
+    handler_step_seq: i64,
+    snapshots: &BTreeMap<i64, ProviderEventStepSnapshot>,
+    scope: &GraphScope,
+) -> Vec<GraphMutation> {
+    let mut mutations = Vec::new();
+    for snapshot in snapshots.values() {
+        let id = format!("wf_step|{run_id}|{}", snapshot.step_seq);
+        let summary = format!(
+            "step={}, op={}, status={}",
+            snapshot.step_seq, snapshot.workflow_node_id, snapshot.status
+        );
+        let metadata = json!({
+            "entity_type": "workflow_step_exec",
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "workflow_id": snapshot.workflow_id,
+            "workflow_node_id": snapshot.workflow_node_id,
+            "step_seq": snapshot.step_seq,
+            "op": snapshot.workflow_node_id,
+            "status": snapshot.status,
+            "duration_ms": 0,
+            "result_json": snapshot.result_json,
+            "event_seq": snapshot.event_seq,
+            "transition_id": snapshot.transition_id,
+            "namespace": scope.namespace,
+            "workspace_id": scope.workspace_id,
+            "graph_space": scope.graph_space,
+            "in_conversation_chain": false
+        });
+        mutations.push(provider_event_node_mutation(
+            scope,
+            id.clone(),
+            format!("WF step {}: {}", snapshot.step_seq, snapshot.workflow_node_id),
+            summary,
+            metadata.as_object().cloned().unwrap_or_default(),
+            None,
+        ));
+    }
+
+    let message_id = format!("msg:{event_id}");
+    let mut links = Vec::new();
+    if let Some(producer_step_seq) = producer_step_seq {
+        links.push(("emitted_by_step", producer_step_seq));
+    }
+    links.push(("handled_by_step", handler_step_seq));
+    for (relation, step_seq) in links {
+        let step_id = format!("wf_step|{run_id}|{step_seq}");
+        let edge_id = stable_id(
+            "lane_message_step_link",
+            &[
+                message_id.clone(),
+                relation.to_owned(),
+                step_id.clone(),
+            ],
+        )
+        .to_string();
+        let metadata = json!({
+            "entity_type": "conversation_edge",
+            "relation": relation,
+            "conversation_id": conversation_id,
+            "run_id": run_id,
+            "source_id": [message_id],
+            "target_id": [step_id],
+            "char_distance_from_last_summary": 0,
+            "turn_distance_from_last_summary": 0,
+            "namespace": scope.namespace,
+            "workspace_id": scope.workspace_id,
+            "graph_space": scope.graph_space,
+            "in_conversation_chain": false
+        });
+        let payload = json!({
+            "id": edge_id,
+            "label": relation,
+            "type": "relationship",
+            "summary": relation,
+            "doc_id": edge_id,
+            "relation": relation,
+            "source_ids": [message_id],
+            "target_ids": [step_id],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "metadata": metadata,
+            "properties": {},
+            "embedding": null
+        });
+        mutations.push(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: stable_id(
+                "agent_provider_event_graph_mutation",
+                &["edge".to_owned(), edge_id.clone()],
+            )
+            .to_string(),
+            op: "ADD".to_owned(),
+            record: GraphRecord {
+                id: edge_id,
+                document: Some(payload.to_string()),
+                metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+                embedding: None,
+            },
+            payload,
+            embedding_dim: 0,
+        });
+    }
+    mutations
+}
+
 fn provider_event_graph_mutations(
     publication: &DurableProviderEventPublicationV1,
     scope: &GraphScope,

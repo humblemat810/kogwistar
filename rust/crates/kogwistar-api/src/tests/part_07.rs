@@ -1293,6 +1293,138 @@ fn provider_event_ack_graph_mutations_link_event_to_ack_step() {
 }
 
 #[test]
+fn provider_event_links_match_python_producer_and_handler_contract() {
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let producer = ProviderEventStepSnapshot {
+        step_seq: 3,
+        workflow_id: "workflow-a".to_owned(),
+        workflow_node_id: "provider.stream".to_owned(),
+        status: "success".to_owned(),
+        result_json: "{\"published\":true}".to_owned(),
+        event_seq: 8,
+        transition_id: "transition-producer".to_owned(),
+    };
+    let handler = ProviderEventStepSnapshot {
+        step_seq: 5,
+        workflow_id: "workflow-a".to_owned(),
+        workflow_node_id: "agent.event.tool".to_owned(),
+        status: "success".to_owned(),
+        result_json: "{\"tool\":\"read\"}".to_owned(),
+        event_seq: 12,
+        transition_id: "transition-handler".to_owned(),
+    };
+    let snapshots = BTreeMap::from([(3, producer), (5, handler)]);
+    let mutations = provider_event_step_link_mutations(
+        "event-a",
+        "run-a",
+        "conversation-a",
+        Some(3),
+        5,
+        &snapshots,
+        &scope,
+    );
+
+    assert_eq!(mutations.len(), 4);
+    assert_eq!(mutations[0].record.id, "wf_step|run-a|3");
+    assert_eq!(mutations[1].record.id, "wf_step|run-a|5");
+    assert_eq!(mutations[0].record.metadata["event_seq"], 8);
+    assert_eq!(mutations[1].record.metadata["transition_id"], "transition-handler");
+    assert_eq!(mutations[2].payload["relation"], "emitted_by_step");
+    assert_eq!(mutations[2].payload["source_ids"], json!(["msg:event-a"]));
+    assert_eq!(mutations[2].payload["target_ids"], json!(["wf_step|run-a|3"]));
+    assert_eq!(mutations[3].payload["relation"], "handled_by_step");
+    assert_eq!(mutations[3].payload["target_ids"], json!(["wf_step|run-a|5"]));
+    assert_ne!(mutations[2].record.id, mutations[3].record.id);
+    assert_eq!(mutations[0].scope, scope);
+
+    let replay = provider_event_step_link_mutations(
+        "event-a",
+        "run-a",
+        "conversation-a",
+        Some(3),
+        5,
+        &snapshots,
+        &scope,
+    );
+    assert_eq!(mutations, replay, "replay preserves deterministic step/link records");
+
+    let shared_step = BTreeMap::from([(3, snapshots[&3].clone())]);
+    let shared_mutations = provider_event_step_link_mutations(
+        "event-b",
+        "run-a",
+        "conversation-a",
+        Some(3),
+        3,
+        &shared_step,
+        &scope,
+    );
+    assert_eq!(
+        shared_mutations.iter().filter(|mutation| mutation.entity_kind == "node").count(),
+        1,
+        "producer and handler sharing a step reuse one step node"
+    );
+    assert_eq!(
+        shared_mutations.iter().filter(|mutation| mutation.entity_kind == "edge").count(),
+        2
+    );
+}
+
+#[test]
+fn provider_event_step_snapshot_lookup_rejects_wrong_scope_and_missing_steps() {
+    let event = |seq: i64, run_id: &str| ServerRunEvent {
+        seq,
+        run_id: run_id.to_owned(),
+        event_type: "workflow.recorded_transition.v1".to_owned(),
+        payload_json: json!({
+            "transition_id": format!("transition-{seq}"),
+            "reduced": {
+                "state": {
+                    "run_id": run_id,
+                    "conversation_id": "conversation-a",
+                    "workflow_id": "workflow-a",
+                    "last_step_seq": seq,
+                    "last_node_id": "agent.event.receive"
+                },
+                "errors": [],
+                "result": {"ok": true}
+            }
+        })
+        .to_string(),
+        created_at_ms: 100 + seq,
+    };
+
+    let found = provider_event_step_snapshots(
+        vec![event(4, "run-a")],
+        "run-a",
+        "conversation-a",
+        "workflow-a",
+        &[4],
+    )
+    .unwrap();
+    assert_eq!(found[&4].workflow_node_id, "agent.event.receive");
+    assert!(provider_event_step_snapshots(
+        vec![event(4, "other-run")],
+        "run-a",
+        "conversation-a",
+        "workflow-a",
+        &[4],
+    )
+    .is_err());
+    assert!(provider_event_step_snapshots(
+        Vec::new(),
+        "run-a",
+        "conversation-a",
+        "workflow-a",
+        &[4],
+    )
+    .is_err());
+}
+
+#[test]
 fn provider_event_acknowledgement_contract_rejects_invalid_or_duplicate_claims() {
     use kogwistar_runtime::ProviderEventAcknowledgementV1;
 

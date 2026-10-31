@@ -1,6 +1,14 @@
 use super::*;
 
 impl PostgresUnitOfWork<'_> {
+    pub async fn recorded_runtime_steps(
+        &self,
+        run_id: &str,
+        step_seqs: &[i64],
+    ) -> PostgresStoreResult<Vec<ServerRunEvent>> {
+        recorded_runtime_steps(&self.transaction, &self.tables, run_id, step_seqs).await
+    }
+
     pub async fn get_server_run(&self, run_id: &str) -> PostgresStoreResult<Option<ServerRun>> {
         server_run(&self.transaction, &self.tables, run_id).await
     }
