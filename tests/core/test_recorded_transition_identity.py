@@ -5,9 +5,9 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
-from sqlalchemy.exc import IntegrityError
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
