@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -225,6 +226,105 @@ def test_python_rejects_newer_sqlite_schema_without_mutating_database(
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='global_seq'"
         ).fetchone() is None
+
+
+def test_python_and_rust_migrate_legacy_sqlite_queue_schema_equivalently(
+    tmp_path: Path,
+) -> None:
+    python_path = tmp_path / "python-legacy.db"
+    rust_path = tmp_path / "rust-legacy.db"
+    legacy_schema = """
+        CREATE TABLE index_jobs (
+            job_id TEXT PRIMARY KEY, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL,
+            index_kind TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL,
+            lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT, payload_json TEXT, created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        INSERT INTO index_jobs VALUES (
+            'legacy-job', 'node', 'n1', 'node_embedding', 'UPSERT', 'PENDING',
+            NULL, 0, NULL, '{"legacy":true}', 10, 10
+        );
+        CREATE TABLE projected_lane_messages (
+            message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default',
+            inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL,
+            sender_id TEXT NOT NULL, msg_type TEXT NOT NULL, status TEXT NOT NULL,
+            seq INTEGER NOT NULL, conversation_seq INTEGER NOT NULL, claimed_by TEXT,
+            lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+            available_at INTEGER NOT NULL, run_id TEXT, step_id TEXT, correlation_id TEXT,
+            payload_json TEXT, error_json TEXT, prev_message_id TEXT, next_message_id TEXT,
+            inbox_tail_message_id TEXT, conversation_tail_message_id TEXT
+        );
+        INSERT INTO projected_lane_messages (
+            message_id, inbox_id, conversation_id, recipient_id, sender_id, msg_type,
+            status, seq, conversation_seq, created_at, available_at, payload_json
+        ) VALUES ('legacy-message', 'inbox', 'conversation', 'recipient', 'sender', 'text',
+                  'PENDING', 1, 1, 10, 10, '{"legacy":true}');
+    """
+    for path in (python_path, rust_path):
+        with sqlite3.connect(path) as conn:
+            conn.executescript(legacy_schema)
+
+    python = EngineSQLite(tmp_path, filename="python-legacy.db")
+    python.ensure_initialized()
+    assert _rust(rust_path, {"kind": "open_init"}) == {"initialized": True}
+    assert _rust(rust_path, {"kind": "close"}) is None
+
+    def schema_signature(path: Path) -> dict[str, object]:
+        with sqlite3.connect(path) as conn:
+            table_names = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            result: dict[str, object] = {}
+            for table in table_names:
+                columns = tuple(
+                    sorted(
+                        (
+                            row[1],
+                            row[2].upper(),
+                            row[3],
+                            row[4],
+                            row[5],
+                        )
+                        for row in conn.execute(f'PRAGMA table_info("{table}")')
+                    )
+                )
+                indexes = []
+                for row in conn.execute(f'PRAGMA index_list("{table}")'):
+                    index_name = row[1]
+                    sql_row = conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                        (index_name,),
+                    ).fetchone()
+                    index_sql = (
+                            re.sub(
+                                r"\s*([(),=])\s*",
+                                r"\1",
+                                " ".join(sql_row[0].split()).lower(),
+                            )
+                        if sql_row and sql_row[0]
+                        else None
+                    )
+                    indexes.append((index_name, row[2], row[3], row[4], index_sql))
+                result[table] = (columns, tuple(sorted(indexes)))
+            return result
+
+    assert schema_signature(python_path) == schema_signature(rust_path)
+    for path in (python_path, rust_path):
+        with sqlite3.connect(path) as conn:
+            assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+            assert conn.execute(
+                "SELECT job_id, namespace, coalesce_key, max_retries, payload_json "
+                "FROM index_jobs WHERE job_id='legacy-job'"
+            ).fetchone() == ("legacy-job", "default", "", 10, '{"legacy":true}')
+            assert conn.execute(
+                "SELECT message_id, purpose, payload_json FROM projected_lane_messages "
+                "WHERE message_id='legacy-message'"
+            ).fetchone() == ("legacy-message", "user_visible", '{"legacy":true}')
 
 
 def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tmp_path: Path) -> None:

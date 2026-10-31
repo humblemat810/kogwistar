@@ -346,9 +346,6 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON index_jobs(entity_kind, entity_id, index_kind)"
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
-            )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(index_jobs)").fetchall()}
             for name, definition in (
                 ("claim_token", "TEXT"),
@@ -408,6 +405,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 conn.execute(
                     "ALTER TABLE index_jobs ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'"
                 )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
+            )
             # Phase 2: coalescing + fingerprints
             # Ensure legacy DBs have the new column(s).
             cols = [
