@@ -41,6 +41,14 @@ class DurableProviderEvent(BaseModel):
     event: ProviderEvent
 
 
+class DurableProviderEventPublication(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    namespace: str
+    conversation_id: str
+    event: DurableProviderEvent
+
+
 class ClaimedProviderEvent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -339,6 +347,7 @@ class LaneProviderEventJournal:
 __all__ = [
     "ClaimedProviderEvent",
     "DurableProviderEvent",
+    "DurableProviderEventPublication",
     "EventTraceMetadata",
     "LaneMessageJournalService",
     "LaneProviderEventJournal",

@@ -1091,6 +1091,7 @@ fn failed_native_result(
             trace_events: vec![trace],
             graph_mutation_batch: None,
             graph_mutation_batch_v2: None,
+            provider_event_publications: Vec::new(),
         }),
     }
 }

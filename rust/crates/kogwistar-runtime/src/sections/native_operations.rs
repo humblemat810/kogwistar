@@ -648,6 +648,7 @@ pub fn execute_native_step_with_registry(
         }],
         graph_mutation_batch,
         graph_mutation_batch_v2,
+        provider_event_publications: Vec::new(),
     })
 }
 

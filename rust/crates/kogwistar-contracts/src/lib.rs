@@ -23,7 +23,9 @@ mod projection_checkpoint;
 mod provider_event;
 mod source_map;
 mod tool_audit;
-pub use agent_event::{DurableProviderEventV1, EventTraceMetadataV1};
+pub use agent_event::{
+    DurableProviderEventPublicationV1, DurableProviderEventV1, EventTraceMetadataV1,
+};
 pub use conversation::{
     CONVERSATION_WIRE_VERSION, ContextSnapshotV1, ConversationContractError, ConversationSummaryV1,
     ConversationTranscriptV1, ConversationTurnV1, context_snapshot_from_str,

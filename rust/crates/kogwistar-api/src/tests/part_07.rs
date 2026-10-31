@@ -1086,3 +1086,154 @@
             ));
         }
     }
+#[test]
+fn provider_event_publication_requires_matching_private_graph_event_and_conversation_edge() {
+    let legacy_effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+        "contract_version": 1,
+        "effect_id": "legacy-effect"
+    }))
+    .unwrap();
+    assert!(legacy_effect.provider_event_publications.is_empty());
+
+    let publication_value = json!({
+        "namespace": "tenant-a",
+        "conversation_id": "conversation-a",
+        "event": {
+            "event_id": "agent-event:fixture-001",
+            "trace": {
+                "run_id": "run-a",
+                "turn_id": "turn-a",
+                "workflow_node_id": "wf:agent.event.v1:request",
+                "step_id": "provider-response:response-a",
+                "provider_id": "openai-responses"
+            },
+            "event": {
+                "contract_version": "v1",
+                "provider_event_id": "response-a:1",
+                "provider_sequence": 1,
+                "response_id": "response-a",
+                "kind": "field_completed",
+                "field_name": "text",
+                "value": "safe answer"
+            }
+        }
+    });
+    let publication: kogwistar_contracts::DurableProviderEventPublicationV1 =
+        serde_json::from_value(publication_value).unwrap();
+    let message_id = format!("msg:{}", publication.event.event_id);
+    let payload_json = serde_json::to_string(&publication.event).unwrap();
+    let metadata = serde_json::from_value(json!({
+        "artifact_kind": "lane_message",
+        "conversation_id": publication.conversation_id,
+        "inbox_id": "agent-provider-events",
+        "recipient_id": "agent-event-consumer",
+        "sender_id": "agent-runtime",
+        "msg_type": "agent.provider_event",
+        "purpose": "agent_event",
+        "run_id": "run-a",
+        "step_id": "provider-response:response-a",
+        "correlation_id": publication.event.event_id,
+        "idempotency_key": publication.event.event_id,
+        "visibility": "private",
+        "shared_scope": false,
+        "payload_json": payload_json
+    }))
+    .unwrap();
+    let node = GraphMutation {
+        scope: GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: Some("conversation".to_owned()),
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: "node-event-1".to_owned(),
+        op: "ADD".to_owned(),
+        payload: json!({"id": message_id}),
+        record: GraphRecord {
+            id: message_id.clone(),
+            document: None,
+            metadata,
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    let edge = GraphMutation {
+        scope: node.scope.clone(),
+        table: "gke_edges".to_owned(),
+        entity_kind: "edge".to_owned(),
+        event_id: "edge-event-1".to_owned(),
+        op: "ADD".to_owned(),
+        payload: json!({
+            "id": "event-in-conversation",
+            "source_ids": [message_id],
+            "target_ids": ["conversation-start-a"],
+            "relation": "in_conversation"
+        }),
+        record: GraphRecord {
+            id: "event-in-conversation".to_owned(),
+            document: None,
+            metadata: serde_json::from_value(json!({
+                "conversation_id": publication.conversation_id
+            }))
+            .unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    let mutations = vec![node, edge];
+    assert!(validate_provider_event_publications(
+        std::slice::from_ref(&publication),
+        &mutations,
+        "run-a",
+    )
+    .is_ok());
+    assert!(validate_provider_event_publications(
+        std::slice::from_ref(&publication),
+        &mutations[..1],
+        "run-a",
+    )
+    .is_err());
+    let mut cross_scope_edge = mutations.clone();
+    cross_scope_edge[1].scope.namespace = "other-tenant".to_owned();
+    assert!(validate_provider_event_publications(
+        std::slice::from_ref(&publication),
+        &cross_scope_edge,
+        "run-a",
+    )
+    .is_err());
+    let mut ambiguous_edge = mutations.clone();
+    ambiguous_edge[1].payload["target_ids"] = json!(["conversation-a", "conversation-b"]);
+    assert!(validate_provider_event_publications(
+        std::slice::from_ref(&publication),
+        &ambiguous_edge,
+        "run-a",
+    )
+    .is_err());
+    assert!(validate_provider_event_publications(
+        std::slice::from_ref(&publication),
+        &mutations,
+        "another-run",
+    )
+    .is_err());
+    let mut cross_namespace = publication.clone();
+    cross_namespace.namespace = "other-tenant".to_owned();
+    assert!(validate_provider_event_publications(
+        &[cross_namespace],
+        &mutations,
+        "run-a",
+    )
+    .is_err());
+    let mut transient_delta = publication.clone();
+    transient_delta.event.event = serde_json::from_value(json!({
+        "kind": "text_delta",
+        "delta": "not durable"
+    }))
+    .unwrap();
+    assert!(validate_provider_event_publications(
+        &[transient_delta],
+        &mutations,
+        "run-a",
+    )
+    .is_err());
+}

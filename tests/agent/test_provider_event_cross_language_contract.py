@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from kogwistar.agent.event_journal import DurableProviderEvent
+from kogwistar.agent.event_journal import (
+    DurableProviderEvent,
+    DurableProviderEventPublication,
+)
 from kogwistar.agent.streaming import ProviderEvent
 
 _FIXTURE = (
@@ -41,3 +44,5 @@ def test_python_durable_provider_event_matches_shared_rust_golden_fixture() -> N
     for invalid in fixture["invalid_envelopes"]:
         with pytest.raises(ValidationError):
             DurableProviderEvent.model_validate(invalid)
+    publication = DurableProviderEventPublication.model_validate(fixture["publication"])
+    assert publication.model_dump(mode="json") == fixture["publication"]

@@ -41,6 +41,14 @@ pub struct DurableProviderEventV1 {
     pub event: ProviderEventV1,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurableProviderEventPublicationV1 {
+    pub namespace: String,
+    pub conversation_id: String,
+    pub event: DurableProviderEventV1,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,6 +57,7 @@ mod tests {
     #[derive(Deserialize)]
     struct GoldenEnvelope {
         envelope: Value,
+        publication: Value,
         invalid_envelopes: Vec<Value>,
     }
 
@@ -61,6 +70,12 @@ mod tests {
         let envelope: DurableProviderEventV1 =
             serde_json::from_value(fixture.envelope.clone()).unwrap();
         assert_eq!(serde_json::to_value(envelope).unwrap(), fixture.envelope);
+        let publication: DurableProviderEventPublicationV1 =
+            serde_json::from_value(fixture.publication.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(publication).unwrap(),
+            fixture.publication
+        );
         for invalid in fixture.invalid_envelopes {
             assert!(
                 serde_json::from_value::<DurableProviderEventV1>(invalid.clone()).is_err(),

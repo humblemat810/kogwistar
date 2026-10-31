@@ -47,6 +47,11 @@ pub struct RecordedWorkerSuccessEffect {
     /// and current ACL truth; V1 remains wire-compatible and unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph_mutation_batch_v2: Option<kogwistar_contracts::GraphMutationBatchV2>,
+    /// Provider events are projected into the graph batch and lane inbox in
+    /// the same transaction as this effect and its worker-lane acknowledgement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_event_publications:
+        Vec<kogwistar_contracts::DurableProviderEventPublicationV1>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

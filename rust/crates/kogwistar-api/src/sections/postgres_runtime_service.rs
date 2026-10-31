@@ -13,6 +13,118 @@ enum RuntimeGraphMutationBatch<'a> {
     V2(&'a kogwistar_contracts::GraphMutationBatchV2),
 }
 
+fn validate_provider_event_publications(
+    publications: &[kogwistar_contracts::DurableProviderEventPublicationV1],
+    mutations: &[GraphMutation],
+    run_id: &str,
+) -> Result<(), String> {
+    let mut published_ids = BTreeSet::new();
+    for publication in publications {
+        let event = &publication.event;
+        if publication.namespace.trim().is_empty()
+            || publication.conversation_id.trim().is_empty()
+            || event.event_id.trim().is_empty()
+            || event.event_id.len() > 255
+            || event.trace.run_id != run_id
+            || matches!(
+                &event.event,
+                kogwistar_contracts::ProviderEventV1::TextDelta { .. }
+            )
+        {
+            return Err(
+                "provider event publication is invalid, belongs to another run, or contains a transient token delta"
+                    .to_owned(),
+            );
+        }
+        let message_id = format!("msg:{}", event.event_id);
+        if !published_ids.insert(message_id.clone()) {
+            return Err("provider event publication contains a duplicate event id".to_owned());
+        }
+        let matching_nodes = mutations
+            .iter()
+            .filter(|mutation| {
+                mutation.entity_kind == "node" && mutation.record.id == message_id
+            })
+            .collect::<Vec<_>>();
+        if matching_nodes.len() != 1 {
+            return Err("provider event must have exactly one matching graph message node".to_owned());
+        }
+        let node = matching_nodes[0];
+        if node.scope.graph_space.as_deref() != Some("conversation") {
+            return Err("provider event graph node must use the conversation graph space".to_owned());
+        }
+        if node.scope.namespace != publication.namespace {
+            return Err("provider event namespace must match its graph mutation scope".to_owned());
+        }
+        let metadata = &node.record.metadata;
+        let expected_payload = serde_json::to_value(&publication.event)
+            .map_err(|_| "provider event payload is invalid".to_owned())?;
+        let graph_payload = metadata
+            .get("payload_json")
+            .and_then(Value::as_str)
+            .and_then(|value| serde_json::from_str::<Value>(value).ok());
+        let fields_match = [
+            ("artifact_kind", "lane_message"),
+            ("conversation_id", publication.conversation_id.as_str()),
+            ("inbox_id", "agent-provider-events"),
+            ("recipient_id", "agent-event-consumer"),
+            ("sender_id", "agent-runtime"),
+            ("msg_type", "agent.provider_event"),
+            ("purpose", "agent_event"),
+            ("run_id", event.trace.run_id.as_str()),
+            ("step_id", event.trace.step_id.as_str()),
+            ("correlation_id", event.event_id.as_str()),
+            ("idempotency_key", event.event_id.as_str()),
+            ("visibility", "private"),
+        ]
+        .into_iter()
+        .all(|(key, expected)| metadata.get(key).and_then(Value::as_str) == Some(expected));
+        if !fields_match
+            || metadata.get("shared_scope").and_then(Value::as_bool) != Some(false)
+            || graph_payload.as_ref() != Some(&expected_payload)
+        {
+            return Err("provider event graph node does not match its durable publication".to_owned());
+        }
+        let has_conversation_edge = mutations.iter().any(|mutation| {
+            mutation.entity_kind == "edge"
+                && mutation.payload.get("relation").and_then(Value::as_str)
+                    == Some("in_conversation")
+                && mutation.scope.namespace == publication.namespace
+                && mutation.scope.graph_space.as_deref() == Some("conversation")
+                && mutation
+                    .payload
+                    .get("source_ids")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| {
+                        ids.len() == 1 && ids[0].as_str() == Some(message_id.as_str())
+                    })
+                && mutation
+                    .payload
+                    .get("target_ids")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| ids.len() == 1)
+                && mutation.record.metadata.get("conversation_id").and_then(Value::as_str)
+                    == Some(publication.conversation_id.as_str())
+        });
+        if !has_conversation_edge {
+            return Err("provider event graph batch must link the event into its conversation".to_owned());
+        }
+    }
+    let graph_event_ids = mutations
+        .iter()
+        .filter(|mutation| {
+            mutation.entity_kind == "node"
+                && mutation.record.metadata.get("msg_type").and_then(Value::as_str)
+                    == Some("agent.provider_event")
+        })
+        .map(|mutation| mutation.record.id.clone())
+        .collect::<BTreeSet<_>>();
+    if graph_event_ids != published_ids {
+        return Err("provider event graph nodes and lane publications must match exactly".to_owned());
+    }
+    Ok(())
+}
+
 enum NativeEvidenceContextError {
     CallerNotRunOwner,
     OwnerAuthorization,
@@ -3367,6 +3479,20 @@ impl PostgresRunApplicationService {
                 message,
             );
         }
+        if let Some(effect) = input.effect.as_ref()
+            && !effect.provider_event_publications.is_empty()
+            && (effect.graph_mutation_batch_v2.is_none()
+                || effect
+                    .graph_mutation_batch_v2
+                    .as_ref()
+                    .is_some_and(|batch| batch.default_acl.truth_graph != "conversation"))
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "provider event publications require an ACL-aware conversation graph batch",
+            );
+        }
         let effect_batch: Option<Result<(RuntimeGraphMutationBatch<'_>, Option<&str>), String>> = input.effect.as_ref().and_then(|effect| {
             match (
                 effect.graph_mutation_batch.as_ref(),
@@ -3465,7 +3591,22 @@ impl PostgresRunApplicationService {
                     (mutations, index_jobs)
                 }
                 RuntimeGraphMutationBatch::V2(batch) => match graph_mutation_batch_v2_value((*batch).clone()) {
-                    Ok(value) => value,
+                    Ok(value) => {
+                        if let Some(effect) = input.effect.as_ref()
+                            && let Err(error) = validate_provider_event_publications(
+                                &effect.provider_event_publications,
+                                &value.0,
+                                &input.handoff.run_id,
+                            )
+                        {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_REQUEST",
+                                error,
+                            );
+                        }
+                        value
+                    }
                     Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
                 },
             };
@@ -3492,6 +3633,11 @@ impl PostgresRunApplicationService {
         } else {
             None
         };
+        let provider_event_publications = input
+            .effect
+            .as_ref()
+            .map(|effect| effect.provider_event_publications.clone())
+            .unwrap_or_default();
         let commit_capabilities = self.capabilities.clone();
         let expected_executor_target = executor_target.to_owned();
         let outcome = self
@@ -3531,10 +3677,21 @@ impl PostgresRunApplicationService {
                             return Ok(Err(RuntimeGraphCommitDenial::Scope));
                         }
                         let run = uow.get_server_run(&input.handoff.run_id).await?;
-                        if !run.is_some_and(|run| {
+                        if !run.as_ref().is_some_and(|run| {
                             run.user_id.as_deref() == Some(run_owner_id.as_str())
                         }) {
                             return Ok(Err(RuntimeGraphCommitDenial::Owner));
+                        }
+                        if provider_event_publications.iter().any(|publication| {
+                            run.as_ref().is_none_or(|run| {
+                                run.conversation_id != publication.conversation_id
+                            })
+                        }) {
+                            return Err(
+                                kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    "provider event conversation does not match its durable run".to_owned(),
+                                ),
+                            );
                         }
                     }
                     if let Some((mutations, mut index_jobs, default_acl_truth_graph, _, principal, _, effect_id)) = graph_effects {
@@ -3568,6 +3725,59 @@ impl PostgresRunApplicationService {
                         }
                         for index_job in index_jobs {
                             uow.enqueue_index_job(index_job).await?;
+                        }
+                    }
+                    for publication in &provider_event_publications {
+                        let event = &publication.event;
+                        let message_id = format!("msg:{}", event.event_id);
+                        let payload_json = serde_json::to_string(event)?;
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|error| {
+                                kogwistar_store_postgres::PostgresStoreError::Backend(
+                                    format!("system clock is before Unix epoch: {error}"),
+                                )
+                            })?
+                            .as_secs() as i64;
+                        if let Some(existing) = uow.get_projected_lane_message(&message_id).await? {
+                            let matches = existing.namespace == publication.namespace
+                                && existing.purpose == "agent_event"
+                                && existing.inbox_id == "agent-provider-events"
+                                && existing.conversation_id == publication.conversation_id
+                                && existing.recipient_id == "agent-event-consumer"
+                                && existing.sender_id == "agent-runtime"
+                                && existing.msg_type == "agent.provider_event"
+                                && existing.run_id.as_deref() == Some(input.handoff.run_id.as_str())
+                                && existing.step_id.as_deref() == Some(event.trace.step_id.as_str())
+                                && existing.correlation_id.as_deref() == Some(event.event_id.as_str())
+                                && existing.payload_json.as_deref() == Some(payload_json.as_str());
+                            if !matches {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event lane projection conflicts with the existing event".to_owned(),
+                                    ),
+                                );
+                            }
+                        } else {
+                            uow.project_lane_message(NewProjectedLaneMessage {
+                                message_id,
+                                namespace: publication.namespace.clone(),
+                                purpose: "agent_event".to_owned(),
+                                inbox_id: "agent-provider-events".to_owned(),
+                                conversation_id: publication.conversation_id.clone(),
+                                recipient_id: "agent-event-consumer".to_owned(),
+                                sender_id: "agent-runtime".to_owned(),
+                                msg_type: "agent.provider_event".to_owned(),
+                                status: "pending".to_owned(),
+                                created_at: now,
+                                available_at: now,
+                                run_id: Some(input.handoff.run_id.clone()),
+                                step_id: Some(event.trace.step_id.clone()),
+                                correlation_id: Some(event.event_id.clone()),
+                                payload_json: Some(payload_json),
+                                error_json: None,
+                            })
+                            .await?;
                         }
                     }
                     let handoff = input.handoff;

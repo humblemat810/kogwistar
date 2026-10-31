@@ -221,14 +221,26 @@ The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` 
 | DL-16CI | PASS (Rust projection-read wire validation and route parity) | The Python facade now validates the complete native graph-projection record shape (`id`, `document`, object `metadata`, and nullable finite numeric embedding) and vector-match shape (valid record plus finite numeric distance) before exposing native results to graph reconstruction. Malformed Rust responses fail at the language boundary instead of leaking into downstream model parsing or retrieval logic. Evidence: `tests/core/test_rust_postgres_session_facade.py::test_postgres_meta_facade_validates_native_graph_read_shapes` rejects missing required fields, non-finite embeddings, and non-finite distances; `test_read_subsystem_routes_simple_base_reads_to_native_projection` verifies Node/Edge hydration, native Node/Edge vector queries, and `search_nodes_as_of_scored()` preserving raw distance and normalized similarity without Python fallback, while unsupported nested filters retain Python behavior and tombstone-aware historical retrieval stays on the compatible backend path; full facade plus checklist validator (**37 passed**), Ruff, and `git diff --check` passed on Windows CPython 3.13. Behavior tests use deterministic native-response fixtures; live mixed-language PostgreSQL read-after-write remains a separate Docker-dependent verification. |
 | DL-16CJ | PASS (dual-store execution-session facade contract) | `RustEnginePostgresMetaStore` no longer assigns a `RustPostgresSession` object over the inherited `RustEngineSQLite.session()` context-manager API. It implements the shared `session()` context behavior and exposes the worker through the explicit `native_session` property. A synchronized active-scope count keeps the shared native store open across overlapping threads and closes it only when the final scope exits. Evidence: `tests/core/test_rust_postgres_session_facade.py::test_postgres_meta_facade_session_context_is_nested_and_reopenable` verifies nested lifetime, close, and reopen behavior; `::test_postgres_meta_facade_keeps_store_open_for_overlapping_threads` proves an exiting scope cannot close a store used by another thread; full facade plus checklist validator (**38 passed**), targeted Pyright for `rust_postgres_session.py` and `subsystems/read.py` (**0 errors**), Ruff, and `git diff --check` pass on Windows CPython 3.13. This reconciles the facade API and its scoped concurrent lifetime; it does not prove cross-process transaction or database parity. |
 
-DL-16BQ evidence addendum (no new gate): `DurableProviderEventV1` and
-`EventTraceMetadataV1` now mirror Python's durable provider-event envelope.
-Both Rust and Python tests consume
-`contracts/golden/agent-durable-provider-event-v1.json`; Rust contract tests
-passed **91 tests** and the Python cross-language contract tests passed **3
-tests** on Windows CPython 3.13 (2026-10-31). This closes only the shared wire
-contract prerequisite; Rust's reusable event-agent journal and handling
-workflow remain incomplete.
+DL-16BQ evidence addendum (no new gate): Rust and Python now share the strict
+`DurableProviderEventPublicationV1` envelope in
+`contracts/golden/agent-durable-provider-event-v1.json`. Rust worker-success
+effects accept an optional publication list with an empty legacy default. The
+API validates each publication against exactly one private conversation
+`lane_message` graph node and one unambiguous `in_conversation` edge in the
+same namespace and conversation graph space; token deltas and mismatched run,
+conversation, graph-node, or lane payload identities fail closed. The
+PostgreSQL commit path applies graph mutations and default ACL records, writes
+the durable lane projection, and records the worker result/acknowledgement in
+the same UoW transaction. Evidence on Windows CPython 3.13: Rust contract and
+runtime suites **127 passed**; Rust API suite **194 passed, 21 ignored**;
+Python event journal, cross-language contract, graph-run, and runtime suites
+**27 passed**; disposable live PostgreSQL UoW graph-plus-lane rollback/commit
+test `tests::runtime::graph_run_event_and_worker_lane_share_one_transaction`
+**1 passed**. The API publication validator test also rejects missing,
+cross-namespace, ambiguous, wrong-run, and transient-delta cases. This verifies
+the shared publication substrate and generic database transaction primitive,
+not a full Rust event-agent loop or an end-to-end live API publication/ack
+integration; those remain incomplete under this existing gate.
 
 ## Completion rule
 
