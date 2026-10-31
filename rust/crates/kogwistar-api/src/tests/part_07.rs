@@ -1458,3 +1458,333 @@ fn provider_event_acknowledgement_contract_rejects_invalid_or_duplicate_claims()
     )
     .is_err());
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
+async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
+    let schema = format!("provider_event_causal_{}", uuid::Uuid::new_v4().simple());
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-provider-event-causal-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "causal-owner".to_owned(),
+        email: "causal-owner@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "causal-owner".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "alpha".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+    let owner_auth = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+        .unwrap()
+        .with_owner_auth_config(&owner_auth)
+        .await
+        .unwrap();
+    service.ensure_schema().await.unwrap();
+    service
+        .store
+        .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+        .await
+        .unwrap();
+
+    let run_id = "provider-event-causal-run";
+    let workflow_id = "provider-event-causal-workflow";
+    let conversation_id = "provider-event-causal-conversation";
+    let principal = json!({
+        "sub": "causal-owner",
+        "user_id": "causal-owner",
+        "role": "rw",
+        "ns": ["alpha"],
+        "storage_ns": "alpha",
+        "capabilities": ["read_graph", "write_graph"]
+    });
+    let binding = runtime_owner_binding_v1(&principal, &service.capabilities).unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            user_id: Some("causal-owner".to_owned()),
+            user_turn_node_id: "causal-user-turn".to_owned(),
+            status: "queued".to_owned(),
+        })
+        .await
+        .unwrap();
+    service
+        .store
+        .append_server_run_event(
+            run_id,
+            "run.created",
+            json!({"runtime_owner_binding": binding}).to_string(),
+        )
+        .await
+        .unwrap();
+
+    let start: kogwistar_runtime::RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "causal-start",
+        "expected_event_seq": 1,
+        "kind": "start",
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "conversation_id": conversation_id,
+        "user_id": "causal-owner",
+        "user_turn_node_id": "causal-user-turn",
+        "step_seq": 0,
+        "node_id": "provider-step",
+        "token_id": run_id,
+        "initial_state": {},
+        "frontier": {
+            "pending": [["provider-step", 0, run_id, null]],
+            "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
+        }
+    })).unwrap();
+    service.store.apply_recorded_runtime_transition(start, false).await.unwrap();
+    let producer: kogwistar_runtime::RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "causal-producer-step",
+        "expected_event_seq": 2,
+        "kind": "recorded_step_success",
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "conversation_id": conversation_id,
+        "step_seq": 0,
+        "node_id": "provider-step",
+        "token_id": run_id,
+        "state_update": [["u", {}]],
+        "frontier": {
+            "pending": [["handler-step", 0, run_id, null]],
+            "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
+        },
+        "result": {"published": true}
+    })).unwrap();
+    service.store.apply_recorded_runtime_transition(producer, false).await.unwrap();
+
+    let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_value(json!({
+        "event_id": "provider-event-causal-event",
+        "trace": {
+            "run_id": run_id,
+            "turn_id": "causal-user-turn",
+            "workflow_node_id": "provider.request",
+            "step_id": "provider-response:causal",
+            "producer_step_seq": 0,
+            "provider_id": "fixture-provider",
+            "provider_response_id": "causal-response"
+        },
+        "event": {
+            "kind": "field_completed",
+            "provider_event_id": "causal-response:1",
+            "provider_sequence": 1,
+            "response_id": "causal-response",
+            "field_name": "answer",
+            "value": "grounded test"
+        }
+    })).unwrap();
+    service
+        .persist_native_provider_event(
+            event.clone(),
+            conversation_id.to_owned(),
+            json!({"event": "provider.semantic_event.observed"}),
+        )
+        .await
+        .unwrap();
+    let receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: "agent.event.receive".to_owned(),
+        op_version: "v1".to_owned(),
+        run_id: run_id.to_owned(),
+        workflow_id: workflow_id.to_owned(),
+        node_id: "receive-step".to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        turn_node_id: Some("causal-user-turn".to_owned()),
+        token_id: run_id.to_owned(),
+        parent_token_id: None,
+        step_seq: 1,
+        state: Map::new(),
+        runtime_routes: Vec::new(),
+        ephemeral_context: Map::new(),
+    };
+    let receive_principal = service
+        .native_read_principal(&receive_request, None)
+        .await
+        .unwrap_or_else(|_| panic!("the active run owner retains read_graph authority"));
+    let claim = service
+        .claim_native_provider_event_context(&receive_request, &receive_principal)
+        .await
+        .unwrap()
+        .expect("published event is visible and claimable by its run owner");
+
+    let handler: kogwistar_runtime::RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "causal-handler-step",
+        "expected_event_seq": 4,
+        "kind": "recorded_step_success",
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "conversation_id": conversation_id,
+        "step_seq": 1,
+        "node_id": "handler-step",
+        "token_id": run_id,
+        "state_update": [["u", {
+            "agent_event_current": claim["event"],
+            "agent_event_claim": claim["claim"],
+            "agent_event_handling_step_seq": 1,
+            "agent_event_route": "no_action"
+        }]],
+        "frontier": {
+            "pending": [["ack-step", 0, run_id, null]],
+            "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
+        },
+        "result": {"handled": true}
+    })).unwrap();
+    service.store.apply_recorded_runtime_transition(handler, false).await.unwrap();
+
+    service.store.project_lane_message(NewProjectedLaneMessage {
+        message_id: "causal-ack-runtime-lane".to_owned(),
+        namespace: "workflow".to_owned(),
+        purpose: "system".to_owned(),
+        inbox_id: "workflow-runtime".to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        recipient_id: "rust-native-worker".to_owned(),
+        sender_id: "rust-scheduler".to_owned(),
+        msg_type: "workflow.step.execute".to_owned(),
+        status: "pending".to_owned(),
+        created_at: 1,
+        available_at: 1,
+        run_id: Some(run_id.to_owned()),
+        step_id: Some("ack-step".to_owned()),
+        correlation_id: Some(run_id.to_owned()),
+        payload_json: Some(json!({
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "token_id": run_id,
+            "parent_token_id": null,
+            "op": "agent.event.ack"
+        }).to_string()),
+        error_json: None,
+    }).await.unwrap();
+    let claimed_runtime = service.store.claim_projected_lane_messages(
+        "workflow", "workflow-runtime", "causal-worker", 1, 60,
+    ).await.unwrap();
+    assert_eq!(claimed_runtime.len(), 1);
+    let runtime_lane = &claimed_runtime[0];
+    let handoff = kogwistar_runtime::RecordedWorkerHandoff {
+        message_id: runtime_lane.message_id.clone(),
+        claimed_by: runtime_lane.claimed_by.clone().unwrap(),
+        run_id: run_id.to_owned(),
+        step_id: "ack-step".to_owned(),
+        correlation_id: run_id.to_owned(),
+    };
+    let ack_effect = kogwistar_runtime::RecordedWorkerSuccessEffect {
+        contract_version: 1,
+        effect_id: "causal-ack-effect".to_owned(),
+        status: kogwistar_runtime::RuntimeWorkerEffectStatus::Success,
+        state_update: Vec::new(),
+        update: None,
+        state_schema: Map::new(),
+        successors: Vec::new(),
+        route_next: Vec::new(),
+        result: Some(json!({"handled": true})),
+        errors: Vec::new(),
+        wait_reason: None,
+        resume_payload: None,
+        usage: None,
+        trace_events: Vec::new(),
+        graph_mutation_batch: None,
+        graph_mutation_batch_v2: None,
+        provider_event_publications: Vec::new(),
+        provider_event_acknowledgements: vec![kogwistar_runtime::ProviderEventAcknowledgementV1 {
+            message_id: claim["claim"]["message_id"].as_str().unwrap().to_owned(),
+            claimed_by: claim["claim"]["claimed_by"].as_str().unwrap().to_owned(),
+            event_id: event.event_id.clone(),
+        }],
+    };
+    let request = |effect: kogwistar_runtime::RecordedWorkerSuccessEffect| RuntimeWorkerResultRequest {
+        handoff: handoff.clone(),
+        transition: None,
+        effect: Some(effect),
+    };
+
+    let (fault_setup, fault_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let fault_task = tokio::spawn(fault_connection);
+    fault_setup.batch_execute(&format!(
+        "CREATE FUNCTION \"{schema}\".reject_provider_event_handled() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.event_type='workflow.provider_event.handled.v1' THEN RAISE EXCEPTION 'injected causal ack failure'; END IF; RETURN NEW; END; $$; CREATE TRIGGER reject_provider_event_handled BEFORE INSERT ON \"{schema}\".server_run_events FOR EACH ROW EXECUTE FUNCTION \"{schema}\".reject_provider_event_handled();"
+    )).await.unwrap();
+    drop(fault_setup);
+    fault_task.await.unwrap().unwrap();
+
+    let failed = service.apply_runtime_result_input(
+        request(ack_effect.clone()), None, None, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+    ).await;
+    assert_eq!(failed.status, StatusCode::CONFLICT.as_u16());
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message(&format!("msg:{}", event.event_id))
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "claimed"
+    );
+    assert_eq!(service.store.read_recorded_runtime_state(run_id, workflow_id, conversation_id).await.unwrap().unwrap().last_step_seq, 1);
+    let scope = GraphScope { namespace: "alpha".to_owned(), workspace_id: None, graph_space: Some("conversation".to_owned()) };
+    let causal_edges = service.store.graph_projection_records(GraphProjectionRead {
+        scope: scope.clone(), table: "gke_edges".to_owned(), ids: None,
+        metadata: MetadataFilter::default(), limit: 1000,
+    }).await.unwrap();
+    assert!(!causal_edges.iter().any(|record| record.document.as_deref().is_some_and(|doc| doc.contains("emitted_by_step") || doc.contains("handled_by_step"))));
+
+    let (fault_cleanup, fault_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let fault_cleanup_task = tokio::spawn(fault_connection);
+    fault_cleanup.batch_execute(&format!(
+        "DROP TRIGGER reject_provider_event_handled ON \"{schema}\".server_run_events; DROP FUNCTION \"{schema}\".reject_provider_event_handled();"
+    )).await.unwrap();
+    drop(fault_cleanup);
+    fault_cleanup_task.await.unwrap().unwrap();
+
+    let mut retry_effect = ack_effect.clone();
+    retry_effect.effect_id = "causal-ack-effect-retry".to_owned();
+    let applied = service.apply_runtime_result_input(
+        request(retry_effect), None, None, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+    ).await;
+    assert_eq!(
+        applied.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&applied.body)
+    );
+    let committed_edges = service.store.graph_projection_records(GraphProjectionRead {
+        scope, table: "gke_edges".to_owned(), ids: None,
+        metadata: MetadataFilter::default(), limit: 1000,
+    }).await.unwrap();
+    let relations = committed_edges.iter().filter_map(|record| {
+        record.document.as_deref().and_then(|doc| serde_json::from_str::<Value>(doc).ok())
+            .and_then(|doc| doc["relation"].as_str().map(str::to_owned))
+    }).collect::<Vec<_>>();
+    assert!(relations.iter().any(|relation| relation == "emitted_by_step"));
+    assert!(relations.iter().any(|relation| relation == "handled_by_step"));
+    assert_eq!(
+        service.store.get_projected_lane_message(&format!("msg:{}", event.event_id)).await.unwrap().unwrap().status,
+        "completed"
+    );
+
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+    let _ = std::fs::remove_file(auth_path);
+}

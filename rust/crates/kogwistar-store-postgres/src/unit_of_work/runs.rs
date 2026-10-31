@@ -1,6 +1,15 @@
 use super::*;
 
 impl PostgresUnitOfWork<'_> {
+    pub async fn latest_server_run_event_seq(&self, run_id: &str) -> PostgresStoreResult<i64> {
+        crate::workflow_runtime::latest_server_run_event_seq(
+            &self.transaction,
+            &self.tables,
+            run_id,
+        )
+        .await
+    }
+
     pub async fn recorded_runtime_steps(
         &self,
         run_id: &str,

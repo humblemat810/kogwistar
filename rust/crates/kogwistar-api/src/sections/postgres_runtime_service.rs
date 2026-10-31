@@ -4328,7 +4328,9 @@ impl PostgresRunApplicationService {
                             RecordedRuntimeTransition {
                                 contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
                                 transition_id: format!("complete-{effect_id}"),
-                                expected_event_seq: applied.event_seq,
+                                expected_event_seq: uow
+                                    .latest_server_run_event_seq(&state.run_id)
+                                    .await?,
                                 kind: RecordedTransitionKind::Complete,
                                 run_id: state.run_id,
                                 workflow_id: state.workflow_id,
