@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
+const MAX_COMPLETED_FIELD_EVENTS: usize = 256;
 
 /// Normalizes OpenAI-compatible Chat Completions SSE into the shared event contract.
 /// It deliberately does not execute tool calls; streamed tool arguments need a
@@ -15,6 +16,7 @@ pub(crate) struct ChatCompletionEventStream {
     response_id: Option<String>,
     text: String,
     completed_fields: BTreeSet<String>,
+    field_scanner: JsonFieldScanner,
     started: bool,
     completed: bool,
     saw_tool_calls: bool,
@@ -29,6 +31,7 @@ impl Default for ChatCompletionEventStream {
             response_id: None,
             text: String::new(),
             completed_fields: BTreeSet::new(),
+            field_scanner: JsonFieldScanner::default(),
             started: false,
             completed: false,
             saw_tool_calls: false,
@@ -141,8 +144,10 @@ impl ChatCompletionEventStream {
                 "response_id": self.response_id,
                 "delta": delta,
             }))?);
-            for (field_name, field_value) in completed_top_level_fields(&self.text) {
-                if self.completed_fields.insert(field_name.clone()) {
+            for (field_name, field_value) in self.field_scanner.scan(&self.text) {
+                if self.completed_fields.len() < MAX_COMPLETED_FIELD_EVENTS
+                    && self.completed_fields.insert(field_name.clone())
+                {
                     output.push(self.event(json!({
                         "kind": "field_completed",
                         "response_id": self.response_id,
@@ -230,108 +235,237 @@ impl ChatCompletionEventStream {
     }
 }
 
-// Scan only complete top-level members of a streamed JSON object. Incomplete
-// prefixes are expected during generation and are left for the next delta.
-fn completed_top_level_fields(text: &str) -> Vec<(String, Value)> {
-    let bytes = text.as_bytes();
-    let mut cursor = skip_json_whitespace(bytes, 0);
-    if bytes.get(cursor) != Some(&b'{') {
-        return Vec::new();
-    }
-    cursor += 1;
-    let mut fields = Vec::new();
-    loop {
-        cursor = skip_json_whitespace(bytes, cursor);
-        if bytes.get(cursor) != Some(&b'"') {
-            break;
-        }
-        let key_start = cursor;
-        let Some(key_end) = json_string_end(bytes, cursor) else {
-            break;
-        };
-        let Ok(key) = serde_json::from_str::<String>(&text[key_start..key_end]) else {
-            break;
-        };
-        cursor = skip_json_whitespace(bytes, key_end);
-        if bytes.get(cursor) != Some(&b':') {
-            break;
-        }
-        cursor = skip_json_whitespace(bytes, cursor + 1);
-        let value_start = cursor;
-        let Some((value_end, delimiter)) = json_value_end(bytes, cursor) else {
-            break;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&text[value_start..value_end]) else {
-            break;
-        };
-        fields.push((key, value));
-        cursor = skip_json_whitespace(bytes, value_end);
-        if bytes.get(cursor) != Some(&delimiter) {
-            break;
-        }
-        if delimiter == b'}' {
-            break;
-        }
-        cursor += 1;
-    }
-    fields
+#[derive(Default)]
+struct JsonFieldScanner {
+    cursor: usize,
+    state: JsonFieldScanState,
 }
 
-fn skip_json_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
-    while bytes
-        .get(cursor)
-        .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
-    {
-        cursor += 1;
-    }
-    cursor
+#[derive(Default)]
+enum JsonFieldScanState {
+    #[default]
+    Start,
+    KeyOrEnd,
+    Key {
+        start: usize,
+        escaped: bool,
+    },
+    Colon {
+        key: String,
+    },
+    ValueStart {
+        key: String,
+    },
+    Value {
+        key: String,
+        start: usize,
+        depth: usize,
+        in_string: bool,
+        escaped: bool,
+    },
+    Done,
+    Failed,
 }
 
-fn json_string_end(bytes: &[u8], start: usize) -> Option<usize> {
-    if bytes.get(start) != Some(&b'"') {
-        return None;
-    }
-    let mut cursor = start + 1;
-    let mut escaped = false;
-    while let Some(byte) = bytes.get(cursor) {
-        if escaped {
-            escaped = false;
-        } else if *byte == b'\\' {
-            escaped = true;
-        } else if *byte == b'"' {
-            return Some(cursor + 1);
-        }
-        cursor += 1;
-    }
-    None
-}
-
-fn json_value_end(bytes: &[u8], start: usize) -> Option<(usize, u8)> {
-    let mut cursor = start;
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(byte) = bytes.get(cursor).copied() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
+impl JsonFieldScanner {
+    // Advance only across bytes not visited by earlier deltas. serde_json still
+    // validates each completed value before it becomes a semantic event.
+    fn scan(&mut self, text: &str) -> Vec<(String, Value)> {
+        let bytes = text.as_bytes();
+        let mut fields = Vec::new();
+        loop {
+            let state = std::mem::take(&mut self.state);
+            match state {
+                JsonFieldScanState::Start => match bytes.get(self.cursor) {
+                    Some(byte) if is_json_whitespace(*byte) => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::Start;
+                    }
+                    Some(b'{') => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::KeyOrEnd;
+                    }
+                    Some(_) => self.state = JsonFieldScanState::Failed,
+                    None => {
+                        self.state = JsonFieldScanState::Start;
+                        break;
+                    }
+                },
+                JsonFieldScanState::KeyOrEnd => match bytes.get(self.cursor) {
+                    Some(byte) if is_json_whitespace(*byte) => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::KeyOrEnd;
+                    }
+                    Some(b'"') => {
+                        let start = self.cursor;
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::Key {
+                            start,
+                            escaped: false,
+                        };
+                    }
+                    Some(b'}') => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::Done;
+                    }
+                    Some(_) => self.state = JsonFieldScanState::Failed,
+                    None => {
+                        self.state = JsonFieldScanState::KeyOrEnd;
+                        break;
+                    }
+                },
+                JsonFieldScanState::Key { start, mut escaped } => {
+                    let Some(byte) = bytes.get(self.cursor).copied() else {
+                        self.state = JsonFieldScanState::Key { start, escaped };
+                        break;
+                    };
+                    self.cursor += 1;
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        match serde_json::from_str::<String>(&text[start..self.cursor]) {
+                            Ok(key) => self.state = JsonFieldScanState::Colon { key },
+                            Err(_) => self.state = JsonFieldScanState::Failed,
+                        }
+                        continue;
+                    }
+                    self.state = JsonFieldScanState::Key { start, escaped };
+                }
+                JsonFieldScanState::Colon { key } => match bytes.get(self.cursor) {
+                    Some(byte) if is_json_whitespace(*byte) => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::Colon { key };
+                    }
+                    Some(b':') => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::ValueStart { key };
+                    }
+                    Some(_) => self.state = JsonFieldScanState::Failed,
+                    None => {
+                        self.state = JsonFieldScanState::Colon { key };
+                        break;
+                    }
+                },
+                JsonFieldScanState::ValueStart { key } => match bytes.get(self.cursor) {
+                    Some(byte) if is_json_whitespace(*byte) => {
+                        self.cursor += 1;
+                        self.state = JsonFieldScanState::ValueStart { key };
+                    }
+                    Some(_) => {
+                        self.state = JsonFieldScanState::Value {
+                            key,
+                            start: self.cursor,
+                            depth: 0,
+                            in_string: false,
+                            escaped: false,
+                        };
+                    }
+                    None => {
+                        self.state = JsonFieldScanState::ValueStart { key };
+                        break;
+                    }
+                },
+                JsonFieldScanState::Value {
+                    key,
+                    start,
+                    mut depth,
+                    mut in_string,
+                    mut escaped,
+                } => {
+                    let Some(byte) = bytes.get(self.cursor).copied() else {
+                        self.state = JsonFieldScanState::Value {
+                            key,
+                            start,
+                            depth,
+                            in_string,
+                            escaped,
+                        };
+                        break;
+                    };
+                    if in_string {
+                        if escaped {
+                            escaped = false;
+                        } else if byte == b'\\' {
+                            escaped = true;
+                        } else if byte == b'"' {
+                            in_string = false;
+                        }
+                        self.cursor += 1;
+                    } else {
+                        match byte {
+                            b'"' => {
+                                in_string = true;
+                                self.cursor += 1;
+                            }
+                            b'{' | b'[' => {
+                                depth += 1;
+                                self.cursor += 1;
+                            }
+                            b']' if depth == 0 => {
+                                self.state = JsonFieldScanState::Failed;
+                                continue;
+                            }
+                            b']' => {
+                                depth -= 1;
+                                self.cursor += 1;
+                            }
+                            b'}' if depth == 0 => {
+                                if let Ok(value) =
+                                    serde_json::from_str::<Value>(&text[start..self.cursor])
+                                {
+                                    fields.push((key, value));
+                                    self.cursor += 1;
+                                    self.state = JsonFieldScanState::Done;
+                                } else {
+                                    self.state = JsonFieldScanState::Failed;
+                                }
+                                continue;
+                            }
+                            b'}' => {
+                                depth -= 1;
+                                self.cursor += 1;
+                            }
+                            b',' if depth == 0 => {
+                                if let Ok(value) =
+                                    serde_json::from_str::<Value>(&text[start..self.cursor])
+                                {
+                                    fields.push((key, value));
+                                    self.cursor += 1;
+                                    self.state = JsonFieldScanState::KeyOrEnd;
+                                } else {
+                                    self.state = JsonFieldScanState::Failed;
+                                }
+                                continue;
+                            }
+                            _ => self.cursor += 1,
+                        }
+                    }
+                    self.state = JsonFieldScanState::Value {
+                        key,
+                        start,
+                        depth,
+                        in_string,
+                        escaped,
+                    };
+                }
+                JsonFieldScanState::Done => {
+                    self.state = JsonFieldScanState::Done;
+                    break;
+                }
+                JsonFieldScanState::Failed => {
+                    self.state = JsonFieldScanState::Failed;
+                    break;
+                }
             }
-        } else {
-            match byte {
-                b'"' => in_string = true,
-                b'{' | b'[' => depth += 1,
-                b'}' | b']' if depth > 0 => depth -= 1,
-                b',' | b'}' if depth == 0 => return Some((cursor, byte)),
-                _ => {}
-            }
         }
-        cursor += 1;
+        fields
     }
-    None
+}
+
+fn is_json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\n' | b'\r' | b'\t')
 }
 
 fn frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
@@ -434,13 +568,25 @@ mod tests {
 
     #[test]
     fn completed_field_scanner_handles_escaped_strings_and_nested_values() {
-        let fields = completed_top_level_fields(
-            r#"{"quote":"say \"hi\"","nested":{"ok":true},"tail":[1,"雪"]}"#,
-        );
+        let json = r#"{"quote":"say \"hi\"","nested":{"ok":true},"tail":[1,"雪"]}"#;
+        let mut scanner = JsonFieldScanner::default();
+        let fields = json
+            .char_indices()
+            .map(|(index, character)| index + character.len_utf8())
+            .flat_map(|end| scanner.scan(&json[..end]))
+            .collect::<Vec<_>>();
         assert_eq!(fields.len(), 3);
         assert_eq!(fields[0], ("quote".to_owned(), json!("say \"hi\"")));
         assert_eq!(fields[1], ("nested".to_owned(), json!({"ok": true})));
         assert_eq!(fields[2], ("tail".to_owned(), json!([1, "雪"])));
-        assert_eq!(completed_top_level_fields(r#"{"partial":{"x":1"#).len(), 0);
+
+        let mut incomplete = JsonFieldScanner::default();
+        let incomplete_json = r#"{"partial":{"x":1"#;
+        let incomplete_fields = incomplete_json
+            .char_indices()
+            .map(|(index, character)| index + character.len_utf8())
+            .flat_map(|end| incomplete.scan(&incomplete_json[..end]))
+            .collect::<Vec<_>>();
+        assert!(incomplete_fields.is_empty());
     }
 }
