@@ -771,7 +771,9 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         "sub": "reader-b",
         "role": "ro",
         "roles": ["reader"],
-        "ns": [graph_type],
+        # Auth namespace, storage namespace, and graph role are independent:
+        # this tool is authorized in docs while reading the knowledge graph.
+        "ns": ["docs"],
         "storage_ns": namespace,
         "capabilities": ["read_graph"],
         "exp": 4_102_444_800,
