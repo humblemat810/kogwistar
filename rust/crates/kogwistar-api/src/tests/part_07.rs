@@ -2183,7 +2183,8 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let fake_chroma = tokio::spawn(async move {
-        for _ in 0..2 {
+        let mut projected = Vec::new();
+        for _ in 0..4 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let mut chunk = [0_u8; 2048];
@@ -2211,18 +2212,32 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
                 &bytes[header_end + 4..header_end + 4 + content_length],
             )
             .unwrap();
-            let response = json!({
-                "id": format!("collection-{}", request["name"].as_str().unwrap()),
-                "metadata": {"hnsw:space":"cosine"}
-            })
-            .to_string();
+            let request_line = String::from_utf8_lossy(&bytes[..header_end])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let (status, response) = if request_line.contains("/collections HTTP") {
+                (
+                    "200 OK",
+                    json!({
+                        "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                        "metadata": {"hnsw:space":"cosine"}
+                    }),
+                )
+            } else {
+                projected.push((request_line, request));
+                ("200 OK", json!({}))
+            };
+            let response = response.to_string();
             let wire = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response.len(),
                 response
             );
             stream.write_all(wire.as_bytes()).await.unwrap();
         }
+        projected
     });
 
     let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
@@ -2236,15 +2251,35 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     )
     .await
     .unwrap();
-    fake_chroma.await.unwrap();
-
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-chroma-graph-mutation-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
+    let embedding_calls = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(FixedEmbeddingProvider {
+        profile: kogwistar_engine::embedding::EmbeddingProfile {
+            provider: "test".to_owned(),
+            model: "fixed-v1".to_owned(),
+            dimension: 2,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        },
+        vector: vec![0.6, 0.8],
+        calls: embedding_calls.clone(),
+        fail: None,
+    });
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
-        .with_chroma_graph(graph);
+        .with_chroma_graph(graph)
+        .with_embedding_provider(provider);
     assert!(service.supports_http_operation("POST", INTERNAL_GRAPH_MUTATIONS_ROUTE));
 
     let mut batch: Value = serde_json::from_str(include_str!(concat!(
@@ -2255,6 +2290,30 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     batch["mutations"][0]["scope"] = json!({
         "namespace":"docs", "workspace_id":null, "graph_space":null
     });
+    let python_models: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+    )))
+    .unwrap();
+    let mut node_payload = python_models["cases"][0]["payload"].clone();
+    node_payload["id"] = json!("node-1");
+    node_payload["embedding"] = json!([1.0, 0.0]);
+    node_payload["metadata"].as_object_mut().unwrap().remove("workspace_id");
+    node_payload["metadata"].as_object_mut().unwrap().remove("graph_space");
+    batch["mutations"][0]["payload"] = node_payload;
+    let mut edge_mutation = batch["mutations"][0].clone();
+    edge_mutation["table"] = json!("gke_edges");
+    edge_mutation["entity_kind"] = json!("edge");
+    edge_mutation["event_id"] = json!("event-edge");
+    edge_mutation["record"]["id"] = json!("edge-1");
+    let mut edge_payload = python_models["cases"][1]["payload"].clone();
+    edge_payload["id"] = json!("edge-1");
+    edge_payload["embedding"] = json!([1.0, 0.0]);
+    edge_payload["source_ids"] = json!(["node-1"]);
+    edge_payload["metadata"].as_object_mut().unwrap().remove("workspace_id");
+    edge_payload["metadata"].as_object_mut().unwrap().remove("graph_space");
+    edge_mutation["payload"] = edge_payload;
+    batch["mutations"].as_array_mut().unwrap().push(edge_mutation);
     let body = serde_json::to_vec(&batch).unwrap();
     let principal = json!({
         "sub":"alice", "user_id":"alice", "role":"rw", "ns":["docs"],
@@ -2283,19 +2342,57 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(first.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&first.body));
     let first_body: Value = serde_json::from_slice(&first.body).unwrap();
     assert_eq!(first_body["projection_consistency"], "eventual");
+    assert_eq!(first_body["results"].as_array().unwrap().len(), 2);
     assert_eq!(first_body["results"][0]["inserted"], true);
 
     let retry = service.execute(request()).await;
     assert_eq!(retry.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&retry.body));
     let retry_body: Value = serde_json::from_slice(&retry.body).unwrap();
     assert_eq!(retry_body["results"][0]["mutated"], false);
-    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 1);
+    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 2);
     let jobs = service
         .store
         .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
         .unwrap();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].index_kind, "node_embedding");
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs.iter().all(|job| job.index_kind == "node_embedding"));
+    assert_eq!(
+        jobs.iter()
+            .map(|job| job.entity_kind.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["edge", "node"].into_iter().collect()
+    );
+
+    let projected = service
+        .run_embedding_projection_jobs_once(10, 30, Some("docs"))
+        .await
+        .unwrap();
+    let projection_jobs = service
+        .store
+        .list_index_jobs(Some("docs"), None, None, None, None, 10)
+        .unwrap();
+    assert_eq!(projected.claimed, 2);
+    assert_eq!(
+        projected.projected, 2,
+        "projection summary: {projected:?}; jobs: {projection_jobs:?}"
+    );
+    assert_eq!(embedding_calls.lock().unwrap().len(), 1);
+    let chroma_upserts = fake_chroma.await.unwrap();
+    assert_eq!(chroma_upserts.len(), 2);
+    let node_upsert = chroma_upserts
+        .iter()
+        .find(|(_, body)| body["ids"][0] == "node-1")
+        .unwrap();
+    assert!(node_upsert.0.contains("collection-nodes"));
+    assert_eq!(node_upsert.1["embeddings"][0], json!([0.6, 0.8]));
+    assert_eq!(node_upsert.1["metadatas"][0]["namespace"], "docs");
+    let edge_upsert = chroma_upserts
+        .iter()
+        .find(|(_, body)| body["ids"][0] == "edge-1")
+        .unwrap();
+    assert!(edge_upsert.0.contains("collection-edges"));
+    assert_eq!(edge_upsert.1["embeddings"][0], json!([0.6, 0.8]));
+    assert_eq!(edge_upsert.1["metadatas"][0]["namespace"], "docs");
 
     drop(service);
     remove_test_sqlite(&sqlite_path);
