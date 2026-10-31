@@ -1271,6 +1271,57 @@ impl SqliteRunApplicationService {
         Ok(self)
     }
 
+    async fn resolve_inline_native_owner_principal(
+        &self,
+        run_id: &str,
+        required_capability: &str,
+    ) -> Result<Value, String> {
+        let run = self
+            .store
+            .get_server_run(run_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "native worker run is missing".to_owned())?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "native worker run has no authenticated owner".to_owned())?;
+        let admission = self
+            .store
+            .list_server_run_events(run_id, 0, 1)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|event| event.event_type == "run.created")
+            .ok_or_else(|| "native worker run has no admission event".to_owned())?;
+        let admission_payload: Value = serde_json::from_str(&admission.payload_json)
+            .map_err(|_| "native worker admission event is invalid".to_owned())?;
+        let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
+            admission_payload
+                .get("runtime_owner_binding")
+                .cloned()
+                .ok_or_else(|| "native worker run has no trusted owner binding".to_owned())?,
+        )
+        .map_err(|_| "native worker owner binding is invalid".to_owned())?;
+        if binding.user_id != owner_id {
+            return Err("native worker owner binding does not match the durable run owner".to_owned());
+        }
+        let auth_store = self
+            .owner_auth_store
+            .as_ref()
+            .ok_or_else(|| "native worker owner revalidation is not configured".to_owned())?;
+        let user = auth_store
+            .auth_user(owner_id)
+            .await?
+            .filter(|user| user.is_active)
+            .ok_or_else(|| "native worker run owner is missing or inactive".to_owned())?;
+        revalidated_runtime_owner_principal(
+            &binding,
+            &user,
+            &self.capabilities,
+            required_capability,
+        )
+    }
+
     /// Reconcile one SQLite/Chroma projection namespace against canonical
     /// SQLite events. Chroma is eventually consistent, so callers may rerun
     /// this bounded-page scan; it is not a multi-writer transaction.
@@ -3299,13 +3350,14 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        self.apply_runtime_result_input(input, "python-worker")
+        self.apply_runtime_result_input(input, "python-worker", Some(&request.principal))
     }
 
     fn apply_runtime_result_input(
         &self,
         input: RuntimeWorkerResultRequest,
         executor_target: &str,
+        principal: Option<&Value>,
     ) -> ApiEffectResponse {
         if input.transition.is_some() == input.effect.is_some() {
             return effect_error(
@@ -3314,22 +3366,120 @@ impl SqliteRunApplicationService {
                 "exactly one of transition or effect is required",
             );
         }
-        if input
-            .effect
-            .as_ref()
-            .is_some_and(|effect| {
-                effect.graph_mutation_batch.is_some()
-                    || effect.graph_mutation_batch_v2.is_some()
-                    || !effect.provider_event_publications.is_empty()
-                    || !effect.provider_event_acknowledgements.is_empty()
-            })
-        {
+        if input.effect.as_ref().is_some_and(|effect| {
+            effect.graph_mutation_batch.is_some() && effect.graph_mutation_batch_v2.is_some()
+        }) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "worker effect cannot carry both graph batch versions",
+            );
+        }
+        if input.effect.as_ref().is_some_and(|effect| {
+            !effect.provider_event_publications.is_empty()
+                || !effect.provider_event_acknowledgements.is_empty()
+        }) {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
-                "Worker graph and provider-event effects require atomic graph authority with index jobs",
+                "SQLite runtime provider-event effects are not implemented",
             );
         }
+        let graph_batch = input.effect.as_ref().and_then(|effect| {
+            match (
+                effect.graph_mutation_batch.as_ref(),
+                effect.graph_mutation_batch_v2.as_ref(),
+            ) {
+                (Some(_), Some(_)) => Some(Err(
+                    "worker effect cannot carry both graph batch versions".to_owned(),
+                )),
+                (Some(v1), None) => Some((|| {
+                    let mutations = graph_mutation_batch_value(v1.clone())?;
+                    validate_graph_mutation_envelopes(v1, &mutations)?;
+                    validate_runtime_graph_mutations(&mutations)?;
+                    let index_jobs = graph_index_jobs_value(v1, &mutations)?;
+                    Ok((GraphMutationBatch { mutations, index_jobs }, None))
+                })()),
+                (None, Some(v2)) => Some((|| {
+                    let (mutations, index_jobs) = graph_mutation_batch_v2_value(v2.clone())?;
+                    validate_runtime_graph_mutations(&mutations)?;
+                    Ok((
+                        GraphMutationBatch { mutations, index_jobs },
+                        Some(v2.default_acl.truth_graph.clone()),
+                    ))
+                })()),
+                (None, None) => None,
+            }
+        });
+        let graph_batch = match graph_batch {
+            Some(Ok((batch, default_acl_truth_graph))) => {
+                if self.chroma_graph.is_none() {
+                    return effect_error(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                        "runtime graph effects require SQLite canonical events with configured Chroma projection",
+                    );
+                }
+                let Some(principal) = principal else {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "runtime graph effects require an authenticated write_graph principal",
+                    );
+                };
+                if !capability_allowed_for_principal(
+                    principal,
+                    &self.capabilities,
+                    "write_graph",
+                    &["write_graph"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "runtime graph effects require write_graph capability",
+                    );
+                }
+                let Some(owner_id) = authenticated_run_owner_id(principal).map(str::to_owned)
+                else {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "runtime graph effects require an authenticated run owner",
+                    );
+                };
+                let scope = security_scope_value(principal);
+                if batch.mutations
+                    .iter()
+                    .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &scope))
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_SCOPE_FORBIDDEN",
+                        "runtime graph effect scope is outside the authenticated owner scope",
+                    );
+                }
+                let effect_id = input
+                    .effect
+                    .as_ref()
+                    .map(|effect| effect.effect_id.clone())
+                    .unwrap_or_default();
+                Some((
+                    batch,
+                    owner_id,
+                    principal.clone(),
+                    default_acl_truth_graph,
+                    effect_id,
+                ))
+            }
+            Some(Err(error)) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+            None => None,
+        };
         if let Some(effect) = input.effect.as_ref()
             && let Err(message) =
                 validate_python_worker_submission_trace_binding(
@@ -3344,6 +3494,68 @@ impl SqliteRunApplicationService {
             );
         }
         let outcome = self.store.immediate_transaction(|uow| {
+            if let Some((batch, owner_id, principal, default_acl_truth_graph, effect_id)) = graph_batch.as_ref() {
+                if !capability_allowed_for_principal(
+                    principal,
+                    &self.capabilities,
+                    "write_graph.commit",
+                    &["write_graph"],
+                ) {
+                    return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                        "runtime graph owner no longer has write_graph capability".to_owned(),
+                    ));
+                }
+                let run = uow.get_server_run(&input.handoff.run_id)?;
+                if !run
+                    .as_ref()
+                    .is_some_and(|run| run.user_id.as_deref() == Some(owner_id.as_str()))
+                {
+                    return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                        "runtime graph effect owner does not match the durable run owner".to_owned(),
+                    ));
+                }
+                let scope = security_scope_value(principal);
+                if batch
+                    .mutations
+                    .iter()
+                    .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &scope))
+                {
+                    return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                        "runtime graph effect scope is outside the current owner scope".to_owned(),
+                    ));
+                }
+                let mut batch = batch.clone();
+                if let Some(truth_graph) = default_acl_truth_graph {
+                    let scope = batch.mutations.first().map(|mutation| mutation.scope.clone()).ok_or_else(|| {
+                        kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                            "ACL-aware graph batch must not be empty".to_owned(),
+                        )
+                    })?;
+                    let targets = acl_targets_for_graph_mutations(&batch.mutations).0;
+                    let entity_ids = acl_target_entity_ids(&targets);
+                    let existing = uow.graph_acl_records_for_entities(&scope, truth_graph, &entity_ids)?;
+                    let security_scope = principal
+                        .get("security_scope")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_ascii_lowercase);
+                    let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+                        &scope,
+                        &batch.mutations,
+                        targets,
+                        existing,
+                        truth_graph,
+                        &owner_id.to_ascii_lowercase(),
+                        security_scope.as_deref(),
+                        effect_id,
+                    )
+                    .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+                    batch.mutations.extend(acl_mutations);
+                    batch.index_jobs.extend(acl_jobs);
+                }
+                uow.apply_canonical_graph_mutation_batch(batch)?;
+            }
             let handoff = input.handoff;
             let lane = uow
                 .get_projected_lane_message(&handoff.message_id)?
@@ -3608,6 +3820,10 @@ impl SqliteRunApplicationService {
             transition: None,
             effect: Some(effect),
         };
-        self.apply_runtime_result_input(result, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+        self.apply_runtime_result_input(
+            result,
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+            None,
+        )
     }
 }

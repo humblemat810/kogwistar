@@ -2148,6 +2148,14 @@ async fn sqlite_run_admission_persists_authenticated_owner_binding() {
         .unwrap()
         .iter()
         .any(|capability| capability == "write_graph"));
+    let revalidated = service
+        .resolve_inline_native_owner_principal("sqlite-owner-bound-run", "write_graph")
+        .await
+        .unwrap();
+    assert_eq!(authenticated_run_owner_id(&revalidated), Some("sqlite-owner"));
+    assert!(principal_strings(&revalidated, "capabilities")
+        .iter()
+        .any(|capability| capability == "write_graph"));
 
     let mismatch = service
         .execute(ApiEffectRequest {
@@ -2445,6 +2453,281 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(edge_upsert.1["embeddings"][0], json!([0.6, 0.8]));
     assert_eq!(edge_upsert.1["metadatas"][0]["namespace"], "docs");
     assert_eq!(edge_upsert.1["metadatas"][0]["_class_name"], "Edge");
+
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
+async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let chroma_setup = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            )
+            .unwrap();
+            let response = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space": "cosine"}
+            })
+            .to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("runtime-nodes"),
+        chroma_config("runtime-edges"),
+    )
+    .await
+    .unwrap();
+    chroma_setup.await.unwrap();
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-runtime-graph-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph);
+    let principal = json!({
+        "sub": "runtime-owner", "user_id": "runtime-owner", "role": "rw",
+        "ns": ["conversation"], "storage_ns": "conversation",
+        "workspace": "workspace-a", "graph_space": "conversation",
+        "capabilities": ["write_graph"]
+    });
+    let submitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": "sqlite-runtime-graph-run",
+                "workflow_id": "sqlite-runtime-graph-workflow",
+                "conversation_id": "sqlite-runtime-graph-conversation",
+                "turn_node_id": "turn-1"
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+
+    let claimed = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/claim".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "claimed_by": "python-worker", "limit": 1, "lease_seconds": 60
+            }))
+            .unwrap(),
+            principal: json!({"sub":"worker","role":"admin","capabilities":["*"]}),
+        })
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK.as_u16());
+    let claimed: Value = serde_json::from_slice(&claimed.body).unwrap();
+    let work = &claimed["work"][0];
+
+    let models: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+    )))
+    .unwrap();
+    let mut node = models["cases"][0]["payload"].clone();
+    node["id"] = json!("runtime-effect-node");
+    node["embedding"] = json!([1.0, 0.0, 0.0]);
+    node["metadata"]["namespace"] = json!("conversation");
+    node["metadata"]["workspace_id"] = json!("workspace-a");
+    node["metadata"]["graph_space"] = json!("conversation");
+    let mut batch: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-mutation-batch-v1.json"
+    )))
+    .unwrap();
+    let mutation = &mut batch["mutations"][0];
+    mutation["scope"] = json!({
+        "namespace": "conversation", "workspace_id": "workspace-a",
+        "graph_space": "conversation"
+    });
+    mutation["event_id"] = json!("runtime-effect-graph-event");
+    mutation["payload"] = node.clone();
+    mutation["model_envelope"] = json!({
+        "schema_version": 1, "model_class": "node", "payload": node
+    });
+    mutation["record"]["id"] = json!("runtime-effect-node");
+    mutation["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
+    mutation["embedding_dim"] = json!(3);
+    batch["contract_version"] = json!(2);
+    batch["default_acl"] = json!({"truth_graph": "conversation"});
+
+    let result_body = serde_json::to_vec(&json!({
+                "handoff": {
+                    "message_id": work["message_id"],
+                    "claimed_by": work["claimed_by"],
+                    "run_id": work["run_id"],
+                    "step_id": work["step_id"],
+                    "correlation_id": work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "sqlite-runtime-graph-effect",
+                    "state_update": [["u", {"graph_written": true}]],
+                    "successors": [],
+                    "result": {"done": true},
+                    "graph_mutation_batch_v2": batch
+                }
+            }))
+    .unwrap();
+    let wrong_scope = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: result_body.clone(),
+            principal: json!({
+                "sub": "runtime-owner", "user_id": "runtime-owner", "role": "rw",
+                "ns": ["conversation"], "storage_ns": "conversation",
+                "workspace": "other-workspace", "graph_space": "conversation",
+                "capabilities": ["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(wrong_scope.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(service.store.replay_raw_events("conversation", 0, 100).unwrap().is_empty());
+
+    let wrong_owner = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: result_body.clone(),
+            principal: json!({
+                "sub": "other-owner", "user_id": "other-owner", "role": "rw",
+                "ns": ["conversation"], "storage_ns": "conversation",
+                "workspace": "workspace-a", "graph_space": "conversation",
+                "capabilities": ["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(wrong_owner.status, StatusCode::CONFLICT.as_u16());
+    assert!(service.store.replay_raw_events("conversation", 0, 100).unwrap().is_empty());
+
+    let mut invalid_handoff: Value = serde_json::from_slice(&result_body).unwrap();
+    invalid_handoff["handoff"]["correlation_id"] = json!("wrong-correlation");
+    let rolled_back = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&invalid_handoff).unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(rolled_back.status, StatusCode::CONFLICT.as_u16());
+    assert!(service.store.replay_raw_events("conversation", 0, 100).unwrap().is_empty());
+
+    let mut forged_acl: Value = serde_json::from_slice(&result_body).unwrap();
+    forged_acl["effect"]["graph_mutation_batch_v2"]["mutations"][0]["record"]["metadata"]["entity_type"] = json!("acl_record");
+    let denied_acl = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&forged_acl).unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(denied_acl.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+    assert!(service.store.replay_raw_events("conversation", 0, 100).unwrap().is_empty());
+
+    let result = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: result_body.clone(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(result.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&result.body));
+    let events = service.store.replay_raw_events("conversation", 0, 100).unwrap();
+    assert!(events.iter().any(|event| {
+        event.entity_id == "runtime-effect-node" && event.event_id == "runtime-effect-graph-event"
+    }));
+    assert!(events.iter().any(|event| {
+        serde_json::from_str::<Value>(&event.payload_json).is_ok_and(|payload| {
+            payload["metadata"]["entity_type"] == "acl_record"
+                && payload["metadata"]["acl_target_entity_id"] == "runtime-effect-node"
+                && payload["metadata"]["acl_truth_graph"] == "conversation"
+        })
+    }));
+    let jobs = service.store.list_index_jobs(
+        Some("conversation"), Some("PENDING"), None, None, None, 20,
+    ).unwrap();
+    assert!(jobs.iter().any(|job| job.entity_id == "runtime-effect-node"));
+    assert_eq!(
+        service.store.get_server_run("sqlite-runtime-graph-run").unwrap().unwrap().status,
+        "succeeded"
+    );
+    let replay = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: result_body,
+            principal,
+        })
+        .await;
+    assert_eq!(replay.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        service.store.replay_raw_events("conversation", 0, 100).unwrap().len(),
+        events.len()
+    );
+    assert_eq!(
+        service
+            .store
+            .list_index_jobs(Some("conversation"), Some("PENDING"), None, None, None, 20)
+            .unwrap()
+            .len(),
+        jobs.len()
+    );
 
     drop(service);
     remove_test_sqlite(&sqlite_path);

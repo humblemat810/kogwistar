@@ -928,9 +928,31 @@ impl ApplicationService for SqliteRunApplicationService {
                 return Ok(false);
             };
             let result = native_result_for_claimed_work(work, &self.native_operations)?;
+            let inline_principal = if result.effect.as_ref().is_some_and(|effect| {
+                effect.graph_mutation_batch.is_some()
+                    || effect.graph_mutation_batch_v2.is_some()
+            }) {
+                match self
+                    .resolve_inline_native_owner_principal(
+                        &result.handoff.run_id,
+                        "write_graph",
+                    )
+                    .await
+                {
+                    Ok(principal) => Some(principal),
+                    Err(error) => {
+                        return Err(format!(
+                            "native graph effect owner revalidation failed: {error}"
+                        ));
+                    }
+                }
+            } else {
+                None
+            };
             let applied = self.apply_runtime_result_input(
                 result,
                 kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                inline_principal.as_ref(),
             );
             if !(200..300).contains(&applied.status) {
                 return Err(format!(

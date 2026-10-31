@@ -1259,6 +1259,23 @@ fn validate_graph_mutation_envelopes(
     Ok(())
 }
 
+fn validate_runtime_graph_mutations(mutations: &[GraphMutation]) -> Result<(), String> {
+    if mutations.iter().any(|mutation| {
+        mutation.record.metadata.get("entity_type").and_then(Value::as_str)
+            == Some("acl_record")
+            || mutation
+                .payload
+                .get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get("entity_type"))
+                .and_then(Value::as_str)
+                == Some("acl_record")
+    }) {
+        return Err("runtime workers cannot supply host-owned ACL records".to_owned());
+    }
+    Ok(())
+}
+
 fn graph_index_jobs_value(
     input: &GraphMutationBatchInput,
     mutations: &[GraphMutation],

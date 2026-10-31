@@ -3954,6 +3954,13 @@ impl PostgresRunApplicationService {
                     Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
                 },
             };
+            if let Err(error) = validate_runtime_graph_mutations(&mutations) {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
             let security_scope = security_scope_value(principal);
             if mutations
                 .iter()
