@@ -1665,7 +1665,6 @@ impl PostgresRunApplicationService {
             .ok_or_else(|| "native answer generation requires a turn node ID".to_owned())?;
         let trace_context = kogwistar_runtime::native_trace_context_fields(request);
         let model = provider.model().to_owned();
-        let client_sequence = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
         provider
             .answer_with_event_sink(
                 system_prompt,
@@ -1683,7 +1682,6 @@ impl PostgresRunApplicationService {
                     let turn_node_id = turn_node_id.clone();
                     let trace_context = trace_context.clone();
                     let model = model.clone();
-                    let client_sequence = client_sequence.clone();
                     async move {
                         if let kogwistar_contracts::ProviderEventV1::TextDelta {
                             delta, ..
@@ -1696,10 +1694,9 @@ impl PostgresRunApplicationService {
                                 );
                             }
                             // Client delivery is observational; bounded-buffer failure must not fail the workflow.
-                            let sequence = client_sequence
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                .saturating_add(1);
-                            let _ = service.transient_run_deltas.publish(&run_id, sequence, delta);
+                            let _ = service
+                                .transient_run_deltas
+                                .publish_next(&run_id, delta);
                             return Ok(());
                         }
                         let Some(provider_event) =
@@ -1716,8 +1713,10 @@ impl PostgresRunApplicationService {
                         let provider_sequence = event_value
                             .get("provider_sequence")
                             .and_then(Value::as_i64);
-                        let client_sse_sequence =
-                            client_sequence.load(std::sync::atomic::Ordering::Relaxed);
+                        let client_sse_sequence = service
+                            .transient_run_deltas
+                            .last_sequence(&run_id)
+                            .unwrap_or_default();
                         let attempt = trace_context
                             .get("attempt")
                             .and_then(Value::as_i64)
