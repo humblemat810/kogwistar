@@ -1,5 +1,6 @@
 use kogwistar_contracts::{ProviderEventV1, provider_event_from_str};
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 const MAX_STREAM_BYTES: usize = 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
@@ -13,6 +14,7 @@ pub(crate) struct ChatCompletionEventStream {
     sequence: i64,
     response_id: Option<String>,
     text: String,
+    completed_fields: BTreeSet<String>,
     started: bool,
     completed: bool,
     saw_tool_calls: bool,
@@ -26,6 +28,7 @@ impl Default for ChatCompletionEventStream {
             sequence: 0,
             response_id: None,
             text: String::new(),
+            completed_fields: BTreeSet::new(),
             started: false,
             completed: false,
             saw_tool_calls: false,
@@ -138,6 +141,16 @@ impl ChatCompletionEventStream {
                 "response_id": self.response_id,
                 "delta": delta,
             }))?);
+            for (field_name, field_value) in completed_top_level_fields(&self.text) {
+                if self.completed_fields.insert(field_name.clone()) {
+                    output.push(self.event(json!({
+                        "kind": "field_completed",
+                        "response_id": self.response_id,
+                        "field_name": field_name,
+                        "value": field_value,
+                    }))?);
+                }
+            }
         }
         if choice
             .get("finish_reason")
@@ -217,6 +230,110 @@ impl ChatCompletionEventStream {
     }
 }
 
+// Scan only complete top-level members of a streamed JSON object. Incomplete
+// prefixes are expected during generation and are left for the next delta.
+fn completed_top_level_fields(text: &str) -> Vec<(String, Value)> {
+    let bytes = text.as_bytes();
+    let mut cursor = skip_json_whitespace(bytes, 0);
+    if bytes.get(cursor) != Some(&b'{') {
+        return Vec::new();
+    }
+    cursor += 1;
+    let mut fields = Vec::new();
+    loop {
+        cursor = skip_json_whitespace(bytes, cursor);
+        if bytes.get(cursor) != Some(&b'"') {
+            break;
+        }
+        let key_start = cursor;
+        let Some(key_end) = json_string_end(bytes, cursor) else {
+            break;
+        };
+        let Ok(key) = serde_json::from_str::<String>(&text[key_start..key_end]) else {
+            break;
+        };
+        cursor = skip_json_whitespace(bytes, key_end);
+        if bytes.get(cursor) != Some(&b':') {
+            break;
+        }
+        cursor = skip_json_whitespace(bytes, cursor + 1);
+        let value_start = cursor;
+        let Some((value_end, delimiter)) = json_value_end(bytes, cursor) else {
+            break;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text[value_start..value_end]) else {
+            break;
+        };
+        fields.push((key, value));
+        cursor = skip_json_whitespace(bytes, value_end);
+        if bytes.get(cursor) != Some(&delimiter) {
+            break;
+        }
+        if delimiter == b'}' {
+            break;
+        }
+        cursor += 1;
+    }
+    fields
+}
+
+fn skip_json_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while bytes
+        .get(cursor)
+        .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+    {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn json_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'"') {
+        return None;
+    }
+    let mut cursor = start + 1;
+    let mut escaped = false;
+    while let Some(byte) = bytes.get(cursor) {
+        if escaped {
+            escaped = false;
+        } else if *byte == b'\\' {
+            escaped = true;
+        } else if *byte == b'"' {
+            return Some(cursor + 1);
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn json_value_end(bytes: &[u8], start: usize) -> Option<(usize, u8)> {
+    let mut cursor = start;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(byte) = bytes.get(cursor).copied() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else {
+            match byte {
+                b'"' => in_string = true,
+                b'{' | b'[' => depth += 1,
+                b'}' | b']' if depth > 0 => depth -= 1,
+                b',' | b'}' if depth == 0 => return Some((cursor, byte)),
+                _ => {}
+            }
+        }
+        cursor += 1;
+    }
+    None
+}
+
 fn frame_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
     buffer
         .windows(2)
@@ -279,5 +396,51 @@ mod tests {
         );
         let events = parser.push(b"data: [DONE]\n\n").unwrap();
         assert!(events.iter().any(|event| matches!(event, ProviderEventV1::ResponseFailed { error_code, .. } if error_code == "streamed_tool_calls_unsupported")));
+    }
+
+    #[test]
+    fn emits_a_field_only_after_its_complete_json_value_and_only_once() {
+        let mut parser = ChatCompletionEventStream::default();
+        let first = br#"data: {"id":"resp-fields","choices":[{"delta":{"content":"{\"answer\":\"complete"},"finish_reason":null}]}"#;
+        let events = parser.push(&[first.as_slice(), b"\n\n"].concat()).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ProviderEventV1::FieldCompleted { .. }))
+        );
+
+        let second = br#"data: {"id":"resp-fields","choices":[{"delta":{"content":"\",\"metadata\":{\"items\":[1,2]}}"},"finish_reason":null}]}"#;
+        let events = parser.push(&[second.as_slice(), b"\n\n"].concat()).unwrap();
+        let completed = events
+            .iter()
+            .filter_map(|event| match event {
+                ProviderEventV1::FieldCompleted {
+                    field_name, value, ..
+                } => Some((field_name.as_str(), value)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0], ("answer", &json!("complete")));
+        assert_eq!(completed[1], ("metadata", &json!({"items": [1, 2]})));
+
+        let repeated = parser.push(&[second.as_slice(), b"\n\n"].concat()).unwrap();
+        assert!(
+            !repeated
+                .iter()
+                .any(|event| matches!(event, ProviderEventV1::FieldCompleted { .. }))
+        );
+    }
+
+    #[test]
+    fn completed_field_scanner_handles_escaped_strings_and_nested_values() {
+        let fields = completed_top_level_fields(
+            r#"{"quote":"say \"hi\"","nested":{"ok":true},"tail":[1,"雪"]}"#,
+        );
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0], ("quote".to_owned(), json!("say \"hi\"")));
+        assert_eq!(fields[1], ("nested".to_owned(), json!({"ok": true})));
+        assert_eq!(fields[2], ("tail".to_owned(), json!([1, "雪"])));
+        assert_eq!(completed_top_level_fields(r#"{"partial":{"x":1"#).len(), 0);
     }
 }
