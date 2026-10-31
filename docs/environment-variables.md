@@ -37,11 +37,11 @@ tests, and optional integrations.
 
 | Variable | Used By | Purpose |
 | --- | --- | --- |
-| `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend. The inline embedding worker supports PostgreSQL or SQLite metadata with an explicitly configured Chroma graph projection. |
+| `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend: `pg` or `sqlite` (default). Other values, including `in_memory`, fail startup rather than silently selecting SQLite; the native HTTP application service does not yet compose the standalone in-memory store. The inline embedding worker supports PostgreSQL or SQLite metadata with an explicitly configured Chroma graph projection. |
 | `KOGWISTAR_PG_DSN` | Rust `kogwistar-server` | PostgreSQL DSN for the native Rust service and its durable index-job queue. |
 | `KOGWISTAR_PG_SCHEMA_BASE` | Rust `kogwistar-server` | PostgreSQL schema base; defaults to `kogwistar`. |
 | `KOGWISTAR_WISDOM_SCHEMA` | Rust `kogwistar-server` | Optional PostgreSQL schema for the generic graph operations exposed by the wisdom routes. Defaults to the legacy `<KOGWISTAR_PG_SCHEMA_BASE>_wisdom` schema so existing data remains reachable. Set it equal to `KOGWISTAR_PG_SCHEMA_BASE` to share the same physical graph store; namespace and ACL `truth_graph` still scope and authorize the role. |
-| `KOGWISTAR_META_SQLITE_PATH` | Rust `kogwistar-server` | Selects SQLite for metadata/runtime/queue storage when the PostgreSQL backend is not selected. It does not make SQLite authoritative for graph data. |
+| `KOGWISTAR_META_SQLITE_PATH` | Rust `kogwistar-server` | Configures SQLite metadata/runtime/queue storage when `KOGWISTAR_BACKEND=sqlite`. It does not make SQLite authoritative for graph data. |
 | `KOGWISTAR_CHROMA_ENDPOINT` | Rust `kogwistar-server` | Optional Chroma HTTP endpoint. When paired with `KOGWISTAR_META_SQLITE_PATH`, enables authenticated graph reads through public MCP (neighbors, find-edges, shortest-path, and k-hop) and the internal `POST /internal/graph/mutations` batch route. For that write path, SQLite commits canonical graph events and durable embedding jobs atomically; Chroma is an eventual, revision-fenced projection, not part of the SQLite transaction. Standalone SQLite metadata mode remains without graph-write authority. Startup fails if Chroma cannot be configured. |
 | `KOGWISTAR_CHROMA_NODE_COLLECTION` | Rust `kogwistar-server` | Node collection for the optional SQLite-metadata/Chroma-graph composition; defaults to `nodes`. |
 | `KOGWISTAR_CHROMA_EDGE_COLLECTION` | Rust `kogwistar-server` | Edge collection for the optional SQLite-metadata/Chroma-graph composition; defaults to `edges`. |

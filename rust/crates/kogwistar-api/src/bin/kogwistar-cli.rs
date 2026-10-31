@@ -10,7 +10,7 @@ fn main() {
     if args.next().as_deref() != Some("health") {
         usage();
     }
-    let backend = args.next().unwrap_or_else(|| "in_memory".to_owned());
+    let backend = args.next().unwrap_or_else(|| "sqlite".to_owned());
     if args.next().is_some() {
         usage();
     }

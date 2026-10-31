@@ -281,6 +281,55 @@ fn environment(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerBackend {
+    Postgres,
+    Sqlite,
+}
+
+impl ServerBackend {
+    fn from_config(value: &str) -> Result<Self, std::io::Error> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pg" => Ok(Self::Postgres),
+            "sqlite" => Ok(Self::Sqlite),
+            "in_memory" => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "KOGWISTAR_BACKEND=in_memory is not supported by the native server composition; use pg or sqlite",
+            )),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "KOGWISTAR_BACKEND must be pg or sqlite",
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Postgres => "pg",
+            Self::Sqlite => "sqlite",
+        }
+    }
+}
+
+#[cfg(test)]
+mod server_backend_tests {
+    use super::ServerBackend;
+
+    #[test]
+    fn server_backend_config_accepts_only_implemented_compositions() {
+        assert_eq!(ServerBackend::from_config("pg").unwrap(), ServerBackend::Postgres);
+        assert_eq!(
+            ServerBackend::from_config(" SQLITE ").unwrap(),
+            ServerBackend::Sqlite
+        );
+        for unsupported in ["in_memory", "chroma", "postgres", "typo", ""] {
+            let error = ServerBackend::from_config(unsupported)
+                .expect_err("unsupported backend must fail before server startup");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+    }
+}
+
 fn configured_wisdom_schema(base_schema: &str, configured: Option<&str>) -> Result<String, String> {
     match configured {
         Some(schema) if schema.trim().is_empty() => {
@@ -456,6 +505,7 @@ fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std:
 /// standalone binary.  PyO3 calls this function so native wheels need not ship
 /// a second platform-specific executable beside the extension module.
 pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let backend = ServerBackend::from_config(&environment("KOGWISTAR_BACKEND", "sqlite"))?;
     let host = environment("KOGWISTAR_SERVER_HOST", "127.0.0.1");
     let port = environment("KOGWISTAR_SERVER_PORT", "8000");
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
@@ -465,13 +515,12 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         .filter(|role| !role.is_empty())
         .map(str::to_owned)
         .collect();
-    let backend = environment("KOGWISTAR_BACKEND", "in_memory");
     let inline_embedding_worker = boolean_environment("KOGWISTAR_EMBEDDING_WORKER_INLINE")?;
     let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
     let (reconcile_interval, reconcile_namespace) = projection_reconcile_settings()?;
     let state = ApiState {
         health: HealthSnapshot {
-            backend: backend.clone(),
+            backend: backend.as_str().to_owned(),
             persist_directory: environment("KOGWISTAR_PERSIST_DIRECTORY", ".kogwistar"),
             conversation_persist_directory: environment(
                 "KOGWISTAR_CONVERSATION_PERSIST_DIRECTORY",
@@ -485,7 +534,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                 "KOGWISTAR_WISDOM_PERSIST_DIRECTORY",
                 ".kogwistar/wisdom",
             ),
-            pg_schema_base: (backend == "pg")
+            pg_schema_base: (backend == ServerBackend::Postgres)
                 .then(|| environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar")),
         },
         required_roles,
@@ -494,7 +543,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     };
     let mut embedding_worker_available = false;
     let mut projection_reconciliation_available = false;
-    let application: Arc<dyn ApplicationService> = if backend == "pg" {
+    let application: Arc<dyn ApplicationService> = if backend == ServerBackend::Postgres {
         match std::env::var("KOGWISTAR_PG_DSN") {
             Ok(dsn) if !dsn.trim().is_empty() => {
                 let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
