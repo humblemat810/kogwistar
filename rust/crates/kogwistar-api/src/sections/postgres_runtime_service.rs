@@ -1476,6 +1476,8 @@ impl PostgresRunApplicationService {
                         let provider_sequence = event_value
                             .get("provider_sequence")
                             .and_then(Value::as_i64);
+                        let client_sse_sequence =
+                            client_sequence.load(std::sync::atomic::Ordering::Relaxed);
                         let attempt = trace_context
                             .get("attempt")
                             .and_then(Value::as_i64)
@@ -1507,7 +1509,7 @@ impl PostgresRunApplicationService {
                             provider_id: "openai_compatible_chat_completions".to_owned(),
                             provider_response_id: response_id,
                             provider_sequence,
-                            client_sse_sequence: None,
+                            client_sse_sequence: Some(client_sse_sequence),
                         };
                         let event_id = kogwistar_contracts::durable_provider_event_id(
                             &event_trace,
@@ -1531,6 +1533,7 @@ impl PostgresRunApplicationService {
                             "executor_target": "rust-native",
                             "provider_id": "openai_compatible_chat_completions",
                             "provider_model": model,
+                            "client_sse_sequence": client_sse_sequence,
                             "provider_event": provider_event,
                         });
                         if let Some(fields) = payload.as_object_mut() {

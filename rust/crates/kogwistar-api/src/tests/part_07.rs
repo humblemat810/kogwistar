@@ -1274,7 +1274,9 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
                 "turn_id": "turn-a",
                 "workflow_node_id": "wf:agent.event.v1:request",
                 "step_id": "provider-response:response-a",
-                "provider_id": "openai-responses"
+                "provider_id": "openai-responses",
+                "provider_sequence": 3,
+                "client_sse_sequence": 12
             },
             "event": {
                 "contract_version": "v1",
@@ -1291,6 +1293,8 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
         serde_json::from_value(publication_value).unwrap();
     let message_id = format!("msg:{}", publication.event.event_id);
     let payload_json = serde_json::to_string(&publication.event).unwrap();
+    assert_eq!(publication.event.trace.client_sse_sequence, Some(12));
+    assert!(payload_json.contains("\"client_sse_sequence\":12"));
     let metadata = serde_json::from_value(json!({
         "artifact_kind": "lane_message",
         "conversation_id": publication.conversation_id,
