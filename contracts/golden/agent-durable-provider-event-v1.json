@@ -1,0 +1,49 @@
+{
+  "envelope": {
+    "event_id": "agent-event:fixture-001",
+    "trace": {
+      "run_id": "run-fixture-001",
+      "turn_id": "turn-fixture-001",
+      "workflow_node_id": "wf:agent.event.v1:request",
+      "step_id": "provider-response:response-fixture-001",
+      "attempt": 1,
+      "producer_step_seq": 7,
+      "producer_attempt": 2,
+      "trace_id": "trace-fixture-001",
+      "span_id": "span-provider-001",
+      "parent_span_id": "span-parent-001",
+      "provider_id": "openai-responses",
+      "provider_response_id": "response-fixture-001",
+      "provider_sequence": 3,
+      "client_sse_sequence": null
+    },
+    "event": {
+      "contract_version": "v1",
+      "provider_event_id": "response-fixture-001:3",
+      "provider_sequence": 3,
+      "response_id": "response-fixture-001",
+      "kind": "field_completed",
+      "field_name": "text",
+      "value": "fixture answer"
+    }
+  },
+  "invalid_envelopes": [
+    {
+      "event_id": "agent-event:fixture-001",
+      "trace": {},
+      "event": {"kind": "response_started", "extra": true}
+    },
+    {
+      "event_id": "agent-event:fixture-001",
+      "trace": {
+        "run_id": "run-fixture-001",
+        "turn_id": "turn-fixture-001",
+        "workflow_node_id": "wf:agent.event.v1:request",
+        "step_id": "provider-response:response-fixture-001",
+        "provider_id": "openai-responses",
+        "unexpected": "no"
+      },
+      "event": {"kind": "response_started"}
+    }
+  ]
+}

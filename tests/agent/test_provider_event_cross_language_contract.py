@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from kogwistar.agent.event_journal import DurableProviderEvent
 from kogwistar.agent.streaming import ProviderEvent
 
 _FIXTURE = (
@@ -30,3 +31,13 @@ def test_python_provider_events_reject_the_shared_invalid_cases() -> None:
     for invalid in fixture["invalid_events"]:
         with pytest.raises(ValidationError):
             _EVENT_ADAPTER.validate_python(invalid)
+
+
+def test_python_durable_provider_event_matches_shared_rust_golden_fixture() -> None:
+    fixture_path = _FIXTURE.with_name("agent-durable-provider-event-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    envelope = DurableProviderEvent.model_validate(fixture["envelope"])
+    assert envelope.model_dump(mode="json") == fixture["envelope"]
+    for invalid in fixture["invalid_envelopes"]:
+        with pytest.raises(ValidationError):
+            DurableProviderEvent.model_validate(invalid)
