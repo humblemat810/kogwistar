@@ -584,11 +584,25 @@ impl OpenAiCompatibleChatConfig {
         let mut response_bytes = Vec::new();
         let mut event_stream = crate::native_event_stream::ChatCompletionEventStream::default();
         let mut provider_events = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| "could not read structured chat provider response".to_owned())?
-        {
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) if self.streaming => {
+                    let events = event_stream.abort(
+                        "provider_stream_transport_error",
+                        "provider response stream ended unexpectedly",
+                    );
+                    for event in &events {
+                        event_sink(event.clone()).await?;
+                    }
+                    provider_events.extend(events);
+                    return Err("could not read structured chat provider response".to_owned());
+                }
+                Err(_) => {
+                    return Err("could not read structured chat provider response".to_owned());
+                }
+            };
             if self.streaming {
                 let events = event_stream
                     .push(&chunk)
@@ -1719,6 +1733,118 @@ mod tests {
         let serialized = serde_json::to_string(&*observed).unwrap();
         assert!(!serialized.contains("must not be accepted"));
         assert!(!serialized.contains("truncated rationale"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_provider_records_transport_failure_after_truncated_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..1 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let header_end = loop {
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap();
+                while request.len() < header_end + content_length {
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+
+                let answer = json!({
+                    "text":"transient answer must not persist",
+                    "reasoning":"transient rationale",
+                    "claims":[]
+                })
+                .to_string();
+                let frame = format!(
+                    "data: {}\r\n\r\n",
+                    json!({
+                        "id":format!("resp-transport-{attempt}"),
+                        "choices":[{"delta":{"content":answer},"finish_reason":null}]
+                    })
+                );
+                let declared_length = frame.len() + 128;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {declared_length}\r\nconnection: close\r\n\r\n"
+                );
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(frame.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+        });
+        let provider = OpenAiCompatibleChatConfig::new(
+            format!("http://{address}/v1/chat/completions"),
+            "fixture-model",
+            None,
+        )
+        .unwrap()
+        .with_streaming(true);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_by_sink = std::sync::Arc::clone(&observed);
+        let result = provider
+            .answer_with_event_sink(
+                "system",
+                "question",
+                &json!({"nodes": [], "edges": []}),
+                &[],
+                move |event| {
+                    let observed = std::sync::Arc::clone(&observed_by_sink);
+                    async move {
+                        if let Some(summary) = semantic_event_trace_summary(&event) {
+                            observed.lock().unwrap().push(summary);
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a truncated HTTP body is not a valid answer"
+        );
+        let observed = observed.lock().unwrap();
+        let failures = observed
+            .iter()
+            .filter(|event| event["kind"] == "response_failed")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            failures.len(),
+            1,
+            "the failed provider call is reported once"
+        );
+        assert!(
+            failures.iter().all(|event| {
+                event["details"]["error_code"] == "provider_stream_transport_error"
+            })
+        );
+        assert!(
+            observed
+                .iter()
+                .all(|event| event["kind"] != "response_completed")
+        );
+        let serialized = serde_json::to_string(&*observed).unwrap();
+        assert!(!serialized.contains("transient answer must not persist"));
+        assert!(!serialized.contains("transient rationale"));
         server.await.unwrap();
     }
 

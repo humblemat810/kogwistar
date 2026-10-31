@@ -77,6 +77,12 @@ impl ChatCompletionEventStream {
         Ok(output)
     }
 
+    pub(crate) fn abort(&mut self, code: &str, message: &str) -> Vec<ProviderEventV1> {
+        let mut output = Vec::new();
+        self.fail(&mut output, code, message);
+        output
+    }
+
     fn process_frame(
         &mut self,
         frame: &[u8],
