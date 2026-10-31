@@ -1434,7 +1434,9 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let chroma = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..6 {
+            let mut applied = std::collections::BTreeMap::new();
+            let mut fail_first_upsert_response = true;
+            for _ in 0..9 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -1462,24 +1464,50 @@
                 let request_line = head.lines().next().unwrap().to_owned();
                 let body: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length])
                     .unwrap();
-                let response = if request_line.contains("/collections HTTP") {
-                    json!({
+                let (status, response) = if request_line.contains("/collections HTTP") {
+                    (
+                        "200 OK",
+                        json!({
                         "id": format!("collection-{}", body["name"].as_str().unwrap()),
                         "metadata": {"hnsw:space":"cosine"}
-                    })
+                        }),
+                    )
+                } else if request_line.contains("/upsert") {
+                    if let Some(ids) = body["ids"].as_array() {
+                        for (index, id) in ids.iter().filter_map(Value::as_str).enumerate() {
+                            applied.insert(
+                                id.to_owned(),
+                                json!({
+                                    "document": body["documents"][index].clone(),
+                                    "metadata": body["metadatas"][index].clone(),
+                                    "embedding": body["embeddings"][index].clone()
+                                }),
+                            );
+                        }
+                    }
+                    if fail_first_upsert_response {
+                        fail_first_upsert_response = false;
+                        // Model a lost acknowledgement after Chroma applied the idempotent upsert.
+                        (
+                            "500 Internal Server Error",
+                            json!({"error":"injected response loss after upsert"}),
+                        )
+                    } else {
+                        ("200 OK", json!({}))
+                    }
                 } else {
-                    json!({})
+                    ("200 OK", json!({}))
                 };
                 let response = response.to_string();
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     response.len(),
                     response
                 );
                 stream.write_all(response.as_bytes()).await.unwrap();
                 observed.push((request_line, body));
             }
-            observed
+            (observed, applied)
         });
 
         let path = std::env::temp_dir().join(format!(
@@ -1682,7 +1710,7 @@
         let service = open_sqlite_application_service(
             &path,
             Some(SqliteChromaGraphConfig {
-                endpoint,
+                endpoint: endpoint.clone(),
                 metric: DistanceMetric::Cosine,
                 node_collection: "worker-nodes".to_owned(),
                 edge_collection: "worker-edges".to_owned(),
@@ -1690,7 +1718,7 @@
         )
         .await
         .unwrap()
-        .with_embedding_provider(provider);
+        .with_embedding_provider(provider.clone());
         assert_eq!(
             sqlite_canonical_entity_revision(&service.store, namespace, "node", entity_id)
                 .unwrap()
@@ -1714,10 +1742,55 @@
             .await
             .unwrap();
         assert_eq!(summary.claimed, 2);
-        assert_eq!(summary.projected, 2);
+        assert_eq!(summary.projected, 1);
+        assert_eq!(summary.retried, 1);
         assert!(service
             .store
             .get_stage1_node_projection(namespace, &format!("node:{entity_id}"))
+            .unwrap()
+            .is_some());
+        let accepted_retry = service
+            .store
+            .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap()
+            .into_iter()
+            .find(|job| job.index_kind == "node_embedding")
+            .expect("failed Chroma projection remains retryable");
+        assert!(accepted_retry.accepted_result_json.is_some());
+        assert!(accepted_retry.accepted_result_sha256.is_some());
+        let replay_id = accepted_retry.entity_id.clone();
+
+        // The accepted embedding result is durable before the Chroma write.
+        // Restarting replays it without calling the provider again.
+        drop(service);
+        tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint: endpoint.clone(),
+                metric: DistanceMetric::Cosine,
+                node_collection: "worker-nodes".to_owned(),
+                edge_collection: "worker-edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap()
+        .with_embedding_provider(provider.clone());
+        let replay = service
+            .run_embedding_projection_jobs_once(2, 30, Some(namespace))
+            .await
+            .unwrap();
+        assert_eq!(replay.claimed, 1);
+        assert_eq!(replay.projected, 0);
+        assert_eq!(replay.reused, 1);
+        assert!(service
+            .store
+            .get_stage1_node_projection(namespace, &format!("node:{entity_id}"))
+            .unwrap()
+            .is_none());
+        assert!(service
+            .store
+            .get_stage1_node_projection(namespace, &format!("node:{second_id}"))
             .unwrap()
             .is_none());
         let mut batches = calls.lock().unwrap().clone();
@@ -1753,22 +1826,25 @@
                 .status,
             "PENDING"
         );
-        let requests = chroma.await.unwrap();
+        let (requests, applied) = chroma.await.unwrap();
         let upserts = requests
             .iter()
             .filter(|(line, _)| line.contains("/upsert"))
             .collect::<Vec<_>>();
-        assert_eq!(upserts.len(), 2);
+        assert_eq!(upserts.len(), 3, "failed upsert is replayed after restart");
         for (upsert_path, upsert) in &upserts {
             assert!(upsert_path.contains("worker-nodes"));
             assert_eq!(upsert["embeddings"][0], json!([0.6, 0.8]));
         }
+        assert_eq!(upserts[0].1["ids"][0], replay_id);
+        assert_eq!(upserts[0].1, upserts[2].1, "retry reuses the accepted action");
+        assert_eq!(applied.len(), 2, "same-ID retry leaves one projection per entity");
         let mut projected_ids = upserts
             .iter()
             .filter_map(|(_, body)| body["ids"][0].as_str())
             .collect::<Vec<_>>();
         projected_ids.sort();
-        assert_eq!(projected_ids, vec![entity_id, second_id]);
+        assert_eq!(projected_ids, vec![entity_id, replay_id.as_str(), second_id]);
         let primary_upsert = upserts
             .iter()
             .find(|(_, body)| body["ids"][0] == entity_id)
