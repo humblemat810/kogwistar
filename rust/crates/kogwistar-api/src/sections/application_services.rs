@@ -975,6 +975,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     | Some(INTERNAL_GRAPH_VIZ_D3_ROUTE)
                     | Some(INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE)
             );
+        let is_composed_graph_mutation = self.chroma_graph.is_some()
+            && method == "POST"
+            && path.split('?').next() == Some(INTERNAL_GRAPH_MUTATIONS_ROUTE);
         let is_composed_conversation_transcript = self.chroma_graph.is_some()
             && method == "GET"
             && conversation_transcript_id(path).is_some();
@@ -986,6 +989,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && is_conversation_list_route(path);
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
+            || is_composed_graph_mutation
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
             || is_composed_conversation_list)
@@ -995,6 +999,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 || self.graph_authority_capability().supports_single_mutation())
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
                 || is_composed_graph_read
+                || is_composed_graph_mutation
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
                 || is_composed_conversation_list)
@@ -1023,6 +1028,9 @@ impl ApplicationService for SqliteRunApplicationService {
             }
             if request.method == "POST" && self.chroma_graph.is_some() {
                 match request.path_and_query.split('?').next() {
+                    Some(INTERNAL_GRAPH_MUTATIONS_ROUTE) => {
+                        return self.sqlite_chroma_graph_mutation_effect(&request).await;
+                    }
                     Some("/api/syscall/v1/receive_message") => {
                         return self.sqlite_chroma_receive_message_effect(&request).await;
                     }

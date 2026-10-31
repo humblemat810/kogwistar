@@ -2175,3 +2175,128 @@ async fn sqlite_run_admission_persists_authenticated_owner_binding() {
     remove_test_sqlite(&sqlite_path);
     remove_test_sqlite(&auth_path);
 }
+
+#[tokio::test]
+async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let fake_chroma = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "Chroma connection closed before request body");
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            )
+            .unwrap();
+            let response = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space":"cosine"}
+            })
+            .to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("nodes"),
+        chroma_config("edges"),
+    )
+    .await
+    .unwrap();
+    fake_chroma.await.unwrap();
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-graph-mutation-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph);
+    assert!(service.supports_http_operation("POST", INTERNAL_GRAPH_MUTATIONS_ROUTE));
+
+    let mut batch: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-mutation-batch-v1.json"
+    )))
+    .unwrap();
+    batch["mutations"][0]["scope"] = json!({
+        "namespace":"docs", "workspace_id":null, "graph_space":null
+    });
+    let body = serde_json::to_vec(&batch).unwrap();
+    let principal = json!({
+        "sub":"alice", "user_id":"alice", "role":"rw", "ns":["docs"],
+        "storage_ns":"docs", "capabilities":["write_graph"]
+    });
+    let denied = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_MUTATIONS_ROUTE.to_owned(),
+            body: body.clone(),
+            principal: json!({"sub":"alice", "role":"ro", "ns":["docs"], "storage_ns":"docs"}),
+        })
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(service.store.replay_raw_events("docs", 0, 10).unwrap().is_empty());
+
+    let request = || ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: INTERNAL_GRAPH_MUTATIONS_ROUTE.to_owned(),
+        body: body.clone(),
+        principal: principal.clone(),
+    };
+    let first = service.execute(request()).await;
+    assert_eq!(first.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&first.body));
+    let first_body: Value = serde_json::from_slice(&first.body).unwrap();
+    assert_eq!(first_body["projection_consistency"], "eventual");
+    assert_eq!(first_body["results"][0]["inserted"], true);
+
+    let retry = service.execute(request()).await;
+    assert_eq!(retry.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&retry.body));
+    let retry_body: Value = serde_json::from_slice(&retry.body).unwrap();
+    assert_eq!(retry_body["results"][0]["mutated"], false);
+    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 1);
+    let jobs = service
+        .store
+        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
+        .unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].index_kind, "node_embedding");
+
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+}

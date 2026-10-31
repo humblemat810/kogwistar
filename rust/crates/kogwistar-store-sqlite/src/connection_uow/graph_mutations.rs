@@ -14,7 +14,8 @@ impl SqliteUnitOfWork<'_> {
             ));
         };
         let scope = first.scope.clone();
-        for mutation in &batch.mutations {
+        let mut mutations = batch.mutations;
+        for mutation in &mut mutations {
             validate_graph_mutation(mutation)?;
             if mutation.scope != scope {
                 return Err(SqliteStoreError::TransactionAborted(
@@ -27,6 +28,7 @@ impl SqliteUnitOfWork<'_> {
                         .to_owned(),
                 ));
             }
+            persist_graph_scope(mutation)?;
         }
         for job in &batch.index_jobs {
             if job.namespace != scope.namespace
@@ -43,8 +45,8 @@ impl SqliteUnitOfWork<'_> {
             }
         }
 
-        let mut applied = Vec::with_capacity(batch.mutations.len());
-        for mutation in batch.mutations {
+        let mut applied = Vec::with_capacity(mutations.len());
+        for mutation in mutations {
             let payload_json = serde_json::to_string(&mutation.payload)
                 .expect("serde_json::Value serialization cannot fail");
             let appended = self.append_raw_entity_event(
@@ -89,7 +91,12 @@ impl SqliteUnitOfWork<'_> {
                     namespace: mutation.scope.namespace.clone(),
                     entity_kind: mutation.entity_kind.clone(),
                     entity_id: mutation.record.id.clone(),
-                    index_kind: "node_embedding".to_owned(),
+                    index_kind: if mutation.entity_kind == "edge" {
+                        "edge_embedding"
+                    } else {
+                        "node_embedding"
+                    }
+                    .to_owned(),
                     op: if revision.is_deleted() {
                         "DELETE".to_owned()
                     } else {
@@ -115,4 +122,44 @@ impl SqliteUnitOfWork<'_> {
         }
         Ok(applied)
     }
+}
+
+fn persist_graph_scope(mutation: &mut GraphMutation) -> SqliteStoreResult<()> {
+    let metadata = mutation
+        .payload
+        .as_object_mut()
+        .and_then(|payload| {
+            payload
+                .entry("metadata".to_owned())
+                .or_insert_with(|| Value::Object(Default::default()))
+                .as_object_mut()
+        })
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "canonical graph payload metadata must be an object".to_owned(),
+            )
+        })?;
+    for (key, expected) in [
+        ("namespace", Some(mutation.scope.namespace.as_str())),
+        ("workspace_id", mutation.scope.workspace_id.as_deref()),
+        ("graph_space", mutation.scope.graph_space.as_deref()),
+    ] {
+        let Some(expected) = expected else {
+            continue;
+        };
+        if metadata
+            .get(key)
+            .is_some_and(|actual| actual.as_str() != Some(expected))
+        {
+            return Err(SqliteStoreError::TransactionAborted(format!(
+                "canonical graph metadata {key:?} conflicts with its event scope"
+            )));
+        }
+        metadata.insert(key.to_owned(), Value::String(expected.to_owned()));
+        mutation
+            .record
+            .metadata
+            .insert(key.to_owned(), Value::String(expected.to_owned()));
+    }
+    Ok(())
 }

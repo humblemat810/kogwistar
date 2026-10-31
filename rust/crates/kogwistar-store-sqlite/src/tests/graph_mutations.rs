@@ -36,6 +36,18 @@ fn canonical_graph_batch_commits_events_and_projection_jobs_together() {
     assert!(applied.iter().all(|item| item.inserted && item.mutated));
     let events = store.replay_raw_events("conversation", 0, 10).unwrap();
     assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0].payload_json.parse::<serde_json::Value>().unwrap()["metadata"]["namespace"],
+        "conversation"
+    );
+    assert_eq!(
+        events[0].payload_json.parse::<serde_json::Value>().unwrap()["metadata"]["workspace_id"],
+        "workspace-a"
+    );
+    assert_eq!(
+        events[0].payload_json.parse::<serde_json::Value>().unwrap()["metadata"]["graph_space"],
+        "conversation"
+    );
     let jobs = store
         .list_index_jobs(
             Some("conversation"),
@@ -130,6 +142,55 @@ fn canonical_graph_batch_rejects_mixed_scopes_before_writing() {
             .unwrap()
             .is_empty()
     );
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn canonical_graph_batch_rejects_conflicting_payload_scope_before_writing() {
+    let (store, path) = store("canonical-graph-payload-scope-conflict");
+    let mut conflicting = mutation("scope-conflict-event", "node-1");
+    conflicting.payload["metadata"] = serde_json::json!({"workspace_id":"other-workspace"});
+    let result = store.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: vec![conflicting],
+        index_jobs: Vec::new(),
+    });
+    assert!(result.is_err());
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn canonical_edge_mutation_queues_the_edge_embedding_projection_kind() {
+    let (store, path) = store("canonical-edge-projection-kind");
+    let mut edge = mutation("edge-event-1", "edge-1");
+    edge.table = "gke_edges".to_owned();
+    edge.entity_kind = "edge".to_owned();
+    edge.payload = serde_json::json!({
+        "id":"edge-1", "relation":"related", "source_ids":["node-1"],
+        "target_ids":["node-2"], "metadata":{"engine_type":"conversation"}
+    });
+    edge.record.document = Some(edge.payload.to_string());
+
+    store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![edge],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    let jobs = store
+        .list_index_jobs(Some("conversation"), Some("PENDING"), None, None, None, 10)
+        .unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].entity_kind, "edge");
+    assert_eq!(jobs[0].index_kind, "edge_embedding");
+
     drop(store);
     let _ = fs::remove_file(path);
 }

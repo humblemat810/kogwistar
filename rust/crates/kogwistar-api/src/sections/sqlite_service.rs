@@ -1133,15 +1133,129 @@ impl SqliteRunApplicationService {
         self
     }
 
-    /// Add a separate Chroma graph projection to the SQLite metadata/runtime
-    /// service. SQLite remains authoritative only for its existing metadata
-    /// and queue responsibilities; graph reads are sourced from Chroma.
+    /// Compose Chroma graph reads with SQLite's canonical event journal and
+    /// durable projection queue. Graph mutations commit only to SQLite; Chroma
+    /// remains an eventual, revision-fenced projection.
     pub fn with_chroma_graph(
         mut self,
         graph: kogwistar_store_chroma::ChromaGraphStore,
     ) -> Self {
         self.chroma_graph = Some(graph);
         self
+    }
+
+    async fn sqlite_chroma_graph_mutation_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if self.chroma_graph.is_none() {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "SQLite graph mutations require the configured eventual Chroma projection",
+            );
+        }
+        if !capability_allowed_for_principal(
+            &request.principal,
+            &self.capabilities,
+            "write_graph",
+            &["write_graph"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph mutation requires write_graph capability",
+            );
+        }
+        let input: GraphMutationBatchInput = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        if let Err(error) = input.validate() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
+        }
+        let mutations = match graph_mutation_batch_value(input.clone()) {
+            Ok(mutations) => mutations,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        if let Err(error) = validate_graph_mutation_envelopes(&input, &mutations) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
+        }
+        let security_scope = security_scope_value(&request.principal);
+        if mutations
+            .iter()
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Graph mutation scope is outside the principal storage scope",
+            );
+        }
+        let index_jobs = match graph_index_jobs_value(&input, &mutations) {
+            Ok(jobs) => jobs,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let committed = self.store.immediate_transaction(|uow| {
+            uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: mutations.clone(),
+                index_jobs: index_jobs.clone(),
+            })
+        });
+        match committed {
+            Ok(results) => json_effect(
+                StatusCode::OK,
+                rust_native_attested(json!({
+                    "contract_version": 1,
+                    "atomic": true,
+                    "projection_consistency": "eventual",
+                    "results": results.into_iter().map(|result| json!({
+                        "event": {
+                            "namespace": result.event.namespace,
+                            "seq": result.event.seq,
+                            "event_id": result.event.event_id,
+                            "entity_kind": result.event.entity_kind,
+                            "entity_id": result.event.entity_id,
+                            "op": result.event.op,
+                            "payload": result.event.payload,
+                        },
+                        "inserted": result.inserted,
+                        "mutated": result.mutated,
+                    })).collect::<Vec<_>>(),
+                })),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_GRAPH_MUTATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
     }
 
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
