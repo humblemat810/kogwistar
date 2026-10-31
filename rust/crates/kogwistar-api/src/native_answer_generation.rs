@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::time::Duration;
 
 use kogwistar_contracts::ProviderEventV1;
@@ -398,6 +399,7 @@ impl OpenAiCompatibleChatConfig {
         self
     }
 
+    #[cfg(test)]
     pub(crate) async fn answer(
         &self,
         system_prompt: &str,
@@ -410,6 +412,7 @@ impl OpenAiCompatibleChatConfig {
             .map(|(answer, _)| answer)
     }
 
+    #[cfg(test)]
     pub(crate) async fn answer_with_events(
         &self,
         system_prompt: &str,
@@ -417,10 +420,32 @@ impl OpenAiCompatibleChatConfig {
         evidence_pack: &Value,
         used_node_ids: &[String],
     ) -> Result<(Value, Vec<Value>), String> {
+        self.answer_with_event_sink(
+            system_prompt,
+            question,
+            evidence_pack,
+            used_node_ids,
+            |_| async { Ok(()) },
+        )
+        .await
+    }
+
+    pub(crate) async fn answer_with_event_sink<F, Fut>(
+        &self,
+        system_prompt: &str,
+        question: &str,
+        evidence_pack: &Value,
+        used_node_ids: &[String],
+        mut event_sink: F,
+    ) -> Result<(Value, Vec<Value>), String>
+    where
+        F: FnMut(ProviderEventV1) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
         let (user_prompt, aliases) = answer_user_prompt(question, evidence_pack)?;
         for _ in 0..3 {
             if let Some((answer, events)) = self
-                .complete_answer_with_events(system_prompt, &user_prompt)
+                .complete_answer_observed(system_prompt, &user_prompt, &mut event_sink)
                 .await?
             {
                 let answer = restore_answer_aliases(answer, &aliases, used_node_ids)?;
@@ -493,6 +518,20 @@ impl OpenAiCompatibleChatConfig {
         system_prompt: &str,
         user_prompt: &str,
     ) -> Result<Option<(AnswerWithCitations, Vec<ProviderEventV1>)>, String> {
+        self.complete_answer_observed(system_prompt, user_prompt, &mut |_| async { Ok(()) })
+            .await
+    }
+
+    async fn complete_answer_observed<F, Fut>(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        event_sink: &mut F,
+    ) -> Result<Option<(AnswerWithCitations, Vec<ProviderEventV1>)>, String>
+    where
+        F: FnMut(ProviderEventV1) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
         let request_body = json!({
             "model": self.model,
             "messages": [
@@ -551,11 +590,13 @@ impl OpenAiCompatibleChatConfig {
             .map_err(|_| "could not read structured chat provider response".to_owned())?
         {
             if self.streaming {
-                provider_events.extend(
-                    event_stream.push(&chunk).map_err(|_| {
-                        "could not normalize structured chat event stream".to_owned()
-                    })?,
-                );
+                let events = event_stream
+                    .push(&chunk)
+                    .map_err(|_| "could not normalize structured chat event stream".to_owned())?;
+                for event in &events {
+                    event_sink(event.clone()).await?;
+                }
+                provider_events.extend(events);
                 continue;
             }
             if response_bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
@@ -567,11 +608,13 @@ impl OpenAiCompatibleChatConfig {
             response_bytes.extend_from_slice(&chunk);
         }
         if self.streaming {
-            provider_events.extend(
-                event_stream
-                    .finish()
-                    .map_err(|_| "could not finish structured chat event stream".to_owned())?,
-            );
+            let events = event_stream
+                .finish()
+                .map_err(|_| "could not finish structured chat event stream".to_owned())?;
+            for event in &events {
+                event_sink(event.clone()).await?;
+            }
+            provider_events.extend(events);
             let Some(structured_output) = provider_events.iter().find_map(|event| match event {
                 ProviderEventV1::ResponseCompleted {
                     structured_output: Some(value),
@@ -606,64 +649,108 @@ impl OpenAiCompatibleChatConfig {
 fn semantic_event_trace_summaries(events: &[ProviderEventV1]) -> Vec<Value> {
     events
         .iter()
-        .filter_map(|event| {
-            let (kind, response_id, event_id, sequence, details) = match event {
-                ProviderEventV1::ResponseStarted {
-                    response_id,
-                    provider_event_id,
-                    provider_sequence,
-                    ..
-                } => ("response_started", response_id, provider_event_id, provider_sequence, None),
-                ProviderEventV1::FieldCompleted {
-                    response_id,
-                    provider_event_id,
-                    provider_sequence,
-                    field_name,
-                    ..
-                } => ("field_completed", response_id, provider_event_id, provider_sequence, Some(json!({"field_name": field_name}))),
-                ProviderEventV1::ReasoningSummary {
-                    response_id,
-                    provider_event_id,
-                    provider_sequence,
-                    ..
-                } => ("reasoning_summary", response_id, provider_event_id, provider_sequence, None),
-                ProviderEventV1::ToolCallCompleted {
-                    response_id,
-                    provider_event_id,
-                    provider_sequence,
-                    call_id,
-                    name,
-                    ..
-                } => ("tool_call_completed", response_id, provider_event_id, provider_sequence, Some(json!({"call_id": call_id, "name": name}))),
-                ProviderEventV1::ResponseCompleted {
-                    response_id,
-                    provider_event_id,
-                    provider_sequence,
-                    input_tokens,
-                    output_tokens,
-                    has_tool_calls,
-                    ..
-                } => ("response_completed", response_id, provider_event_id, provider_sequence, Some(json!({"input_tokens": input_tokens, "output_tokens": output_tokens, "has_tool_calls": has_tool_calls}))),
-                ProviderEventV1::ResponseFailed {
-                    response_id,
-                    provider_event_id,
-                    provider_sequence,
-                    error_code,
-                    retryable,
-                    ..
-                } => ("response_failed", response_id, provider_event_id, provider_sequence, Some(json!({"error_code": error_code, "retryable": retryable}))),
-                ProviderEventV1::TextDelta { .. } => return None,
-            };
-            let truncate = |value: &Option<String>| value.as_deref().map(|text| text.chars().take(256).collect::<String>());
-            Some(json!({
-                "kind": kind,
-                "response_id": truncate(response_id),
-                "provider_event_id": truncate(event_id),
-                "provider_sequence": sequence,
-                "details": details,
-            }))
-        })
+        .filter_map(semantic_event_trace_summary)
         .collect()
+}
+
+pub(crate) fn semantic_event_trace_summary(event: &ProviderEventV1) -> Option<Value> {
+    let (kind, response_id, event_id, sequence, details) = match event {
+        ProviderEventV1::ResponseStarted {
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            ..
+        } => (
+            "response_started",
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            None,
+        ),
+        ProviderEventV1::FieldCompleted {
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            field_name,
+            ..
+        } => (
+            "field_completed",
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            Some(json!({"field_name": field_name})),
+        ),
+        ProviderEventV1::ReasoningSummary {
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            ..
+        } => (
+            "reasoning_summary",
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            None,
+        ),
+        ProviderEventV1::ToolCallCompleted {
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            call_id,
+            name,
+            ..
+        } => (
+            "tool_call_completed",
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            Some(json!({"call_id": call_id, "name": name})),
+        ),
+        ProviderEventV1::ResponseCompleted {
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            input_tokens,
+            output_tokens,
+            has_tool_calls,
+            ..
+        } => (
+            "response_completed",
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            Some(
+                json!({"input_tokens": input_tokens, "output_tokens": output_tokens, "has_tool_calls": has_tool_calls}),
+            ),
+        ),
+        ProviderEventV1::ResponseFailed {
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            error_code,
+            retryable,
+            ..
+        } => (
+            "response_failed",
+            response_id,
+            provider_event_id,
+            provider_sequence,
+            Some(json!({"error_code": error_code, "retryable": retryable})),
+        ),
+        ProviderEventV1::TextDelta { .. } => return None,
+    };
+    let truncate = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(|text| text.chars().take(256).collect::<String>())
+    };
+    Some(json!({
+        "kind": kind,
+        "response_id": truncate(response_id),
+        "provider_event_id": truncate(event_id),
+        "provider_sequence": sequence,
+        "details": details,
+    }))
 }
 
 fn answer_prompt_messages(
@@ -1484,13 +1571,40 @@ mod tests {
         )
         .unwrap()
         .with_streaming(true);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_by_sink = std::sync::Arc::clone(&observed);
         let result = provider
-            .complete_answer("system", "question")
+            .answer_with_event_sink(
+                "system",
+                "question",
+                &json!({"nodes": [], "edges": []}),
+                &[],
+                move |event| {
+                    let observed = std::sync::Arc::clone(&observed_by_sink);
+                    async move {
+                        if let Some(summary) = semantic_event_trace_summary(&event) {
+                            observed.lock().unwrap().push(summary);
+                        }
+                        Ok(())
+                    }
+                },
+            )
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(result.text, "streamed answer");
-        assert_eq!(result.reasoning, "brief rationale");
+        assert_eq!(result.0["text"], "streamed answer");
+        let observed = observed.lock().unwrap();
+        assert!(observed.iter().any(|event| {
+            event["kind"] == "field_completed" && event["details"]["field_name"] == "text"
+        }));
+        assert!(
+            observed
+                .iter()
+                .any(|event| event["kind"] == "response_completed")
+        );
+        let encoded = serde_json::to_string(&*observed).unwrap();
+        assert!(!encoded.contains("streamed answer"));
+        assert!(!encoded.contains("brief rationale"));
+        assert!(!encoded.contains("text_delta"));
         server.await.unwrap();
     }
 

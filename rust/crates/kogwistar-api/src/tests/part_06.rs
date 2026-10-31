@@ -5849,17 +5849,63 @@
                 json!({"id":"resp-agentic-e2e","choices":[{"delta":{"content":format!("\"reasoning\"{remaining_fields}")},"finish_reason":null}]}),
                 json!({"id":"resp-agentic-e2e","choices":[{"delta":{},"finish_reason":"stop"}]}),
             ];
-            let mut response = String::new();
-            for chunk in chunks {
-                response.push_str(&format!("data: {chunk}\r\n\r\n"));
-            }
-            response.push_str("data: [DONE]\r\n\r\n");
-            let wire = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                response.len(),
-                response
+            let frames = chunks
+                .iter()
+                .map(|chunk| format!("data: {chunk}\r\n\r\n"))
+                .collect::<Vec<_>>();
+            let content_length = frames
+                .iter()
+                .map(String::len)
+                .sum::<usize>()
+                + "data: [DONE]\r\n\r\n".len();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {content_length}\r\nconnection: close\r\n\r\n"
             );
-            stream.write_all(wire.as_bytes()).await.unwrap();
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.flush().await.unwrap();
+            for (index, frame) in frames.iter().enumerate() {
+                stream.write_all(frame.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+                if index == 0 {
+                    let persisted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        loop {
+                            let events = snapshot_reader
+                                .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
+                                .await
+                                .unwrap();
+                            let field_was_persisted = events.iter().any(|event| {
+                                event.event_type == "workflow.provider_event.v1"
+                                    && serde_json::from_str::<Value>(&event.payload_json)
+                                        .ok()
+                                        .is_some_and(|payload| {
+                                            payload["provider_event"]["kind"] == "field_completed"
+                                                && payload["provider_event"]["details"]["field_name"] == "text"
+                                        })
+                            });
+                            if field_was_persisted {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                    })
+                    .await;
+                    if persisted.is_err() {
+                        let events = snapshot_reader
+                            .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
+                            .await
+                            .unwrap();
+                        let event_types = events
+                            .iter()
+                            .map(|event| event.event_type.as_str())
+                            .collect::<Vec<_>>();
+                        panic!(
+                            "complete semantic fields persist before provider completion; observed run events: {event_types:?}"
+                        );
+                    }
+                }
+            }
+            stream.write_all(b"data: [DONE]\r\n\r\n").await.unwrap();
+            stream.flush().await.unwrap();
         });
         let embedding_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let embedding_address = embedding_listener.local_addr().unwrap();
@@ -5902,7 +5948,8 @@
             "fixture-answer-model",
             None,
         )
-        .unwrap();
+        .unwrap()
+        .with_streaming(true);
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
             .unwrap()
             .with_native_operations(crate::native_answer_persist::registry().unwrap())
