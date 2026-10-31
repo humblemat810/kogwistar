@@ -68,10 +68,7 @@ mod native_answer_view;
 mod native_event_stream;
 mod native_memory_pin;
 mod runtime_contract;
-pub use cutover::{
-    ImplementationSnapshot, PENDING_SERVER_CUTOVER_ROUTES, PENDING_SYSCALL_CUTOVER_OPS,
-    TRANSPORT_OWNED_HTTP_ROUTES,
-};
+pub use cutover::{ImplementationSnapshot, TRANSPORT_OWNED_HTTP_ROUTES};
 use cutover::{is_pending_server_cutover_route, is_transport_owned_http_route};
 use runtime_contract::{
     default_runtime_kind, runtime_implementation_attestation, runtime_worker_recipient,

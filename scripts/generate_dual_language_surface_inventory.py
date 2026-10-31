@@ -16,6 +16,7 @@ MCP = ROOT / "contracts" / "golden" / "mcp-tools.json"
 RUST_API = ROOT / "rust" / "crates" / "kogwistar-api" / "src"
 RUST_CUTOVER = RUST_API / "cutover.rs"
 RUST_MCP = RUST_API / "sections" / "contracts_and_runtime.rs"
+RUST_PORT_MANIFEST = ROOT / "contracts" / "rust-port-v1.json"
 
 
 def _string_pairs(source: str, constant: str) -> list[list[str]]:
@@ -25,15 +26,6 @@ def _string_pairs(source: str, constant: str) -> list[list[str]]:
     if match is None:
         raise ValueError(f"could not find Rust constant {constant}")
     return [list(pair) for pair in re.findall(r'"([A-Z]+)"\s*,\s*"([^"]+)"', match.group(1))]
-
-
-def _string_items(source: str, constant: str) -> list[str]:
-    match = re.search(
-        rf"pub const {constant}:.*?= &\[(.*?)\];", source, flags=re.DOTALL
-    )
-    if match is None:
-        raise ValueError(f"could not find Rust constant {constant}")
-    return re.findall(r'"([a-z_]+)"', match.group(1))
 
 
 def _rust_mcp_allowlist(source: str) -> dict[str, set[str]]:
@@ -56,11 +48,22 @@ def _rust_mcp_allowlist(source: str) -> dict[str, set[str]]:
 def build_inventory() -> dict[str, Any]:
     openapi = json.loads(OPENAPI.read_text(encoding="utf-8"))
     mcp = json.loads(MCP.read_text(encoding="utf-8"))
-    cutover = RUST_CUTOVER.read_text(encoding="utf-8")
+    deferrals = json.loads(RUST_PORT_MANIFEST.read_text(encoding="utf-8"))[
+        "server_operation_deferrals"
+    ]
     rust_mcp = _rust_mcp_allowlist(RUST_MCP.read_text(encoding="utf-8"))
-    pending_routes = {tuple(pair) for pair in _string_pairs(cutover, "PENDING_SERVER_CUTOVER_ROUTES")}
-    transport_routes = {tuple(pair) for pair in _string_pairs(cutover, "TRANSPORT_OWNED_HTTP_ROUTES")}
-    pending_syscalls = _string_items(cutover, "PENDING_SYSCALL_CUTOVER_OPS")
+    pending_routes = {
+        (operation["method"], operation["path"])
+        for group in deferrals["route_groups"]
+        for operation in group["operations"]
+    }
+    transport_routes = {
+        tuple(pair)
+        for pair in _string_pairs(
+            RUST_CUTOVER.read_text(encoding="utf-8"), "TRANSPORT_OWNED_HTTP_ROUTES"
+        )
+    }
+    pending_syscalls = deferrals["syscall_group"]["operations"]
 
     http_operations: list[dict[str, str]] = []
     for path, path_item in sorted(openapi["paths"].items()):

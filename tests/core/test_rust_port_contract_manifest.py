@@ -19,8 +19,8 @@ DUAL_LANGUAGE_MANIFEST_PATH = (
 SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 CI_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ci.yml"
 RUST_PORT_WORKFLOW_PATH = ROOT / ".github" / "workflows" / "rust-port-compat.yml"
-RUST_CUTOVER_SOURCE_PATH = (
-    ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "cutover.rs"
+RUST_API_BUILD_SCRIPT_PATH = (
+    ROOT / "rust" / "crates" / "kogwistar-api" / "build.rs"
 )
 CONSUMER_IMPORT_INVENTORY_PATH = (
     ROOT / "contracts" / "inventory" / "consumer-imports-v1.json"
@@ -195,14 +195,10 @@ def test_four_layer_ci_core_pin_matches_reference_application_contract() -> None
 
 
 def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> None:
-    rust_cutover = RUST_CUTOVER_SOURCE_PATH.read_text(encoding="utf-8")
-    pending = re.search(
-        r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
-        rust_cutover,
-        flags=re.DOTALL,
+    deferrals = _manifest()["server_operation_deferrals"]
+    pending_count = sum(
+        len(group["operations"]) for group in deferrals["route_groups"]
     )
-    assert pending is not None
-    pending_count = len(re.findall(r'"(?:DELETE|GET|POST)",', pending.group(1)))
     status = (ROOT / "kogwistar" / "docs" / "ADR-015-implementation-status.md").read_text(
         encoding="utf-8"
     )
@@ -218,23 +214,7 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert deferrals["status"] == "versioned-intentionally-deferred"
     assert deferrals["owner"] == "python-rollback-deployment"
 
-    rust_cutover = RUST_CUTOVER_SOURCE_PATH.read_text(encoding="utf-8")
-    pending_routes = re.search(
-        r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
-        rust_cutover,
-        flags=re.DOTALL,
-    )
-    pending_syscalls = re.search(
-        r"pub const PENDING_SYSCALL_CUTOVER_OPS:.*?= &\[(.*?)\];",
-        rust_cutover,
-        flags=re.DOTALL,
-    )
-    assert pending_routes is not None
-    assert pending_syscalls is not None
-    rust_routes = set(
-        re.findall(r'"([A-Z]+)"\s*,\s*"([^"]+)"', pending_routes.group(1))
-    )
-    rust_syscalls = set(re.findall(r'"([a-z_]+)"', pending_syscalls.group(1)))
+    build_script = RUST_API_BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
     manifest_routes = {
         (operation["method"], operation["path"])
         for group in deferrals["route_groups"]
@@ -245,12 +225,17 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert len(manifest_routes) == sum(
         len(group["operations"]) for group in deferrals["route_groups"]
     )
-    assert manifest_routes == rust_routes
-    assert manifest_syscalls == rust_syscalls
+    assert len(manifest_syscalls) == len(deferrals["syscall_group"]["operations"])
+    assert 'join("../../../contracts/rust-port-v1.json")' in build_script
+    assert '"server_operation_deferrals"' in build_script
+    assert "PENDING_SERVER_CUTOVER_ROUTES" in build_script
+    assert "PENDING_SYSCALL_CUTOVER_OPS" in build_script
+    assert "duplicate deferred route" in build_script
+    assert "duplicate deferred syscall operation" in build_script
     gate_path = ROOT / "scripts" / "rust_port_release_gate.py"
     gate_source = gate_path.read_text(encoding="utf-8")
-    assert f"SERVER_DEFERRAL_ROUTE_COUNT_V1 = {len(rust_routes)}" in gate_source
-    assert f"SERVER_DEFERRAL_SYSCALL_COUNT_V1 = {len(rust_syscalls)}" in gate_source
+    assert f"SERVER_DEFERRAL_ROUTE_COUNT_V1 = {len(manifest_routes)}" in gate_source
+    assert f"SERVER_DEFERRAL_SYSCALL_COUNT_V1 = {len(manifest_syscalls)}" in gate_source
     for group in [*deferrals["route_groups"], deferrals["syscall_group"]]:
         assert group["owner"] == "python"
         assert group["status"] == "intentionally-deferred"
@@ -291,26 +276,16 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
         if expected_rust_coverage != "python-only":
             assert item["native_rust_path"] == "not-verified"
 
-    rust_cutover = RUST_CUTOVER_SOURCE_PATH.read_text(encoding="utf-8")
-    routes_match = re.search(
-        r"pub const PENDING_SERVER_CUTOVER_ROUTES:.*?= &\[(.*?)\];",
-        rust_cutover,
-        flags=re.DOTALL,
-    )
-    syscalls_match = re.search(
-        r"pub const PENDING_SYSCALL_CUTOVER_OPS:.*?= &\[(.*?)\];",
-        rust_cutover,
-        flags=re.DOTALL,
-    )
-    assert routes_match is not None
-    assert syscalls_match is not None
-    expected_routes = re.findall(
-        r'"([A-Z]+)"\s*,\s*"([^"]+)"', routes_match.group(1)
-    )
-    expected_syscalls = re.findall(r'"([a-z_]+)"', syscalls_match.group(1))
+    deferrals = port_manifest["server_operation_deferrals"]
+    expected_routes = {
+        (operation["method"], operation["path"])
+        for group in deferrals["route_groups"]
+        for operation in group["operations"]
+    }
+    expected_syscalls = set(deferrals["syscall_group"]["operations"])
     gaps = crosswalk["rust_server_gaps"]
-    assert [tuple(route) for route in gaps["pending_routes"]] == expected_routes
-    assert gaps["pending_syscalls"] == expected_syscalls
+    assert {tuple(route) for route in gaps["pending_routes"]} == expected_routes
+    assert set(gaps["pending_syscalls"]) == expected_syscalls
 
 
 def test_dual_language_surface_inventory_is_current() -> None:

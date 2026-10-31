@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-use super::FROZEN_OPENAPI_ROUTES;
+use super::{FROZEN_OPENAPI_ROUTES, PENDING_SERVER_CUTOVER_ROUTES};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ImplementationSnapshot {
@@ -61,18 +61,6 @@ fn route_template_matches(template: &str, path: &str) -> bool {
             })
 }
 
-pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
-    ("DELETE", "/admin/doc/{doc_id}"),
-    ("GET", "/api/search_index_hybrid"),
-    ("GET", "/api/runs/{run_id}/evidence"),
-    ("GET", "/api/viz/cytoscape.json"),
-    ("GET", "/api/viz/d3.json"),
-    ("GET", "/viz/d3.bundle"),
-    ("GET", "/api/workflow/runs/{run_id}/lineage"),
-    ("POST", "/api/add_index_entries"),
-    ("POST", "/api/document.upsert_tree"),
-];
-
 pub const TRANSPORT_OWNED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/health"),
     ("GET", "/api/auth/login"),
@@ -92,13 +80,6 @@ pub(crate) fn frozen_application_route_operations() -> usize {
         .filter(|(method, path)| !is_transport_owned_http_route(method, path))
         .count()
 }
-
-pub const PENDING_SYSCALL_CUTOVER_OPS: &[&str] = &[
-    "send_message",
-    "receive_message",
-    "mount_memory",
-    "invoke_tool",
-];
 
 impl Default for ImplementationSnapshot {
     fn default() -> Self {
