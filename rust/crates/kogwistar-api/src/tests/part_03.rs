@@ -502,6 +502,34 @@
         assert_eq!(design_snapshot.version, 3);
         assert!(runtime_graph_plan_from_snapshot(&design_snapshot.payload_json).is_some());
         assert!(exact_runtime_graph_plan(Some(projection), Some(design_snapshot)).is_some());
+        let submitted = call(
+            "POST",
+            "/api/workflow/runs",
+            json!({
+                "run_id": "run-from-rust-design",
+                "workflow_id": "wf-write",
+                "conversation_id": "conversation-from-rust-design"
+            }),
+        );
+        assert_eq!(submitted.status, 202);
+        let submitted: Value = serde_json::from_slice(&submitted.body).unwrap();
+        let lane = store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                inbox_id: Some("workflow-runtime".to_owned()),
+                correlation_id: Some("run-from-rust-design".to_owned()),
+                limit: 1,
+                ..LaneMessageFilter::default()
+            })
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("design submission durably creates a runtime lane message");
+        let worker_payload: Value = serde_json::from_str(lane.payload_json.as_deref().unwrap()).unwrap();
+        assert_eq!(worker_payload["run_id"], submitted["run_id"]);
+        assert_eq!(worker_payload["start_node_id"], "start");
+        assert_eq!(worker_payload["runtime_routes"][0]["source_node_id"], "start");
+        assert_eq!(worker_payload["runtime_routes"][0]["target_node_id"], "end");
         let events = store
             .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
             .unwrap();
