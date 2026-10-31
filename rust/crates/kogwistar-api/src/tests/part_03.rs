@@ -1093,6 +1093,48 @@
             serde_json::from_slice(&external_endpoint_bytes).unwrap();
         assert_eq!(external_endpoint_body["nodes_added"], 0);
         assert_eq!(external_endpoint_body["edges_added"], 1);
+
+        let mut external_edge_endpoint_extraction = extraction.clone();
+        external_edge_endpoint_extraction
+            .as_object_mut()
+            .unwrap()
+            .remove("content");
+        external_edge_endpoint_extraction["nodes"] = json!([]);
+        let mut nested_external_edge = extraction["edges"][0].clone();
+        nested_external_edge["id"] = json!("ne:external-edge-reference");
+        nested_external_edge["source_ids"] = json!([]);
+        nested_external_edge["target_ids"] =
+            json!([existing_document_body["node_ids"][1]]);
+        nested_external_edge["source_edge_ids"] =
+            json!([existing_document_body["edge_ids"][0]]);
+        nested_external_edge["target_edge_ids"] = json!([]);
+        external_edge_endpoint_extraction["edges"] = json!([nested_external_edge]);
+        let external_edge_endpoint_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {graph_upsert_token}"),
+                    )
+                    .body(Body::from(
+                        serde_json::to_vec(&external_edge_endpoint_extraction).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(external_edge_endpoint_upsert.status(), StatusCode::OK);
+        let external_edge_endpoint_body: Value = serde_json::from_slice(
+            &to_bytes(external_edge_endpoint_upsert.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(external_edge_endpoint_body["nodes_added"], 0);
+        assert_eq!(external_edge_endpoint_body["edges_added"], 1);
         let events_before_hidden_endpoint = service
             .store
             .replay_raw_events("alpha", 0, 100)
@@ -1117,6 +1159,33 @@
             .await
             .unwrap();
         assert_eq!(hidden_endpoint_upsert.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            service
+                .store
+                .replay_raw_events("alpha", 0, 100)
+                .await
+                .unwrap()
+                .len(),
+            events_before_hidden_endpoint
+        );
+        let hidden_edge_endpoint_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", graph_upsert_token_for("bob")),
+                    )
+                    .body(Body::from(
+                        serde_json::to_vec(&external_edge_endpoint_extraction).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hidden_edge_endpoint_upsert.status(), StatusCode::CONFLICT);
         assert_eq!(
             service
                 .store
@@ -1360,13 +1429,13 @@
             .replay_raw_events("alpha", 0, 100)
             .await
             .unwrap();
-        assert_eq!(events.len(), 35);
+        assert_eq!(events.len(), 39);
         let jobs = service
             .store
             .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
             .unwrap();
-        assert_eq!(jobs.len(), 50);
+        assert_eq!(jobs.len(), 57);
         assert!(jobs.iter().any(|job| job.job_id == "graph-route-index-1"));
 
         let records = service
@@ -1501,7 +1570,7 @@
                 .await
                 .unwrap()
                 .len(),
-            35
+            39
         );
         assert_eq!(
             service

@@ -4004,8 +4004,8 @@ impl PostgresRunApplicationService {
         } else {
             None
         };
-        let external_node_ids = match graph_upsert_external_node_ids(&input) {
-            Ok(ids) => ids,
+        let external_endpoints = match graph_upsert_external_endpoints(&input) {
+            Ok(endpoints) => endpoints,
             Err(error) => {
                 return effect_error(
                     StatusCode::UNPROCESSABLE_ENTITY,
@@ -4014,6 +4014,105 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        let mut endpoint_node_ids = external_endpoints.node_ids.clone();
+        let mut endpoint_edge_ids = external_endpoints.edge_ids.clone();
+        let mut endpoint_edges = BTreeMap::<String, GraphRecord>::new();
+        loop {
+            let pending_edge_ids = endpoint_edge_ids
+                .iter()
+                .filter(|id| !endpoint_edges.contains_key(*id))
+                .cloned()
+                .collect::<Vec<_>>();
+            if pending_edge_ids.is_empty() {
+                break;
+            }
+            if endpoint_node_ids.len().saturating_add(endpoint_edge_ids.len()) > 10_000 {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_GRAPH_ENDPOINT_LIMIT",
+                    "External graph endpoint closure exceeds 10000 entities",
+                );
+            }
+            let records = match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: document_scope.clone(),
+                    table: "gke_edges".to_owned(),
+                    ids: Some(pending_edge_ids.clone()),
+                    metadata: MetadataFilter::default(),
+                    limit: pending_edge_ids.len(),
+                })
+                .await
+            {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_GRAPH_ENDPOINT_UNAVAILABLE",
+                        error.to_string(),
+                    );
+                }
+            };
+            if records.len() != pending_edge_ids.len() {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_GRAPH_ENDPOINT_INVALID",
+                    "One or more external graph endpoints are missing from the principal scope",
+                );
+            }
+            for record in records {
+                endpoint_node_ids.extend(
+                    graph_record_string_ids(&record, "source_ids")
+                        .into_iter()
+                        .chain(graph_record_string_ids(&record, "target_ids")),
+                );
+                endpoint_edge_ids.extend(
+                    graph_record_string_ids(&record, "source_edge_ids")
+                        .into_iter()
+                        .chain(graph_record_string_ids(&record, "target_edge_ids")),
+                );
+                endpoint_edges.insert(record.id.clone(), record);
+            }
+        }
+        if endpoint_node_ids.len().saturating_add(endpoint_edge_ids.len()) > 10_000 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_GRAPH_ENDPOINT_LIMIT",
+                "External graph endpoint closure exceeds 10000 entities",
+            );
+        }
+        let endpoint_nodes = if endpoint_node_ids.is_empty() {
+            Vec::new()
+        } else {
+            match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: document_scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(endpoint_node_ids.iter().cloned().collect()),
+                    metadata: MetadataFilter::default(),
+                    limit: endpoint_node_ids.len(),
+                })
+                .await
+            {
+                Ok(records) if records.len() == endpoint_node_ids.len() => records,
+                Ok(_) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_GRAPH_ENDPOINT_INVALID",
+                        "One or more external graph endpoints are missing from the principal scope",
+                    );
+                }
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_GRAPH_ENDPOINT_UNAVAILABLE",
+                        error.to_string(),
+                    );
+                }
+            }
+        };
+        let endpoint_edges = endpoint_edges.into_values().collect::<Vec<_>>();
         let source_text = input
             .content
             .clone()
@@ -4030,7 +4129,12 @@ impl PostgresRunApplicationService {
                 .and_then(|record| record.document.as_deref()),
         );
         let (batch, node_ids, edge_ids) =
-            match graph_upsert_mutation_batch(&input, &source_text, &security_scope, &external_node_ids) {
+            match graph_upsert_mutation_batch(
+                &input,
+                &source_text,
+                &security_scope,
+                &external_endpoints,
+            ) {
             Ok(batch) => batch,
             Err(error) => {
                 return effect_error(
@@ -4148,10 +4252,21 @@ impl PostgresRunApplicationService {
         let acl_security_scope = security_scope["security_scope"].as_str().map(str::to_owned);
         let acl_effect_id = uuid::Uuid::new_v4().to_string();
         let endpoint_scope = document_scope.clone();
-        let endpoint_ids = external_node_ids.into_iter().collect::<Vec<_>>();
-        let mut identity_locks = endpoint_ids
+        let endpoint_node_ids = endpoint_node_ids.into_iter().collect::<Vec<_>>();
+        let endpoint_edge_ids = endpoint_edges
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let expected_endpoint_nodes = endpoint_nodes;
+        let expected_endpoint_edges = endpoint_edges;
+        let mut identity_locks = endpoint_node_ids
             .iter()
             .map(|id| ("node".to_owned(), id.clone()))
+            .chain(
+                endpoint_edge_ids
+                    .iter()
+                    .map(|id| ("edge".to_owned(), id.clone())),
+            )
             .chain(
                 mutations
                     .iter()
@@ -4166,32 +4281,74 @@ impl PostgresRunApplicationService {
                         uow.lock_entity_identity(&endpoint_scope.namespace, &kind, &id)
                             .await?;
                     }
-                    if !endpoint_ids.is_empty() {
+                    if !endpoint_node_ids.is_empty() || !endpoint_edge_ids.is_empty() {
                         let nodes = uow
                             .graph_projection_records_for_update(GraphProjectionRead {
                                 scope: endpoint_scope.clone(),
                                 table: "gke_nodes".to_owned(),
-                                ids: Some(endpoint_ids.clone()),
+                                ids: Some(endpoint_node_ids.clone()),
                                 metadata: MetadataFilter::default(),
-                                limit: endpoint_ids.len(),
+                                limit: endpoint_node_ids.len(),
                             })
                             .await?;
+                        let edges = uow
+                            .graph_projection_records_for_update(GraphProjectionRead {
+                                scope: endpoint_scope.clone(),
+                                table: "gke_edges".to_owned(),
+                                ids: Some(endpoint_edge_ids.clone()),
+                                metadata: MetadataFilter::default(),
+                                limit: endpoint_edge_ids.len(),
+                            })
+                            .await?;
+                        if !graph_upsert_endpoint_snapshot_matches(
+                            &nodes,
+                            &expected_endpoint_nodes,
+                        ) || !graph_upsert_endpoint_snapshot_matches(
+                            &edges,
+                            &expected_endpoint_edges,
+                        ) {
+                            return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
+                                "graph endpoint closure changed during authorization".to_owned(),
+                            ));
+                        }
+                        let node_id_set = endpoint_node_ids.iter().collect::<BTreeSet<_>>();
+                        let edge_id_set = endpoint_edge_ids.iter().collect::<BTreeSet<_>>();
+                        for edge in &edges {
+                            if ["source_ids", "target_ids"].into_iter().any(|field| {
+                                graph_record_string_ids(edge, field)
+                                    .iter()
+                                    .any(|id| !node_id_set.contains(id))
+                            }) || ["source_edge_ids", "target_edge_ids"]
+                                .into_iter()
+                                .any(|field| {
+                                    graph_record_string_ids(edge, field)
+                                        .iter()
+                                        .any(|id| !edge_id_set.contains(id))
+                                })
+                            {
+                                return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
+                                    "external graph endpoint closure is incomplete".to_owned(),
+                                ));
+                            }
+                        }
+                        let mut all_endpoint_ids = endpoint_node_ids.clone();
+                        all_endpoint_ids.extend(endpoint_edge_ids.clone());
                         let acl_records = uow
                             .graph_acl_records_for_entities(
                                 &endpoint_scope,
                                 "knowledge",
-                                &endpoint_ids,
+                                &all_endpoint_ids,
                             )
                             .await?;
                         let mut acl_index = GraphAclIndex::default();
                         acl_index.extend_from_records(&acl_records, "knowledge");
-                        let (visible_nodes, _) = graph_records_visible_by_acl_with_index(
+                        let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
                             &nodes,
-                            &[],
+                            &edges,
                             &acl_index,
                             &acl_principal,
                         );
-                        let visible_ids = visible_nodes
+                        let mut visible_ids = visible_nodes
                             .iter()
                             .filter(|record| {
                                 !record
@@ -4202,8 +4359,9 @@ impl PostgresRunApplicationService {
                             })
                             .map(|record| record.id.clone())
                             .collect::<BTreeSet<_>>();
-                        if visible_ids.len() != endpoint_ids.len()
-                            || endpoint_ids.iter().any(|id| !visible_ids.contains(id))
+                        visible_ids.extend(visible_edges.iter().map(|record| record.id.clone()));
+                        if visible_ids.len() != all_endpoint_ids.len()
+                            || all_endpoint_ids.iter().any(|id| !visible_ids.contains(id))
                         {
                             return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
                                 "one or more graph endpoints are missing or not visible".to_owned(),

@@ -108,10 +108,25 @@ fn graph_upsert_should_write_document(inline_content: Option<&str>, stored_conte
     inline_content.is_some() || !stored_content.is_some_and(|content| !content.is_empty())
 }
 
-fn graph_upsert_external_node_ids(
+fn graph_upsert_endpoint_snapshot_matches(actual: &[GraphRecord], expected: &[GraphRecord]) -> bool {
+    actual.len() == expected.len()
+        && actual.iter().zip(expected).all(|(actual, expected)| {
+            actual.id == expected.id
+                && actual.document == expected.document
+                && actual.metadata == expected.metadata
+        })
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GraphUpsertExternalEndpoints {
+    pub node_ids: std::collections::BTreeSet<String>,
+    pub edge_ids: std::collections::BTreeSet<String>,
+}
+
+pub(crate) fn graph_upsert_external_endpoints(
     input: &GraphExtractionRequestV1,
-) -> Result<std::collections::BTreeSet<String>, String> {
-    let local_ids = input
+) -> Result<GraphUpsertExternalEndpoints, String> {
+    let local_node_ids = input
         .nodes
         .iter()
         .flat_map(|node| [node.get("local_id"), node.get("id")])
@@ -119,7 +134,15 @@ fn graph_upsert_external_node_ids(
         .filter_map(Value::as_str)
         .map(str::to_owned)
         .collect::<std::collections::BTreeSet<_>>();
-    let mut external_ids = std::collections::BTreeSet::new();
+    let local_edge_ids = input
+        .edges
+        .iter()
+        .flat_map(|edge| [edge.get("local_id"), edge.get("id")])
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut external = GraphUpsertExternalEndpoints::default();
     for edge in &input.edges {
         for field in ["source_ids", "target_ids"] {
             let endpoints = edge
@@ -130,13 +153,26 @@ fn graph_upsert_external_node_ids(
                 let id = endpoint
                     .as_str()
                     .ok_or_else(|| format!("edge {field} entries must be strings"))?;
-                if !local_ids.contains(id) && !id.starts_with("nn:") {
-                    external_ids.insert(id.to_owned());
+                if !local_node_ids.contains(id) && !id.starts_with("nn:") {
+                    external.node_ids.insert(id.to_owned());
+                }
+            }
+        }
+        for field in ["source_edge_ids", "target_edge_ids"] {
+            let Some(endpoints) = edge.get(field).and_then(Value::as_array) else {
+                continue;
+            };
+            for endpoint in endpoints {
+                let id = endpoint
+                    .as_str()
+                    .ok_or_else(|| format!("edge {field} entries must be strings"))?;
+                if !local_edge_ids.contains(id) && !id.starts_with("ne:") {
+                    external.edge_ids.insert(id.to_owned());
                 }
             }
         }
     }
-    Ok(external_ids)
+    Ok(external)
 }
 
 fn normalize_extraction_entity(
@@ -242,7 +278,7 @@ fn graph_upsert_mutation_batch(
     input: &GraphExtractionRequestV1,
     source_text: &str,
     security_scope: &Value,
-    external_node_ids: &std::collections::BTreeSet<String>,
+    external_endpoints: &GraphUpsertExternalEndpoints,
 ) -> Result<(GraphMutationBatchInput, Vec<String>, Vec<String>), String> {
     use std::collections::BTreeMap;
 
@@ -326,7 +362,12 @@ fn graph_upsert_mutation_batch(
                     node_ids
                         .get(token)
                         .cloned()
-                        .or_else(|| external_node_ids.contains(token).then(|| token.to_owned()))
+                        .or_else(|| {
+                            external_endpoints
+                                .node_ids
+                                .contains(token)
+                                .then(|| token.to_owned())
+                        })
                         .ok_or_else(|| format!("edge endpoint {token:?} is not a node in this request"))?,
                 );
             }
@@ -345,16 +386,16 @@ fn graph_upsert_mutation_batch(
                         let token = endpoint
                             .as_str()
                             .ok_or_else(|| format!("edge {field} entries must be strings"))?;
-                        let resolved = edge_ids
-                            .get(token)
-                            .map(String::as_str)
-                            .unwrap_or(token);
-                        if !edge_ids.values().any(|edge_id| edge_id == resolved) {
+                        let local_edge_id = edge_ids.get(token);
+                        let resolved = local_edge_id.map(String::as_str).unwrap_or(token);
+                        let resolved_local = local_edge_id.is_some()
+                            || edge_ids.values().any(|edge_id| edge_id == token);
+                        if !resolved_local && !external_endpoints.edge_ids.contains(token) {
                             return Err(format!(
                                 "hyperedge endpoint {token:?} is not an edge in this request"
                             ));
                         }
-                        if !materialized_edge_ids.contains(resolved) {
+                        if resolved_local && !materialized_edge_ids.contains(resolved) {
                             dependencies_ready = false;
                         }
                         *endpoint = Value::String(resolved.to_owned());
@@ -532,7 +573,7 @@ mod graph_upsert_tests {
             &input,
             source,
             &principal_scope(),
-            &std::collections::BTreeSet::new(),
+            &GraphUpsertExternalEndpoints::default(),
         )
             .expect("valid fixture converts to a native graph batch");
         assert_eq!(nodes.len(), 2);
@@ -565,7 +606,7 @@ mod graph_upsert_tests {
             &input,
             &source,
             &principal_scope(),
-            &std::collections::BTreeSet::new(),
+            &GraphUpsertExternalEndpoints::default(),
         )
         .expect("stored source text validates an extraction without inline content");
         assert_eq!((batch.mutations.len(), nodes.len(), edges.len()), (3, 2, 1));
@@ -591,7 +632,7 @@ mod graph_upsert_tests {
             &input,
             source,
             &principal_scope(),
-            &std::collections::BTreeSet::new(),
+            &GraphUpsertExternalEndpoints::default(),
         )
         .expect("LLM-only input is normalized without trusting metadata");
         let node = batch
@@ -620,7 +661,7 @@ mod graph_upsert_tests {
             &input,
             source,
             &principal_scope(),
-            &std::collections::BTreeSet::new(),
+            &GraphUpsertExternalEndpoints::default(),
         )
         .is_err());
     }
@@ -640,7 +681,7 @@ mod graph_upsert_tests {
             &input,
             source,
             &principal_scope(),
-            &std::collections::BTreeSet::new(),
+            &GraphUpsertExternalEndpoints::default(),
         )
         .expect("forward-declared hyperedge is topologically ordered");
         assert_eq!(edge_ids.len(), 2);
@@ -656,7 +697,7 @@ mod graph_upsert_tests {
             &input,
             source,
             &principal_scope(),
-            &std::collections::BTreeSet::new(),
+            &GraphUpsertExternalEndpoints::default(),
         )
             .is_err_and(|error| error.contains("cycle")));
     }
@@ -666,14 +707,17 @@ mod graph_upsert_tests {
         let input = extraction_fixture();
         let source = input.content.clone().expect("fixture source text");
         let external_id = "persisted-node".to_owned();
-        let external_ids = std::collections::BTreeSet::from([external_id.clone()]);
+        let external_endpoints = GraphUpsertExternalEndpoints {
+            node_ids: std::collections::BTreeSet::from([external_id.clone()]),
+            edge_ids: std::collections::BTreeSet::new(),
+        };
         let mut input = input;
         input.edges[0]["source_ids"][0] = Value::String(external_id.clone());
         let (batch, _, _) = graph_upsert_mutation_batch(
             &input,
             &source,
             &principal_scope(),
-            &external_ids,
+            &external_endpoints,
         )
         .expect("host-validated external node references remain canonical");
         let edge = batch
@@ -682,6 +726,43 @@ mod graph_upsert_tests {
             .find(|mutation| mutation.entity_kind == "edge")
             .expect("edge mutation");
         assert_eq!(edge.payload["source_ids"][0], external_id);
+    }
+
+    #[test]
+    fn graph_upsert_preserves_declared_external_edge_endpoint_for_host_validation() {
+        let mut input = extraction_fixture();
+        let mut nested = input.edges[0].clone();
+        nested.insert("id".to_owned(), json!("ne:nested-local"));
+        nested.insert("source_edge_ids".to_owned(), json!(["persisted-edge"]));
+        input.edges.push(nested);
+        let source = input.content.clone().expect("fixture source text");
+        let external_endpoints = GraphUpsertExternalEndpoints {
+            node_ids: std::collections::BTreeSet::new(),
+            edge_ids: std::collections::BTreeSet::from(["persisted-edge".to_owned()]),
+        };
+        let (batch, _, _) = graph_upsert_mutation_batch(
+            &input,
+            &source,
+            &principal_scope(),
+            &external_endpoints,
+        )
+        .expect("host-validated external edge references remain canonical");
+        let nested_edge = batch
+            .mutations
+            .iter()
+            .find(|mutation| {
+                mutation
+                    .payload
+                    .get("source_edge_ids")
+                    .and_then(Value::as_array)
+                    .is_some_and(|ids| ids.iter().any(|id| id == "persisted-edge"))
+            })
+            .expect("nested edge mutation");
+        assert!(nested_edge.payload["source_edge_ids"]
+            .as_array()
+            .expect("edge endpoint list")
+            .iter()
+            .any(|id| id == "persisted-edge"));
     }
 }
 
