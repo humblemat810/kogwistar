@@ -3,6 +3,7 @@ pub struct SqliteRunApplicationService {
     store: SqliteStore,
     chroma_graph: Option<kogwistar_store_chroma::ChromaGraphStore>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    owner_auth_store: Option<AuthStore>,
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
@@ -1107,6 +1108,7 @@ impl SqliteRunApplicationService {
                 store,
                 chroma_graph: None,
                 embedding_provider: None,
+                owner_auth_store: None,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
@@ -1143,6 +1145,14 @@ impl SqliteRunApplicationService {
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    pub async fn with_owner_auth_config(
+        mut self,
+        config: &AuthConfig,
+    ) -> Result<Self, String> {
+        self.owner_auth_store = Some(AuthStore::from_config(config).await?);
+        Ok(self)
     }
 
     /// Reconcile one SQLite/Chroma projection namespace against canonical
@@ -2647,6 +2657,20 @@ impl SqliteRunApplicationService {
                 "workflow_id and conversation_id are required",
             );
         }
+        let authenticated_owner = authenticated_run_owner_id(&request.principal);
+        if input.user_id.as_deref().is_some_and(|requested| {
+            authenticated_owner.is_none_or(|owner| owner != requested.trim())
+        }) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "run user_id must match the authenticated principal",
+            );
+        }
+        let run_user_id = authenticated_owner
+            .map(str::to_owned)
+            .or_else(|| input.user_id.clone());
+        let owner_binding = runtime_owner_binding_v1(&request.principal, &self.capabilities);
         let run_id = input
             .run_id
             .as_deref()
@@ -2677,7 +2701,7 @@ impl SqliteRunApplicationService {
             input.runtime_kind.clone()
         };
         let worker_protocol = worker_protocol_for_runtime_kind(&runtime_kind);
-        let event_payload = json!({
+        let mut event_payload = json!({
             "run_id": run_id,
             "run_kind": "workflow_runtime",
             "conversation_id": conversation_id,
@@ -2686,6 +2710,9 @@ impl SqliteRunApplicationService {
             "turn_node_id": turn_node_id,
             "implementation_attestation": runtime_implementation_attestation(&runtime_kind),
         });
+        if let Some(binding) = owner_binding {
+            event_payload["runtime_owner_binding"] = json!(binding);
+        }
         let graph_plan = exact_runtime_graph_plan(
             self.store
                 .get_named_projection("workflow_design", workflow_id)
@@ -2913,7 +2940,7 @@ impl SqliteRunApplicationService {
                 run_id: run_id.clone(),
                 conversation_id: conversation_id.to_owned(),
                 workflow_id: workflow_id.to_owned(),
-                user_id: input.user_id.clone(),
+                user_id: run_user_id.clone(),
                 user_turn_node_id: turn_node_id.clone(),
                 status: "queued".to_owned(),
             })?;

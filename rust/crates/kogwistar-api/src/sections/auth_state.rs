@@ -260,13 +260,13 @@ fn oidc_providers(config: &AuthConfig) -> Result<OidcProvidersConfig, &'static s
 }
 
 #[derive(Clone)]
-enum AuthStore {
+pub(crate) enum AuthStore {
     Sqlite(SqliteAuthStore),
     Postgres(PostgresAuthStore),
 }
 
 impl AuthStore {
-    async fn from_config(config: &AuthConfig) -> Result<Self, String> {
+    pub(crate) async fn from_config(config: &AuthConfig) -> Result<Self, String> {
         let url = config
             .auth_db_url
             .as_deref()
@@ -298,7 +298,7 @@ impl AuthStore {
         .map_err(|error| error.to_string())
     }
 
-    async fn auth_user(&self, user_id: &str) -> Result<Option<AuthUser>, String> {
+    pub(crate) async fn auth_user(&self, user_id: &str) -> Result<Option<AuthUser>, String> {
         match self {
             Self::Sqlite(store) => store.auth_user(user_id).await,
             Self::Postgres(store) => store.auth_user(user_id).await,

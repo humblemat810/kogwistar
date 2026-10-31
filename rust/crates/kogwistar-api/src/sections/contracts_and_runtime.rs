@@ -557,6 +557,10 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                 let mut service = open_sqlite_application_service(path, chroma)
                     .await
                     .map_err(std::io::Error::other)?;
+                service = service
+                    .with_owner_auth_config(&state.auth)
+                    .await
+                    .map_err(std::io::Error::other)?;
                 if chroma_configured {
                     let embedding_provider = embedding_provider_from_settings(
                         std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),

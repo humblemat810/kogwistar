@@ -1238,7 +1238,6 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
     )
     .is_err());
 }
-
 #[test]
 fn provider_event_ack_graph_mutations_link_event_to_ack_step() {
     let scope = GraphScope {
@@ -1783,4 +1782,109 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     drop(cleanup);
     cleanup_task.await.unwrap().unwrap();
     let _ = std::fs::remove_file(auth_path);
+}
+#[tokio::test]
+async fn sqlite_run_admission_persists_authenticated_owner_binding() {
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-owner-binding-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-owner-binding-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "sqlite-owner".to_owned(),
+        email: "sqlite-owner@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "sqlite-owner".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "workflow".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let principal = json!({
+        "user_id": "sqlite-owner",
+        "sub": "sqlite-owner@example.test",
+        "role": "rw",
+        "ns": ["workflow"],
+        "storage_ns": "workflow",
+        "capabilities": ["workflow.run.write", "write_graph"]
+    });
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": "sqlite-owner-bound-run",
+                "workflow_id": "sqlite-owner-bound-workflow",
+                "conversation_id": "sqlite-owner-bound-conversation",
+                "user_id": "sqlite-owner"
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::ACCEPTED.as_u16());
+    let run = service
+        .store
+        .get_server_run("sqlite-owner-bound-run")
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.user_id.as_deref(), Some("sqlite-owner"));
+    let created = service
+        .store
+        .list_server_run_events("sqlite-owner-bound-run", 0, 1)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "run.created")
+        .unwrap();
+    let payload: Value = serde_json::from_str(&created.payload_json).unwrap();
+    assert_eq!(payload["runtime_owner_binding"]["version"], 1);
+    assert_eq!(payload["runtime_owner_binding"]["user_id"], "sqlite-owner");
+    assert!(payload["runtime_owner_binding"]["admitted_capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|capability| capability == "write_graph"));
+
+    let mismatch = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": "sqlite-owner-mismatch-run",
+                "workflow_id": "sqlite-owner-bound-workflow",
+                "conversation_id": "sqlite-owner-bound-conversation",
+                "user_id": "another-user"
+            }))
+            .unwrap(),
+            principal,
+        })
+        .await;
+    assert_eq!(mismatch.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(service
+        .store
+        .get_server_run("sqlite-owner-mismatch-run")
+        .unwrap()
+        .is_none());
+
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+    remove_test_sqlite(&auth_path);
 }
