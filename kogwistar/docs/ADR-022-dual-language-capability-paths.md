@@ -350,6 +350,22 @@ atomic operation or add a deliberately specified asynchronous/outbox workflow.
 An outbox provides eventual follow-up, not a claim of cross-language or
 cross-store ACID.
 
+Graph write ingress must remain generic over graph entity models and storage
+backends. Do not make a shared graph operation depend on `PureChromaNode`,
+`PureChromaEdge`, PostgreSQL, or any one graph/domain family. Preserve the
+versioned model envelope and validate the selected registered model family;
+retain node/edge identity and incidence semantics, including edge-to-edge
+hyperedge references. Select persistence behavior from the configured backend's
+existing store interfaces and declared guarantees. A backend that supports
+ordinary graph writes must not be rejected merely because it lacks PostgreSQL's
+atomic graph-plus-index-job transaction; conversely, an operation that truly
+requires that atomic guarantee must fail closed or use a separately specified
+eventual/outbox contract rather than pretending the backend provides it.
+Generic model handling does not bypass model validation, ACL, namespace,
+workspace, provenance, or ownership checks. System-managed model families must
+retain their own authority checks instead of being coerced into a generic
+user-writable graph shape.
+
 The Rust internal graph-mutation seam therefore treats indexing as an explicit
 part of the command, not as an inferred side effect. A caller may attach
 versioned index-job intents to a graph batch. PostgreSQL commits the graph
