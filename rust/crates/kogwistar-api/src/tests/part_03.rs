@@ -475,8 +475,8 @@
             })
         };
         for body in [
-            json!({"designer_id":"alice","node_id":"start","label":"Start","op":"start","start":true}),
-            json!({"designer_id":"alice","node_id":"end","label":"End","op":"end","terminal":true}),
+            json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
+            json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),
         ] {
             assert_eq!(
                 call("POST", "/api/workflow/design/wf-write/nodes", body).status,
@@ -508,7 +508,8 @@
             json!({
                 "run_id": "run-from-rust-design",
                 "workflow_id": "wf-write",
-                "conversation_id": "conversation-from-rust-design"
+                "conversation_id": "conversation-from-rust-design",
+                "initial_state": {"counter": 1}
             }),
         );
         assert_eq!(submitted.status, 202);
@@ -530,6 +531,71 @@
         assert_eq!(worker_payload["start_node_id"], "start");
         assert_eq!(worker_payload["runtime_routes"][0]["source_node_id"], "start");
         assert_eq!(worker_payload["runtime_routes"][0]["target_node_id"], "end");
+        assert_eq!(worker_payload["executor_target"], "rust-native");
+
+        let execute_claimed_native_step = |work: &Value| {
+            call(
+                "POST",
+                "/internal/runtime/native/execute",
+                json!({
+                    "handoff": {
+                        "message_id": work["message_id"],
+                        "claimed_by": work["claimed_by"],
+                        "run_id": work["run_id"],
+                        "step_id": work["step_id"],
+                        "correlation_id": work["correlation_id"]
+                    },
+                    "payload": work["payload"]
+                }),
+            )
+        };
+        let first_claim = call(
+            "POST",
+            "/internal/runtime/claim",
+            json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["rust-native-worker"]
+            }),
+        );
+        assert_eq!(first_claim.status, 200);
+        let first_work: Value = serde_json::from_slice(&first_claim.body).unwrap();
+        let first_work = &first_work["work"][0];
+        assert_eq!(first_work["step_id"], "start");
+        assert_eq!(first_work["payload"]["op"], "increment-counter");
+        assert_eq!(execute_claimed_native_step(first_work).status, 200);
+
+        let second_claim = call(
+            "POST",
+            "/internal/runtime/claim",
+            json!({
+                "claimed_by": "rust-native-worker",
+                "limit": 1,
+                "lease_seconds": 60,
+                "recipient_ids": ["rust-native-worker"]
+            }),
+        );
+        assert_eq!(second_claim.status, 200);
+        let second_work: Value = serde_json::from_slice(&second_claim.body).unwrap();
+        let second_work = &second_work["work"][0];
+        assert_eq!(second_work["step_id"], "end");
+        assert_eq!(second_work["payload"]["op"], "emit-result");
+        assert_eq!(execute_claimed_native_step(second_work).status, 200);
+        assert_eq!(store.get_server_run("run-from-rust-design").unwrap().unwrap().status, "succeeded");
+        let run_events = store
+            .list_server_run_events("run-from-rust-design", 0, 100)
+            .unwrap();
+        assert!(run_events.iter().any(|event| {
+            event.event_type == "workflow.recorded_transition.v1"
+                && event.payload_json.contains("increment-counter")
+                && event.payload_json.contains(":2")
+        }));
+        assert!(run_events.iter().any(|event| {
+            event.event_type == "workflow.trace.v1"
+                && event.payload_json.contains("runtime.native.step.completed")
+                && event.payload_json.contains("\"seam_crossings\":[]")
+        }));
         let events = store
             .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
             .unwrap();
