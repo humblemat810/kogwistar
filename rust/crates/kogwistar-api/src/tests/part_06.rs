@@ -4830,7 +4830,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..22 {
+            for _ in 0..24 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -5138,6 +5138,65 @@
         assert!(transcript_payload["turns"][0].get("schema_version").is_none());
         assert!(service.supports_http_operation("GET", "/api/conversations/c1/turns"));
 
+        assert!(service.supports_mcp_tool("conversation", "conversation.get_transcript"));
+        let mcp_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let mcp_list = mcp_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"list-transcript","method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mcp_list_body = to_bytes(mcp_list.into_body(), 65_536).await.unwrap();
+        let mcp_list_value: Value = serde_json::from_slice(&mcp_list_body).unwrap();
+        assert!(mcp_list_value["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "conversation.get_transcript"));
+
+        let mcp_transcript = mcp_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"get-transcript","method":"tools/call","params":{"name":"conversation.get_transcript","arguments":{"conversation_id":"c1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_transcript.status(), StatusCode::OK);
+        let mcp_transcript_body = to_bytes(mcp_transcript.into_body(), 65_536).await.unwrap();
+        let mcp_transcript_value: Value = serde_json::from_slice(&mcp_transcript_body).unwrap();
+        assert_eq!(mcp_transcript_value["result"]["conversation_id"], "c1");
+        assert_eq!(mcp_transcript_value["result"]["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(mcp_transcript_value["result"]["turns"][0]["node_id"], "turn-1");
+
         for (uri, expected_path) in [
             ("/api/conversations/c1", "detail"),
             ("/api/conversations", "list"),
@@ -5232,7 +5291,7 @@
         assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
 
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 22);
+        assert_eq!(requests.len(), 24);
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")
@@ -5245,6 +5304,7 @@
             uuid::Uuid::new_v4()
         ));
         let metadata_only = SqliteRunApplicationService::open(&metadata_only_path).unwrap();
+        assert!(!metadata_only.supports_mcp_tool("conversation", "conversation.get_transcript"));
         let unsupported = metadata_only
             .execute(request(
                 "receive_message",

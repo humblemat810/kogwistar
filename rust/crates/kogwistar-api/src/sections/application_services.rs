@@ -838,7 +838,7 @@ impl ApplicationService for SqliteRunApplicationService {
         name != "workflow.tool_audit"
             && name != "conversation.create"
             && name != "conversation.ask"
-            && name != "conversation.get_transcript"
+            && (name != "conversation.get_transcript" || self.chroma_graph.is_some())
             && rust_mcp_tool_supported(surface, name)
     }
 
