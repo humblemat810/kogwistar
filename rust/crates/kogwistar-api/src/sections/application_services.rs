@@ -777,26 +777,18 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
-        if name == "kg_semantic_seed_then_expand_text" {
-            if surface != "root"
-                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
-                || principal_strings(principal, "ns").is_empty()
-            {
-                return false;
-            }
-            let state = self
-                .capabilities
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            return effective_capabilities(principal, &state).contains("read_graph")
-                && self.supports_mcp_tool(surface, name);
-        }
-        if name == "wisdom.semantic_seed_then_expand" {
+        let graph_read_namespace = match name {
+            "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
+            | "kg_semantic_seed_then_expand_text" => Some("docs"),
+            "wisdom.semantic_seed_then_expand" => Some("wisdom"),
+            _ => None,
+        };
+        if let Some(namespace) = graph_read_namespace {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")
                     .iter()
-                    .any(|namespace| namespace == "wisdom" || namespace == "*")
+                    .any(|actual| actual == namespace || actual == "*")
             {
                 return false;
             }
@@ -804,7 +796,8 @@ impl ApplicationService for PostgresRunApplicationService {
                 .capabilities
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            return effective_capabilities(principal, &state).contains("read_graph")
+            let authorized = effective_capabilities(principal, &state).contains("read_graph");
+            return authorized
                 && self.supports_mcp_tool(surface, name);
         }
         if name != "wisdom.kg_upsert_graph" {

@@ -1042,3 +1042,47 @@
             &authorized,
         ));
     }
+
+    #[test]
+    fn graph_read_mcp_discovery_matches_namespace_and_capability_admission() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "graph_read_discovery",
+        )
+        .unwrap();
+        let tools = [
+            "kg_find_edges",
+            "kg_k_hop",
+            "kg_neighbors",
+            "kg_shortest_path",
+        ];
+        let authorized_reader = json!({
+            "role": "ro", "ns": ["docs"], "capabilities": ["read_graph"]
+        });
+        for tool in tools {
+            assert!(
+                service.supports_mcp_tool_for_principal("root", tool, &authorized_reader),
+                "authorized docs reader should discover {tool}"
+            );
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                tool,
+                &json!({"role": "ro", "ns": ["docs"], "capabilities": []}),
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                tool,
+                &json!({"role": "ro", "ns": ["workflow"], "capabilities": ["read_graph"]}),
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                tool,
+                &json!({"role": "rw", "ns": ["docs"], "capabilities": []}),
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "conversation",
+                tool,
+                &authorized_reader,
+            ));
+        }
+    }
