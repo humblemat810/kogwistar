@@ -25,6 +25,7 @@ mod source_map;
 mod tool_audit;
 pub use agent_event::{
     DurableProviderEventPublicationV1, DurableProviderEventV1, EventTraceMetadataV1,
+    durable_provider_event_id,
 };
 pub use conversation::{
     CONVERSATION_WIRE_VERSION, ContextSnapshotV1, ConversationContractError, ConversationSummaryV1,

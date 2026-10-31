@@ -237,10 +237,19 @@ Python event journal, cross-language contract, graph-run, and runtime suites
 **27 passed**; disposable live PostgreSQL UoW graph-plus-lane rollback/commit
 test `tests::runtime::graph_run_event_and_worker_lane_share_one_transaction`
 **1 passed**. The API publication validator test also rejects missing,
-cross-namespace, ambiguous, wrong-run, and transient-delta cases. This verifies
-the shared publication substrate and generic database transaction primitive,
-not a full Rust event-agent loop or an end-to-end live API publication/ack
-integration; those remain incomplete under this existing gate.
+cross-namespace, ambiguous, wrong-run, and transient-delta cases. The native
+answer provider callback now derives the same replay-stable event identity as
+Python, reloads the durable run-owner binding and current auth user while the
+PostgreSQL UoW is open, and commits event graph mutations, private ACL records,
+the pending lane projection, and the run trace together. Live packaged-server
+evidence: `tests::postgres_agentic_answer_workflow_executes_durably_without_python_worker`
+passed against disposable PostgreSQL (**1 passed in 17.71s**), observing the
+trace, graph event node, matching lane payload, and owner ACL before the
+provider completed. The shared event-ID golden contract passed in Rust (**1**)
+and Python (**3**). This closes live Rust API event publication for the native
+answer callback only. The Rust reusable event-agent loop, lane claim/handle/
+ack workflow, and atomicity between a separately configured auth database and
+the PostgreSQL graph transaction remain incomplete under this existing gate.
 
 ## Completion rule
 

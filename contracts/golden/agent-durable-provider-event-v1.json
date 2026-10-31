@@ -59,6 +59,8 @@
       }
     }
   },
+  "computed_event_id": "agent-event:1dc4bb5671760a2b4bbace11f6f15545adaebdcd995b389dc66672a342885726",
+  "computed_sequence_event_id": "agent-event:44f821e3a6f10399a012981634c7792812a2e04f0c0fc46cbc4d9683d1291cf1",
   "invalid_envelopes": [
     {
       "event_id": "agent-event:fixture-001",

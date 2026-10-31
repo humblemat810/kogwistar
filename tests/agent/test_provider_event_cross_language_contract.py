@@ -9,6 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 from kogwistar.agent.event_journal import (
     DurableProviderEvent,
     DurableProviderEventPublication,
+    _event_identity,
 )
 from kogwistar.agent.streaming import ProviderEvent
 
@@ -46,3 +47,14 @@ def test_python_durable_provider_event_matches_shared_rust_golden_fixture() -> N
             DurableProviderEvent.model_validate(invalid)
     publication = DurableProviderEventPublication.model_validate(fixture["publication"])
     assert publication.model_dump(mode="json") == fixture["publication"]
+    envelope = DurableProviderEvent.model_validate(fixture["envelope"])
+    assert f"agent-event:{_event_identity(envelope.trace, envelope.event)}" == fixture[
+        "computed_event_id"
+    ]
+    sequence_event = _EVENT_ADAPTER.validate_python(
+        fixture["envelope"]["event"] | {"provider_event_id": None}
+    )
+    assert (
+        f"agent-event:{_event_identity(envelope.trace, sequence_event)}"
+        == fixture["computed_sequence_event_id"]
+    )

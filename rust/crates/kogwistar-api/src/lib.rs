@@ -97,6 +97,7 @@ include!("sections/postgres_contracts.rs");
 include!("sections/postgres_graph_service.rs");
 include!("sections/postgres_automation_service.rs");
 include!("sections/postgres_runtime_service.rs");
+include!("sections/provider_event_publication.rs");
 include!("sections/application_services.rs");
 include!("sections/auth_state.rs");
 include!("sections/auth_handlers.rs");

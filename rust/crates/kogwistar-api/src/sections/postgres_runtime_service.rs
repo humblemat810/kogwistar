@@ -1380,7 +1380,7 @@ impl PostgresRunApplicationService {
                     .ok_or_else(|| "selected evidence IDs must be strings".to_owned())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let store = &self.store;
+        let service = self;
         let run_id = request.run_id.clone();
         let workflow_id = request.workflow_id.clone();
         let conversation_id = request.conversation_id.clone();
@@ -1388,7 +1388,11 @@ impl PostgresRunApplicationService {
         let step_seq = request.step_seq;
         let token_id = request.token_id.clone();
         let parent_token_id = request.parent_token_id.clone();
-        let turn_node_id = request.turn_node_id.clone();
+        let turn_node_id = request
+            .turn_node_id
+            .clone()
+            .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str).map(str::to_owned))
+            .ok_or_else(|| "native answer generation requires a turn node ID".to_owned())?;
         let trace_context = kogwistar_runtime::native_trace_context_fields(request);
         let model = provider.model().to_owned();
         provider
@@ -1398,7 +1402,7 @@ impl PostgresRunApplicationService {
                 evidence_pack,
                 &used_node_ids,
                 move |event| {
-                    let store = store;
+                    let service = service;
                     let run_id = run_id.clone();
                     let workflow_id = workflow_id.clone();
                     let conversation_id = conversation_id.clone();
@@ -1413,6 +1417,57 @@ impl PostgresRunApplicationService {
                             crate::native_answer_generation::semantic_event_trace_summary(&event)
                         else {
                             return Ok(());
+                        };
+                        let event_value = serde_json::to_value(&event)
+                            .map_err(|_| "could not encode provider event".to_owned())?;
+                        let response_id = event_value
+                            .get("response_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        let provider_sequence = event_value
+                            .get("provider_sequence")
+                            .and_then(Value::as_i64);
+                        let attempt = trace_context
+                            .get("attempt")
+                            .and_then(Value::as_i64)
+                            .filter(|attempt| *attempt > 0)
+                            .unwrap_or(1);
+                        let event_trace = kogwistar_contracts::EventTraceMetadataV1 {
+                            run_id: run_id.clone(),
+                            turn_id: turn_node_id.clone(),
+                            workflow_node_id: node_id.clone(),
+                            step_id: format!(
+                                "provider-response:{}",
+                                response_id.as_deref().unwrap_or("unknown")
+                            ),
+                            attempt: 1,
+                            producer_step_seq: Some(step_seq),
+                            producer_attempt: Some(attempt),
+                            trace_id: trace_context
+                                .get("trace_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            span_id: trace_context
+                                .get("span_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            parent_span_id: trace_context
+                                .get("parent_span_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            provider_id: "openai_compatible_chat_completions".to_owned(),
+                            provider_response_id: response_id,
+                            provider_sequence,
+                            client_sse_sequence: None,
+                        };
+                        let event_id = kogwistar_contracts::durable_provider_event_id(
+                            &event_trace,
+                            &event,
+                        );
+                        let durable_event = kogwistar_contracts::DurableProviderEventV1 {
+                            event_id,
+                            trace: event_trace,
+                            event,
                         };
                         let mut payload = json!({
                             "run_id": run_id,
@@ -1432,16 +1487,14 @@ impl PostgresRunApplicationService {
                         if let Some(fields) = payload.as_object_mut() {
                             fields.extend(trace_context);
                         }
-                        let payload = serde_json::to_string(&payload)
-                        .map_err(|_| "could not encode provider event trace".to_owned())?;
-                        store
-                            .append_server_run_event(
-                                &run_id,
-                                "workflow.provider_event.v1",
+                        service
+                            .persist_native_provider_event(
+                                durable_event,
+                                conversation_id,
                                 payload,
                             )
                             .await
-                            .map_err(|_| "could not persist provider event trace".to_owned())?;
+                            ?;
                         Ok(())
                     }
                 },

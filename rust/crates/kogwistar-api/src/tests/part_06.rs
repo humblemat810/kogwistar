@@ -5873,7 +5873,7 @@
                                 .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
                                 .await
                                 .unwrap();
-                            let field_was_persisted = events.iter().any(|event| {
+                            let trace_was_persisted = events.iter().any(|event| {
                                 event.event_type == "workflow.provider_event.v1"
                                     && serde_json::from_str::<Value>(&event.payload_json)
                                         .ok()
@@ -5882,7 +5882,71 @@
                                                 && payload["provider_event"]["details"]["field_name"] == "text"
                                         })
                             });
-                            if field_was_persisted {
+                            let lanes = snapshot_reader
+                                .list_projected_lane_messages(LaneMessageFilter {
+                                    namespace: Some("alpha".to_owned()),
+                                    inbox_id: Some("agent-provider-events".to_owned()),
+                                    conversation_id: Some("answer-e2e-conversation".to_owned()),
+                                    msg_type: Some("agent.provider_event".to_owned()),
+                                    limit: 100,
+                                    ..LaneMessageFilter::default()
+                                })
+                                .await
+                                .unwrap();
+                            let event_nodes = snapshot_reader
+                                .graph_projection_records(GraphProjectionRead {
+                                    scope: GraphScope {
+                                        namespace: "alpha".to_owned(),
+                                        workspace_id: None,
+                                        graph_space: Some("conversation".to_owned()),
+                                    },
+                                    table: "gke_nodes".to_owned(),
+                                    ids: None,
+                                    metadata: MetadataFilter {
+                                        equals: BTreeMap::from([
+                                            ("msg_type".to_owned(), json!("agent.provider_event")),
+                                            ("conversation_id".to_owned(), json!("answer-e2e-conversation")),
+                                        ]),
+                                    },
+                                    limit: 100,
+                                })
+                                .await
+                                .unwrap();
+                            let lane_node_match = lanes.iter().any(|lane| {
+                                event_nodes.iter().any(|node| {
+                                    node.id == lane.message_id
+                                        && node.metadata.get("payload_json").and_then(Value::as_str)
+                                            == lane.payload_json.as_deref()
+                                })
+                            });
+                            let event_node_ids = event_nodes
+                                .iter()
+                                .map(|node| node.id.clone())
+                                .collect::<Vec<_>>();
+                            let event_acl = snapshot_reader
+                                .graph_acl_records_for_entities(
+                                    &GraphScope {
+                                        namespace: "alpha".to_owned(),
+                                        workspace_id: None,
+                                        graph_space: Some("conversation".to_owned()),
+                                    },
+                                    "conversation",
+                                    &event_node_ids,
+                                )
+                                .await
+                                .unwrap();
+                            let private_acl_match = !event_node_ids.is_empty()
+                                && event_node_ids.iter().all(|event_node_id| {
+                                    event_acl.iter().any(|acl| {
+                                        acl.metadata.get("acl_target_entity_id").and_then(Value::as_str)
+                                            == Some(event_node_id.as_str())
+                                            && acl.metadata.get("acl_mode").and_then(Value::as_str)
+                                                == Some("private")
+                                            && acl.metadata.get("owner_id").and_then(Value::as_str)
+                                                == Some("alice")
+                                    })
+                                });
+                            if trace_was_persisted && lane_node_match && private_acl_match {
                                 break;
                             }
                             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -5898,8 +5962,56 @@
                             .iter()
                             .map(|event| event.event_type.as_str())
                             .collect::<Vec<_>>();
+                        let lanes = snapshot_reader
+                            .list_projected_lane_messages(LaneMessageFilter {
+                                namespace: Some("alpha".to_owned()),
+                                inbox_id: Some("agent-provider-events".to_owned()),
+                                conversation_id: Some("answer-e2e-conversation".to_owned()),
+                                msg_type: Some("agent.provider_event".to_owned()),
+                                limit: 100,
+                                ..LaneMessageFilter::default()
+                            })
+                            .await
+                            .unwrap();
+                        let event_nodes = snapshot_reader
+                            .graph_projection_records(GraphProjectionRead {
+                                scope: GraphScope {
+                                    namespace: "alpha".to_owned(),
+                                    workspace_id: None,
+                                    graph_space: Some("conversation".to_owned()),
+                                },
+                                table: "gke_nodes".to_owned(),
+                                ids: None,
+                                metadata: MetadataFilter {
+                                    equals: BTreeMap::from([(
+                                        "msg_type".to_owned(),
+                                        json!("agent.provider_event"),
+                                    )]),
+                                },
+                                limit: 100,
+                            })
+                            .await
+                            .unwrap();
+                        let event_node_ids = event_nodes
+                            .iter()
+                            .map(|node| node.id.clone())
+                            .collect::<Vec<_>>();
+                        let event_acl = snapshot_reader
+                            .graph_acl_records_for_entities(
+                                &GraphScope {
+                                    namespace: "alpha".to_owned(),
+                                    workspace_id: None,
+                                    graph_space: Some("conversation".to_owned()),
+                                },
+                                "conversation",
+                                &event_node_ids,
+                            )
+                            .await
+                            .unwrap();
                         panic!(
-                            "complete semantic fields persist before provider completion; observed run events: {event_types:?}"
+                            "complete semantic fields persist before provider completion; run events={event_types:?}, lanes={}, event_nodes={event_node_ids:?}, acl={:?}",
+                            lanes.len(),
+                            event_acl.iter().map(|acl| &acl.metadata).collect::<Vec<_>>()
                         );
                     }
                 }
