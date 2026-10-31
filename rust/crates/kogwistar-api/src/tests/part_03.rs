@@ -1006,6 +1006,48 @@
             .get(0);
         assert_eq!(stored_jobs, 3);
 
+        let mut existing_document_extraction = extraction.clone();
+        existing_document_extraction
+            .as_object_mut()
+            .unwrap()
+            .remove("content");
+        let existing_document_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {graph_upsert_token}"),
+                    )
+                    .body(Body::from(
+                        serde_json::to_vec(&existing_document_extraction).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(existing_document_upsert.status(), StatusCode::OK);
+        let existing_document_body: Value = serde_json::from_slice(
+            &to_bytes(existing_document_upsert.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(existing_document_body["document_id"], "public-graph-upsert-doc");
+        assert_eq!(existing_document_body["nodes_added"], 2);
+        assert_eq!(existing_document_body["edges_added"], 1);
+        let unchanged_document: String = client
+            .query_one(
+                &format!("SELECT document FROM \"{schema}\".\"gke_documents\" WHERE id=$1"),
+                &[&"public-graph-upsert-doc"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(unchanged_document, extraction["content"].as_str().unwrap());
+
         let mcp_list = make_app()
             .oneshot(
                 Request::builder()
@@ -1239,13 +1281,13 @@
             .replay_raw_events("alpha", 0, 100)
             .await
             .unwrap();
-        assert_eq!(events.len(), 10);
+        assert_eq!(events.len(), 13);
         let jobs = service
             .store
             .list_index_jobs(Some("alpha"), None, None, None, None, 10)
             .await
             .unwrap();
-        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs.len(), 7);
         assert!(jobs.iter().any(|job| job.job_id == "graph-route-index-1"));
 
         let records = service
@@ -1376,11 +1418,11 @@
         assert_eq!(
             service
                 .store
-                .replay_raw_events("alpha", 0, 10)
+                .replay_raw_events("alpha", 0, 100)
                 .await
                 .unwrap()
                 .len(),
-            10
+            13
         );
         assert_eq!(
             service

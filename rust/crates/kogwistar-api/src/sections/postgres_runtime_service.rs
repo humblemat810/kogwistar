@@ -3972,7 +3972,49 @@ impl PostgresRunApplicationService {
             Err(response) => return response,
         };
         let security_scope = security_scope_value(&request.principal);
-        let (batch, node_ids, edge_ids) = match graph_upsert_mutation_batch(&input, &security_scope) {
+        let document_scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .unwrap_or("docs")
+                .to_owned(),
+            workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
+            graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
+        };
+        let existing_document = if input.content.is_none() {
+            match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: document_scope.clone(),
+                    table: "gke_documents".to_owned(),
+                    ids: Some(vec![input.doc_id.clone()]),
+                    metadata: MetadataFilter::default(),
+                    limit: 1,
+                })
+                .await
+            {
+                Ok(records) => records.into_iter().next(),
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_DOCUMENT_SOURCE_UNAVAILABLE",
+                        error.to_string(),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let source_text = input
+            .content
+            .clone()
+            .or_else(|| {
+                existing_document
+                    .as_ref()
+                    .and_then(|record| record.document.clone())
+            })
+            .unwrap_or_default();
+        let (batch, node_ids, edge_ids) =
+            match graph_upsert_mutation_batch(&input, &source_text, &security_scope) {
             Ok(batch) => batch,
             Err(error) => {
                 return effect_error(
@@ -3983,32 +4025,26 @@ impl PostgresRunApplicationService {
             }
         };
         if batch.mutations.is_empty() {
-            let scope = GraphScope {
-                namespace: security_scope["storage_namespace"]
-                    .as_str()
-                    .unwrap_or("docs")
-                    .to_owned(),
-                workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
-                graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
-            };
-            let mut metadata = serde_json::Map::new();
-            metadata.insert("doc_type".to_owned(), json!(input.doc_type));
-            metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-            if let Err(error) = self.store.upsert_document_projection(DocumentProjectionUpsert {
-                scope,
-                record: GraphRecord {
-                    id: input.doc_id.clone(),
-                    document: input.content.clone(),
-                    metadata,
-                    embedding: None,
-                },
-                embedding_dim: 0,
-            }).await {
-                return effect_error(
-                    StatusCode::CONFLICT,
-                    "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
-                    error.to_string(),
-                );
+            if input.content.is_some() || existing_document.is_none() {
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("doc_type".to_owned(), json!(input.doc_type));
+                metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
+                if let Err(error) = self.store.upsert_document_projection(DocumentProjectionUpsert {
+                    scope: document_scope,
+                    record: GraphRecord {
+                        id: input.doc_id.clone(),
+                        document: Some(source_text),
+                        metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                }).await {
+                    return effect_error(
+                        StatusCode::CONFLICT,
+                        "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+                        error.to_string(),
+                    );
+                }
             }
             return json_effect(
                 StatusCode::OK,
@@ -4048,27 +4084,28 @@ impl PostgresRunApplicationService {
                 "Graph mutation scope is outside the principal storage scope",
             );
         }
-        let document_scope = GraphScope {
-            namespace: security_scope["storage_namespace"]
-                .as_str()
-                .unwrap_or("docs")
-                .to_owned(),
-            workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
-            graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
-        };
         let mut document_metadata = serde_json::Map::new();
         document_metadata.insert("doc_type".to_owned(), json!(input.doc_type));
         document_metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-        let document_write = PostgresGraphProjectionUpsert {
+        let document_write = (input.content.is_some() || existing_document.is_none()).then(|| {
+            PostgresGraphProjectionUpsert {
+                scope: document_scope.clone(),
+                table: "gke_documents".to_owned(),
+                record: GraphRecord {
+                    id: input.doc_id.clone(),
+                    document: Some(source_text.clone()),
+                    metadata: document_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }
+        });
+        let locked_document_read = GraphProjectionRead {
             scope: document_scope,
             table: "gke_documents".to_owned(),
-            record: GraphRecord {
-                id: input.doc_id.clone(),
-                document: input.content.clone(),
-                metadata: document_metadata,
-                embedding: None,
-            },
-            embedding_dim: 0,
+            ids: Some(vec![input.doc_id.clone()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
         };
         let index_jobs = match graph_index_jobs_value(&batch, &mutations) {
             Ok(jobs) => jobs,
@@ -4084,7 +4121,23 @@ impl PostgresRunApplicationService {
             .store
             .transaction(move |uow| {
                 Box::pin(async move {
-                    uow.upsert_graph_projection(document_write).await?;
+                    if let Some(expected_document) = existing_document {
+                        let locked = uow
+                            .graph_projection_records_for_update(locked_document_read)
+                            .await?;
+                        if locked
+                            .first()
+                            .is_none_or(|current| current.document != expected_document.document)
+                        {
+                            return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
+                                "source document changed while graph evidence was being validated"
+                                    .to_owned(),
+                            ));
+                        }
+                    }
+                    if let Some(document_write) = document_write {
+                        uow.upsert_graph_projection(document_write).await?;
+                    }
                     for mutation in mutations {
                         uow.apply_graph_mutation(mutation).await?;
                     }

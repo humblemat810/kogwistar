@@ -94,11 +94,11 @@ fn graph_upsert_request(request: &ApiEffectRequest) -> Result<GraphExtractionReq
             error.to_string(),
         )
     })?;
-    if input.doc_type != "text" || input.content.is_none() {
+    if input.doc_type != "text" {
         return Err(effect_error(
             StatusCode::NOT_IMPLEMENTED,
             "KOGWISTAR_GRAPH_UPSERT_UNSUPPORTED",
-            "Rust graph upsert currently requires normalized text content in the request",
+            "Rust graph upsert currently supports normalized text documents only",
         ));
     }
     Ok(input)
@@ -205,16 +205,13 @@ fn normalize_extraction_mention(
 
 fn graph_upsert_mutation_batch(
     input: &GraphExtractionRequestV1,
+    source_text: &str,
     security_scope: &Value,
 ) -> Result<(GraphMutationBatchInput, Vec<String>, Vec<String>), String> {
     use std::collections::BTreeMap;
 
-    let source_text = input
-        .content
-        .as_ref()
-        .ok_or_else(|| "graph upsert requires source text".to_owned())?;
     input
-        .validate_source_spans(&BTreeMap::from([(input.doc_id.clone(), source_text.clone())]))
+        .validate_source_spans(&BTreeMap::from([(input.doc_id.clone(), source_text.to_owned())]))
         .map_err(|error| error.to_string())?;
 
     let mut node_ids = BTreeMap::<String, String>::new();
@@ -493,7 +490,9 @@ mod graph_upsert_tests {
     #[test]
     fn graph_upsert_builds_typed_atomic_batch_from_shared_fixture() {
         let input = extraction_fixture();
-        let (batch, nodes, edges) = graph_upsert_mutation_batch(&input, &principal_scope())
+        let source = input.content.as_deref().expect("fixture source text");
+        let (batch, nodes, edges) =
+            graph_upsert_mutation_batch(&input, source, &principal_scope())
             .expect("valid fixture converts to a native graph batch");
         assert_eq!(nodes.len(), 2);
         assert_eq!(edges.len(), 1);
@@ -518,13 +517,23 @@ mod graph_upsert_tests {
     }
 
     #[test]
+    fn graph_upsert_can_validate_against_host_loaded_existing_document_text() {
+        let mut input = extraction_fixture();
+        let source = input.content.take().expect("fixture source text");
+        let (batch, nodes, edges) = graph_upsert_mutation_batch(&input, &source, &principal_scope())
+            .expect("stored source text validates an extraction without inline content");
+        assert_eq!((batch.mutations.len(), nodes.len(), edges.len()), (3, 2, 1));
+    }
+
+    #[test]
     fn graph_upsert_checks_exact_source_and_does_not_accept_caller_acl_metadata() {
         let mut input = extraction_fixture();
         input.nodes[0].insert(
             "metadata".to_owned(),
             json!({"lifecycle_status":"tombstoned", "acl_mode":"public"}),
         );
-        let (batch, _, _) = graph_upsert_mutation_batch(&input, &principal_scope())
+        let source = input.content.as_deref().expect("fixture source text");
+        let (batch, _, _) = graph_upsert_mutation_batch(&input, source, &principal_scope())
             .expect("LLM-only input is normalized without trusting metadata");
         let node = batch
             .mutations
@@ -547,7 +556,8 @@ mod graph_upsert_tests {
     fn graph_upsert_rejects_dangling_node_endpoints() {
         let mut input = extraction_fixture();
         input.edges[0]["source_ids"][0] = json!("nn:unknown");
-        assert!(graph_upsert_mutation_batch(&input, &principal_scope()).is_err());
+        let source = input.content.as_deref().expect("fixture source text");
+        assert!(graph_upsert_mutation_batch(&input, source, &principal_scope()).is_err());
     }
 
     #[test]
@@ -560,7 +570,8 @@ mod graph_upsert_tests {
         inner.insert("source_edge_ids".to_owned(), Value::Null);
         inner.insert("target_edge_ids".to_owned(), Value::Null);
         input.edges.push(inner);
-        let (batch, _, edge_ids) = graph_upsert_mutation_batch(&input, &principal_scope())
+        let source = input.content.as_deref().expect("fixture source text");
+        let (batch, _, edge_ids) = graph_upsert_mutation_batch(&input, source, &principal_scope())
             .expect("forward-declared hyperedge is topologically ordered");
         assert_eq!(edge_ids.len(), 2);
         let ordered = batch
@@ -571,7 +582,7 @@ mod graph_upsert_tests {
             .collect::<Vec<_>>();
         assert_eq!(ordered, [edge_ids[1].as_str(), edge_ids[0].as_str()]);
         input.edges[1]["source_edge_ids"] = json!(["ne:connects"]);
-        assert!(graph_upsert_mutation_batch(&input, &principal_scope())
+        assert!(graph_upsert_mutation_batch(&input, source, &principal_scope())
             .is_err_and(|error| error.contains("cycle")));
     }
 }
