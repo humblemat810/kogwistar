@@ -4819,6 +4819,171 @@
     }
 
     #[tokio::test]
+    async fn sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let fake = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (split, length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(split) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&bytes[..split]);
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= split + 4 + length {
+                            break (split, length);
+                        }
+                    }
+                };
+                let head = String::from_utf8_lossy(&bytes[..split]).to_string();
+                let body: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length])
+                    .unwrap();
+                let payload = if head.lines().next().unwrap().contains("/collections HTTP") {
+                    json!({
+                        "id": format!("collection-{}", body["name"].as_str().unwrap()),
+                        "metadata": {"hnsw:space": "cosine"}
+                    })
+                } else if head.lines().next().unwrap().contains("collection-nodes/get") {
+                    let nodes = [
+                        ("start", json!({"entity_type":"conversation_start","conversation_id":"c1"})),
+                        ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
+                        ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
+                        ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
+                        ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
+                        ("acl-turn-2", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-2","acl_version":1,"acl_mode":"public"})),
+                    ];
+                    let metadatas = nodes
+                        .iter()
+                        .map(|(_, metadata)| {
+                            json!({
+                                "_kogwistar_namespace":"scope-a",
+                                "workspace_id":"workspace-a",
+                                "graph_space":"conversation",
+                                "_kogwistar_original_metadata":metadata.to_string()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    json!({
+                        "ids": nodes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                        "documents": ["{}","{}","{}","{}","{}","{}"],
+                        "metadatas": metadatas,
+                        "embeddings": [null,null,null,null,null,null]
+                    })
+                } else {
+                    json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})
+                };
+                let response_body = payload.to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                requests.push((head, body));
+            }
+            requests
+        });
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-chroma-transcript-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "nodes".to_owned(),
+                edge_collection: "edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let request = |args: Value, principal: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+            body: json!({"version":"v1","args":args}).to_string().into_bytes(),
+            principal,
+        };
+        let principal = json!({
+            "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+            "graph_space":"conversation", "ns":["conversation"], "capabilities":["read_graph"]
+        });
+        let denied = service
+            .execute(request(
+                json!({"conversation_id":"c1"}),
+                json!({"ns":["conversation"],"capabilities":[]}),
+            ))
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        let missing_id = service
+            .execute(request(json!({}), principal.clone()))
+            .await;
+        assert_eq!(missing_id.status, StatusCode::BAD_REQUEST.as_u16());
+
+        let response = service
+            .execute(request(json!({"conversation_id":"c1"}), principal.clone()))
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let response: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(response["op"], "receive_message");
+        assert_eq!(response["result"]["conversation_id"], "c1");
+        assert_eq!(response["result"]["messages"][0]["node_id"], "turn-1");
+        assert_eq!(response["result"]["messages"][1]["node_id"], "turn-2");
+
+        let empty_transcript = service
+            .execute(request(json!({"conversation_id":"missing"}), principal))
+            .await;
+        assert_eq!(empty_transcript.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&empty_transcript.body).unwrap()["result"]["messages"],
+            json!([])
+        );
+        let requests = fake.await.unwrap();
+        assert_eq!(requests.len(), 6);
+        assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
+            |(_, body)| body["where"].to_string().contains("workspace_id")
+                && body["where"].to_string().contains("conversation")
+        ));
+        drop(service);
+        let _ = std::fs::remove_file(path);
+
+        let metadata_only_path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-metadata-only-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let metadata_only = SqliteRunApplicationService::open(&metadata_only_path).unwrap();
+        let unsupported = metadata_only
+            .execute(request(json!({"conversation_id":"c1"}), json!({
+                "sub":"reader-1", "storage_ns":"scope-a", "ns":["conversation"],
+                "capabilities":["read_graph"]
+            })))
+            .await;
+        assert_eq!(unsupported.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&unsupported.body).unwrap()["code"],
+            "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER"
+        );
+        drop(metadata_only);
+        let _ = std::fs::remove_file(metadata_only_path);
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; full Rust-native answer workflow against disposable PostgreSQL"]
     async fn postgres_agentic_answer_workflow_executes_durably_without_python_worker() {
         use std::process::{Command, Stdio};

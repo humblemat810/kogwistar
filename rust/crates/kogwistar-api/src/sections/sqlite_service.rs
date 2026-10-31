@@ -1778,6 +1778,64 @@ impl SqliteRunApplicationService {
         Ok((nodes, edges))
     }
 
+    async fn sqlite_chroma_receive_message_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let input = match syscall_input(request, "receive_message") {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "receive_message",
+            false,
+            &["read_graph"],
+            "conversation",
+        ) {
+            return syscall_forbidden("receive_message");
+        }
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let transcript = match conversation_transcript_from_visible_records(
+            &nodes,
+            conversation_id,
+            10_000,
+        ) {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "receive_message",
+            json_effect(
+                StatusCode::OK,
+                legacy_receive_message_value(transcript),
+            ),
+        )
+    }
+
     async fn chroma_graph_neighbors_effect(
         &self,
         request: &ApiEffectRequest,

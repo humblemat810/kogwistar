@@ -867,6 +867,9 @@ impl ApplicationService for SqliteRunApplicationService {
         Box::pin(async move {
             if request.method == "POST" && self.chroma_graph.is_some() {
                 match request.path_and_query.split('?').next() {
+                    Some("/api/syscall/v1/receive_message") => {
+                        return self.sqlite_chroma_receive_message_effect(&request).await;
+                    }
                     Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
                         return self.chroma_graph_neighbors_effect(&request).await;
                     }
