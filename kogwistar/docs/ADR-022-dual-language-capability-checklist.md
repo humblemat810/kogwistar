@@ -18,6 +18,8 @@ Rust MCP operation coverage now includes `workflow.run_steps`: it routes to the 
 
 Current public-surface evidence for DL-02/DL-03: `contracts/dual-language-surface-inventory-v1.json` enumerates the frozen REST and MCP operations and pending syscalls. Rust MCP allowlisting is explicitly not equivalent to runtime/backend authorization; the inventory is not behavioral parity or cutover authorization. Its source-drift check is `tests/core/test_rust_port_contract_manifest.py::test_dual_language_surface_inventory_is_current`.
 
+The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` route before probing, so a missing handler cannot be mistaken for an implemented route merely because a nonexistent run returned 404.
+
 | ID | Status | Gate / evidence |
 | --- | --- | --- |
 | DL-01 | PASS | Record the dual-language support decision, native-path definition, and invariants in `ADR-022-dual-language-capability-paths.md`. |

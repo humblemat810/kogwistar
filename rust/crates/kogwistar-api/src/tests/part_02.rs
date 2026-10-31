@@ -331,6 +331,32 @@
             "kogwistar-api-route-inventory-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
+        let fixture_store = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+        let mut run_ids = std::collections::BTreeMap::new();
+        for (index, &(_, template)) in FROZEN_OPENAPI_ROUTES.iter().enumerate() {
+            if template.contains("{run_id}") {
+                let run_id = format!("inventory-run-{index}");
+                fixture_store
+                    .create_server_run(kogwistar_store::ServerRunCreate {
+                        run_id: run_id.clone(),
+                        conversation_id: format!("inventory-conversation-{index}"),
+                        workflow_id: format!("inventory-workflow-{index}"),
+                        user_id: Some("inventory-admin".to_owned()),
+                        user_turn_node_id: format!("inventory-turn-{index}"),
+                        status: "running".to_owned(),
+                    })
+                    .unwrap();
+                fixture_store
+                    .append_server_run_event(
+                        &run_id,
+                        "run.started",
+                        r#"{"source":"route-inventory"}"#.to_owned(),
+                    )
+                    .unwrap();
+                run_ids.insert(index, run_id);
+            }
+        }
+        drop(fixture_store);
         let service = SqliteRunApplicationService::open(&path).unwrap();
         let transport_routes = [
             ("GET", "/health"),
@@ -341,12 +367,18 @@
             ("POST", "/auth/dev-token"),
         ];
         let mut unavailable = Vec::new();
-        for &(method, template) in FROZEN_OPENAPI_ROUTES {
+        for (index, &(method, template)) in FROZEN_OPENAPI_ROUTES.iter().enumerate() {
             if transport_routes.contains(&(method, template)) {
                 continue;
             }
             let path_and_query = template
-                .replace("{run_id}", "inventory-run")
+                .replace(
+                    "{run_id}",
+                    run_ids
+                        .get(&index)
+                        .map(String::as_str)
+                        .unwrap_or("inventory-run"),
+                )
                 .replace("{conversation_id}", "inventory-conversation")
                 .replace("{workflow_id}", "inventory-workflow")
                 .replace("{service_id}", "inventory-service")
