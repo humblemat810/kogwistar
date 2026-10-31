@@ -2150,6 +2150,35 @@
                 }
             }
         }
+        let mut tree_payload = extraction.clone();
+        let tree_payload_object = tree_payload.as_object_mut().unwrap();
+        tree_payload_object.remove("contract_version");
+        tree_payload_object.remove("content");
+        tree_payload_object.remove("doc_type");
+        tree_payload_object.remove("insertion_method");
+        let tree_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/document.upsert_tree")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {graph_upsert_token}"))
+                    .body(Body::from(serde_json::to_vec(&tree_payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tree_upsert.status(), StatusCode::OK);
+        let tree_body: Value = serde_json::from_slice(
+            &to_bytes(tree_upsert.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tree_body["status"], "ok");
+        assert_eq!(tree_body["inserted_nodes"], 2);
+        assert_eq!(tree_body["inserted_edges"], 1);
+        assert_eq!(tree_body["engine_result"]["document_id"], "public-graph-upsert-doc");
+        assert_eq!(tree_body["engine_result"]["node_ids"].as_array().unwrap().len(), 2);
+        assert_eq!(tree_body["engine_result"]["edge_ids"].as_array().unwrap().len(), 1);
         drop(mismatched_service);
         drop(legacy_service);
         drop(service);

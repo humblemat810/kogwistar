@@ -11,7 +11,7 @@
   "counts": {
     "http_operations": 84,
     "mcp_operations": 60,
-    "pending_http_operations": 7,
+    "pending_http_operations": 6,
     "allowlisted_mcp_operations": 47,
     "pending_syscalls": 4
   },
@@ -98,7 +98,7 @@
       "method": "POST",
       "path": "/api/document.upsert_tree",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "POST",

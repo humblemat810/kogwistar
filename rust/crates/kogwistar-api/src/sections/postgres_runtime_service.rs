@@ -4431,6 +4431,70 @@ impl PostgresRunApplicationService {
         }
     }
 
+    async fn public_document_tree_upsert_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !self.store.graph_authority_capability().supports_atomic_index_jobs()
+            || !self.document_authority_capability().supports_projection_upsert()
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The selected Rust store does not own atomic graph and document projections",
+            );
+        }
+        if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph upsert requires write_graph capability",
+            );
+        }
+        let (graph_request, inserted_nodes, inserted_edges) =
+            match document_tree_upsert_graph_request(request) {
+                Ok(parsed) => parsed,
+                Err(response) => return response,
+            };
+        let response = self.public_graph_upsert_effect(&graph_request).await;
+        if !(200..300).contains(&response.status) {
+            return response;
+        }
+        let result: Value = match serde_json::from_slice(&response.body) {
+            Ok(result) => result,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_GRAPH_UPSERT_RESPONSE_INVALID",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(document_id) = result.get("document_id").and_then(Value::as_str) else {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_GRAPH_UPSERT_RESPONSE_INVALID",
+                "graph upsert response did not include document_id",
+            );
+        };
+        let engine_result = json!({
+            "document_id": document_id,
+            "node_ids": result.get("node_ids").cloned().unwrap_or_else(|| json!([])),
+            "edge_ids": result.get("edge_ids").cloned().unwrap_or_else(|| json!([])),
+            "nodes_added": result.get("nodes_added").cloned().unwrap_or_else(|| json!(0)),
+            "edges_added": result.get("edges_added").cloned().unwrap_or_else(|| json!(0)),
+        });
+        json_effect(
+            StatusCode::OK,
+            json!({
+                "status": "ok",
+                "inserted_nodes": inserted_nodes,
+                "inserted_edges": inserted_edges,
+                "engine_result": engine_result,
+            }),
+        )
+    }
+
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
         if is_pending_server_cutover_route(&request.method, &request.path_and_query) {
             return effect_error(
@@ -4618,6 +4682,9 @@ impl PostgresRunApplicationService {
                 return json_effect(StatusCode::OK, json!({"status": "ok"}));
             }
             return response;
+        }
+        if is_public_document_tree_upsert_route(&request.method, &request.path_and_query) {
+            return self.public_document_tree_upsert_effect(&request).await;
         }
         if is_public_graph_upsert_route(&request.method, &request.path_and_query) {
             return self.public_graph_upsert_effect(&request).await;

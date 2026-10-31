@@ -1,6 +1,7 @@
 const INTERNAL_DOCUMENT_PROJECTION_ROUTE: &str = "/internal/document/projection";
 const PUBLIC_DOCUMENT_UPSERT_ROUTE: &str = "/api/document";
 const PUBLIC_GRAPH_UPSERT_ROUTE: &str = "/api/graph/upsert";
+const PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE: &str = "/api/document.upsert_tree";
 
 fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
     method == "POST"
@@ -12,6 +13,87 @@ fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
 
 fn is_public_graph_upsert_route(method: &str, path_and_query: &str) -> bool {
     method == "POST" && path_and_query.split('?').next() == Some(PUBLIC_GRAPH_UPSERT_ROUTE)
+}
+
+fn is_public_document_tree_upsert_route(method: &str, path_and_query: &str) -> bool {
+    method == "POST"
+        && path_and_query.split('?').next() == Some(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
+}
+
+fn document_tree_upsert_graph_request(
+    request: &ApiEffectRequest,
+) -> Result<(ApiEffectRequest, usize, usize), ApiEffectResponse> {
+    let payload: Value = serde_json::from_slice(&request.body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })?;
+    let Some(payload) = payload.as_object() else {
+        return Err(effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            "document tree upsert body must be an object",
+        ));
+    };
+    let doc_id = payload.get("doc_id").and_then(Value::as_str);
+    if !doc_id.is_some_and(|value| !value.trim().is_empty()) {
+        return Err(effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            "doc_id must be a non-empty string",
+        ));
+    }
+    let nodes = payload.get("nodes").and_then(Value::as_array).ok_or_else(|| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            "nodes must be an array",
+        )
+    })?;
+    let edges = match payload.get("edges") {
+        None => Vec::new(),
+        Some(Value::Array(edges)) => edges.clone(),
+        Some(_) => {
+            return Err(effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "edges must be an array",
+            ));
+        }
+    };
+    if nodes.iter().chain(&edges).any(|entity| !entity.is_object()) {
+        return Err(effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            "nodes and edges must contain objects",
+        ));
+    }
+    let node_count = nodes.len();
+    let edge_count = edges.len();
+    let graph_payload = json!({
+        "contract_version": 1,
+        "doc_id": doc_id,
+        "content": null,
+        "doc_type": "text",
+        "insertion_method": payload
+            .get("insertion_method")
+            .cloned()
+            .unwrap_or_else(|| json!("document_parser_v1")),
+        "nodes": nodes,
+        "edges": edges,
+    });
+    let mut graph_request = request.clone();
+    graph_request.path_and_query = PUBLIC_GRAPH_UPSERT_ROUTE.to_owned();
+    graph_request.body = serde_json::to_vec(&graph_payload).map_err(|error| {
+        effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_REQUEST_ENCODING_FAILED",
+            error.to_string(),
+        )
+    })?;
+    Ok((graph_request, node_count, edge_count))
 }
 
 fn document_projection_input(
@@ -563,6 +645,54 @@ mod graph_upsert_tests {
             "workspace": "workspace-a",
             "graph_space": "facts",
         })
+    }
+
+    #[test]
+    fn legacy_document_tree_request_maps_to_native_graph_contract() {
+        let request = ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.upsert_tree".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "doc_id": "doc-tree",
+                "nodes": [{"id": "node-1"}],
+                "edges": [{"id": "edge-1"}],
+                "legacy_extra": "ignored by the Python request model",
+            }))
+            .unwrap(),
+            principal: json!({"sub": "alice"}),
+        };
+        let (native, node_count, edge_count) =
+            document_tree_upsert_graph_request(&request).expect("legacy request maps");
+        let body: Value = serde_json::from_slice(&native.body).unwrap();
+        assert_eq!(native.path_and_query, PUBLIC_GRAPH_UPSERT_ROUTE);
+        assert_eq!(body["doc_id"], "doc-tree");
+        assert_eq!(body["doc_type"], "text");
+        assert_eq!(body["insertion_method"], "document_parser_v1");
+        assert_eq!(body["content"], Value::Null);
+        assert_eq!((node_count, edge_count), (1, 1));
+        assert_eq!(native.principal, request.principal);
+    }
+
+    #[test]
+    fn legacy_document_tree_request_rejects_invalid_entity_envelopes() {
+        for payload in [
+            json!({"doc_id": "doc-tree"}),
+            json!({"doc_id": "doc-tree", "nodes": [null]}),
+            json!({"doc_id": "doc-tree", "nodes": [], "edges": "not-an-array"}),
+            json!({"doc_id": "", "nodes": []}),
+        ] {
+            let request = ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.upsert_tree".to_owned(),
+                body: serde_json::to_vec(&payload).unwrap(),
+                principal: Value::Null,
+            };
+            let error = document_tree_upsert_graph_request(&request)
+                .expect_err("invalid legacy request must fail closed");
+            assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+        }
     }
 
     #[test]

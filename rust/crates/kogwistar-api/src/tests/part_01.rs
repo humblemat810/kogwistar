@@ -1977,6 +1977,8 @@
             "GET",
             "/api/workflow/runs/{run_id}/lineage"
         ));
+        assert!(postgres.supports_http_operation("POST", "/api/document.upsert_tree"));
+        assert!(!sqlite.supports_http_operation("POST", "/api/document.upsert_tree"));
 
         for service in [&sqlite as &dyn ApplicationService, &postgres] {
             for &(method, path) in PENDING_SERVER_CUTOVER_ROUTES {
