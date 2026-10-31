@@ -740,6 +740,17 @@
         .unwrap_err();
         assert_eq!(denied.status, StatusCode::FORBIDDEN);
 
+        let public_request = ApiEffectRequest {
+            path_and_query: PUBLIC_DOCUMENT_UPSERT_ROUTE.to_owned(),
+            ..request(json!({"sub":"reader","role":"ro","capabilities":[]}))
+        };
+        assert!(is_document_projection_route(
+            &public_request.method,
+            &public_request.path_and_query
+        ));
+        let public_denied = document_projection_write(&public_request, &capabilities).unwrap_err();
+        assert_eq!(public_denied.status, StatusCode::FORBIDDEN);
+
         let write = document_projection_write(
             &request(json!({
                 "sub":"writer",

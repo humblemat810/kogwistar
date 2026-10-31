@@ -2028,7 +2028,7 @@
                 app.oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri(INTERNAL_DOCUMENT_PROJECTION_ROUTE)
+                        .uri(PUBLIC_DOCUMENT_UPSERT_ROUTE)
                         .header("content-type", "application/json")
                         .header("authorization", format!("Bearer {token}"))
                         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -2050,6 +2050,13 @@
         )
         .await;
         assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &to_bytes(first.into_body(), 4096).await.unwrap()
+            )
+            .unwrap(),
+            json!({"status": "ok"})
+        );
         let retry = send(
             make_app(),
             json!({

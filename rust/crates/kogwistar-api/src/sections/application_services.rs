@@ -2048,8 +2048,7 @@ impl SqliteRunApplicationService {
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
         }
-        if request.method == "POST" && request.path_and_query == INTERNAL_DOCUMENT_PROJECTION_ROUTE
-        {
+        if is_document_projection_route(&request.method, &request.path_and_query) {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_DOCUMENT_AUTHORITY_UNSUPPORTED",

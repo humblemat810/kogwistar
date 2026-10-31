@@ -4129,9 +4129,14 @@ impl PostgresRunApplicationService {
         {
             return self.latest_snapshot_effect(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == INTERNAL_DOCUMENT_PROJECTION_ROUTE
-        {
-            return self.document_projection_effect(&request).await;
+        if is_document_projection_route(&request.method, &request.path_and_query) {
+            let public_upsert = request.path_and_query.split('?').next()
+                == Some(PUBLIC_DOCUMENT_UPSERT_ROUTE);
+            let response = self.document_projection_effect(&request).await;
+            if public_upsert && response.status == StatusCode::OK {
+                return json_effect(StatusCode::OK, json!({"status": "ok"}));
+            }
+            return response;
         }
         if let Some(response) = visualization_shell_effect(&request) {
             return response;

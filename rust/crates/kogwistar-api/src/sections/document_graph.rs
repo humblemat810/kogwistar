@@ -1,4 +1,13 @@
 const INTERNAL_DOCUMENT_PROJECTION_ROUTE: &str = "/internal/document/projection";
+const PUBLIC_DOCUMENT_UPSERT_ROUTE: &str = "/api/document";
+
+fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
+    method == "POST"
+        && matches!(
+            path_and_query.split('?').next(),
+            Some(INTERNAL_DOCUMENT_PROJECTION_ROUTE | PUBLIC_DOCUMENT_UPSERT_ROUTE)
+        )
+}
 
 fn document_projection_input(
     request: &ApiEffectRequest,
@@ -36,7 +45,7 @@ fn document_projection_write(
         return Err(effect_error(
             StatusCode::NOT_IMPLEMENTED,
             "KOGWISTAR_DOCUMENT_PROJECTION_UNSUPPORTED",
-            "Rust projection handoff currently requires normalized text content",
+            "Rust document upsert currently supports normalized text content only",
         ));
     }
     let scope = security_scope_value(&request.principal);

@@ -475,10 +475,6 @@
           },
           {
             "method": "POST",
-            "path": "/api/document"
-          },
-          {
-            "method": "POST",
             "path": "/api/document.upsert_tree"
           },
           {
