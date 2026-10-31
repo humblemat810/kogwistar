@@ -579,6 +579,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON server_run_events(run_id, seq)"
             )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id "
+                "ON server_run_events(json_extract(payload_json, '$.transition_id')) "
+                "WHERE event_type='workflow.recorded_transition.v1'"
+            )
 
     # ------------------------------------------------------------------
     # Connection / transaction helpers

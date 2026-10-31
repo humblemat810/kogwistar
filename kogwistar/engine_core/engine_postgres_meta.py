@@ -490,6 +490,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             """,
             f"CREATE INDEX IF NOT EXISTS idx_server_runs_status ON {schema}.server_runs(status, updated_at_ms)",
             f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)",
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id "
+            f"ON {schema}.server_run_events ((payload_json::jsonb->>'transition_id')) "
+            "WHERE event_type='workflow.recorded_transition.v1'",
         ]
 
     def _run_bootstrap(self, conn: SqlAlchemyConnectionLike) -> None:

@@ -339,6 +339,26 @@ def test_sqlite_mixed_python_rust_restart_preserves_sequence_and_projections(
     assert len(python_v2.list_server_run_events("run-1")) == 4
 
 
+def test_python_writer_cannot_duplicate_rust_recorded_transition_id(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path, filename="transition-identity.sqlite")
+    python.ensure_initialized()
+    transition = _start()
+    accepted = _apply(python.db_path, transition)
+    assert accepted["event_seq"] == 1
+
+    event = python.list_server_run_events("run-1")[0]
+    assert event["event_type"] == "workflow.recorded_transition.v1"
+    with pytest.raises(sqlite3.IntegrityError):
+        python.append_server_run_event(
+            "run-1", event["event_type"], json.dumps(event["payload"])
+        )
+
+    assert len(python.list_server_run_events("run-1")) == 1
+    assert _apply(python.db_path, transition)["idempotent"] is True
+
+
 def test_sqlite_upgrade_python_rollback_rebuilds_disposable_runtime_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

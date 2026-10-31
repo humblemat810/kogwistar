@@ -48,6 +48,16 @@ def _json_int(value: object, default: int = 0) -> int:
     return default
 
 
+def _recorded_transition_id(event_type: str, payload_json: str) -> str | None:
+    if event_type != "workflow.recorded_transition.v1":
+        return None
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        return None
+    transition_id = payload.get("transition_id")
+    return transition_id if isinstance(transition_id, str) else None
+
+
 _active_in_memory_meta_txn: contextvars.ContextVar[_TxnView | None] = contextvars.ContextVar(
     "gke_in_memory_meta_txn", default=None
 )
@@ -1371,6 +1381,15 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
     ) -> JsonObject:
         now = _now_ms()
         with self.transaction() as txn:
+            transition_id = _recorded_transition_id(event_type, payload_json)
+            if transition_id is not None and any(
+                _recorded_transition_id(row.event_type, row.payload_json) == transition_id
+                for rows in txn.state.server_run_events.values()
+                for row in rows
+            ):
+                raise ValueError(
+                    f"recorded runtime transition {transition_id!r} already exists"
+                )
             events = txn.state.server_run_events.setdefault(str(run_id), [])
             seq = (events[-1].seq + 1) if events else 1
             row = _ServerRunEventRow(
