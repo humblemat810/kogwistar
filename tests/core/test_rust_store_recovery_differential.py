@@ -8,7 +8,9 @@ from typing import Any
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
+from kogwistar.document_types import Chunk
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.models import Document
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
 from kogwistar.runtime import (
@@ -36,26 +38,25 @@ def _postgres(dsn: str | None, schema: str, operation: dict[str, Any]) -> Any:
 
 def _event(*, entity_id: str, revision: int) -> str:
     """Full Node-shaped Python event payload, intentionally not Rust-specific."""
+    source_document = Document.from_text("alpha beta", id="source-doc")
+    source_document.source_map = {
+        "chunk-0": Chunk(
+            doc_id="source-doc", start_char=0, end_char=5, text="alpha"
+        ),
+        "chunk-1": Chunk(
+            doc_id="source-doc", start_char=5, end_char=10, text=" beta"
+        ),
+    }
+    source_map = source_document.model_dump(
+        field_mode="backend", dump_format="json", exclude={"embeddings"}
+    )["source_map"]
     return json.dumps(
         {
             "id": entity_id,
             "document": f"node {entity_id} revision {revision}",
             "metadata": {"revision": revision, "source": "python"},
             "groundings": [],
-            "source_map": {
-                "chunk-0": {
-                    "doc_id": "source-doc",
-                    "start_char": 0,
-                    "end_char": 5,
-                    "text": "alpha",
-                },
-                "chunk-1": {
-                    "doc_id": "source-doc",
-                    "start_char": 5,
-                    "end_char": 10,
-                    "text": " beta",
-                },
-            },
+            "source_map": source_map,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -106,20 +107,18 @@ def _assert_projection_shape(payload: dict[str, Any]) -> None:
     active = entities['["alien_kind","n2"]']
     assert active["deleted"] is False
     assert active["entity"]["id"] == "n2"
-    assert active["entity"]["source_map"] == {
-        "chunk-0": {
-            "doc_id": "source-doc",
-            "start_char": 0,
-            "end_char": 5,
-            "text": "alpha",
-        },
-        "chunk-1": {
-            "doc_id": "source-doc",
-            "start_char": 5,
-            "end_char": 10,
-            "text": " beta",
-        },
+    expected_source_map = Document.from_text("alpha beta", id="source-doc")
+    expected_source_map.source_map = {
+        "chunk-0": Chunk(
+            doc_id="source-doc", start_char=0, end_char=5, text="alpha"
+        ),
+        "chunk-1": Chunk(
+            doc_id="source-doc", start_char=5, end_char=10, text=" beta"
+        ),
     }
+    assert active["entity"]["source_map"] == expected_source_map.model_dump(
+        field_mode="backend", dump_format="json", exclude={"embeddings"}
+    )["source_map"]
 
 
 def test_rust_meta_facades_implement_checkpointed_projection_store_protocol(
