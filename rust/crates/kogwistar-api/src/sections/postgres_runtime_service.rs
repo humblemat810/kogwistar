@@ -4516,6 +4516,9 @@ impl PostgresRunApplicationService {
                             .await?;
                         }
                     }
+                    if applied.idempotent {
+                        return Ok(Ok(applied));
+                    }
                     let state = applied.reduced.state.clone();
                     let frontier = &state.frontier;
                     let unfinished = !frontier.pending.is_empty()
@@ -4575,7 +4578,9 @@ impl PostgresRunApplicationService {
                                     token_id: token_id.clone(),
                                     parent_token_id: parent_token_id.clone(),
                                     step_seq: next_step_seq,
-                                    expected_event_seq: applied.event_seq,
+                                    expected_event_seq: uow
+                                        .latest_server_run_event_seq(&state.run_id)
+                                        .await?,
                                     resume_effect: None,
                                 },
                             );

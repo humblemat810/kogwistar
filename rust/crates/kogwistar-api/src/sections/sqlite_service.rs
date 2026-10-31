@@ -3618,7 +3618,6 @@ impl SqliteRunApplicationService {
         }
         let runtime_run_id = input.handoff.run_id.clone();
         let outcome = self.store.immediate_transaction(|uow| {
-            let mut provider_event_handled_traces = Vec::new();
             if let Some((batch, owner_id, principal, default_acl_truth_graph, effect_id, publications)) = graph_batch.as_ref() {
                 if !capability_allowed_for_principal(
                     principal,
@@ -3828,7 +3827,7 @@ impl SqliteRunApplicationService {
                         ));
                     }
                     for acknowledgement in &provider_event_acknowledgements {
-                        provider_event_handled_traces.push(apply_sqlite_provider_event_acknowledgement(
+                        apply_sqlite_provider_event_acknowledgement(
                             uow,
                             acknowledgement,
                             &runtime_run_id,
@@ -3837,9 +3836,12 @@ impl SqliteRunApplicationService {
                             scope,
                             owner_id,
                             principal,
-                        )?);
+                        )?;
                     }
                 }
+            }
+            if applied.idempotent {
+                return Ok(applied);
             }
             let frontier = &applied.reduced.state.frontier;
             let telemetry_run_id = transition.run_id.clone();
@@ -3903,7 +3905,8 @@ impl SqliteRunApplicationService {
                             token_id: token_id.clone(),
                             parent_token_id: parent_token_id.clone(),
                             step_seq: next_step_seq,
-                            expected_event_seq: applied.event_seq,
+                            expected_event_seq: uow
+                                .latest_server_run_event_seq(&transition.run_id)?,
                             resume_effect: None,
                         },
                     );
@@ -3935,7 +3938,8 @@ impl SqliteRunApplicationService {
                     RecordedRuntimeTransition {
                         contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
                         transition_id: format!("complete-{}", transition.transition_id),
-                        expected_event_seq: applied.event_seq,
+                        expected_event_seq: uow
+                            .latest_server_run_event_seq(&transition.run_id)?,
                         kind: RecordedTransitionKind::Complete,
                         run_id: transition.run_id,
                         workflow_id: transition.workflow_id,
@@ -3985,13 +3989,6 @@ impl SqliteRunApplicationService {
                             "trace_index": trace_index,
                             "trace": trace,
                         }))?,
-                    )?;
-                }
-                for trace in provider_event_handled_traces {
-                    uow.append_server_run_event(
-                        &telemetry_run_id,
-                        "workflow.provider_event.handled.v1",
-                        serde_json::to_string(&trace)?,
                     )?;
                 }
             }
@@ -4066,7 +4063,7 @@ fn apply_sqlite_provider_event_acknowledgement(
     scope: &GraphScope,
     owner_id: &str,
     principal: &Value,
-) -> Result<Value, kogwistar_store_sqlite::SqliteStoreError> {
+) -> Result<(), kogwistar_store_sqlite::SqliteStoreError> {
     let lane = uow
         .get_projected_lane_message(&acknowledgement.message_id)?
         .ok_or_else(|| {
@@ -4219,11 +4216,16 @@ fn apply_sqlite_provider_event_acknowledgement(
         &acknowledgement.message_id,
         &acknowledgement.claimed_by,
     )?;
-    Ok(json!({
-        "event_id": acknowledgement.event_id,
-        "message_id": acknowledgement.message_id,
-        "workflow_node_id": workflow_node_id,
-        "step_seq": step_seq,
-        "effect_id": effect_id,
-    }))
+    uow.append_server_run_event(
+        run_id,
+        "workflow.provider_event.handled.v1",
+        serde_json::to_string(&json!({
+            "event_id": acknowledgement.event_id,
+            "message_id": acknowledgement.message_id,
+            "workflow_node_id": workflow_node_id,
+            "step_seq": step_seq,
+            "effect_id": effect_id,
+        }))?,
+    )?;
+    Ok(())
 }

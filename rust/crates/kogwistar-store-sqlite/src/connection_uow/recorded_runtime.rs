@@ -1,6 +1,10 @@
 use super::*;
 
 impl SqliteUnitOfWork<'_> {
+    pub fn latest_server_run_event_seq(&self, run_id: &str) -> SqliteStoreResult<i64> {
+        latest_server_run_event_seq(self.transaction, run_id)
+    }
+
     pub fn recorded_runtime_steps(
         &self,
         run_id: &str,

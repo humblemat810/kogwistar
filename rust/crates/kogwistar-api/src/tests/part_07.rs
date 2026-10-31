@@ -2039,13 +2039,36 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     fault_cleanup_task.await.unwrap().unwrap();
 
     let applied = service.apply_runtime_result_input(
-        request(ack_effect), None, None, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        request(ack_effect.clone()), None, None, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
     ).await;
     assert_eq!(
         applied.status,
         StatusCode::OK.as_u16(),
         "{}",
         String::from_utf8_lossy(&applied.body)
+    );
+    let events_before_exact_retry = service
+        .store
+        .list_server_run_events(run_id, 0, usize::MAX)
+        .await
+        .unwrap();
+    let exact_retry = service
+        .apply_runtime_result_input(
+            request(ack_effect),
+            None,
+            None,
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        )
+        .await;
+    assert_eq!(exact_retry.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        service
+            .store
+            .list_server_run_events(run_id, 0, usize::MAX)
+            .await
+            .unwrap(),
+        events_before_exact_retry,
+        "an exact post-commit retry must not append another completion or handled event"
     );
     let committed_edges = service.store.graph_projection_records(GraphProjectionRead {
         scope, table: "gke_edges".to_owned(), ids: None,
