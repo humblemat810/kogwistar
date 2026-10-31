@@ -15,6 +15,8 @@ pub enum SqliteStoreError {
     Io(#[from] std::io::Error),
     #[error("SQLite database authority is held by another process for {path}: {message}")]
     AuthorityConflict { path: String, message: String },
+    #[error("SQLite schema version {found} is newer than the supported version {supported}")]
+    UnsupportedSchemaVersion { found: i64, supported: i64 },
     #[error("namespace must not be empty")]
     EmptyNamespace,
     #[error(

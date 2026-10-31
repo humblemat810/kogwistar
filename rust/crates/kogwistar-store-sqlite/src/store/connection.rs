@@ -32,6 +32,12 @@ impl SqliteStore {
         let conn = configured_connection(&path)?;
         let authority_lock = Arc::new(authority_lock);
         let schema_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if schema_version > STORE_SCHEMA_VERSION {
+            return Err(SqliteStoreError::UnsupportedSchemaVersion {
+                found: schema_version,
+                supported: STORE_SCHEMA_VERSION,
+            });
+        }
         if schema_version < STORE_SCHEMA_VERSION {
             initialize_schema(&conn)?;
             conn.execute_batch(&format!("PRAGMA user_version = {STORE_SCHEMA_VERSION};"))?;

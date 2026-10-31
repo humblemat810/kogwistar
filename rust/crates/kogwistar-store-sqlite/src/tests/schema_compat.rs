@@ -61,6 +61,44 @@ fn python_legacy_shaped_database_is_opened_read_and_written_without_reformatting
     drop(conn);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn newer_schema_version_is_rejected_without_mutating_database() {
+    let path = database_path("newer-schema-version");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sentinel (value TEXT NOT NULL);
+         INSERT INTO sentinel VALUES ('preserve');
+         PRAGMA user_version = 2;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = match SqliteStore::open(&path) {
+        Ok(_) => panic!("a newer schema must not be opened by this store version"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        SqliteStoreError::UnsupportedSchemaVersion {
+            found: 2,
+            supported: 1
+        }
+    ));
+
+    let conn = Connection::open(&path).unwrap();
+    let (version, value): (i64, String) = conn
+        .query_row(
+            "SELECT (SELECT user_version FROM pragma_user_version), value FROM sentinel",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((version, value.as_str()), (2, "preserve"));
+    drop(conn);
+    fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn autocommit_reads_observe_commits_from_an_external_connection() {
     let (store, path) = store("external-read");
