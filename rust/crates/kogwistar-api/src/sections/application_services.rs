@@ -828,7 +828,9 @@ impl ApplicationService for PostgresRunApplicationService {
     ) -> bool {
         let graph_read_namespace = match name {
             "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
-            | "kg_semantic_seed_then_expand_text" => Some("docs"),
+            | "kg_semantic_seed_then_expand_text"
+            | "kg_viz_cytoscape_json"
+            | "kg_viz_d3_json" => Some("docs"),
             "wisdom.semantic_seed_then_expand" => Some("wisdom"),
             _ => None,
         };
@@ -945,7 +947,12 @@ impl ApplicationService for SqliteRunApplicationService {
             return self.chroma_graph.is_some()
                 && matches!(
                     name,
-                    "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
+                    "kg_find_edges"
+                        | "kg_k_hop"
+                        | "kg_neighbors"
+                        | "kg_shortest_path"
+                        | "kg_viz_cytoscape_json"
+                        | "kg_viz_d3_json"
                 );
         }
         name != "workflow.tool_audit"
@@ -965,6 +972,8 @@ impl ApplicationService for SqliteRunApplicationService {
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
                     | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
+                    | Some(INTERNAL_GRAPH_VIZ_D3_ROUTE)
+                    | Some(INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE)
             );
         let is_composed_conversation_transcript = self.chroma_graph.is_some()
             && method == "GET"
@@ -1034,6 +1043,12 @@ impl ApplicationService for SqliteRunApplicationService {
                     }
                     Some(INTERNAL_GRAPH_K_HOP_ROUTE) => {
                         return self.chroma_graph_k_hop_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_VIZ_D3_ROUTE) => {
+                        return self.chroma_graph_visualization_effect(&request, false).await;
+                    }
+                    Some(INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE) => {
+                        return self.chroma_graph_visualization_effect(&request, true).await;
                     }
                     _ => {}
                 }

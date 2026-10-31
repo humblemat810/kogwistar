@@ -16,6 +16,8 @@ const INTERNAL_GRAPH_VECTOR_QUERY_ROUTE: &str = "/internal/graph/vector-query";
 const INTERNAL_GRAPH_FIND_EDGES_ROUTE: &str = "/internal/graph/find-edges";
 const INTERNAL_GRAPH_SHORTEST_PATH_ROUTE: &str = "/internal/graph/shortest-path";
 const INTERNAL_GRAPH_K_HOP_ROUTE: &str = "/internal/graph/k-hop";
+const INTERNAL_GRAPH_VIZ_D3_ROUTE: &str = "/internal/graph/viz-d3";
+const INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE: &str = "/internal/graph/viz-cytoscape";
 
 const INTERNAL_APPLICATION_EFFECT_ROUTES: &[&str] = &[
     INTERNAL_RUNTIME_CLAIM_ROUTE,
@@ -30,6 +32,8 @@ const INTERNAL_APPLICATION_EFFECT_ROUTES: &[&str] = &[
     INTERNAL_GRAPH_FIND_EDGES_ROUTE,
     INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
     INTERNAL_GRAPH_K_HOP_ROUTE,
+    INTERNAL_GRAPH_VIZ_D3_ROUTE,
+    INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE,
 ];
 
 fn rust_native_attested(mut value: Value) -> Value {
@@ -196,6 +200,8 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "kg_neighbors"
                 | "kg_semantic_seed_then_expand_text"
                 | "kg_shortest_path"
+                | "kg_viz_cytoscape_json"
+                | "kg_viz_d3_json"
                 | "wisdom.kg_upsert_graph"
                 | "wisdom.semantic_seed_then_expand"
         ),

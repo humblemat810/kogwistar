@@ -1408,6 +1408,79 @@ impl PostgresRunApplicationService {
         )
     }
 
+    async fn graph_visualization_effect(
+        &self,
+        request: &ApiEffectRequest,
+        cytoscape: bool,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input: GraphVisualizationRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        let result = if cytoscape {
+            graph_viz_cytoscape_from_records(
+                &nodes,
+                &edges,
+                input.doc_id.as_deref(),
+                &input.mode,
+            )
+        } else {
+            graph_viz_d3_from_records(
+                &nodes,
+                &edges,
+                input.doc_id.as_deref(),
+                &input.mode,
+            )
+        };
+        json_effect(StatusCode::OK, rust_native_attested(result))
+    }
+
     async fn load_resource_snapshot_rows(
         &self,
     ) -> Result<(Vec<ServerRun>, Vec<ProjectedLaneMessage>, Vec<ServerRunEvent>), ApiEffectResponse>

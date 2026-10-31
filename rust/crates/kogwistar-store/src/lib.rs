@@ -6,7 +6,7 @@ use kogwistar_contracts::{
     PersistentGraphEntityV1, ToolAuditContractError, ToolAuditItemV1,
 };
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use thiserror::Error;
@@ -1122,6 +1122,233 @@ pub fn graph_k_hop_from_records(
         frontier = next_frontier;
     }
     layers
+}
+
+/// Project scope- and ACL-filtered graph records to the Python D3 MCP shape.
+///
+/// This is a serialization kernel only: callers own scope selection and ACL
+/// filtering. Missing or inaccessible endpoints are omitted from links so a
+/// visible edge cannot disclose identifiers for hidden entities.
+pub fn graph_viz_d3_from_records(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    doc_id: Option<&str>,
+    mode: &str,
+) -> Value {
+    let selected = |record: &GraphRecord| {
+        !is_tombstoned(&record.metadata)
+            && doc_id.is_none_or(|expected| {
+                record_field(record, "doc_id")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some(expected)
+            })
+    };
+    let mut node_values = BTreeMap::<String, Value>::new();
+    for node in nodes.iter().filter(|record| selected(record)) {
+        let mut value = record_json(node)
+            .filter(Value::is_object)
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let object = value.as_object_mut().expect("object was checked");
+        object.insert("id".to_owned(), Value::String(node.id.clone()));
+        object.insert(
+            "label".to_owned(),
+            record_field(node, "label")
+                .filter(|value| !value.is_null())
+                .unwrap_or_else(|| Value::String(node.id.clone())),
+        );
+        object.insert("type".to_owned(), Value::String("entity".to_owned()));
+        if let Some(summary) = record_field(node, "summary") {
+            object.insert("summary".to_owned(), summary);
+        }
+        object.insert(
+            "properties".to_owned(),
+            record_field(node, "properties")
+                .filter(Value::is_object)
+                .unwrap_or_else(|| Value::Object(Map::new())),
+        );
+        node_values.insert(node.id.clone(), value);
+    }
+    let node_ids = node_values.keys().cloned().collect::<BTreeSet<_>>();
+    let visible_edges = edges
+        .iter()
+        .filter(|record| selected(record))
+        .collect::<Vec<_>>();
+    let edge_ids = visible_edges
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<BTreeSet<_>>();
+    let reify = mode.eq_ignore_ascii_case("reify");
+    let mut links = Vec::new();
+
+    for edge in &visible_edges {
+        let relation = record_field(edge, "relation")
+            .or_else(|| record_field(edge, "label"))
+            .filter(|value| !value.is_null())
+            .unwrap_or_else(|| Value::String("edge".to_owned()));
+        let properties = record_field(edge, "properties")
+            .filter(Value::is_object)
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        let sources = graph_record_string_list(edge, "source_ids");
+        let targets = graph_record_string_list(edge, "target_ids");
+        let source_edges = graph_record_string_list(edge, "source_edge_ids");
+        let target_edges = graph_record_string_list(edge, "target_edge_ids");
+
+        if reify {
+            if !node_values.contains_key(&edge.id) {
+                node_values.insert(
+                    edge.id.clone(),
+                    json!({
+                        "id": edge.id,
+                        "label": relation,
+                        "type": "edge-node",
+                        "summary": record_field(edge, "summary"),
+                        "properties": properties,
+                    }),
+                );
+            }
+            for source in sources.iter().filter(|id| node_ids.contains(*id)) {
+                links.push(json!({"source": source, "target": edge.id, "relation": relation, "role": "src", "properties": properties}));
+            }
+            for source in source_edges.iter().filter(|id| edge_ids.contains(*id)) {
+                links.push(json!({"source": source, "target": edge.id, "relation": relation, "role": "src", "properties": properties}));
+            }
+            for target in targets.iter().filter(|id| node_ids.contains(*id)) {
+                links.push(json!({"source": edge.id, "target": target, "relation": relation, "role": "tgt", "properties": properties}));
+            }
+            for target in target_edges.iter().filter(|id| edge_ids.contains(*id)) {
+                links.push(json!({"source": edge.id, "target": target, "relation": relation, "role": "tgt", "properties": properties}));
+            }
+        } else {
+            for source in sources.iter().filter(|id| node_ids.contains(*id)) {
+                for target in targets.iter().filter(|id| node_ids.contains(*id)) {
+                    links.push(json!({"source": source, "target": target, "relation": relation, "properties": properties}));
+                }
+            }
+        }
+    }
+    json!({
+        "nodes": node_values.into_values().collect::<Vec<_>>(),
+        "links": links,
+        "mode": mode,
+        "doc_id": doc_id,
+    })
+}
+
+/// Project the D3 projection into Python Cytoscape's elements envelope.
+pub fn graph_viz_cytoscape_from_records(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    doc_id: Option<&str>,
+    mode: &str,
+) -> Value {
+    let d3 = graph_viz_d3_from_records(nodes, edges, doc_id, mode);
+    let mut elements = Vec::new();
+    let visible_node_ids = d3["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|node| node["type"] == "entity")
+        .filter_map(|node| node["id"].as_str().map(str::to_owned))
+        .collect::<BTreeSet<_>>();
+    let visible_edge_ids = edges
+        .iter()
+        .filter(|edge| {
+            !is_tombstoned(&edge.metadata)
+                && doc_id.is_none_or(|expected| {
+                    record_field(edge, "doc_id")
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .as_deref()
+                        == Some(expected)
+                })
+        })
+        .map(|edge| edge.id.clone())
+        .collect::<BTreeSet<_>>();
+    for node in d3["nodes"].as_array().into_iter().flatten() {
+        let data = if node["type"] == "entity" {
+            json!({"id": node["id"], "label": node["label"], "type": "entity"})
+        } else {
+            json!({"id": node["id"], "label": node["label"], "type": "edge-node"})
+        };
+        elements.push(json!({
+            "data": data,
+            "classes": if node["type"] == "edge-node" { "edge-node" } else { "" },
+        }));
+    }
+    if mode.eq_ignore_ascii_case("reify") {
+        for link in d3["links"].as_array().into_iter().flatten() {
+            let role = link["role"].as_str().unwrap_or_default();
+            let edge_id = if role == "src" {
+                link["target"].as_str().unwrap_or_default()
+            } else {
+                link["source"].as_str().unwrap_or_default()
+            };
+            let endpoint_id = if role == "src" {
+                link["source"].as_str().unwrap_or_default()
+            } else {
+                link["target"].as_str().unwrap_or_default()
+            };
+            let endpoint_is_edge = visible_edge_ids.contains(endpoint_id);
+            let endpoint_role = match (role, endpoint_is_edge) {
+                ("src", true) => "srcE",
+                ("src", false) => "src",
+                (_, true) => "tgtE",
+                (_, false) => "tgt",
+            };
+            elements.push(json!({
+                "data": {
+                    "id": format!("{edge_id}::{endpoint_role}::{endpoint_id}"),
+                    "source": link["source"],
+                    "target": link["target"],
+                    "label": link["relation"],
+                },
+                "classes": role,
+            }));
+        }
+    } else {
+        for edge in edges
+            .iter()
+            .filter(|edge| visible_edge_ids.contains(&edge.id))
+        {
+            let relation = record_field(edge, "relation")
+                .or_else(|| record_field(edge, "label"))
+                .filter(|value| !value.is_null());
+            for source in graph_record_string_list(edge, "source_ids")
+                .iter()
+                .filter(|id| visible_node_ids.contains(*id))
+            {
+                for target in graph_record_string_list(edge, "target_ids")
+                    .iter()
+                    .filter(|id| visible_node_ids.contains(*id))
+                {
+                    elements.push(json!({
+                        "data": {
+                            "id": format!("{}::{}->{}", edge.id, source, target),
+                            "source": source,
+                            "target": target,
+                            "label": relation,
+                        },
+                        "classes": "",
+                    }));
+                }
+            }
+        }
+    }
+    json!({"elements": elements, "mode": mode, "doc_id": doc_id})
+}
+
+fn graph_record_string_list(record: &GraphRecord, field: &str) -> Vec<String> {
+    let value = record_field(record, field).and_then(|value| match value {
+        Value::String(encoded) => serde_json::from_str::<Value>(&encoded).ok(),
+        value => Some(value),
+    });
+    value
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::to_owned))
+        .filter(|value| !value.is_empty())
+        .collect()
 }
 
 fn is_tombstoned(metadata: &Map<String, Value>) -> bool {
@@ -2973,6 +3200,84 @@ mod tests {
                 edges: BTreeSet::from(["e0".to_owned(), "e2".to_owned()]),
             }
         );
+    }
+
+    #[test]
+    fn graph_visualization_projects_acl_visible_records_in_both_formats() {
+        let mut source = node_record("n1");
+        source.document =
+            Some(json!({"label":"Source","summary":"source summary","doc_id":"d1"}).to_string());
+        let mut target = node_record("n2");
+        target.document = Some(json!({"label":"Target","doc_id":"d1"}).to_string());
+        let mut hidden = node_record("private-node");
+        hidden.document = Some(json!({"label":"Hidden","doc_id":"d1"}).to_string());
+        let visible_edge = edge_record(
+            "e1",
+            json!({
+                "relation":"connects",
+                "doc_id":"d1",
+                "source_ids":["n1", "private-node"],
+                "target_ids":["n2"],
+                "properties":{"weight":2}
+            }),
+        );
+        let unrelated_edge = edge_record(
+            "e2",
+            json!({"relation":"other","doc_id":"d2","source_ids":["n1"],"target_ids":["n2"]}),
+        );
+        let mut tombstoned = edge_record(
+            "e3",
+            json!({"relation":"deleted","doc_id":"d1","source_ids":["n1"],"target_ids":["n2"]}),
+        );
+        tombstoned
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        let nodes = vec![source, target, hidden];
+        let edges = vec![visible_edge.clone(), unrelated_edge, tombstoned];
+
+        let d3 = graph_viz_d3_from_records(&nodes[..2], &edges, Some("d1"), "reify");
+        assert_eq!(d3["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(d3["links"].as_array().unwrap().len(), 2);
+        assert!(!d3.to_string().contains("private-node"));
+        assert!(!d3.to_string().contains("e2"));
+        assert!(!d3.to_string().contains("e3"));
+
+        let cy = graph_viz_cytoscape_from_records(&nodes[..2], &edges, Some("d1"), "classic");
+        let elements = cy["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 3);
+        assert_eq!(elements[2]["data"]["source"], "n1");
+        assert_eq!(elements[2]["data"]["target"], "n2");
+        assert_eq!(elements[2]["data"]["id"], "e1::n1->n2");
+        assert_eq!(cy["mode"], "classic");
+        assert_eq!(cy["doc_id"], "d1");
+
+        let source_edge = edge_record(
+            "e4",
+            json!({
+                "relation":"composes",
+                "doc_id":"d1",
+                "source_edge_ids":["e1"],
+                "target_edge_ids":["e5"]
+            }),
+        );
+        let target_edge = edge_record("e5", json!({"relation":"terminal","doc_id":"d1"}));
+        let reified = graph_viz_cytoscape_from_records(
+            &nodes[..2],
+            &[visible_edge, source_edge, target_edge],
+            Some("d1"),
+            "reify",
+        );
+        let reified_elements = reified["elements"].as_array().unwrap();
+        assert!(reified_elements.iter().any(|element| {
+            element["data"]["id"] == "e4::srcE::e1"
+                && element["data"]["source"] == "e1"
+                && element["data"]["target"] == "e4"
+        }));
+        assert!(reified_elements.iter().any(|element| {
+            element["data"]["id"] == "e4::tgtE::e5"
+                && element["data"]["source"] == "e4"
+                && element["data"]["target"] == "e5"
+        }));
     }
 
     #[test]

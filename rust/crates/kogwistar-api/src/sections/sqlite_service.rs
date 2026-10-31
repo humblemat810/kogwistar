@@ -2303,6 +2303,50 @@ impl SqliteRunApplicationService {
         )
     }
 
+    async fn chroma_graph_visualization_effect(
+        &self,
+        request: &ApiEffectRequest,
+        cytoscape: bool,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph read requires read_graph capability",
+            );
+        }
+        let input: GraphVisualizationRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let result = if cytoscape {
+            graph_viz_cytoscape_from_records(
+                &nodes,
+                &edges,
+                input.doc_id.as_deref(),
+                &input.mode,
+            )
+        } else {
+            graph_viz_d3_from_records(
+                &nodes,
+                &edges,
+                input.doc_id.as_deref(),
+                &input.mode,
+            )
+        };
+        json_effect(StatusCode::OK, rust_native_attested(result))
+    }
+
     async fn chroma_graph_vector_query_effect(
         &self,
         request: &ApiEffectRequest,

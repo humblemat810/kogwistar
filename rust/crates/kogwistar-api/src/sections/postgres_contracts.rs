@@ -13,6 +13,19 @@ pub struct PostgresRunApplicationService {
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphVisualizationRequest {
+    #[serde(default)]
+    doc_id: Option<String>,
+    #[serde(default = "default_graph_visualization_mode")]
+    mode: String,
+}
+
+fn default_graph_visualization_mode() -> String {
+    "reify".to_owned()
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeOwnerBindingV1 {

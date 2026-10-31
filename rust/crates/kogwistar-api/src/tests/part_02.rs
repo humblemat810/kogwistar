@@ -549,7 +549,7 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(root_supported, 7);
+        assert_eq!(root_supported, 9);
         assert!(rust_mcp_tool_supported("root", "kg_find_edges"));
         assert!(rust_mcp_tool_supported("root", "kg_k_hop"));
         assert!(rust_mcp_tool_supported("root", "kg_neighbors"));
@@ -558,6 +558,8 @@
             "kg_semantic_seed_then_expand_text"
         ));
         assert!(rust_mcp_tool_supported("root", "kg_shortest_path"));
+        assert!(rust_mcp_tool_supported("root", "kg_viz_cytoscape_json"));
+        assert!(rust_mcp_tool_supported("root", "kg_viz_d3_json"));
         assert!(rust_mcp_tool_supported("root", "wisdom.kg_upsert_graph"));
         assert!(rust_mcp_tool_supported(
             "root",

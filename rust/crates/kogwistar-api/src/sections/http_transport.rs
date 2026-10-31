@@ -315,6 +315,20 @@ async fn mcp_handler(
                 body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
                 principal: principal.clone(),
             }),
+            "kg_viz_d3_json" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
+                principal: principal.clone(),
+            }),
+            "kg_viz_cytoscape_json" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE.to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
+                principal: principal.clone(),
+            }),
             "kg_neighbors" => arguments
                 .get("rid")
                 .and_then(Value::as_str)

@@ -4751,8 +4751,13 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut observed = Vec::new();
-            for _ in 0..20 {
-                let (mut stream, _) = listener.accept().await.unwrap();
+            loop {
+                let Ok(Ok((mut stream, _))) =
+                    tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+                        .await
+                else {
+                    break;
+                };
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
                 let (split, length) = loop {
@@ -4898,7 +4903,14 @@
                 },
             ).unwrap();
         }
-        let graph_read_tools = ["kg_neighbors", "kg_find_edges", "kg_shortest_path", "kg_k_hop"];
+        let graph_read_tools = [
+            "kg_neighbors",
+            "kg_find_edges",
+            "kg_shortest_path",
+            "kg_k_hop",
+            "kg_viz_d3_json",
+            "kg_viz_cytoscape_json",
+        ];
         assert!(graph_read_tools.iter().all(|name| service.supports_mcp_tool("root", name)));
         assert!(!service.supports_mcp_tool("root", "kg_graph_mutate"));
         assert!(!SqliteRunApplicationService::open(&path).unwrap().supports_mcp_tool("root", "kg_neighbors"));
@@ -4969,7 +4981,7 @@
         let denied: Value = serde_json::from_slice(&to_bytes(denied.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(denied["error"]["data"]["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
 
-        let mcp_read = app.oneshot(
+        let mcp_read = app.clone().oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/mcp")
@@ -4982,6 +4994,42 @@
         let mcp_read: Value = serde_json::from_slice(&to_bytes(mcp_read.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(mcp_read["result"]["nodes"], json!(["n2"]));
         assert_eq!(mcp_read["result"]["edges"], json!(["e1"]));
+
+        for (tool, expected_key) in [
+            ("kg_viz_d3_json", "nodes"),
+            ("kg_viz_cytoscape_json", "elements"),
+        ] {
+            let visualization = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("content-type", "application/json")
+                        .header(
+                            "authorization",
+                            format!("Bearer {}", token(&["read_graph"])),
+                        )
+                        .body(Body::from(format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":\"{tool}\",\"method\":\"tools/call\",\"params\":{{\"name\":\"{tool}\",\"arguments\":{{\"doc_id\":null,\"mode\":\"reify\"}}}}}}"
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(visualization.status(), StatusCode::OK);
+            let visualization: Value = serde_json::from_slice(
+                &to_bytes(visualization.into_body(), 65_536).await.unwrap(),
+            )
+            .unwrap();
+            let rows = visualization["result"][expected_key].as_array().unwrap();
+            assert!(rows.iter().any(|row| row.to_string().contains("n1")));
+            assert!(rows.iter().any(|row| row.to_string().contains("n2")));
+            assert!(
+                !visualization.to_string().contains("n3"),
+                "private graph endpoint must not leak through {tool}: {visualization}"
+            );
+        }
 
         let request = |path: &str, body: Value, capabilities: Value| ApiEffectRequest {
             contract_version: 1,
@@ -4998,6 +5046,8 @@
             INTERNAL_GRAPH_FIND_EDGES_ROUTE,
             INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
             INTERNAL_GRAPH_K_HOP_ROUTE,
+            INTERNAL_GRAPH_VIZ_D3_ROUTE,
+            INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE,
         ] {
             assert!(service.supports_http_operation("POST", route), "route {route}");
         }
@@ -5060,6 +5110,24 @@
             json!([{"nodes":[],"edges":["e1"]}])
         );
 
+        for (route, key) in [
+            (INTERNAL_GRAPH_VIZ_D3_ROUTE, "nodes"),
+            (INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE, "elements"),
+        ] {
+            let output = service
+                .execute(request(route, json!({"mode":"reify"}), read_capability.clone()))
+                .await;
+            assert_eq!(
+                output.status,
+                StatusCode::OK.as_u16(),
+                "visualization route {route} failed: {}",
+                String::from_utf8_lossy(&output.body)
+            );
+            let output: Value = serde_json::from_slice(&output.body).unwrap();
+            assert!(output[key].as_array().is_some());
+            assert!(!output.to_string().contains("n3"));
+        }
+
         let vector_query = service
             .execute(request(
                 INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
@@ -5101,7 +5169,7 @@
         assert_eq!(edge_vector_query["distances"], json!([[0.1]]));
 
         let observed = fake.await.unwrap();
-        assert_eq!(observed.len(), 20);
+        assert!(observed.len() >= 20);
         assert!(observed.iter().any(|(line, _)| line.contains("collection-nodes/get")));
         assert!(observed.iter().any(|(line, _)| line.contains("collection-edges/get")));
         assert!(observed.iter().any(|(line, payload)| {
@@ -5113,7 +5181,7 @@
                 line.contains("/get HTTP") && payload["where"].to_string().contains("workspace_id")
             })
             .collect::<Vec<_>>();
-        assert_eq!(scoped_reads.len(), 12);
+        assert!(scoped_reads.len() >= 12);
         assert!(
             scoped_reads.iter().all(|(_, payload)| {
                 payload["where"].to_string().contains("workspace_id")

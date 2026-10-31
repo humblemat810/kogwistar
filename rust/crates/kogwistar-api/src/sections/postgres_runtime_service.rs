@@ -5815,6 +5815,14 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_K_HOP_ROUTE {
             return self.graph_k_hop_effect(&request).await;
         }
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_VIZ_D3_ROUTE {
+            return self.graph_visualization_effect(&request, false).await;
+        }
+        if request.method == "POST"
+            && request.path_and_query == INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE
+        {
+            return self.graph_visualization_effect(&request, true).await;
+        }
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
         {
