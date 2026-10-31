@@ -582,6 +582,97 @@
             .unwrap();
         assert!(records.is_empty(), "unauthorized graph effects must not persist");
 
+        let (fault_setup, fault_connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let fault_connection_task = tokio::spawn(fault_connection);
+        fault_setup
+            .batch_execute(&format!(
+                "CREATE FUNCTION \"{schema}\".reject_worker_result_index_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected worker-result index-job failure'; END; $$; CREATE TRIGGER reject_worker_result_index_job BEFORE INSERT ON \"{schema}\".index_jobs FOR EACH ROW EXECUTE FUNCTION \"{schema}\".reject_worker_result_index_job();"
+            ))
+            .await
+            .unwrap();
+        drop(fault_setup);
+        fault_connection_task.await.unwrap().unwrap();
+
+        let run_events_before_fault = service
+            .store
+            .list_server_run_events("owned-run", 0, usize::MAX)
+            .await
+            .unwrap()
+            .len();
+        let failed = client
+            .post(format!("{base}/internal/runtime/results"))
+            .bearer_auth(&owner_token)
+            .json(&worker_result)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            failed.json::<Value>().await.unwrap()["code"],
+            "KOGWISTAR_RUNTIME_RESULT_CONFLICT"
+        );
+        let failed_events = service.store.replay_raw_events("alpha", 0, 100).await.unwrap();
+        assert!(!failed_events
+            .iter()
+            .any(|event| event.event_id == "owner-check-event"));
+        let failed_records = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["owner-check-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(failed_records.is_empty(), "failed transaction must roll back graph projections");
+        assert!(service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|job| job.job_id != "owner-check-job"));
+        assert_eq!(
+            service
+                .store
+                .list_server_run_events("owned-run", 0, usize::MAX)
+                .await
+                .unwrap()
+                .len(),
+            run_events_before_fault,
+            "failed transaction must not append a runtime event"
+        );
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message("lane-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed",
+            "failed transaction must leave the worker lane unacknowledged"
+        );
+
+        let (fault_cleanup, fault_connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let fault_connection_task = tokio::spawn(fault_connection);
+        fault_cleanup
+            .batch_execute(&format!(
+                "DROP TRIGGER reject_worker_result_index_job ON \"{schema}\".index_jobs; DROP FUNCTION \"{schema}\".reject_worker_result_index_job();"
+            ))
+            .await
+            .unwrap();
+        drop(fault_cleanup);
+        fault_connection_task.await.unwrap().unwrap();
+
         let request_body = serde_json::to_vec(&worker_result).unwrap();
         let mut disconnected_client = tokio::net::TcpStream::connect(address).await.unwrap();
         let request_head = format!(
