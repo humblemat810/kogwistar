@@ -12,37 +12,7 @@ async fn resolve_default_acl_graph_effects(
     security_scope: Option<&str>,
     effect_id: &str,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
-    let mut targets = BTreeSet::<AclTargetKey>::new();
-    let mut lock_targets = BTreeSet::<(String, String)>::new();
-    for mutation in mutations {
-        if mutation.record.metadata.get("entity_type")
-            == Some(&Value::String("acl_record".to_owned()))
-        {
-            continue;
-        }
-        lock_targets.insert((mutation.entity_kind.clone(), mutation.record.id.clone()));
-        targets.insert((
-            mutation.entity_kind.clone(),
-            mutation.record.id.clone(),
-            String::new(),
-        ));
-        if let Some(mentions) = mutation.payload.get("mentions").and_then(Value::as_array) {
-            for (grounding_index, grounding) in mentions.iter().enumerate() {
-                let grounding_id = format!("{}::mention::{grounding_index}", mutation.record.id);
-                targets.insert(("grounding".to_owned(), mutation.record.id.clone(), grounding_id));
-                let Some(spans) = grounding.get("spans").and_then(Value::as_array) else {
-                    continue;
-                };
-                for span_index in 0..spans.len() {
-                    let span_id = format!(
-                        "{}::mention::{grounding_index}::span::{span_index}",
-                        mutation.record.id
-                    );
-                    targets.insert(("span".to_owned(), mutation.record.id.clone(), span_id));
-                }
-            }
-        }
-    }
+    let (targets, lock_targets) = acl_targets_for_graph_mutations(mutations);
 
     for (kind, entity_id) in &lock_targets {
         uow.lock_entity_identity(&scope.namespace, kind, entity_id).await?;
@@ -60,6 +30,74 @@ async fn resolve_default_acl_graph_effects(
     let existing = uow
         .graph_acl_records_for_entities(scope, truth_graph, &target_entity_ids)
         .await?;
+    derive_default_acl_graph_effects_from_records(
+        scope,
+        mutations,
+        targets,
+        existing,
+        truth_graph,
+        owner_id,
+        security_scope,
+        effect_id,
+    )
+    .map_err(PostgresStoreError::Backend)
+}
+
+fn acl_targets_for_graph_mutations(
+    mutations: &[GraphMutation],
+) -> (BTreeSet<AclTargetKey>, BTreeSet<(String, String)>) {
+    let mut targets = BTreeSet::<AclTargetKey>::new();
+    let mut lock_targets = BTreeSet::<(String, String)>::new();
+    for mutation in mutations {
+        if mutation.record.metadata.get("entity_type")
+            == Some(&Value::String("acl_record".to_owned()))
+        {
+            continue;
+        }
+        lock_targets.insert((mutation.entity_kind.clone(), mutation.record.id.clone()));
+        targets.insert((mutation.entity_kind.clone(), mutation.record.id.clone(), String::new()));
+        if let Some(mentions) = mutation.payload.get("mentions").and_then(Value::as_array) {
+            for (grounding_index, grounding) in mentions.iter().enumerate() {
+                let grounding_id = format!("{}::mention::{grounding_index}", mutation.record.id);
+                targets.insert(("grounding".to_owned(), mutation.record.id.clone(), grounding_id));
+                let Some(spans) = grounding.get("spans").and_then(Value::as_array) else {
+                    continue;
+                };
+                for span_index in 0..spans.len() {
+                    let span_id = format!(
+                        "{}::mention::{grounding_index}::span::{span_index}",
+                        mutation.record.id
+                    );
+                    targets.insert(("span".to_owned(), mutation.record.id.clone(), span_id));
+                }
+            }
+        }
+    }
+    (targets, lock_targets)
+}
+
+fn acl_target_entity_ids(targets: &BTreeSet<AclTargetKey>) -> Vec<String> {
+    targets
+        .iter()
+        .map(|(_, entity_id, _)| entity_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn derive_default_acl_graph_effects_from_records(
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    targets: BTreeSet<AclTargetKey>,
+    existing: Vec<GraphRecord>,
+    truth_graph: &str,
+    owner_id: &str,
+    security_scope: Option<&str>,
+    effect_id: &str,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), String> {
+    if targets.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
     let latest = latest_acl_records(existing);
     let mut derived_mutations = Vec::new();
     let mut derived_jobs = Vec::new();
@@ -82,7 +120,7 @@ async fn resolve_default_acl_graph_effects(
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
                 .checked_add(1)
-                .ok_or_else(|| PostgresStoreError::Backend("ACL version overflow".to_owned()))?;
+                .ok_or_else(|| "ACL version overflow".to_owned())?;
             let acl_node = acl_record_mutation(
                 scope,
                 truth_graph,
@@ -459,5 +497,61 @@ mod graph_acl_effects_unit_tests {
             latest[&("node".to_owned(), "node-1".to_owned(), String::new())].id,
             current.id
         );
+    }
+
+    #[test]
+    fn acl_derivation_is_backend_independent_and_graph_role_generic() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("wisdom".to_owned()),
+        };
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "event-node-1".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"node-1","label":"item","metadata":{"engine_type":"wisdom"}}),
+            record: GraphRecord {
+                id: "node-1".to_owned(),
+                document: Some("item".to_owned()),
+                metadata: Map::from_iter([("engine_type".to_owned(), json!("wisdom"))]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let (targets, _) = acl_targets_for_graph_mutations(std::slice::from_ref(&mutation));
+        let target_ids = acl_target_entity_ids(&targets);
+        assert_eq!(target_ids, vec!["node-1"]);
+        let (derived, jobs) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            std::slice::from_ref(&mutation),
+            targets.clone(),
+            Vec::new(),
+            "wisdom",
+            "owner-a",
+            Some("tenant-a"),
+            "effect-1",
+        )
+        .unwrap();
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0].record.metadata["owner_id"], "owner-a");
+        assert_eq!(derived[0].payload["metadata"]["acl_truth_graph"], "wisdom");
+        assert_eq!(jobs.len(), 2);
+
+        let existing = derived[0].record.clone();
+        let (unchanged, _) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            std::slice::from_ref(&mutation),
+            targets,
+            vec![existing],
+            "wisdom",
+            "owner-a",
+            Some("tenant-a"),
+            "effect-2",
+        )
+        .unwrap();
+        assert!(unchanged.is_empty());
     }
 }

@@ -78,6 +78,7 @@ pub struct SqliteUnitOfWork<'connection> {
     pub(super) transaction: &'connection Connection,
 }
 
+mod acl_records;
 mod design_and_runs;
 mod events_recovery;
 mod graph_mutations;

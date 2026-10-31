@@ -17,9 +17,9 @@ use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
     EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
     EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphMutationBatch,
-    IndexJob, IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
-    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
-    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    GraphRecord, IndexJob, IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore,
+    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
@@ -87,6 +87,7 @@ pub struct SqliteAuthStore {
     path: Arc<PathBuf>,
 }
 
+mod acl_records;
 mod auth;
 mod auth_schema;
 mod authority;

@@ -188,6 +188,8 @@ fn block_on<T>(future: impl Future<Output = T>) -> T {
     }
 }
 
+#[path = "tests/acl_records.rs"]
+mod acl_records;
 #[path = "tests/auth.rs"]
 mod auth;
 #[path = "tests/authority.rs"]
