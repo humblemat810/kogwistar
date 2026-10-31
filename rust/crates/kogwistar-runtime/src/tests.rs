@@ -784,6 +784,164 @@
     }
 
     #[test]
+    fn registered_event_advisory_hook_is_typed_bounded_and_idempotently_keyed() {
+        use std::sync::{Arc, Mutex};
+
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut registry = NativeOperationRegistry::default();
+        let callback_received = Arc::clone(&received);
+        registry
+            .register_event_advisory_hook(move |request, event, idempotency_key| {
+                callback_received.lock().unwrap().push((
+                    request.run_id.clone(),
+                    event.clone(),
+                    idempotency_key.to_owned(),
+                ));
+                Ok(json!({"hint": "consider the completed text field"}))
+            })
+            .unwrap();
+
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.hook".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-hook-001".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "hook".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: Some("turn".to_owned()),
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 9,
+            state: Map::from_iter([
+                (
+                    "agent_event_current".to_owned(),
+                    json!({
+                        "event_id": "event-hook-1",
+                        "event": {
+                            "kind": "field_completed",
+                            "field_name": "text",
+                            "value": "answer"
+                        }
+                    }),
+                ),
+                ("agent_event_route".to_owned(), json!("advisory")),
+                (
+                    "agent_event_advisory_field_names".to_owned(),
+                    json!(["text"]),
+                ),
+                ("agent_event_advisory_hook_count".to_owned(), json!(0)),
+                ("agent_event_advisory_response_hook_count".to_owned(), json!(0)),
+            ]),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+
+        let first = execute_native_step_with_registry(&request, &registry).unwrap();
+        let second = execute_native_step_with_registry(&request, &registry).unwrap();
+        let updates = |effect: &RecordedWorkerSuccessEffect| {
+            kogwistar_contracts::apply_state_update_pairs(
+                Value::Object(request.state.clone()),
+                effect.state_update.iter().map(|update| match update {
+                    RecordedStateUpdate::Pair((mode, payload)) => (mode.as_str(), payload),
+                    RecordedStateUpdate::Object { mode, payload } => (mode.as_str(), payload),
+                }),
+            )
+            .unwrap()
+        };
+        let first_state = updates(&first);
+        assert_eq!(
+            first_state["agent_event_hook_annotations"]["hint"],
+            "consider the completed text field"
+        );
+        assert_eq!(first_state["agent_event_advisory_hook_count"], 1);
+        assert_eq!(first_state["agent_event_advisory_response_hook_count"], 1);
+        assert_eq!(first_state["agent_event_handling_step_seq"], 9);
+        assert_eq!(
+            updates(&second)["agent_event_hook_annotations"],
+            first_state["agent_event_hook_annotations"]
+        );
+
+        let calls = received.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "run-hook-001");
+        assert_eq!(
+            calls[0].1,
+            serde_json::from_value::<kogwistar_contracts::ProviderEventV1>(json!({
+                "kind": "field_completed",
+                "field_name": "text",
+                "value": "answer"
+            }))
+            .unwrap()
+        );
+        assert_eq!(calls[0].2, calls[1].2);
+        assert!(calls[0].2.starts_with("agent-advisory-hook:v1:"));
+    }
+
+    #[test]
+    fn registered_event_advisory_hook_rejects_non_advisory_route_before_callback() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register_event_advisory_hook(move |_, _, _| {
+                callback_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"hint": "must not run"}))
+            })
+            .unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.hook".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-hook-002".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "hook".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::from_iter([
+                (
+                    "agent_event_current".to_owned(),
+                    json!({
+                        "event_id": "event-hook-2",
+                        "event": {
+                            "kind": "tool_call_completed",
+                            "call_id": "call-1",
+                            "name": "lookup",
+                            "arguments": {}
+                        }
+                    }),
+                ),
+                ("agent_event_route".to_owned(), json!("advisory")),
+            ]),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::OperationFailed { .. })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn event_advisory_annotations_are_bounded_and_require_an_object() {
+        assert_eq!(bounded_event_advisory_annotations(json!("not an object")), json!({}));
+        assert_eq!(
+            bounded_event_advisory_annotations(json!({"hint": "x".repeat(6_001)})),
+            json!({"_status": "hook_output_over_budget"})
+        );
+    }
+
+    #[test]
     fn native_operation_recognition_is_strict_and_shared() {
         assert_eq!(native_operation_name("rust-native/noop"), Some("noop"));
         assert_eq!(native_operation_name("rust-native/"), None);

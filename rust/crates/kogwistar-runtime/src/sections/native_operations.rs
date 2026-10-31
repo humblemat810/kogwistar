@@ -426,6 +426,30 @@ impl NativeOperationRegistry {
         )
     }
 
+    /// Register the advisory hook node used by the graph-native event workflow.
+    ///
+    /// The callback is application-owned and synchronous like other native
+    /// operations. Its output is confined to bounded annotations; it cannot
+    /// select routes, produce graph effects, or change authority fields.
+    pub fn register_event_advisory_hook<F>(
+        &mut self,
+        hook: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+                &kogwistar_contracts::ProviderEventV1,
+                &str,
+            ) -> Result<Value, String>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register("agent.event.hook", "v1", move |request| {
+            native_event_advisory_hook(request, &hook)
+        })
+    }
+
     /// Register a trusted state operation that returns typed durable effects.
     /// Effects are requests only; the API validates and commits them together
     /// with the runtime transition.
@@ -586,6 +610,118 @@ impl NativeOperationRegistry {
 
     pub fn supports(&self, operation: &str, version: &str) -> bool {
         self.handler(operation, version).is_some()
+    }
+}
+
+const MAX_EVENT_ADVISORY_ANNOTATION_CHARS: usize = 6_000;
+
+fn native_event_advisory_hook<F>(
+    request: &RuntimeNativeStepRequest,
+    hook: &F,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
+where
+    F: Fn(
+            &RuntimeNativeStepRequest,
+            &kogwistar_contracts::ProviderEventV1,
+            &str,
+        ) -> Result<Value, String>
+        + Send
+        + Sync
+        + 'static,
+{
+    let current = request
+        .state
+        .get("agent_event_current")
+        .and_then(Value::as_object)
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "current provider event is missing".to_owned(),
+        })?;
+    let event_id = current
+        .get("event_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "current provider event ID is missing".to_owned(),
+        })?;
+    let event_value = current
+        .get("event")
+        .cloned()
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "current provider event payload is missing".to_owned(),
+        })?;
+    let event: kogwistar_contracts::ProviderEventV1 =
+        serde_json::from_value(event_value).map_err(|_| {
+            RuntimeNativeExecutionError::OperationFailed {
+                operation: request.operation.clone(),
+                reason: "current provider event payload is invalid".to_owned(),
+            }
+        })?;
+    if request.state.get("agent_event_route").and_then(Value::as_str) != Some("advisory")
+        || event_route_for_claim(request, &event)?.0 != "advisory"
+    {
+        return Err(RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "current provider event is not eligible for advisory handling".to_owned(),
+        });
+    }
+
+    let key_material = format!("advisory-hook\0{}\0{event_id}", request.run_id);
+    let idempotency_key = format!(
+        "agent-advisory-hook:v1:{}",
+        hex::encode(Sha256::digest(key_material.as_bytes()))
+    );
+    let raw_annotations = hook(request, &event, &idempotency_key).map_err(|_| {
+        RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "advisory hook callback failed".to_owned(),
+        }
+    })?;
+    let annotations = bounded_event_advisory_annotations(raw_annotations);
+    let hook_count = request
+        .state
+        .get("agent_event_advisory_hook_count")
+        .and_then(Value::as_i64)
+        .filter(|count| *count >= 0)
+        .unwrap_or(0);
+    let response_hook_count = request
+        .state
+        .get("agent_event_advisory_response_hook_count")
+        .and_then(Value::as_i64)
+        .filter(|count| *count >= 0)
+        .unwrap_or(0);
+    let mut update = Map::new();
+    update.insert("agent_event_hook_annotations".to_owned(), annotations);
+    update.insert(
+        "agent_event_advisory_hook_count".to_owned(),
+        json!(hook_count.saturating_add(1)),
+    );
+    update.insert(
+        "agent_event_advisory_response_hook_count".to_owned(),
+        json!(response_hook_count.saturating_add(1)),
+    );
+    update.insert(
+        "agent_event_handling_step_seq".to_owned(),
+        json!(request.step_seq),
+    );
+    Ok(NativeOperationOutput {
+        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
+        result: None,
+    })
+}
+
+fn bounded_event_advisory_annotations(raw: Value) -> Value {
+    let Some(annotations) = raw.as_object() else {
+        return json!({});
+    };
+    match serde_json::to_string(annotations) {
+        Ok(serialized) if serialized.chars().count() <= MAX_EVENT_ADVISORY_ANNOTATION_CHARS => {
+            Value::Object(annotations.clone())
+        }
+        Ok(_) => json!({"_status":"hook_output_over_budget"}),
+        Err(_) => json!({"_status":"invalid_hook_output"}),
     }
 }
 
