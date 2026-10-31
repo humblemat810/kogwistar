@@ -311,9 +311,23 @@ impl ServerBackend {
     }
 }
 
+fn required_backend_setting(
+    name: &'static str,
+    value: Option<String>,
+) -> Result<String, std::io::Error> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{name} is required for the selected KOGWISTAR_BACKEND"),
+            )
+        })
+}
+
 #[cfg(test)]
 mod server_backend_tests {
-    use super::ServerBackend;
+    use super::{ServerBackend, required_backend_setting};
 
     #[test]
     fn server_backend_config_accepts_only_implemented_compositions() {
@@ -327,6 +341,14 @@ mod server_backend_tests {
                 .expect_err("unsupported backend must fail before server startup");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
+        for missing in [None, Some(String::new()), Some("  \t".to_owned())] {
+            assert!(required_backend_setting("KOGWISTAR_PG_DSN", missing).is_err());
+        }
+        assert_eq!(
+            required_backend_setting("KOGWISTAR_META_SQLITE_PATH", Some("db.sqlite".to_owned()))
+                .unwrap(),
+            "db.sqlite"
+        );
     }
 }
 
@@ -506,6 +528,14 @@ fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std:
 /// a second platform-specific executable beside the extension module.
 pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let backend = ServerBackend::from_config(&environment("KOGWISTAR_BACKEND", "sqlite"))?;
+    let (setting_name, setting_value) = match backend {
+        ServerBackend::Postgres => ("KOGWISTAR_PG_DSN", std::env::var("KOGWISTAR_PG_DSN").ok()),
+        ServerBackend::Sqlite => (
+            "KOGWISTAR_META_SQLITE_PATH",
+            std::env::var("KOGWISTAR_META_SQLITE_PATH").ok(),
+        ),
+    };
+    let backend_setting = required_backend_setting(setting_name, setting_value)?;
     let host = environment("KOGWISTAR_SERVER_HOST", "127.0.0.1");
     let port = environment("KOGWISTAR_SERVER_PORT", "8000");
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
@@ -544,8 +574,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     let mut embedding_worker_available = false;
     let mut projection_reconciliation_available = false;
     let application: Arc<dyn ApplicationService> = if backend == ServerBackend::Postgres {
-        match std::env::var("KOGWISTAR_PG_DSN") {
-            Ok(dsn) if !dsn.trim().is_empty() => {
+        let dsn = backend_setting.clone();
                 let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
                 let wisdom_schema = configured_wisdom_schema(
                     &schema_base,
@@ -585,12 +614,8 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     .await
                     .map_err(std::io::Error::other)?;
                 Arc::new(service)
-            }
-            _ => Arc::new(UnavailableApplicationService),
-        }
     } else {
-        match std::env::var("KOGWISTAR_META_SQLITE_PATH") {
-            Ok(path) if !path.trim().is_empty() => {
+        let path = backend_setting;
                 let chroma = match std::env::var("KOGWISTAR_CHROMA_ENDPOINT") {
                     Ok(endpoint) if !endpoint.trim().is_empty() => {
                         let metric = match environment("KOGWISTAR_CHROMA_METRIC", "cosine")
@@ -647,9 +672,6 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     }
                 }
                 Arc::new(service)
-            }
-            _ => Arc::new(UnavailableApplicationService),
-        }
     };
     if inline_embedding_worker && !embedding_worker_available {
         return Err(std::io::Error::new(
