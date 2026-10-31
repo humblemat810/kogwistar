@@ -870,6 +870,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     Some("/api/syscall/v1/receive_message") => {
                         return self.sqlite_chroma_receive_message_effect(&request).await;
                     }
+                    Some("/api/syscall/v1/mount_memory") => {
+                        return self.sqlite_chroma_mount_memory_effect(&request).await;
+                    }
                     Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
                         return self.chroma_graph_neighbors_effect(&request).await;
                     }

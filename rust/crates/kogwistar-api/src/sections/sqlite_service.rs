@@ -1836,6 +1836,82 @@ impl SqliteRunApplicationService {
         )
     }
 
+    async fn sqlite_chroma_mount_memory_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let input = match syscall_input(request, "mount_memory") {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "mount_memory",
+            false,
+            &["project_view"],
+            "conversation",
+        ) {
+            return syscall_forbidden("mount_memory");
+        }
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let run_id = match context_snapshot_syscall_field(&input.args, "run_id") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let stage = match context_snapshot_syscall_field(&input.args, "stage") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+            &nodes,
+            conversation_id,
+            run_id.as_deref(),
+            stage.as_deref(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "mount_memory",
+            json_effect(StatusCode::OK, public_context_snapshot_value(snapshot)),
+        )
+    }
+
     async fn chroma_graph_neighbors_effect(
         &self,
         request: &ApiEffectRequest,

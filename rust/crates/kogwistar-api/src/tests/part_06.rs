@@ -4830,7 +4830,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..8 {
+            for _ in 0..12 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -4868,10 +4868,12 @@
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
                         ("turn-private", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":3,"role":"assistant","summary":"private"})),
+                        ("snapshot", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer","snapshot_seq":7})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-2", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-2","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
+                        ("acl-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot","acl_version":1,"acl_mode":"public"})),
                     ];
                     let metadatas = nodes
                         .iter()
@@ -4886,9 +4888,15 @@
                         .collect::<Vec<_>>();
                     json!({
                         "ids": nodes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                        "documents": ["{}","{}","{}","{}","{}","{}","{}","{}"],
+                        "documents": nodes.iter().map(|(id, _)| {
+                            if *id == "snapshot" {
+                                r#"{"metadata":{"summary":"stored summary"},"properties":{"references":["evidence-1"]}}"#.to_owned()
+                            } else {
+                                "{}".to_owned()
+                            }
+                        }).collect::<Vec<_>>(),
                         "metadatas": metadatas,
-                        "embeddings": [null,null,null,null,null,null,null,null]
+                        "embeddings": [null,null,null,null,null,null,null,null,null,null]
                     })
                 } else {
                     json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})
@@ -4919,10 +4927,10 @@
         )
         .await
         .unwrap();
-        let request = |args: Value, principal: Value| ApiEffectRequest {
+        let request = |operation: &str, args: Value, principal: Value| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
-            path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+            path_and_query: format!("/api/syscall/v1/{operation}"),
             body: json!({"version":"v1","args":args}).to_string().into_bytes(),
             principal,
         };
@@ -4932,18 +4940,19 @@
         });
         let denied = service
             .execute(request(
+                "receive_message",
                 json!({"conversation_id":"c1"}),
                 json!({"ns":["conversation"],"capabilities":[]}),
             ))
             .await;
         assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
         let missing_id = service
-            .execute(request(json!({}), principal.clone()))
+            .execute(request("receive_message", json!({}), principal.clone()))
             .await;
         assert_eq!(missing_id.status, StatusCode::BAD_REQUEST.as_u16());
 
         let response = service
-            .execute(request(json!({"conversation_id":"c1"}), principal.clone()))
+            .execute(request("receive_message", json!({"conversation_id":"c1"}), principal.clone()))
             .await;
         assert_eq!(response.status, StatusCode::OK.as_u16());
         let response: Value = serde_json::from_slice(&response.body).unwrap();
@@ -4953,13 +4962,40 @@
         assert_eq!(response["result"]["messages"][1]["node_id"], "turn-2");
 
         let empty_transcript = service
-            .execute(request(json!({"conversation_id":"missing"}), principal))
+            .execute(request("receive_message", json!({"conversation_id":"missing"}), principal.clone()))
             .await;
         assert_eq!(empty_transcript.status, StatusCode::OK.as_u16());
         assert_eq!(
             serde_json::from_slice::<Value>(&empty_transcript.body).unwrap()["result"]["messages"],
             json!([])
         );
+
+        let denied_mount = service
+            .execute(request(
+                "mount_memory",
+                json!({"conversation_id":"c1"}),
+                json!({"ns":["conversation"],"capabilities":[]}),
+            ))
+            .await;
+        assert_eq!(denied_mount.status, StatusCode::FORBIDDEN.as_u16());
+
+        let mounted = service
+            .execute(request(
+                "mount_memory",
+                json!({"conversation_id":"c1","run_id":"run-a","stage":"answer"}),
+                json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+                    "graph_space":"conversation", "ns":["conversation"], "capabilities":["project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(mounted.status, StatusCode::OK.as_u16());
+        let mounted: Value = serde_json::from_slice(&mounted.body).unwrap();
+        assert_eq!(mounted["op"], "mount_memory");
+        assert_eq!(mounted["result"]["snapshot_node_id"], "snapshot");
+        assert_eq!(mounted["result"]["metadata"]["summary"], "stored summary");
+        assert_eq!(mounted["result"]["properties"]["references"], json!(["evidence-1"]));
+        assert!(mounted["result"].get("schema_version").is_none());
 
         let auth = AuthConfig {
             mode: "dev".to_owned(),
@@ -4976,7 +5012,7 @@
             &json!({
                 "sub":"reader-1", "role":"ro", "storage_ns":"scope-a",
                 "workspace_id":"workspace-a", "graph_space":"conversation",
-                "ns":["conversation"], "capabilities":["read_graph"], "exp":now + 300
+                "ns":["conversation"], "capabilities":["read_graph","project_view"], "exp":now + 300
             }),
             &EncodingKey::from_secret(b"sqlite-chroma-transcript-secret"),
         )
@@ -5002,17 +5038,61 @@
             )
             .await
             .unwrap();
-        assert_eq!(http_response.status(), StatusCode::OK);
-        let http_payload: Value = serde_json::from_slice(
-            &to_bytes(http_response.into_body(), 65_536).await.unwrap(),
-        )
-        .unwrap();
+        let http_status = http_response.status();
+        let http_body = to_bytes(http_response.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            http_status,
+            StatusCode::OK,
+            "response body: {}",
+            String::from_utf8_lossy(&http_body)
+        );
+        let http_payload: Value = serde_json::from_slice(&http_body).unwrap();
         assert_eq!(http_payload["result"]["messages"][0]["node_id"], "turn-1");
         assert_eq!(http_payload["result"]["messages"][1]["node_id"], "turn-2");
         assert_eq!(http_payload["result"]["messages"].as_array().unwrap().len(), 2);
 
+        let http_mount_memory = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        )
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/mount_memory")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    r#"{"version":"v1","args":{"conversation_id":"c1","run_id":"run-a","stage":"answer"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let mount_status = http_mount_memory.status();
+        let mount_body = to_bytes(http_mount_memory.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            mount_status,
+            StatusCode::OK,
+            "mount_memory response: {}",
+            String::from_utf8_lossy(&mount_body)
+        );
+        let mount_payload: Value = serde_json::from_slice(&mount_body).unwrap();
+        assert_eq!(mount_payload["result"]["snapshot_node_id"], "snapshot");
+        assert_eq!(mount_payload["result"]["metadata"]["summary"], "stored summary");
+        assert!(mount_payload["result"].get("schema_version").is_none());
+
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 8);
+        assert_eq!(requests.len(), 12);
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")
@@ -5026,10 +5106,14 @@
         ));
         let metadata_only = SqliteRunApplicationService::open(&metadata_only_path).unwrap();
         let unsupported = metadata_only
-            .execute(request(json!({"conversation_id":"c1"}), json!({
-                "sub":"reader-1", "storage_ns":"scope-a", "ns":["conversation"],
-                "capabilities":["read_graph"]
-            })))
+            .execute(request(
+                "receive_message",
+                json!({"conversation_id":"c1"}),
+                json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "ns":["conversation"],
+                    "capabilities":["read_graph"]
+                }),
+            ))
             .await;
         assert_eq!(unsupported.status, StatusCode::NOT_IMPLEMENTED.as_u16());
         assert_eq!(
