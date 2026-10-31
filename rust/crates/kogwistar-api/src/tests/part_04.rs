@@ -1487,6 +1487,7 @@
             uuid::Uuid::new_v4()
         ));
         let calls = Arc::new(Mutex::new(Vec::new()));
+        let provider_failure = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let provider = Arc::new(FixedEmbeddingProvider {
             profile: kogwistar_engine::embedding::EmbeddingProfile {
                 provider: "test".to_owned(),
@@ -1505,7 +1506,7 @@
             },
             vector: vec![0.6, 0.8],
             calls: calls.clone(),
-            fail: None,
+            fail: Some(provider_failure.clone()),
         });
         let service = open_sqlite_application_service(
             &path,
@@ -1649,9 +1650,35 @@
             })
             .unwrap();
 
-        // The SQLite queue and canonical event are durable across a Rust
-        // application-service restart; Chroma promotion remains eventual.
+        let failed_attempt = service
+            .run_embedding_projection_jobs_once(2, 30, Some(namespace))
+            .await
+            .unwrap();
+        assert_eq!(failed_attempt.claimed, 2);
+        assert_eq!(failed_attempt.projected, 0);
+        assert_eq!(failed_attempt.retried, 2);
+        assert!(service
+            .store
+            .get_stage1_node_projection(namespace, &format!("node:{entity_id}"))
+            .unwrap()
+            .is_some());
+        let failed_jobs = service
+            .store
+            .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
+            .unwrap();
+        assert_eq!(
+            failed_jobs
+                .iter()
+                .filter(|job| job.index_kind == "node_embedding" && job.retry_count == 1)
+                .count(),
+            2
+        );
+
+        // The SQLite queue and canonical event survive process restart after a
+        // provider failure; Chroma remains a derived eventual projection.
         drop(service);
+        provider_failure.store(false, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         let service = open_sqlite_application_service(
             &path,
             Some(SqliteChromaGraphConfig {
@@ -1694,12 +1721,13 @@
             .unwrap()
             .is_none());
         let mut batches = calls.lock().unwrap().clone();
-        assert_eq!(batches.len(), 1);
-        batches[0].sort();
-        assert_eq!(
-            batches[0],
-            vec![document.to_owned(), second_document.clone()]
-        );
+        assert_eq!(batches.len(), 2, "one failed and one recovered provider batch");
+        let expected_batch = vec![document.to_owned(), second_document.clone()];
+        for batch in &mut batches {
+            batch.sort();
+            assert_eq!(*batch, expected_batch);
+        }
+        assert_eq!(batches[0], batches[1]);
         let jobs = service
             .store
             .list_index_jobs(Some(namespace), None, None, None, None, 10)
@@ -1828,9 +1856,12 @@
         assert_eq!(stale_summary.projected, 0);
         assert_eq!(stale_summary.retried, 1);
         let mut provider_batches = calls.lock().unwrap().clone();
-        assert_eq!(provider_batches.len(), 1);
-        provider_batches[0].sort();
-        assert_eq!(provider_batches[0], vec![document.to_owned(), second_document]);
+        assert_eq!(provider_batches.len(), 2);
+        let expected_batch = vec![document.to_owned(), second_document];
+        for batch in &mut provider_batches {
+            batch.sort();
+            assert_eq!(*batch, expected_batch);
+        }
         let stale_job = service
             .store
             .list_index_jobs(Some(namespace), Some("PENDING"), None, None, None, 10)
