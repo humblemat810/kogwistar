@@ -80,6 +80,46 @@ fn latest_entity_events_are_batched_and_scoped_by_namespace_and_kind() {
 }
 
 #[test]
+fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
+    let (store, path) = store("latest-events-uow");
+    store
+        .immediate_transaction(|uow| {
+            uow.append_raw_entity_event(
+                "wisdom",
+                NewRawEntityEvent {
+                    event_id: "wisdom-node-v1".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "node-1".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: r#"{"revision":1}"#.to_owned(),
+                },
+            )?;
+            uow.append_raw_entity_event(
+                "wisdom",
+                NewRawEntityEvent {
+                    event_id: "wisdom-node-v2".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "node-1".to_owned(),
+                    op: "REPLACE".to_owned(),
+                    payload_json: r#"{"revision":2}"#.to_owned(),
+                },
+            )?;
+            let latest = uow.latest_entity_events(
+                "wisdom",
+                "node",
+                &["node-1".to_owned(), "missing".to_owned()],
+            )?;
+            assert_eq!(latest.len(), 1);
+            assert_eq!(latest["node-1"].event_id, "wisdom-node-v2");
+            assert_eq!(latest["node-1"].payload_json, r#"{"revision":2}"#);
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn global_user_and_scoped_sequences_are_isolated_and_current() {
     let (store, path) = store("sequences");
     assert_eq!(store.current_global_seq().unwrap(), 0);

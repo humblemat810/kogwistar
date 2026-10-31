@@ -371,6 +371,381 @@ fn graph_record_string_ids_from_value(value: &Value, field: &str) -> Vec<String>
         .collect()
 }
 
+fn sqlite_wisdom_records(
+    uow: &kogwistar_store_sqlite::SqliteUnitOfWork<'_>,
+    scope: &GraphScope,
+    entity_kind: &str,
+    ids: &[String],
+) -> Result<Vec<GraphRecord>, SqliteStoreError> {
+    let latest = uow.latest_entity_events(&scope.namespace, entity_kind, ids)?;
+    let mut records = Vec::with_capacity(latest.len());
+    for id in ids {
+        let Some(event) = latest.get(id) else {
+            continue;
+        };
+        let payload: Value = serde_json::from_str(&event.payload_json)?;
+        let Some(object) = payload.as_object() else {
+            return Err(SqliteStoreError::TransactionAborted(
+                "canonical graph event payload must be an object".to_owned(),
+            ));
+        };
+        let mut metadata = object
+            .get("metadata")
+            .and_then(Value::as_object)
+            .cloned()
+            .ok_or_else(|| {
+                SqliteStoreError::TransactionAborted(
+                    "canonical graph event metadata must be an object".to_owned(),
+                )
+            })?;
+        if scope.workspace_id.as_deref().is_some_and(|expected| {
+            metadata.get("workspace_id").and_then(Value::as_str) != Some(expected)
+        }) || scope.graph_space.as_deref().is_some_and(|expected| {
+            metadata.get("graph_space").and_then(Value::as_str) != Some(expected)
+        }) {
+            continue;
+        }
+        if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+            metadata.extend(properties.clone());
+        }
+        for field in [
+            "label",
+            "type",
+            "summary",
+            "doc_id",
+            "domain_id",
+            "canonical_entity_id",
+            "relation",
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+        ] {
+            if let Some(value) = object.get(field).filter(|value| !value.is_null()) {
+                metadata.insert(field.to_owned(), value.clone());
+            }
+        }
+        if matches!(event.op.to_ascii_uppercase().as_str(), "DELETE" | "TOMBSTONE")
+            || object
+                .get("lifecycle_patch")
+                .and_then(|patch| patch.get("lifecycle_status"))
+                .and_then(Value::as_str)
+                == Some("tombstoned")
+        {
+            metadata.insert("tombstoned".to_owned(), Value::Bool(true));
+            metadata.insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        }
+        records.push(GraphRecord {
+            id: event.entity_id.clone(),
+            document: object
+                .get("document")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            metadata,
+            embedding: object
+                .get("embedding")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_f64)
+                        .map(|value| value as f32)
+                        .collect()
+                }),
+        });
+    }
+    Ok(records)
+}
+
+fn wisdom_record_is_tombstoned(record: &GraphRecord) -> bool {
+    record
+        .metadata
+        .get("lifecycle_status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+}
+
+impl SqliteRunApplicationService {
+    async fn sqlite_public_wisdom_graph_upsert_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if self.chroma_graph.is_none() {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "Wisdom graph writes require SQLite canonical events and a configured Chroma projection",
+            );
+        }
+        if principal_role(&request.principal) != "rw"
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "wisdom" || namespace == "*")
+            || !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"])
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Wisdom graph upsert requires rw, wisdom namespace, and write_graph capability",
+            );
+        }
+        let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_GRAPH_OWNER_REQUIRED",
+                "Wisdom graph upsert requires an authenticated owner identity",
+            );
+        };
+        let Some(provider) = self.embedding_provider.as_ref() else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+                "Wisdom graph writes require a configured embedding provider",
+            );
+        };
+        let scope_values = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_values["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: scope_values["workspace"].as_str().map(str::to_owned),
+            graph_space: scope_values["graph_space"].as_str().map(str::to_owned),
+        };
+        let parsed = match parse_wisdom_graph_upsert(&request.body) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+            }
+        };
+        let prepared = match prepare_wisdom_graph_mutations(parsed.inp, &scope) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+            }
+        };
+        if prepared.mutations.is_empty() {
+            return json_effect(StatusCode::OK, json!({
+                "node_ids": prepared.node_ids,
+                "edge_ids": prepared.edge_ids,
+                "nodes_added": 0,
+                "edges_added": 0,
+            }));
+        }
+        let mut batch = GraphMutationBatchInput {
+            contract_version: 1,
+            atomic: true,
+            mutations: prepared.mutations,
+            index_jobs: Vec::new(),
+        };
+        let profile = provider.profile();
+        if let Err(error) = profile.validate() {
+            return effect_error(StatusCode::BAD_GATEWAY, "KOGWISTAR_EMBEDDING_FAILED", error.to_string());
+        }
+        let mut embedding_positions = Vec::new();
+        let mut embedding_texts = Vec::new();
+        for (position, mutation) in batch.mutations.iter().enumerate() {
+            let (Some(label), Some(summary)) = (
+                mutation.payload.get("label").and_then(Value::as_str),
+                mutation.payload.get("summary").and_then(Value::as_str),
+            ) else {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "wisdom graph entities require label and summary",
+                );
+            };
+            embedding_positions.push(position);
+            embedding_texts.push(format!("{label}: {summary}"));
+        }
+        let vectors = match provider.embed(&embedding_texts).await {
+            Ok(vectors) if vectors.len() == embedding_positions.len() => vectors,
+            Ok(_) => return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "embedding provider returned an unexpected vector count",
+            ),
+            Err(_) => return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "embedding provider failed",
+            ),
+        };
+        for (position, vector) in embedding_positions.into_iter().zip(vectors) {
+            if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider returned an invalid vector",
+                );
+            }
+            let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+            if vector.iter().any(|value| !value.is_finite()) {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding vector exceeds graph storage range",
+                );
+            }
+            batch.mutations[position].record.embedding = Some(vector);
+            batch.mutations[position].embedding_dim = profile.dimension;
+        }
+        if let Err(error) = batch.validate() {
+            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error.to_string());
+        }
+        let mutations = match graph_mutation_batch_value(batch.clone()) {
+            Ok(mutations) => mutations,
+            Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
+        };
+        if let Err(error) = validate_graph_mutation_envelopes(&batch, &mutations) {
+            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+        }
+
+        let mut references = wisdom_graph_references(&mutations);
+        let target_nodes = mutations
+            .iter()
+            .filter(|mutation| mutation.entity_kind == "node")
+            .map(|mutation| mutation.record.id.clone())
+            .collect::<BTreeSet<_>>();
+        let target_edges = mutations
+            .iter()
+            .filter(|mutation| mutation.entity_kind == "edge")
+            .map(|mutation| mutation.record.id.clone())
+            .collect::<BTreeSet<_>>();
+        let owner_id = owner_id.to_owned();
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_values["security_scope"].as_str(),
+        );
+        let security_scope = scope_values["security_scope"].as_str().map(str::to_owned);
+        let result = self.store.immediate_transaction(|uow| {
+            let mut external_edges = BTreeMap::<String, GraphRecord>::new();
+            loop {
+                let pending = references
+                    .edge_ids
+                    .iter()
+                    .filter(|id| !target_edges.contains(*id) && !external_edges.contains_key(*id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if pending.is_empty() {
+                    break;
+                }
+                if references.node_ids.len().saturating_add(references.edge_ids.len()) > 10_000 {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "wisdom graph endpoint closure exceeds 10000 entities".to_owned(),
+                    ));
+                }
+                let records = sqlite_wisdom_records(uow, &scope, "edge", &pending)?;
+                if records.len() != pending.len() {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "one or more external wisdom edges are missing from the caller scope".to_owned(),
+                    ));
+                }
+                for record in records {
+                    references.node_ids.extend(
+                        ["source_ids", "target_ids"]
+                            .into_iter()
+                            .flat_map(|field| wisdom_graph_record_ids(&record, field)),
+                    );
+                    references.edge_ids.extend(
+                        ["source_edge_ids", "target_edge_ids"]
+                            .into_iter()
+                            .flat_map(|field| wisdom_graph_record_ids(&record, field)),
+                    );
+                    external_edges.insert(record.id.clone(), record);
+                }
+            }
+            references.node_ids.retain(|id| !target_nodes.contains(id));
+            references.edge_ids.retain(|id| !target_edges.contains(id));
+            if references.node_ids.len().saturating_add(references.edge_ids.len()) > 10_000 {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "wisdom graph endpoint closure exceeds 10000 entities".to_owned(),
+                ));
+            }
+            let mut node_ids = references.node_ids.iter().cloned().collect::<Vec<_>>();
+            node_ids.extend(target_nodes.iter().cloned());
+            node_ids.sort();
+            node_ids.dedup();
+            let mut edge_ids = references.edge_ids.iter().cloned().collect::<Vec<_>>();
+            edge_ids.extend(target_edges.iter().cloned());
+            edge_ids.sort();
+            edge_ids.dedup();
+            let nodes = sqlite_wisdom_records(uow, &scope, "node", &node_ids)?;
+            let edges = sqlite_wisdom_records(uow, &scope, "edge", &edge_ids)?;
+            if references.node_ids.iter().any(|id| !nodes.iter().any(|node| &node.id == id))
+                || references.edge_ids.iter().any(|id| !edges.iter().any(|edge| &edge.id == id))
+            {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "one or more external wisdom endpoints are missing from the caller scope".to_owned(),
+                ));
+            }
+            let existing_ids = nodes.iter().chain(&edges).map(|record| record.id.clone()).collect::<Vec<_>>();
+            let acl_records = uow.graph_acl_records_for_entities(&scope, "wisdom", &existing_ids)?;
+            let mut acl_index = GraphAclIndex::default();
+            acl_index.extend_from_records(&acl_records, "wisdom");
+            let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
+                &nodes,
+                &edges,
+                &acl_index,
+                &acl_principal,
+            );
+            let expected = nodes.iter().map(|record| ("node", record.id.as_str()))
+                .chain(edges.iter().map(|record| ("edge", record.id.as_str())))
+                .collect::<BTreeSet<_>>();
+            let visible = visible_nodes.iter().map(|record| ("node", record.id.as_str()))
+                .chain(visible_edges.iter().map(|record| ("edge", record.id.as_str())))
+                .collect::<BTreeSet<_>>();
+            if expected != visible
+                || nodes.iter().any(|record| target_nodes.contains(&record.id) && wisdom_record_is_tombstoned(record))
+                || edges.iter().any(|record| target_edges.contains(&record.id) && wisdom_record_is_tombstoned(record))
+            {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "one or more wisdom graph entities are hidden or tombstoned".to_owned(),
+                ));
+            }
+            let existing_targets = nodes.iter().filter(|record| target_nodes.contains(&record.id))
+                .map(|record| ("node".to_owned(), record.id.clone()))
+                .chain(edges.iter().filter(|record| target_edges.contains(&record.id))
+                    .map(|record| ("edge".to_owned(), record.id.clone())))
+                .collect::<BTreeSet<_>>();
+            let new_mutations = mutations.iter().filter(|mutation| {
+                !existing_targets.contains(&(mutation.entity_kind.clone(), mutation.record.id.clone()))
+            }).cloned().collect::<Vec<_>>();
+            let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+                &scope,
+                &new_mutations,
+                acl_targets_for_graph_mutations(&new_mutations).0,
+                acl_records,
+                "wisdom",
+                &owner_id,
+                security_scope.as_deref(),
+                &uuid::Uuid::new_v4().to_string(),
+            ).map_err(SqliteStoreError::TransactionAborted)?;
+            let mut all_mutations = mutations.clone();
+            all_mutations.extend(acl_mutations);
+            uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: all_mutations,
+                index_jobs: acl_jobs,
+            })?;
+            Ok(())
+        });
+        match result {
+            Ok(()) => json_effect(StatusCode::OK, json!({
+                "node_ids": prepared.node_ids,
+                "edge_ids": prepared.edge_ids,
+                "nodes_added": prepared.node_ids.len(),
+                "edges_added": prepared.edge_ids.len(),
+                "projection_consistency": "eventual",
+            })),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_WISDOM_GRAPH_UPSERT_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+}
+
 impl PostgresRunApplicationService {
     async fn embed_wisdom_graph_mutations(
         &self,

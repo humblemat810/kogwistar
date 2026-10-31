@@ -2449,3 +2449,194 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     drop(service);
     remove_test_sqlite(&sqlite_path);
 }
+
+#[tokio::test]
+async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let chroma_setup = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            )
+            .unwrap();
+            let response = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space": "cosine"}
+            })
+            .to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("wisdom-nodes"),
+        chroma_config("wisdom-edges"),
+    )
+    .await
+    .unwrap();
+    chroma_setup.await.unwrap();
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-wisdom-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let provider = Arc::new(FixedEmbeddingProvider {
+        profile: kogwistar_engine::embedding::EmbeddingProfile {
+            provider: "test".to_owned(),
+            model: "fixed-v1".to_owned(),
+            dimension: 2,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        },
+        vector: vec![0.6, 0.8],
+        calls: Arc::new(Mutex::new(Vec::new())),
+        fail: None,
+    });
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_embedding_provider(provider);
+    assert!(service.supports_mcp_tool("root", "wisdom.kg_upsert_graph"));
+    assert!(service.supports_http_operation("POST", PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE));
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+    )))
+    .unwrap();
+    let mut node = fixture["cases"][0]["payload"].clone();
+    node["id"] = json!("sqlite-wisdom-node");
+    node["embedding"] = Value::Null;
+    let mut edge = fixture["cases"][1]["payload"].clone();
+    edge["id"] = json!("sqlite-wisdom-edge");
+    edge["source_ids"] = json!(["sqlite-wisdom-node"]);
+    edge["target_ids"] = json!([]);
+    edge["embedding"] = Value::Null;
+    let body = serde_json::to_vec(&json!({"inp": {"nodes": [node], "edges": [edge]}})).unwrap();
+    let principal = json!({
+        "sub": "alice", "user_id": "alice", "role": "rw",
+        "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
+        "capabilities": ["write_graph"]
+    });
+    let denied = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+        body: body.clone(),
+        principal: json!({"sub": "alice", "role": "ro", "ns": ["wisdom"]}),
+    }).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(service.store.replay_raw_events("wisdom", 0, 100).unwrap().is_empty());
+
+    let response = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+        body,
+        principal,
+    }).await;
+    assert_eq!(response.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&response.body));
+    let payload: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(payload["projection_consistency"], "eventual");
+    assert_eq!(payload["node_ids"][0], "sqlite-wisdom-node");
+    assert_eq!(payload["edge_ids"][0], "sqlite-wisdom-edge");
+
+    let events = service.store.replay_raw_events("wisdom", 0, 100).unwrap();
+    assert!(events.iter().any(|event| event.entity_id == "sqlite-wisdom-node"));
+    assert!(events.iter().any(|event| event.entity_id == "sqlite-wisdom-edge"));
+    assert!(events.iter().any(|event| {
+        serde_json::from_str::<Value>(&event.payload_json)
+            .ok()
+            .and_then(|payload| payload.get("metadata").cloned())
+            .and_then(|metadata| metadata.get("entity_type").cloned())
+            == Some(json!("acl_record"))
+    }), "host-derived default ACL records are part of the canonical event transaction");
+    let jobs = service.store.list_index_jobs(Some("wisdom"), Some("PENDING"), None, None, None, 100).unwrap();
+    assert!(jobs.iter().any(|job| job.entity_id == "sqlite-wisdom-node"));
+    assert!(jobs.iter().any(|job| job.entity_id == "sqlite-wisdom-edge"));
+    assert!(jobs.iter().all(|job| job.namespace == "wisdom"));
+
+    let committed_event_count = events.len();
+    let mut private_reference = fixture["cases"][1]["payload"].clone();
+    private_reference["id"] = json!("bob-reference-edge");
+    private_reference["source_ids"] = json!(["sqlite-wisdom-node"]);
+    private_reference["target_ids"] = json!([]);
+    private_reference["embedding"] = Value::Null;
+    let hidden_reference = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+        body: serde_json::to_vec(&json!({"inp": {"nodes": [], "edges": [private_reference]}})).unwrap(),
+        principal: json!({
+            "sub": "bob", "user_id": "bob", "role": "rw",
+            "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
+            "capabilities": ["write_graph"]
+        }),
+    }).await;
+    assert_eq!(hidden_reference.status, StatusCode::CONFLICT.as_u16());
+
+    let mut missing_reference = fixture["cases"][1]["payload"].clone();
+    missing_reference["id"] = json!("missing-reference-edge");
+    missing_reference["source_ids"] = json!(["absent-wisdom-node"]);
+    missing_reference["target_ids"] = json!([]);
+    missing_reference["embedding"] = Value::Null;
+    let missing_reference = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+        body: serde_json::to_vec(&json!({"inp": {"nodes": [], "edges": [missing_reference]}})).unwrap(),
+        principal: json!({
+            "sub": "alice", "user_id": "alice", "role": "rw",
+            "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
+            "workspace": "other-workspace", "capabilities": ["write_graph"]
+        }),
+    }).await;
+    assert_eq!(missing_reference.status, StatusCode::CONFLICT.as_u16());
+    assert_eq!(service.store.replay_raw_events("wisdom", 0, 100).unwrap().len(), committed_event_count);
+
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+}

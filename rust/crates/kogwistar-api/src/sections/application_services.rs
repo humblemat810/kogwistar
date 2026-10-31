@@ -945,7 +945,7 @@ impl ApplicationService for SqliteRunApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         if surface == "root" {
             return self.chroma_graph.is_some()
-                && matches!(
+                && (matches!(
                     name,
                     "kg_find_edges"
                         | "kg_k_hop"
@@ -953,7 +953,7 @@ impl ApplicationService for SqliteRunApplicationService {
                         | "kg_shortest_path"
                         | "kg_viz_cytoscape_json"
                         | "kg_viz_d3_json"
-                );
+                ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()));
         }
         name != "workflow.tool_audit"
             && name != "conversation.create"
@@ -978,6 +978,9 @@ impl ApplicationService for SqliteRunApplicationService {
         let is_composed_graph_mutation = self.chroma_graph.is_some()
             && method == "POST"
             && path.split('?').next() == Some(INTERNAL_GRAPH_MUTATIONS_ROUTE);
+        let is_composed_wisdom_graph_upsert = self.chroma_graph.is_some()
+            && self.embedding_provider.is_some()
+            && is_public_wisdom_graph_upsert_route(method, path);
         let is_composed_conversation_transcript = self.chroma_graph.is_some()
             && method == "GET"
             && conversation_transcript_id(path).is_some();
@@ -990,6 +993,7 @@ impl ApplicationService for SqliteRunApplicationService {
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
             || is_composed_graph_mutation
+            || is_composed_wisdom_graph_upsert
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
             || is_composed_conversation_list)
@@ -1000,6 +1004,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
                 || is_composed_graph_read
                 || is_composed_graph_mutation
+                || is_composed_wisdom_graph_upsert
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
                 || is_composed_conversation_list)
@@ -1028,6 +1033,9 @@ impl ApplicationService for SqliteRunApplicationService {
             }
             if request.method == "POST" && self.chroma_graph.is_some() {
                 match request.path_and_query.split('?').next() {
+                    Some(PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE) if self.embedding_provider.is_some() => {
+                        return self.sqlite_public_wisdom_graph_upsert_effect(&request).await;
+                    }
                     Some(INTERNAL_GRAPH_MUTATIONS_ROUTE) => {
                         return self.sqlite_chroma_graph_mutation_effect(&request).await;
                     }

@@ -1,6 +1,53 @@
 use super::*;
+use rusqlite::ToSql;
 
 impl SqliteUnitOfWork<'_> {
+    /// Read the latest canonical event for each requested entity while keeping
+    /// the read in the caller's transaction.
+    pub fn latest_entity_events(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        entity_ids: &[String],
+    ) -> SqliteStoreResult<std::collections::HashMap<String, RawEntityEvent>> {
+        if namespace.trim().is_empty() {
+            return Err(SqliteStoreError::EmptyNamespace);
+        }
+        if entity_kind.trim().is_empty() {
+            return Err(StoreError::InvalidIdentifier {
+                identifier: "entity_kind",
+            }
+            .into());
+        }
+        let mut latest = std::collections::HashMap::with_capacity(entity_ids.len());
+        for ids in entity_ids.chunks(400) {
+            if ids.is_empty() {
+                continue;
+            }
+            let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT e.namespace,e.seq,e.event_id,e.entity_kind,e.entity_id,e.op,e.payload_json,e.created_at \
+                 FROM entity_events e JOIN ( \
+                   SELECT entity_id,MAX(seq) AS seq FROM entity_events \
+                   WHERE namespace=? AND entity_kind=? AND entity_id IN ({placeholders}) \
+                   GROUP BY entity_id \
+                 ) latest ON e.namespace=? AND e.entity_kind=? \
+                   AND e.entity_id=latest.entity_id AND e.seq=latest.seq"
+            );
+            let mut values: Vec<&dyn ToSql> = vec![&namespace, &entity_kind];
+            values.extend(ids.iter().map(|id| id as &dyn ToSql));
+            values.push(&namespace);
+            values.push(&entity_kind);
+            let mut statement = self.transaction.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), raw_event_from_row)?;
+            for row in rows {
+                let event = row?;
+                latest.insert(event.entity_id.clone(), event);
+            }
+        }
+        Ok(latest)
+    }
+
     pub fn next_global_seq(&mut self) -> SqliteStoreResult<i64> {
         self.transaction
             .query_row(

@@ -53,7 +53,7 @@ use kogwistar_store_postgres::{
 };
 use kogwistar_store_sqlite::{
     NewRawEntityEvent as SqliteNewRawEntityEvent, RawEntityEvent as SqliteRawEntityEvent,
-    SqliteAuthStore, SqliteStore,
+    SqliteAuthStore, SqliteStore, SqliteStoreError,
 };
 
 mod cutover;
