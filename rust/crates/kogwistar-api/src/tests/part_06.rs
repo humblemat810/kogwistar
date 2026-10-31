@@ -346,9 +346,42 @@
         assert_eq!(body["code"], "KOGWISTAR_RUN_OWNER_FORBIDDEN");
     }
 
+    struct HoldFirstWorkerResultResponse {
+        inner: Arc<dyn ApplicationService>,
+        committed: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        held: std::sync::atomic::AtomicBool,
+    }
+
+    impl ApplicationService for HoldFirstWorkerResultResponse {
+        fn execute(
+            &self,
+            request: ApiEffectRequest,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = ApiEffectResponse> + Send + '_>,
+        > {
+            let hold_response = request.method == "POST"
+                && request.path_and_query == "/internal/runtime/results";
+            Box::pin(async move {
+                let response = self.inner.execute(request).await;
+                if hold_response
+                    && response.status == StatusCode::OK.as_u16()
+                    && !self.held.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    if let Some(committed) = self.committed.lock().unwrap().take() {
+                        let _ = committed.send(());
+                    }
+                    std::future::pending::<()>().await;
+                }
+                response
+            })
+        }
+    }
+
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_worker_graph_effect_rechecks_durable_run_owner_in_transaction() {
+        use tokio::io::AsyncWriteExt;
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_run_owner_{}", uuid::Uuid::new_v4().simple());
@@ -439,11 +472,7 @@
         assert_eq!(claimed[0].message_id, "lane-1");
         assert_eq!(claimed[0].status, "claimed");
 
-        let worker_result = |principal: Value| ApiEffectRequest {
-                contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/internal/runtime/results".to_owned(),
-                body: serde_json::to_vec(&json!({
+        let worker_result = json!({
                     "handoff": {
                         "message_id": "lane-1",
                         "claimed_by": "worker-1",
@@ -477,22 +506,63 @@
                             }]
                         }
                     }
-                }))
-                .unwrap(),
-                principal,
-            };
-        let response = service
-            .execute(worker_result(json!({
-                    "user_id":"different-user",
-                    "sub":"different-user",
-                    "role":"rw",
-                    "storage_ns":"alpha",
-                    "capabilities":["write_graph"]
-                })))
-            .await;
-        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+                });
+        let secret = "worker-result-retry-test-secret";
+        let token = |subject: &str| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": subject,
+                    "user_id": subject,
+                    "role": "rw",
+                    "roles": ["reader"],
+                    "ns": "alpha",
+                    "storage_ns": "alpha",
+                    "capabilities": ["write_graph"],
+                    "exp": 4102444800_u64
+                }),
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let owner_token = token("run-owner");
+        let other_owner_token = token("different-user");
+        let (committed_tx, committed_rx) = tokio::sync::oneshot::channel();
+        let application = Arc::new(HoldFirstWorkerResultResponse {
+            inner: Arc::new(service.clone()),
+            committed: std::sync::Mutex::new(Some(committed_tx)),
+            held: std::sync::atomic::AtomicBool::new(false),
+        });
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            application,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::new();
+        let base = format!("http://{address}");
+
+        let denied = client
+            .post(format!("{base}/internal/runtime/results"))
+            .bearer_auth(&other_owner_token)
+            .json(&worker_result)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
         assert_eq!(
-            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            denied.json::<Value>().await.unwrap()["code"],
             "KOGWISTAR_RUN_OWNER_FORBIDDEN"
         );
         let records = service
@@ -512,19 +582,33 @@
             .unwrap();
         assert!(records.is_empty(), "unauthorized graph effects must not persist");
 
-        let authorized_request = worker_result(json!({
-            "user_id":"run-owner",
-            "sub":"run-owner",
-            "role":"rw",
-            "storage_ns":"alpha",
-            "capabilities":["write_graph"]
-        }));
-        let committed = service.execute(authorized_request.clone()).await;
+        let request_body = serde_json::to_vec(&worker_result).unwrap();
+        let mut disconnected_client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let request_head = format!(
+            "POST /internal/runtime/results HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {owner_token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            request_body.len()
+        );
+        disconnected_client
+            .write_all(request_head.as_bytes())
+            .await
+            .unwrap();
+        disconnected_client
+            .write_all(&request_body)
+            .await
+            .unwrap();
+        committed_rx.await.unwrap();
+        drop(disconnected_client);
+
         assert_eq!(
-            committed.status,
-            StatusCode::OK.as_u16(),
-            "{}",
-            String::from_utf8_lossy(&committed.body)
+            service
+                .store
+                .get_projected_lane_message("lane-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed",
+            "the disconnected HTTP request must commit before its response is lost"
         );
         let run_events_after_commit = service
             .store
@@ -536,8 +620,14 @@
         // The caller did not observe the first response and retries the exact
         // request. Graph, index intent, runtime event, and lane ack share one
         // PostgreSQL transaction and must remain single-application effects.
-        let retry = service.execute(authorized_request).await;
-        assert_eq!(retry.status, StatusCode::OK.as_u16());
+        let retry = client
+            .post(format!("{base}/internal/runtime/results"))
+            .bearer_auth(&owner_token)
+            .json(&worker_result)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
         assert_eq!(
             service
                 .store
@@ -597,6 +687,7 @@
                 .status,
             "completed"
         );
+        server.abort();
     }
 
     #[tokio::test]
