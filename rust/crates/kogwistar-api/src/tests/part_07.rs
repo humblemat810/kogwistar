@@ -1662,52 +1662,54 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let provider_address = listener.local_addr().unwrap();
     let provider_task = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        let (header_end, content_length) = loop {
-            let mut chunk = [0_u8; 4096];
-            let count = stream.read(&mut chunk).await.unwrap();
-            assert_ne!(count, 0);
-            request.extend_from_slice(&chunk[..count]);
-            if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
-                let header_end = header_end + 4;
-                let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length: "))
-                    .unwrap()
-                    .trim()
-                    .parse::<usize>()
-                    .unwrap();
-                if request.len() >= header_end + content_length {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let (header_end, content_length) = loop {
+                let mut chunk = [0_u8; 4096];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let header_end = header_end + 4;
+                    let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .unwrap()
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap();
+                    if request.len() >= header_end + content_length {
+                        break (header_end, content_length);
+                    }
+                    while request.len() < header_end + content_length {
+                        let mut chunk = [0_u8; 4096];
+                        let count = stream.read(&mut chunk).await.unwrap();
+                        assert_ne!(count, 0);
+                        request.extend_from_slice(&chunk[..count]);
+                    }
                     break (header_end, content_length);
                 }
-                while request.len() < header_end + content_length {
-                    let mut chunk = [0_u8; 4096];
-                    let count = stream.read(&mut chunk).await.unwrap();
-                    assert_ne!(count, 0);
-                    request.extend_from_slice(&chunk[..count]);
-                }
-                break (header_end, content_length);
+            };
+            let body: Value = serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
+            assert_eq!(body["model"], "event-fixture-model");
+            assert_eq!(body["stream"], true);
+            let mut body = String::new();
+            for chunk in [
+                json!({"id":"causal-response","choices":[{"delta":{"content":"streamed text"},"finish_reason":null}]}).to_string(),
+                json!({"id":"causal-response","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+            ] {
+                body.push_str(&format!("data: {chunk}\r\n\r\n"));
             }
-        };
-        let body: Value = serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
-        assert_eq!(body["model"], "event-fixture-model");
-        assert_eq!(body["stream"], true);
-        let mut body = String::new();
-        for chunk in [
-            json!({"id":"causal-response","choices":[{"delta":{"content":"streamed text"},"finish_reason":null}]}).to_string(),
-            json!({"id":"causal-response","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
-        ] {
-            body.push_str(&format!("data: {chunk}\r\n\r\n"));
+            body.push_str("data: [DONE]\r\n\r\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
         }
-        body.push_str("data: [DONE]\r\n\r\n");
-        let response = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
     });
     let provider = OpenAiCompatibleChatConfig::new(
         format!("http://{provider_address}/v1/chat/completions"),
@@ -1816,15 +1818,33 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
                 step_id: "provider-step".to_owned(),
                 correlation_id: run_id.to_owned(),
             },
+            provider_request.clone(),
+        )
+        .await
+        .unwrap();
+    let provider_effect = provider_result.effect.expect("provider request returns an effect");
+    let provider_result_json = provider_effect.result.as_ref().unwrap();
+    assert!(provider_result_json["semantic_event_count"].as_i64().unwrap() > 0);
+    assert_eq!(provider_result_json["final_state"]["agent_event_route"], "receive");
+    let events_after_first_attempt = service.store.server_run_events(run_id, 0, 100).await.unwrap();
+    let provider_retry = service
+        .execute_native_provider_event_request(
+            kogwistar_runtime::RecordedWorkerHandoff {
+                message_id: "provider-request-handoff-retry".to_owned(),
+                claimed_by: "provider-request-worker#2".to_owned(),
+                run_id: run_id.to_owned(),
+                step_id: "provider-step".to_owned(),
+                correlation_id: run_id.to_owned(),
+            },
             provider_request,
         )
         .await
         .unwrap();
     provider_task.await.unwrap();
-    let provider_effect = provider_result.effect.expect("provider request returns an effect");
-    let provider_result_json = provider_effect.result.as_ref().unwrap();
-    assert!(provider_result_json["semantic_event_count"].as_i64().unwrap() > 0);
-    assert_eq!(provider_result_json["final_state"]["agent_event_route"], "receive");
+    let retry_effect = provider_retry.effect.expect("provider retry returns an effect");
+    assert_eq!(provider_effect.result, retry_effect.result);
+    let events_after_retry = service.store.server_run_events(run_id, 0, 100).await.unwrap();
+    assert_eq!(events_after_first_attempt, events_after_retry);
     let producer_event_seq = service
         .store
         .server_run_events(run_id, 0, 100)
