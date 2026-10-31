@@ -15,6 +15,44 @@ fn public_context_snapshot_value(snapshot: ContextSnapshotV1) -> Value {
     payload
 }
 
+fn public_run_evidence_value(run_id: &str, snapshot: ContextSnapshotV1) -> Value {
+    let used_node_ids = snapshot
+        .metadata
+        .get("used_node_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let digest_raw = snapshot
+        .properties
+        .get("evidence_pack_digest")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let digest = match digest_raw {
+        Value::String(encoded) => serde_json::from_str::<Value>(&encoded)
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({})),
+        value if value.is_object() => value,
+        _ => json!({}),
+    };
+    let used_node_count = used_node_ids.len();
+    json!({
+        "version": "v1",
+        "run_id": run_id,
+        "conversation_id": snapshot.conversation_id,
+        "snapshot_node_id": snapshot.snapshot_node_id,
+        "snapshot_metadata": snapshot.metadata,
+        "evidence_refs": used_node_ids,
+        "source_summary": {
+            "used_node_count": used_node_count,
+            "evidence_pack_digest": digest,
+        },
+    })
+}
+
 #[cfg(test)]
 fn strip_snapshot_implementation_fields(response: &mut ApiEffectResponse) {
     if !(200..300).contains(&response.status) {

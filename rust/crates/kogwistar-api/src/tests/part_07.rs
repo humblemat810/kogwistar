@@ -117,6 +117,31 @@
         remove_test_sqlite(&sqlite_path);
     }
 
+    #[test]
+    fn rust_run_evidence_projection_matches_shared_v1_contract() {
+        let expected: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        ))
+        .unwrap();
+        let metadata = serde_json::from_value::<BTreeMap<String, Value>>(
+            expected["snapshot_metadata"].clone(),
+        )
+        .unwrap();
+        let digest = serde_json::to_string(&expected["source_summary"]["evidence_pack_digest"])
+            .unwrap();
+        let snapshot = ContextSnapshotV1 {
+            schema_version: 1,
+            snapshot_node_id: expected["snapshot_node_id"].as_str().unwrap().to_owned(),
+            conversation_id: expected["conversation_id"].as_str().unwrap().to_owned(),
+            metadata,
+            properties: BTreeMap::from([("evidence_pack_digest".to_owned(), json!(digest))]),
+        };
+        assert_eq!(
+            public_run_evidence_value(expected["run_id"].as_str().unwrap(), snapshot),
+            expected
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
     async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
@@ -331,13 +356,11 @@
             &to_bytes(response.into_body(), 8192).await.unwrap(),
         )
         .unwrap();
-        assert_eq!(payload["version"], "v1");
-        assert_eq!(payload["run_id"], "evidence-run");
-        assert_eq!(payload["conversation_id"], "evidence-conversation");
-        assert_eq!(payload["snapshot_node_id"], snapshot_id);
-        assert_eq!(payload["evidence_refs"], json!(["evidence-node-1", "evidence-node-2"]));
-        assert_eq!(payload["source_summary"]["used_node_count"], 2);
-        assert_eq!(payload["source_summary"]["evidence_pack_digest"]["items"], 2);
+        let expected: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(payload, expected);
 
         let other_user_token = encode(
             &Header::new(Algorithm::HS256),

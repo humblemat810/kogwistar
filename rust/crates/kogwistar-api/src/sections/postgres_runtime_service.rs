@@ -5076,43 +5076,9 @@ impl PostgresRunApplicationService {
                 Ok(snapshot) => snapshot,
                 Err(response) => return response,
             };
-            let used_node_ids = snapshot
-                .metadata
-                .get("used_node_ids")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            let digest_raw = snapshot
-                .properties
-                .get("evidence_pack_digest")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            let digest = match digest_raw {
-                Value::String(encoded) => serde_json::from_str::<Value>(&encoded)
-                    .ok()
-                    .filter(Value::is_object)
-                    .unwrap_or_else(|| json!({})),
-                value if value.is_object() => value,
-                _ => json!({}),
-            };
-            let used_node_count = used_node_ids.len();
             return json_effect(
                 StatusCode::OK,
-                json!({
-                    "version": "v1",
-                    "run_id": run_id,
-                    "conversation_id": snapshot.conversation_id,
-                    "snapshot_node_id": snapshot.snapshot_node_id,
-                    "snapshot_metadata": snapshot.metadata,
-                    "evidence_refs": used_node_ids,
-                    "source_summary": {
-                        "used_node_count": used_node_count,
-                        "evidence_pack_digest": digest,
-                    },
-                }),
+                public_run_evidence_value(&run_id, snapshot),
             );
         }
         if request.method == "GET" && is_runtime_inspection_tail(&tail) {
