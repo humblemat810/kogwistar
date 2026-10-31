@@ -449,6 +449,105 @@ impl OpenAiCompatibleChatConfig {
         self
     }
 
+    pub(crate) async fn stream_request_events<F, Fut>(
+        &self,
+        provider_request: &ProviderRequestV1,
+        event_sink: F,
+    ) -> Result<Vec<ProviderEventV1>, String>
+    where
+        F: FnMut(ProviderEventV1) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        self.stream_request_events_named(provider_request, "AgentEvent", event_sink)
+            .await
+    }
+
+    async fn stream_request_events_named<F, Fut>(
+        &self,
+        provider_request: &ProviderRequestV1,
+        schema_name: &str,
+        mut event_sink: F,
+    ) -> Result<Vec<ProviderEventV1>, String>
+    where
+        F: FnMut(ProviderEventV1) -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        if !self.streaming {
+            return Err("provider event requests require streaming mode".to_owned());
+        }
+        if provider_request.model != self.model {
+            return Err("provider request model does not match configured model".to_owned());
+        }
+        let request_body = chat_completion_payload(provider_request, schema_name, true)
+            .map_err(|_| "could not build provider event request".to_owned())?;
+        let request_bytes = serde_json::to_vec(&request_body)
+            .map_err(|_| "could not encode provider event request".to_owned())?;
+        if request_bytes.len() > MAX_REQUEST_BYTES {
+            return Err("provider event request exceeds the configured size limit".to_owned());
+        }
+        let client = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .build()
+            .map_err(|_| "could not initialize provider event client".to_owned())?;
+        let mut request = client
+            .post(&self.endpoint)
+            .header(CONTENT_TYPE, "application/json")
+            .body(request_bytes);
+        if let Some(api_key) = &self.api_key {
+            request = request.header(AUTHORIZATION, format!("Bearer {api_key}"));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| "provider event request failed".to_owned())?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("provider event request returned HTTP {status}"));
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err("provider event response exceeds the configured size limit".to_owned());
+        }
+
+        let mut response = response;
+        let mut parser = crate::native_event_stream::ChatCompletionEventStream::default();
+        let mut events = Vec::new();
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(_) => {
+                    let failed = parser.abort(
+                        "provider_stream_transport_error",
+                        "provider response stream ended unexpectedly",
+                    );
+                    for event in &failed {
+                        event_sink(event.clone()).await?;
+                    }
+                    events.extend(failed);
+                    return Err("could not read provider event stream".to_owned());
+                }
+            };
+            let parsed = parser
+                .push(&chunk)
+                .map_err(|_| "could not normalize provider event stream".to_owned())?;
+            for event in &parsed {
+                event_sink(event.clone()).await?;
+            }
+            events.extend(parsed);
+        }
+        let parsed = parser
+            .finish()
+            .map_err(|_| "could not finish provider event stream".to_owned())?;
+        for event in &parsed {
+            event_sink(event.clone()).await?;
+        }
+        events.extend(parsed);
+        Ok(events)
+    }
+
     #[cfg(test)]
     pub(crate) async fn answer(
         &self,
@@ -598,9 +697,27 @@ impl OpenAiCompatibleChatConfig {
             previous_response_id: None,
             max_output_tokens: None,
         };
-        let request_body =
-            chat_completion_payload(&provider_request, "AnswerWithCitations", self.streaming)
-                .map_err(|_| "could not build structured chat provider request".to_owned())?;
+        if self.streaming {
+            let events = self
+                .stream_request_events_named(&provider_request, "AnswerWithCitations", |event| {
+                    event_sink(event)
+                })
+                .await?;
+            let Some(structured_output) = events.iter().find_map(|event| match event {
+                ProviderEventV1::ResponseCompleted {
+                    structured_output: Some(value),
+                    ..
+                } => Some(Value::Object(value.clone().into_iter().collect())),
+                _ => None,
+            }) else {
+                return Ok(None);
+            };
+            return Ok(serde_json::from_value(structured_output)
+                .ok()
+                .map(|answer| (answer, events)));
+        }
+        let request_body = chat_completion_payload(&provider_request, "AnswerWithCitations", false)
+            .map_err(|_| "could not build structured chat provider request".to_owned())?;
         let request_bytes = serde_json::to_vec(&request_body)
             .map_err(|_| "could not encode structured chat request".to_owned())?;
         if request_bytes.len() > MAX_REQUEST_BYTES {
@@ -635,37 +752,12 @@ impl OpenAiCompatibleChatConfig {
         }
         let mut response = response;
         let mut response_bytes = Vec::new();
-        let mut event_stream = crate::native_event_stream::ChatCompletionEventStream::default();
-        let mut provider_events = Vec::new();
         loop {
-            let chunk = match response.chunk().await {
-                Ok(Some(chunk)) => chunk,
-                Ok(None) => break,
-                Err(_) if self.streaming => {
-                    let events = event_stream.abort(
-                        "provider_stream_transport_error",
-                        "provider response stream ended unexpectedly",
-                    );
-                    for event in &events {
-                        event_sink(event.clone()).await?;
-                    }
-                    provider_events.extend(events);
-                    return Err("could not read structured chat provider response".to_owned());
-                }
-                Err(_) => {
-                    return Err("could not read structured chat provider response".to_owned());
-                }
-            };
-            if self.streaming {
-                let events = event_stream
-                    .push(&chunk)
-                    .map_err(|_| "could not normalize structured chat event stream".to_owned())?;
-                for event in &events {
-                    event_sink(event.clone()).await?;
-                }
-                provider_events.extend(events);
-                continue;
-            }
+            let chunk = response
+                .chunk()
+                .await
+                .map_err(|_| "could not read structured chat provider response".to_owned())?;
+            let Some(chunk) = chunk else { break };
             if response_bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                 return Err(
                     "structured chat provider response exceeds the configured size limit"
@@ -673,28 +765,6 @@ impl OpenAiCompatibleChatConfig {
                 );
             }
             response_bytes.extend_from_slice(&chunk);
-        }
-        if self.streaming {
-            let events = event_stream
-                .finish()
-                .map_err(|_| "could not finish structured chat event stream".to_owned())?;
-            for event in &events {
-                event_sink(event.clone()).await?;
-            }
-            provider_events.extend(events);
-            let Some(structured_output) = provider_events.iter().find_map(|event| match event {
-                ProviderEventV1::ResponseCompleted {
-                    structured_output: Some(value),
-                    ..
-                } => Some(Value::Object(value.clone().into_iter().collect())),
-                ProviderEventV1::ResponseFailed { .. } => None,
-                _ => None,
-            }) else {
-                return Ok(None);
-            };
-            return Ok(serde_json::from_value(structured_output)
-                .ok()
-                .map(|answer| (answer, provider_events)));
         }
         let Ok(response) = serde_json::from_slice::<ChatCompletionResponse>(&response_bytes) else {
             return Ok(None);
@@ -1690,6 +1760,147 @@ mod tests {
         assert!(!encoded.contains("brief rationale"));
         assert!(!encoded.contains("text_delta"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_provider_accepts_shared_generic_request_and_emits_typed_events() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let header_end = loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let body: Value =
+                serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
+            assert_eq!(body["model"], "fixture-model");
+            assert_eq!(body["stream"], true);
+            assert_eq!(body["messages"][0]["content"], "instructions");
+            assert_eq!(body["messages"][1]["content"], "input text");
+            assert_eq!(
+                body["response_format"]["json_schema"]["schema"]["required"],
+                json!(["answer"])
+            );
+            assert_eq!(body["tools"][0]["function"]["name"], "lookup");
+
+            let chunks = [
+                json!({"id":"generic-response","choices":[{"delta":{"content":"{\"answer\":\"ready\"}"},"finish_reason":null}]}).to_string(),
+                json!({"id":"generic-response","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+            ];
+            let mut body = String::new();
+            for chunk in chunks {
+                body.push_str(&format!("data: {chunk}\r\n\r\n"));
+            }
+            body.push_str("data: [DONE]\r\n\r\n");
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            for chunk in wire.as_bytes().chunks(13) {
+                stream.write_all(chunk).await.unwrap();
+            }
+        });
+        let provider = OpenAiCompatibleChatConfig::new(
+            format!("http://{address}/v1/chat/completions"),
+            "fixture-model",
+            None,
+        )
+        .unwrap()
+        .with_streaming(true);
+        let request = ProviderRequestV1 {
+            contract_version: PROVIDER_REQUEST_CONTRACT_VERSION.to_owned(),
+            model: "fixture-model".to_owned(),
+            instructions: "instructions".to_owned(),
+            input: "input text".to_owned(),
+            response_schema: Some(BTreeMap::from([
+                ("type".to_owned(), json!("object")),
+                ("required".to_owned(), json!(["answer"])),
+            ])),
+            tools: vec![BTreeMap::from([(
+                "function".to_owned(),
+                json!({"name":"lookup","parameters":{"type":"object"}}),
+            )])],
+            previous_response_id: None,
+            max_output_tokens: Some(serde_json::Number::from(128)),
+        };
+        let mut observed = Vec::new();
+        let events = provider
+            .stream_request_events(&request, |event| {
+                observed.push(event);
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+        assert_eq!(events, observed);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProviderEventV1::FieldCompleted { field_name, value, .. }
+                if field_name == "answer" && value == &json!("ready")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ProviderEventV1::ResponseCompleted { structured_output: Some(output), .. }
+                if output.get("answer") == Some(&json!("ready"))
+        )));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn generic_streaming_provider_rejects_unpinned_model_and_non_streaming_mode() {
+        let provider = OpenAiCompatibleChatConfig::new(
+            "http://127.0.0.1:1/v1/chat/completions",
+            "configured-model",
+            None,
+        )
+        .unwrap();
+        let request = ProviderRequestV1 {
+            contract_version: PROVIDER_REQUEST_CONTRACT_VERSION.to_owned(),
+            model: "other-model".to_owned(),
+            instructions: String::new(),
+            input: "input".to_owned(),
+            response_schema: None,
+            tools: Vec::new(),
+            previous_response_id: None,
+            max_output_tokens: None,
+        };
+        assert!(
+            provider
+                .stream_request_events(&request, |_| async { Ok(()) })
+                .await
+                .unwrap_err()
+                .contains("streaming mode")
+        );
+        assert!(
+            provider
+                .with_streaming(true)
+                .stream_request_events(&request, |_| async { Ok(()) })
+                .await
+                .unwrap_err()
+                .contains("does not match configured model")
+        );
     }
 
     #[tokio::test]
