@@ -1043,32 +1043,26 @@ mod provider_event_trace_tests {
 
     #[test]
     fn native_effect_acknowledgement_reaches_authoritative_worker_result() {
-        let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
-        registry
-            .register_with_effects("agent/event-handle", "v1", |_| {
-                Ok(kogwistar_runtime::NativeOperationEffectOutput {
-                    output: kogwistar_runtime::NativeOperationOutput {
-                        state_update: Vec::new(),
-                        result: Some(json!({"handled": true})),
-                    },
-                    provider_event_acknowledgements: vec![
-                        kogwistar_runtime::ProviderEventAcknowledgementV1 {
-                            message_id: "msg:event-1".to_owned(),
-                            claimed_by: "event-worker#attempt-1".to_owned(),
-                            event_id: "event-1".to_owned(),
-                        },
-                    ],
-                })
-            })
-            .unwrap();
-        let request = kogwistar_runtime::RuntimeNativeStepRequest {
+        let mut fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+        )))
+        .unwrap();
+        let event = fixture["envelope"].take();
+        let event_id = event["event_id"].as_str().unwrap().to_owned();
+        let claim = json!({
+            "message_id": format!("msg:{event_id}"),
+            "claimed_by": "event-worker#attempt-1",
+            "event_id": event_id,
+        });
+        let mut request = kogwistar_runtime::RuntimeNativeStepRequest {
             executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
-            operation: "agent/event-handle".to_owned(),
+            operation: "agent.event.receive".to_owned(),
             op_version: "v1".to_owned(),
-            run_id: "run-event-ack".to_owned(),
-            workflow_id: "workflow-event-ack".to_owned(),
-            node_id: "handle-event".to_owned(),
-            conversation_id: "conversation-event-ack".to_owned(),
+            run_id: "run-fixture-001".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "receive-event".to_owned(),
+            conversation_id: "conversation-fixture-001".to_owned(),
             turn_node_id: None,
             token_id: "token".to_owned(),
             parent_token_id: None,
@@ -1077,13 +1071,41 @@ mod provider_event_trace_tests {
             runtime_routes: Vec::new(),
             ephemeral_context: Map::new(),
         };
+        request
+            .ephemeral_context
+            .insert("authorized_provider_event".to_owned(), event.clone());
+        request.ephemeral_context.insert(
+            "authorized_provider_event_claim".to_owned(),
+            claim.clone(),
+        );
+        let registry = kogwistar_runtime::NativeOperationRegistry::default();
+        let received = kogwistar_runtime::execute_native_step_with_registry(&request, &registry)
+            .unwrap();
+        request.operation = "agent.event.ack".to_owned();
+        request.node_id = "ack-event".to_owned();
+        request.state = kogwistar_contracts::apply_state_update_pairs(
+            Value::Object(Map::new()),
+            received.state_update.iter().map(|update| match update {
+                kogwistar_runtime::RecordedStateUpdate::Pair((mode, payload)) => {
+                    (mode.as_str(), payload)
+                }
+                kogwistar_runtime::RecordedStateUpdate::Object { mode, payload } => {
+                    (mode.as_str(), payload)
+                }
+            }),
+        )
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+        request.ephemeral_context.clear();
         let result = native_result_from_request(
             RecordedWorkerHandoff {
                 message_id: "worker-lane".to_owned(),
                 claimed_by: "rust-native-worker#attempt-1".to_owned(),
-                run_id: "run-event-ack".to_owned(),
-                step_id: "handle-event".to_owned(),
-                correlation_id: "run-event-ack".to_owned(),
+                run_id: "run-fixture-001".to_owned(),
+                step_id: "ack-event".to_owned(),
+                correlation_id: "run-fixture-001".to_owned(),
             },
             request,
             &registry,
@@ -1096,9 +1118,9 @@ mod provider_event_trace_tests {
                 .unwrap()
                 .provider_event_acknowledgements,
             vec![kogwistar_runtime::ProviderEventAcknowledgementV1 {
-                message_id: "msg:event-1".to_owned(),
+                message_id: format!("msg:{event_id}"),
                 claimed_by: "event-worker#attempt-1".to_owned(),
-                event_id: "event-1".to_owned(),
+                event_id,
             }]
         );
     }
