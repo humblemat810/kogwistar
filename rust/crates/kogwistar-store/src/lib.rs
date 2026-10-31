@@ -1131,11 +1131,14 @@ fn is_tombstoned(metadata: &Map<String, Value>) -> bool {
         .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
 }
 
-/// Scope carried by the graph projection. Graph role is an opaque scope value,
-/// not an entity subtype or a table selector. The Python pgvector schema keeps
-/// graph rows in shared tables, so these values are represented by exact JSON
-/// metadata predicates rather than by a Rust-owned table or schema. ACL truth
-/// graph selection is a separate policy concern and is not encoded here.
+/// Storage scope carried by the graph projection. Namespace, workspace, and
+/// graph-space are storage coordinates, not graph roles or entity subtypes.
+/// Python's `kg_graph_type` identifies the graph role and supplies the default
+/// ACL `truth_graph`; it is deliberately independent of this storage scope.
+/// The Python pgvector schema keeps graph rows in shared tables, so these scope
+/// values are represented by exact JSON metadata predicates rather than by a
+/// Rust-owned table or schema. ACL truth-graph selection is policy context and
+/// is carried separately by the ACL-aware mutation contract.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GraphScope {
     pub namespace: String,
