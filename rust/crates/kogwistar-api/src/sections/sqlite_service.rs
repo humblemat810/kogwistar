@@ -1912,6 +1912,72 @@ impl SqliteRunApplicationService {
         )
     }
 
+    async fn sqlite_chroma_conversation_transcript_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+        let Some(conversation_id) = conversation_transcript_id(&request.path_and_query) else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation transcript route was not found",
+            );
+        };
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation transcript reads require read_graph capability",
+            );
+        }
+        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let transcript = match conversation_transcript_from_visible_records(
+            &nodes,
+            &conversation_id,
+            10_000,
+        ) {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut payload = serde_json::to_value(transcript).expect("transcript serializes");
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("schema_version");
+            if let Some(turns) = object.get_mut("turns").and_then(Value::as_array_mut) {
+                for turn in turns {
+                    if let Some(turn) = turn.as_object_mut() {
+                        turn.remove("schema_version");
+                    }
+                }
+            }
+        }
+        json_effect(StatusCode::OK, payload)
+    }
+
     async fn chroma_graph_neighbors_effect(
         &self,
         request: &ApiEffectRequest,

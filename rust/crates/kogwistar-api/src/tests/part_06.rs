@@ -4830,7 +4830,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..12 {
+            for _ in 0..14 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -5091,8 +5091,48 @@
         assert_eq!(mount_payload["result"]["metadata"]["summary"], "stored summary");
         assert!(mount_payload["result"].get("schema_version").is_none());
 
+        let transcript_route = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        )
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/conversations/c1/turns")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let transcript_status = transcript_route.status();
+        let transcript_body = to_bytes(transcript_route.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            transcript_status,
+            StatusCode::OK,
+            "transcript response: {}",
+            String::from_utf8_lossy(&transcript_body)
+        );
+        let transcript_payload: Value = serde_json::from_slice(&transcript_body).unwrap();
+        assert_eq!(transcript_payload["conversation_id"], "c1");
+        assert_eq!(transcript_payload["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(transcript_payload["turns"][0]["node_id"], "turn-1");
+        assert!(transcript_payload.get("schema_version").is_none());
+        assert!(transcript_payload["turns"][0].get("schema_version").is_none());
+        assert!(service.supports_http_operation("GET", "/api/conversations/c1/turns"));
+
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 12);
+        assert_eq!(requests.len(), 14);
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")

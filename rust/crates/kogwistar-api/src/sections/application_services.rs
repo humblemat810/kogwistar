@@ -853,11 +853,17 @@ impl ApplicationService for SqliteRunApplicationService {
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
                     | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
             );
-        (FROZEN_OPENAPI_ROUTES.contains(&(method, path)) || is_composed_graph_read)
+        let is_composed_conversation_transcript = self.chroma_graph.is_some()
+            && method == "GET"
+            && conversation_transcript_id(path).is_some();
+        (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
+            || is_composed_graph_read
+            || is_composed_conversation_transcript)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
-                || is_composed_graph_read)
+                || is_composed_graph_read
+                || is_composed_conversation_transcript)
     }
 
     fn execute(
@@ -865,6 +871,14 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "GET"
+                && self.chroma_graph.is_some()
+                && conversation_transcript_id(&request.path_and_query).is_some()
+            {
+                return self
+                    .sqlite_chroma_conversation_transcript_effect(&request)
+                    .await;
+            }
             if request.method == "POST" && self.chroma_graph.is_some() {
                 match request.path_and_query.split('?').next() {
                     Some("/api/syscall/v1/receive_message") => {
