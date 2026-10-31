@@ -837,10 +837,11 @@
                 Arc::new(service.clone()),
             )
         };
-        let graph_upsert_token = encode(
-            &Header::new(Algorithm::HS256),
-            &json!({
-                "sub": "alice",
+        let graph_upsert_token_for = |subject: &str| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                "sub": subject,
                 "role": "rw",
                 "roles": ["reader", "rw"],
                 "ns": "workflow",
@@ -850,9 +851,11 @@
                 "capabilities": ["write_graph"],
                 "exp": 4102444800_u64
             }),
-            &EncodingKey::from_secret(key.as_bytes()),
-        )
-        .unwrap();
+                &EncodingKey::from_secret(key.as_bytes()),
+            )
+            .unwrap()
+        };
+        let graph_upsert_token = graph_upsert_token_for("alice");
         let mut extraction: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-extraction-v1.json"
@@ -1047,6 +1050,82 @@
             .unwrap()
             .get(0);
         assert_eq!(unchanged_document, extraction["content"].as_str().unwrap());
+
+        let mut external_endpoint_extraction = extraction.clone();
+        external_endpoint_extraction
+            .as_object_mut()
+            .unwrap()
+            .remove("content");
+        external_endpoint_extraction["nodes"] = json!([]);
+        let mut external_edge = extraction["edges"][0].clone();
+        external_edge["id"] = json!("ne:external-node-edge");
+        external_edge["source_ids"] = json!([existing_document_body["node_ids"][0]]);
+        external_edge["target_ids"] = json!([existing_document_body["node_ids"][1]]);
+        external_endpoint_extraction["edges"] = json!([external_edge]);
+        let external_endpoint_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {graph_upsert_token}"),
+                    )
+                    .body(Body::from(
+                        serde_json::to_vec(&external_endpoint_extraction).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let external_endpoint_status = external_endpoint_upsert.status();
+        let external_endpoint_bytes = to_bytes(external_endpoint_upsert.into_body(), 65_536)
+            .await
+            .unwrap();
+        assert_eq!(
+            external_endpoint_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&external_endpoint_bytes)
+        );
+        let external_endpoint_body: Value =
+            serde_json::from_slice(&external_endpoint_bytes).unwrap();
+        assert_eq!(external_endpoint_body["nodes_added"], 0);
+        assert_eq!(external_endpoint_body["edges_added"], 1);
+        let events_before_hidden_endpoint = service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .await
+            .unwrap()
+            .len();
+        let hidden_endpoint_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", graph_upsert_token_for("bob")),
+                    )
+                    .body(Body::from(
+                        serde_json::to_vec(&external_endpoint_extraction).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hidden_endpoint_upsert.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            service
+                .store
+                .replay_raw_events("alpha", 0, 100)
+                .await
+                .unwrap()
+                .len(),
+            events_before_hidden_endpoint
+        );
 
         let mcp_list = make_app()
             .oneshot(
@@ -1281,13 +1360,13 @@
             .replay_raw_events("alpha", 0, 100)
             .await
             .unwrap();
-        assert_eq!(events.len(), 13);
+        assert_eq!(events.len(), 35);
         let jobs = service
             .store
-            .list_index_jobs(Some("alpha"), None, None, None, None, 10)
+            .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
             .unwrap();
-        assert_eq!(jobs.len(), 7);
+        assert_eq!(jobs.len(), 50);
         assert!(jobs.iter().any(|job| job.job_id == "graph-route-index-1"));
 
         let records = service
@@ -1422,7 +1501,7 @@
                 .await
                 .unwrap()
                 .len(),
-            13
+            35
         );
         assert_eq!(
             service

@@ -108,6 +108,37 @@ fn graph_upsert_should_write_document(inline_content: Option<&str>, stored_conte
     inline_content.is_some() || !stored_content.is_some_and(|content| !content.is_empty())
 }
 
+fn graph_upsert_external_node_ids(
+    input: &GraphExtractionRequestV1,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let local_ids = input
+        .nodes
+        .iter()
+        .flat_map(|node| [node.get("local_id"), node.get("id")])
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut external_ids = std::collections::BTreeSet::new();
+    for edge in &input.edges {
+        for field in ["source_ids", "target_ids"] {
+            let endpoints = edge
+                .get(field)
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("edge {field} must be an array"))?;
+            for endpoint in endpoints {
+                let id = endpoint
+                    .as_str()
+                    .ok_or_else(|| format!("edge {field} entries must be strings"))?;
+                if !local_ids.contains(id) && !id.starts_with("nn:") {
+                    external_ids.insert(id.to_owned());
+                }
+            }
+        }
+    }
+    Ok(external_ids)
+}
+
 fn normalize_extraction_entity(
     raw: &serde_json::Map<String, Value>,
     doc_id: &str,
@@ -211,6 +242,7 @@ fn graph_upsert_mutation_batch(
     input: &GraphExtractionRequestV1,
     source_text: &str,
     security_scope: &Value,
+    external_node_ids: &std::collections::BTreeSet<String>,
 ) -> Result<(GraphMutationBatchInput, Vec<String>, Vec<String>), String> {
     use std::collections::BTreeMap;
 
@@ -294,6 +326,7 @@ fn graph_upsert_mutation_batch(
                     node_ids
                         .get(token)
                         .cloned()
+                        .or_else(|| external_node_ids.contains(token).then(|| token.to_owned()))
                         .ok_or_else(|| format!("edge endpoint {token:?} is not a node in this request"))?,
                 );
             }
@@ -495,8 +528,12 @@ mod graph_upsert_tests {
     fn graph_upsert_builds_typed_atomic_batch_from_shared_fixture() {
         let input = extraction_fixture();
         let source = input.content.as_deref().expect("fixture source text");
-        let (batch, nodes, edges) =
-            graph_upsert_mutation_batch(&input, source, &principal_scope())
+        let (batch, nodes, edges) = graph_upsert_mutation_batch(
+            &input,
+            source,
+            &principal_scope(),
+            &std::collections::BTreeSet::new(),
+        )
             .expect("valid fixture converts to a native graph batch");
         assert_eq!(nodes.len(), 2);
         assert_eq!(edges.len(), 1);
@@ -524,8 +561,13 @@ mod graph_upsert_tests {
     fn graph_upsert_can_validate_against_host_loaded_existing_document_text() {
         let mut input = extraction_fixture();
         let source = input.content.take().expect("fixture source text");
-        let (batch, nodes, edges) = graph_upsert_mutation_batch(&input, &source, &principal_scope())
-            .expect("stored source text validates an extraction without inline content");
+        let (batch, nodes, edges) = graph_upsert_mutation_batch(
+            &input,
+            &source,
+            &principal_scope(),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("stored source text validates an extraction without inline content");
         assert_eq!((batch.mutations.len(), nodes.len(), edges.len()), (3, 2, 1));
     }
 
@@ -545,8 +587,13 @@ mod graph_upsert_tests {
             json!({"lifecycle_status":"tombstoned", "acl_mode":"public"}),
         );
         let source = input.content.as_deref().expect("fixture source text");
-        let (batch, _, _) = graph_upsert_mutation_batch(&input, source, &principal_scope())
-            .expect("LLM-only input is normalized without trusting metadata");
+        let (batch, _, _) = graph_upsert_mutation_batch(
+            &input,
+            source,
+            &principal_scope(),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("LLM-only input is normalized without trusting metadata");
         let node = batch
             .mutations
             .iter()
@@ -569,7 +616,13 @@ mod graph_upsert_tests {
         let mut input = extraction_fixture();
         input.edges[0]["source_ids"][0] = json!("nn:unknown");
         let source = input.content.as_deref().expect("fixture source text");
-        assert!(graph_upsert_mutation_batch(&input, source, &principal_scope()).is_err());
+        assert!(graph_upsert_mutation_batch(
+            &input,
+            source,
+            &principal_scope(),
+            &std::collections::BTreeSet::new(),
+        )
+        .is_err());
     }
 
     #[test]
@@ -583,8 +636,13 @@ mod graph_upsert_tests {
         inner.insert("target_edge_ids".to_owned(), Value::Null);
         input.edges.push(inner);
         let source = input.content.as_deref().expect("fixture source text");
-        let (batch, _, edge_ids) = graph_upsert_mutation_batch(&input, source, &principal_scope())
-            .expect("forward-declared hyperedge is topologically ordered");
+        let (batch, _, edge_ids) = graph_upsert_mutation_batch(
+            &input,
+            source,
+            &principal_scope(),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("forward-declared hyperedge is topologically ordered");
         assert_eq!(edge_ids.len(), 2);
         let ordered = batch
             .mutations
@@ -594,8 +652,36 @@ mod graph_upsert_tests {
             .collect::<Vec<_>>();
         assert_eq!(ordered, [edge_ids[1].as_str(), edge_ids[0].as_str()]);
         input.edges[1]["source_edge_ids"] = json!(["ne:connects"]);
-        assert!(graph_upsert_mutation_batch(&input, source, &principal_scope())
+        assert!(graph_upsert_mutation_batch(
+            &input,
+            source,
+            &principal_scope(),
+            &std::collections::BTreeSet::new(),
+        )
             .is_err_and(|error| error.contains("cycle")));
+    }
+
+    #[test]
+    fn graph_upsert_preserves_declared_external_node_endpoint_for_host_validation() {
+        let input = extraction_fixture();
+        let source = input.content.clone().expect("fixture source text");
+        let external_id = "persisted-node".to_owned();
+        let external_ids = std::collections::BTreeSet::from([external_id.clone()]);
+        let mut input = input;
+        input.edges[0]["source_ids"][0] = Value::String(external_id.clone());
+        let (batch, _, _) = graph_upsert_mutation_batch(
+            &input,
+            &source,
+            &principal_scope(),
+            &external_ids,
+        )
+        .expect("host-validated external node references remain canonical");
+        let edge = batch
+            .mutations
+            .iter()
+            .find(|mutation| mutation.entity_kind == "edge")
+            .expect("edge mutation");
+        assert_eq!(edge.payload["source_ids"][0], external_id);
     }
 }
 

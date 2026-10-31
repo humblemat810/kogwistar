@@ -4004,6 +4004,16 @@ impl PostgresRunApplicationService {
         } else {
             None
         };
+        let external_node_ids = match graph_upsert_external_node_ids(&input) {
+            Ok(ids) => ids,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
         let source_text = input
             .content
             .clone()
@@ -4020,7 +4030,7 @@ impl PostgresRunApplicationService {
                 .and_then(|record| record.document.as_deref()),
         );
         let (batch, node_ids, edge_ids) =
-            match graph_upsert_mutation_batch(&input, &source_text, &security_scope) {
+            match graph_upsert_mutation_batch(&input, &source_text, &security_scope, &external_node_ids) {
             Ok(batch) => batch,
             Err(error) => {
                 return effect_error(
@@ -4107,7 +4117,7 @@ impl PostgresRunApplicationService {
             }
         });
         let locked_document_read = GraphProjectionRead {
-            scope: document_scope,
+            scope: document_scope.clone(),
             table: "gke_documents".to_owned(),
             ids: Some(vec![input.doc_id.clone()]),
             metadata: MetadataFilter::default(),
@@ -4123,10 +4133,93 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            security_scope["security_scope"].as_str(),
+        );
+        let Some(_authenticated_owner_id) = authenticated_run_owner_id(&request.principal) else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_GRAPH_OWNER_REQUIRED",
+                "Graph upsert requires an authenticated owner identity",
+            );
+        };
+        let owner_id = acl_principal.principal_id.clone();
+        let acl_security_scope = security_scope["security_scope"].as_str().map(str::to_owned);
+        let acl_effect_id = uuid::Uuid::new_v4().to_string();
+        let endpoint_scope = document_scope.clone();
+        let endpoint_ids = external_node_ids.into_iter().collect::<Vec<_>>();
+        let mut identity_locks = endpoint_ids
+            .iter()
+            .map(|id| ("node".to_owned(), id.clone()))
+            .chain(
+                mutations
+                    .iter()
+                    .map(|mutation| (mutation.entity_kind.clone(), mutation.record.id.clone())),
+            )
+            .collect::<BTreeSet<_>>();
         match self
             .store
             .transaction(move |uow| {
                 Box::pin(async move {
+                    for (kind, id) in std::mem::take(&mut identity_locks) {
+                        uow.lock_entity_identity(&endpoint_scope.namespace, &kind, &id)
+                            .await?;
+                    }
+                    if !endpoint_ids.is_empty() {
+                        let nodes = uow
+                            .graph_projection_records_for_update(GraphProjectionRead {
+                                scope: endpoint_scope.clone(),
+                                table: "gke_nodes".to_owned(),
+                                ids: Some(endpoint_ids.clone()),
+                                metadata: MetadataFilter::default(),
+                                limit: endpoint_ids.len(),
+                            })
+                            .await?;
+                        let acl_records = uow
+                            .graph_acl_records_for_entities(
+                                &endpoint_scope,
+                                "knowledge",
+                                &endpoint_ids,
+                            )
+                            .await?;
+                        let mut acl_index = GraphAclIndex::default();
+                        acl_index.extend_from_records(&acl_records, "knowledge");
+                        let (visible_nodes, _) = graph_records_visible_by_acl_with_index(
+                            &nodes,
+                            &[],
+                            &acl_index,
+                            &acl_principal,
+                        );
+                        let visible_ids = visible_nodes
+                            .iter()
+                            .filter(|record| {
+                                !record
+                                    .metadata
+                                    .get("lifecycle_status")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                            })
+                            .map(|record| record.id.clone())
+                            .collect::<BTreeSet<_>>();
+                        if visible_ids.len() != endpoint_ids.len()
+                            || endpoint_ids.iter().any(|id| !visible_ids.contains(id))
+                        {
+                            return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
+                                "one or more graph endpoints are missing or not visible".to_owned(),
+                            ));
+                        }
+                    }
+                    let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                        uow,
+                        &endpoint_scope,
+                        &mutations,
+                        "knowledge",
+                        &owner_id,
+                        acl_security_scope.as_deref(),
+                        &acl_effect_id,
+                    )
+                    .await?;
                     if let Some(expected_document) = existing_document {
                         let locked = uow
                             .graph_projection_records_for_update(locked_document_read)
@@ -4147,7 +4240,10 @@ impl PostgresRunApplicationService {
                     for mutation in mutations {
                         uow.apply_graph_mutation(mutation).await?;
                     }
-                    for job in index_jobs {
+                    for mutation in acl_mutations {
+                        uow.apply_graph_mutation(mutation).await?;
+                    }
+                    for job in index_jobs.into_iter().chain(acl_jobs) {
                         uow.enqueue_index_job(job).await?;
                     }
                     Ok(())
