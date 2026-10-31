@@ -1,0 +1,49 @@
+{
+  "requests": [
+    {
+      "contract_version": "v1",
+      "model": "local-chat-model",
+      "instructions": "Return a concise answer.",
+      "input": "What is the status?",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "answer": {"type": "string"}
+        },
+        "required": ["answer"],
+        "additionalProperties": false
+      },
+      "tools": [],
+      "previous_response_id": null,
+      "max_output_tokens": 128
+    },
+    {
+      "contract_version": "v1",
+      "model": "local-chat-model",
+      "instructions": "",
+      "input": "Continue.",
+      "response_schema": null,
+      "tools": [
+        {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+      ],
+      "previous_response_id": null,
+      "max_output_tokens": null
+    },
+    {
+      "contract_version": "v1",
+      "model": "local-chat-model",
+      "instructions": "",
+      "input": "Large integer remains lossless.",
+      "response_schema": null,
+      "tools": [],
+      "previous_response_id": null,
+      "max_output_tokens": 18446744073709551616
+    }
+  ],
+  "invalid_requests": [
+    {"contract_version": "v2", "model": "m", "input": "x"},
+    {"contract_version": "v1", "model": "m", "input": "x", "unknown": true},
+    {"contract_version": "v1", "model": "m"},
+    {"contract_version": "v1", "model": "m", "input": "x", "max_output_tokens": 1.5}
+  ]
+}

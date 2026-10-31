@@ -20,6 +20,7 @@ _FIXTURE = (
     / "provider-events-v1.json"
 )
 _EVENT_ADAPTER = TypeAdapter(ProviderEvent)
+_REQUEST_FIXTURE = _FIXTURE.with_name("provider-requests-v1.json")
 
 
 def test_python_provider_events_match_shared_rust_golden_fixture() -> None:
@@ -35,6 +36,19 @@ def test_python_provider_events_reject_the_shared_invalid_cases() -> None:
     for invalid in fixture["invalid_events"]:
         with pytest.raises(ValidationError):
             _EVENT_ADAPTER.validate_python(invalid)
+
+
+def test_python_provider_requests_match_shared_rust_golden_fixture() -> None:
+    from kogwistar.agent.streaming import ProviderRequest
+
+    fixture = json.loads(_REQUEST_FIXTURE.read_text(encoding="utf-8"))
+    assert len(fixture["requests"]) == 3
+    for expected in fixture["requests"]:
+        request = ProviderRequest.model_validate(expected)
+        assert request.model_dump(mode="json") == expected
+    for invalid in fixture["invalid_requests"]:
+        with pytest.raises(ValidationError):
+            ProviderRequest.model_validate(invalid)
 
 
 def test_python_durable_provider_event_matches_shared_rust_golden_fixture() -> None:

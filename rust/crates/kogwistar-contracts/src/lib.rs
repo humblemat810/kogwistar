@@ -21,6 +21,7 @@ mod graph_slice;
 mod native_seam;
 mod projection_checkpoint;
 mod provider_event;
+mod provider_request;
 mod source_map;
 mod tool_audit;
 pub use agent_event::{
@@ -82,6 +83,10 @@ pub use projection_checkpoint::{
 pub use provider_event::{
     PROVIDER_EVENT_CONTRACT_VERSION, ProviderEventContractError, ProviderEventV1,
     provider_event_from_str,
+};
+pub use provider_request::{
+    PROVIDER_REQUEST_CONTRACT_VERSION, ProviderRequestContractError, ProviderRequestV1,
+    provider_request_from_str,
 };
 pub use source_map::{
     SOURCE_MAP_WIRE_VERSION, SourceMapChunkV1, SourceMapV1, SourceMapValidationError,
