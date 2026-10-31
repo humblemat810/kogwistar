@@ -2184,7 +2184,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let fake_chroma = tokio::spawn(async move {
         let mut projected = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..6 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let mut chunk = [0_u8; 2048];
@@ -2279,7 +2279,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
         .with_chroma_graph(graph)
-        .with_embedding_provider(provider);
+        .with_embedding_provider(provider.clone());
     assert!(service.supports_http_operation("POST", INTERNAL_GRAPH_MUTATIONS_ROUTE));
 
     let mut batch: Value = serde_json::from_str(include_str!(concat!(
@@ -2362,6 +2362,26 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
             .collect::<std::collections::BTreeSet<_>>(),
         ["edge", "node"].into_iter().collect()
     );
+
+    // Canonical SQLite events and jobs must survive a service restart before
+    // the eventual Chroma projection is attempted.
+    drop(service);
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("nodes"),
+        chroma_config("edges"),
+    )
+    .await
+    .unwrap();
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_embedding_provider(provider);
+    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 2);
+    let recovered_jobs = service
+        .store
+        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
+        .unwrap();
+    assert_eq!(recovered_jobs.len(), 2);
 
     let projected = service
         .run_embedding_projection_jobs_once(10, 30, Some("docs"))
