@@ -669,10 +669,10 @@
             "label": "Rust semantic retrieval fixture",
             "type": "concept",
             "summary": "A normal graph node used to verify semantic MCP retrieval.",
-            "metadata": {"namespace": "knowledge", "workspace_id": null, "graph_space": null}
+            "metadata": {"namespace": "docs", "workspace_id": null, "graph_space": null}
         });
         graph_batch["mutations"][0]["scope"] = json!({
-            "namespace": "knowledge", "workspace_id": null, "graph_space": null
+            "namespace": "docs", "workspace_id": null, "graph_space": null
         });
         graph_batch["mutations"][0]["event_id"] = json!("regular-semantic-event");
         graph_batch["mutations"][0]["payload"] = graph_node.clone();
@@ -713,14 +713,14 @@
             body: serde_json::to_vec(&graph_batch).unwrap(),
             principal: json!({
                 "sub": "alice", "user_id": "alice", "role": "rw",
-                "ns": ["knowledge"], "storage_ns": "knowledge",
+                "ns": ["docs"], "storage_ns": "docs",
                 "capabilities": ["write_graph"]
             }),
         }).await;
         assert_eq!(graph_write.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&graph_write.body));
         let inserted_graph_node = service.store.graph_projection_records(GraphProjectionRead {
             scope: GraphScope {
-                namespace: "knowledge".to_owned(),
+                namespace: "docs".to_owned(),
                 workspace_id: None,
                 graph_space: None,
             },
@@ -840,7 +840,7 @@
                         &Header::new(Algorithm::HS256),
                         &json!({
                             "sub": "alice", "user_id": "alice", "role": "ro", "roles": ["reader"],
-                            "ns": ["knowledge"], "storage_ns": "knowledge",
+                            "ns": ["docs"], "storage_ns": "docs",
                             "capabilities": ["read_graph"], "exp": 4102444800_u64
                         }),
                         &EncodingKey::from_secret(secret.as_bytes()),
@@ -888,7 +888,7 @@
             contract_version: 1,
             method: "POST".to_owned(),
             path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
-            body: serde_json::to_vec(&json!({"inp": {"nodes": [node], "edges": []}})).unwrap(),
+            body: serde_json::to_vec(&json!({"inp": {"nodes": [node.clone()], "edges": []}})).unwrap(),
             principal: bob,
         }).await;
         assert_ne!(overwrite.status, StatusCode::OK.as_u16());
@@ -927,7 +927,82 @@
         }).await;
         assert_eq!(missing_endpoint.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
 
+        let shared_service = PostgresRunApplicationService::from_dsn_with_wisdom_schema(
+            &dsn,
+            &schema,
+            &schema,
+        )
+        .unwrap()
+        .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+            profile: profile.clone(),
+            vector: vec![0.0, 0.0, 1.0],
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail: None,
+        }));
+        shared_service.ensure_schema().await.unwrap();
+        shared_service
+            .ensure_embedding_profile_binding(&profile)
+            .await
+            .unwrap();
+        let mut shared_node = node.clone();
+        shared_node["id"] = json!("wisdom-shared-schema-node");
+        let shared_write = shared_service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+                body: serde_json::to_vec(
+                    &json!({"inp": {"nodes": [shared_node], "edges": []}}),
+                )
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice", "user_id": "alice", "role": "rw",
+                    "ns": ["wisdom"], "storage_ns": "wisdom",
+                    "capabilities": ["write_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            shared_write.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&shared_write.body)
+        );
+        let shared_role_records = shared_service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "wisdom".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["wisdom-shared-schema-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(shared_role_records.len(), 1);
+        let other_namespace_records = shared_service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "knowledge".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["wisdom-shared-schema-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert!(other_namespace_records.is_empty());
+
         drop(service);
+        drop(shared_service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let cleanup_task = tokio::spawn(connection);
         cleanup.batch_execute(&format!(
