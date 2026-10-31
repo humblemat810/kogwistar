@@ -46,6 +46,14 @@
             })
             .await;
         assert_eq!(edge.status, 200);
+        let snapshot_reader = PostgresStore::from_dsn(&dsn, &schema).unwrap();
+        let current_snapshot = snapshot_reader
+            .get_workflow_design_snapshot("wf-pg-write", 3, 1)
+            .await
+            .unwrap()
+            .expect("PostgreSQL design mutation publishes an exact current snapshot");
+        assert_eq!(current_snapshot.version, 3);
+        assert!(runtime_graph_plan_from_snapshot(&current_snapshot.payload_json).is_some());
         let undo = service
             .execute_async(ApiEffectRequest {
                 contract_version: 1,
@@ -56,6 +64,11 @@
             })
             .await;
         assert_eq!(undo.status, 200);
+        assert!(snapshot_reader
+            .get_workflow_design_snapshot("wf-pg-write", 2, 1)
+            .await
+            .unwrap()
+            .is_some());
         let graph = service
             .execute_async(ApiEffectRequest {
                 contract_version: 1,

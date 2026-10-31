@@ -3783,7 +3783,7 @@
     }
 
     #[tokio::test]
-    async fn sqlite_submit_freezes_exact_ready_graph_snapshot_as_authoritative_routes() {
+    async fn sqlite_submit_freezes_exact_rust_event_graph_snapshot_as_authoritative_routes() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
@@ -3808,7 +3808,7 @@
                     last_authoritative_seq: 1,
                     last_materialized_seq: 1,
                     projection_schema_version: 1,
-                    materialization_status: "ready".to_owned(),
+                    materialization_status: "rust_event_only".to_owned(),
                 },
             )
             .unwrap();

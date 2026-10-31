@@ -1077,6 +1077,16 @@ impl PostgresRunApplicationService {
                     }).collect::<Vec<_>>();
                     let mut folded = workflow_design_history_value(&workflow_id_owned, folded_events, "ready")
                         .map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
+                    let snapshot_graph = graph_at_version(&events, target);
+                    let snapshot_seq = history["commits"][target.to_string()]["target_seq"]
+                        .as_i64()
+                        .unwrap_or(0);
+                    uow.put_workflow_design_snapshot(&workflow_id_owned, WorkflowDesignSnapshotWrite {
+                        version: target,
+                        seq: snapshot_seq,
+                        payload_json: snapshot_graph.to_string(),
+                        schema_version: 1,
+                    }).await?;
                     uow.replace_named_projection("workflow_design", &workflow_id_owned, workflow_design_projection_write(&folded)).await?;
                     folded["status"] = json!("ok"); Ok(folded)
                 }
@@ -1106,9 +1116,9 @@ impl PostgresRunApplicationService {
                         version,prev_version:current,target_seq:data_event.event.seq,
                         forward_json:visible_delta(&before,&graph).to_string(),inverse_json:visible_delta(&graph,&before).to_string(),schema_version:1,
                     }).await?;
-                    if version % 50 == 0 { uow.put_workflow_design_snapshot(&workflow_id_owned, WorkflowDesignSnapshotWrite {
+                    uow.put_workflow_design_snapshot(&workflow_id_owned, WorkflowDesignSnapshotWrite {
                         version,seq:data_event.event.seq,payload_json:graph.to_string(),schema_version:1,
-                    }).await?; }
+                    }).await?;
                     let folded_events = uow.replay_raw_events(&namespace,0,usize::MAX).await?.into_iter().map(|event|EntityEvent{
                         namespace:event.namespace,seq:event.seq,event_id:event.event_id,entity_kind:event.entity_kind,entity_id:event.entity_id,op:event.op,
                         payload:serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),}).collect::<Vec<_>>();

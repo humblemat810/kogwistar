@@ -490,6 +490,18 @@
         let graph: Value = serde_json::from_slice(&graph.body).unwrap();
         assert_eq!(graph["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(graph["edges"].as_array().unwrap().len(), 1);
+        let projection = store
+            .get_named_projection("workflow_design", "wf-write")
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.materialization_status, "rust_event_only");
+        let design_snapshot = store
+            .get_workflow_design_snapshot("wf-write", 3, 1)
+            .unwrap()
+            .expect("every Rust-published design version has an executable snapshot");
+        assert_eq!(design_snapshot.version, 3);
+        assert!(runtime_graph_plan_from_snapshot(&design_snapshot.payload_json).is_some());
+        assert!(exact_runtime_graph_plan(Some(projection), Some(design_snapshot)).is_some());
         let events = store
             .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
             .unwrap();
@@ -536,6 +548,7 @@
         let graph = call("GET", "/api/workflow/design/wf-write/graph", json!({}));
         let graph: Value = serde_json::from_slice(&graph.body).unwrap();
         assert!(graph["edges"].as_array().unwrap().is_empty());
+        assert!(store.get_workflow_design_snapshot("wf-write", 2, 1).unwrap().is_some());
         assert_eq!(
             call(
                 "POST",
@@ -545,6 +558,7 @@
             .status,
             200
         );
+        assert!(store.get_workflow_design_snapshot("wf-write", 3, 1).unwrap().is_some());
         assert_eq!(
             call(
                 "DELETE",

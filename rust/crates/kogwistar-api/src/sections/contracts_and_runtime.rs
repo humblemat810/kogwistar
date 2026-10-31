@@ -2312,7 +2312,10 @@ fn exact_runtime_graph_plan(
 ) -> Option<RuntimeGraphPlan> {
     let projection = projection?;
     let snapshot = snapshot?;
-    if projection.materialization_status != "ready"
+    if !matches!(
+        projection.materialization_status.as_str(),
+        "ready" | "rust_event_only"
+    )
         || projection.payload["current_version"].as_i64()? != snapshot.version
         || projection.payload["snapshot_schema_version"]
             .as_i64()
