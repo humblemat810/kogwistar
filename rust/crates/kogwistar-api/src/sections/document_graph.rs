@@ -1,5 +1,6 @@
 const INTERNAL_DOCUMENT_PROJECTION_ROUTE: &str = "/internal/document/projection";
 const PUBLIC_DOCUMENT_UPSERT_ROUTE: &str = "/api/document";
+const PUBLIC_GRAPH_UPSERT_ROUTE: &str = "/api/graph/upsert";
 
 fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
     method == "POST"
@@ -7,6 +8,10 @@ fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
             path_and_query.split('?').next(),
             Some(INTERNAL_DOCUMENT_PROJECTION_ROUTE | PUBLIC_DOCUMENT_UPSERT_ROUTE)
         )
+}
+
+fn is_public_graph_upsert_route(method: &str, path_and_query: &str) -> bool {
+    method == "POST" && path_and_query.split('?').next() == Some(PUBLIC_GRAPH_UPSERT_ROUTE)
 }
 
 fn document_projection_input(
@@ -72,6 +77,503 @@ fn document_projection_write(
         },
         embedding_dim: 0,
     })
+}
+
+fn graph_upsert_request(request: &ApiEffectRequest) -> Result<GraphExtractionRequestV1, ApiEffectResponse> {
+    let input: GraphExtractionRequestV1 = serde_json::from_slice(&request.body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })?;
+    input.validate().map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })?;
+    if input.doc_type != "text" || input.content.is_none() {
+        return Err(effect_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "KOGWISTAR_GRAPH_UPSERT_UNSUPPORTED",
+            "Rust graph upsert currently requires normalized text content in the request",
+        ));
+    }
+    Ok(input)
+}
+
+fn normalize_extraction_entity(
+    raw: &serde_json::Map<String, Value>,
+    doc_id: &str,
+    insertion_method: &str,
+    id: String,
+    is_edge: bool,
+) -> Result<Value, String> {
+    let mut entity = raw.clone();
+    entity.remove("local_id");
+    entity.remove("references");
+    entity.remove("groundings");
+    entity.insert("id".to_owned(), Value::String(id));
+    entity.insert("doc_id".to_owned(), Value::String(doc_id.to_owned()));
+    entity.remove("embedding");
+    entity.insert("metadata".to_owned(), Value::Object(serde_json::Map::new()));
+    let metadata = entity
+        .get_mut("metadata")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "graph metadata must be an object".to_owned())?;
+    metadata
+        .entry("lifecycle_status".to_owned())
+        .or_insert_with(|| Value::String("active".to_owned()));
+    metadata
+        .entry("redirect_to_id".to_owned())
+        .or_insert(Value::Null);
+
+    let raw_mentions = entity.remove("mentions").or_else(|| {
+        raw.get("groundings").cloned()
+    });
+    let mentions = match raw_mentions {
+        Some(Value::Array(mentions)) => mentions,
+        Some(_) => return Err("mentions must be an array".to_owned()),
+        None => raw
+            .get("references")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|span| json!({"spans": [span]}))
+            .collect(),
+    };
+    let mentions = mentions
+        .into_iter()
+        .map(|mention| normalize_extraction_mention(mention, doc_id, insertion_method))
+        .collect::<Result<Vec<_>, _>>()?;
+    if mentions.is_empty() {
+        return Err("graph entities require at least one source mention".to_owned());
+    }
+    entity.insert("mentions".to_owned(), Value::Array(mentions));
+    if is_edge {
+        for field in ["source_ids", "target_ids"] {
+            if !entity.get(field).is_some_and(Value::is_array) {
+                return Err(format!("edge {field} must be an array"));
+            }
+        }
+        for field in ["source_edge_ids", "target_edge_ids"] {
+            entity.entry(field.to_owned()).or_insert(Value::Null);
+        }
+    }
+    Ok(Value::Object(entity))
+}
+
+fn normalize_extraction_mention(
+    mut mention: Value,
+    doc_id: &str,
+    insertion_method: &str,
+) -> Result<Value, String> {
+    if mention.get("spans").is_none() && mention.get("start_char").is_some() {
+        mention = json!({"spans": [mention]});
+    }
+    let spans = mention
+        .get_mut("spans")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "each graph mention must contain spans".to_owned())?;
+    for (index, span) in spans.iter_mut().enumerate() {
+        let object = span
+            .as_object_mut()
+            .ok_or_else(|| "mention spans must be objects".to_owned())?;
+        object
+            .entry("doc_id".to_owned())
+            .or_insert_with(|| Value::String(doc_id.to_owned()));
+        object.entry("collection_page_url".to_owned()).or_insert_with(|| {
+            Value::String(format!("doc://{doc_id}"))
+        });
+        object.entry("document_page_url".to_owned()).or_insert_with(|| {
+            Value::String(format!("doc://{doc_id}#span-{index}"))
+        });
+        object
+            .entry("insertion_method".to_owned())
+            .or_insert_with(|| Value::String(insertion_method.to_owned()));
+        object.entry("page_number".to_owned()).or_insert(Value::from(1));
+        object.entry("context_before".to_owned()).or_insert_with(|| Value::String(String::new()));
+        object.entry("context_after".to_owned()).or_insert_with(|| Value::String(String::new()));
+        object.entry("chunk_id".to_owned()).or_insert(Value::Null);
+        object.entry("source_cluster_id".to_owned()).or_insert(Value::Null);
+    }
+    Ok(mention)
+}
+
+fn graph_upsert_mutation_batch(
+    input: &GraphExtractionRequestV1,
+    security_scope: &Value,
+) -> Result<(GraphMutationBatchInput, Vec<String>, Vec<String>), String> {
+    use std::collections::BTreeMap;
+
+    let source_text = input
+        .content
+        .as_ref()
+        .ok_or_else(|| "graph upsert requires source text".to_owned())?;
+    input
+        .validate_source_spans(&BTreeMap::from([(input.doc_id.clone(), source_text.clone())]))
+        .map_err(|error| error.to_string())?;
+
+    let mut node_ids = BTreeMap::<String, String>::new();
+    let mut edge_ids = BTreeMap::<String, String>::new();
+    let mut normalized_nodes = Vec::with_capacity(input.nodes.len());
+    let mut normalized_edges = Vec::with_capacity(input.edges.len());
+    let mut result_nodes = Vec::with_capacity(input.nodes.len());
+    let mut result_edges = Vec::with_capacity(input.edges.len());
+    let mut edge_ids_in_input = Vec::with_capacity(input.edges.len());
+    for raw in &input.nodes {
+        let token = raw
+            .get("local_id")
+            .or_else(|| raw.get("id"))
+            .and_then(Value::as_str);
+        let id = match token {
+            Some(value) if value.starts_with("nn:") => node_ids
+                .entry(value.to_owned())
+                .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone(),
+            Some(value) if !value.is_empty() => value.to_owned(),
+            Some(_) => return Err("node id must not be empty".to_owned()),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        for alias in [raw.get("local_id"), raw.get("id")].into_iter().flatten() {
+            if let Some(alias) = alias.as_str() {
+                node_ids.insert(alias.to_owned(), id.clone());
+            }
+        }
+        result_nodes.push(id.clone());
+        normalized_nodes.push(normalize_extraction_entity(
+            raw,
+            &input.doc_id,
+            &input.insertion_method,
+            id,
+            false,
+        )?);
+    }
+    for raw in &input.edges {
+        let token = raw.get("local_id").or_else(|| raw.get("id")).and_then(Value::as_str);
+        let id = match token {
+            Some(value) if value.starts_with("ne:") => edge_ids
+                .entry(value.to_owned())
+                .or_insert_with(|| uuid::Uuid::new_v4().to_string())
+                .clone(),
+            Some(value) if !value.is_empty() => value.to_owned(),
+            Some(_) => return Err("edge id must not be empty".to_owned()),
+            None => uuid::Uuid::new_v4().to_string(),
+        };
+        for alias in [raw.get("local_id"), raw.get("id")].into_iter().flatten() {
+            if let Some(alias) = alias.as_str() {
+                edge_ids.insert(alias.to_owned(), id.clone());
+            }
+        }
+        edge_ids_in_input.push(id.clone());
+        result_edges.push(id.clone());
+    }
+    let mut pending_edges = Vec::with_capacity(input.edges.len());
+    for (index, raw) in input.edges.iter().enumerate() {
+        let id = edge_ids_in_input[index].clone();
+        let mut entity = normalize_extraction_entity(
+            raw,
+            &input.doc_id,
+            &input.insertion_method,
+            id,
+            true,
+        )?;
+        for field in ["source_ids", "target_ids"] {
+            let endpoints = entity[field]
+                .as_array_mut()
+                .ok_or_else(|| format!("edge {field} must be an array"))?;
+            for endpoint in endpoints {
+                let token = endpoint
+                    .as_str()
+                    .ok_or_else(|| format!("edge {field} entries must be strings"))?;
+                *endpoint = Value::String(
+                    node_ids
+                        .get(token)
+                        .cloned()
+                        .ok_or_else(|| format!("edge endpoint {token:?} is not a node in this request"))?,
+                );
+            }
+        }
+        pending_edges.push(entity);
+    }
+    let mut materialized_edge_ids = BTreeSet::new();
+    while !pending_edges.is_empty() {
+        let mut progress = false;
+        let mut next = Vec::new();
+        for mut entity in pending_edges {
+            let mut dependencies_ready = true;
+            for field in ["source_edge_ids", "target_edge_ids"] {
+                if let Some(endpoints) = entity[field].as_array_mut() {
+                    for endpoint in endpoints {
+                        let token = endpoint
+                            .as_str()
+                            .ok_or_else(|| format!("edge {field} entries must be strings"))?;
+                        let resolved = edge_ids
+                            .get(token)
+                            .map(String::as_str)
+                            .unwrap_or(token);
+                        if !edge_ids.values().any(|edge_id| edge_id == resolved) {
+                            return Err(format!(
+                                "hyperedge endpoint {token:?} is not an edge in this request"
+                            ));
+                        }
+                        if !materialized_edge_ids.contains(resolved) {
+                            dependencies_ready = false;
+                        }
+                        *endpoint = Value::String(resolved.to_owned());
+                    }
+                }
+            }
+            if dependencies_ready {
+                materialized_edge_ids.insert(
+                    entity["id"]
+                        .as_str()
+                        .ok_or_else(|| "normalized edge has no id".to_owned())?
+                        .to_owned(),
+                );
+                normalized_edges.push(entity);
+                progress = true;
+            } else {
+                next.push(entity);
+            }
+        }
+        if !progress {
+            return Err("hyperedge endpoints contain a cycle or unresolved dependency".to_owned());
+        }
+        pending_edges = next;
+    }
+
+    let scope = GraphScope {
+        namespace: security_scope["storage_namespace"]
+            .as_str()
+            .unwrap_or("docs")
+            .to_owned(),
+        workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
+        graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
+    };
+    let mut mutations = Vec::with_capacity(normalized_nodes.len() + normalized_edges.len());
+    for (entity_kind, table, model_class, entities) in [
+        ("node", "gke_nodes", GraphModelClass::Node, normalized_nodes),
+        ("edge", "gke_edges", GraphModelClass::Edge, normalized_edges),
+    ] {
+        for payload in entities {
+            let id = payload["id"]
+                .as_str()
+                .ok_or_else(|| "normalized graph entity has no id".to_owned())?
+                .to_owned();
+            let envelope = GraphModelEnvelope::new(model_class, payload.clone());
+            envelope
+                .decode_persistent_v1()
+                .map_err(|error| error.to_string())?;
+            let mut document_payload = payload.clone();
+            let object = document_payload
+                .as_object_mut()
+                .ok_or_else(|| "normalized graph entity must be an object".to_owned())?;
+            if entity_kind == "node" {
+                object.remove("metadata");
+                object.remove("embedding");
+            } else {
+                object.insert("embedding".to_owned(), Value::Null);
+            }
+            let document = serde_json::to_string(&document_payload)
+                .map_err(|error| error.to_string())?;
+            let mut metadata = payload
+                .as_object()
+                .and_then(|object| object.get("metadata"))
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for field in ["doc_id", "label", "type", "summary", "domain_id", "canonical_entity_id"] {
+                if let Some(value) = payload.get(field) {
+                    metadata.insert(field.to_owned(), value.clone());
+                }
+            }
+            if let Some(properties) = payload.get("properties") {
+                metadata.insert(
+                    "properties".to_owned(),
+                    Value::String(serde_json::to_string(properties).map_err(|error| error.to_string())?),
+                );
+            }
+            if let Some(mentions) = payload.get("mentions") {
+                metadata.insert(
+                    "mentions".to_owned(),
+                    Value::String(serde_json::to_string(mentions).map_err(|error| error.to_string())?),
+                );
+            }
+            if entity_kind == "edge" {
+                for field in ["relation", "source_ids", "target_ids"] {
+                    if let Some(value) = payload.get(field) {
+                        metadata.insert(
+                            field.to_owned(),
+                            Value::String(serde_json::to_string(value).map_err(|error| error.to_string())?),
+                        );
+                    }
+                }
+            }
+            metadata.insert("namespace".to_owned(), Value::String(scope.namespace.clone()));
+            metadata.insert(
+                "_class_name".to_owned(),
+                Value::String(if entity_kind == "node" { "Node" } else { "Edge" }.to_owned()),
+            );
+            let mut record_metadata = serde_json::Map::new();
+            for (key, value) in metadata {
+                record_metadata.insert(key, value);
+            }
+            mutations.push(GraphMutationInput {
+                scope: kogwistar_contracts::GraphScopeV1 {
+                    namespace: scope.namespace.clone(),
+                    workspace_id: scope.workspace_id.clone(),
+                    graph_space: scope.graph_space.clone(),
+                },
+                table: table.to_owned(),
+                entity_kind: entity_kind.to_owned(),
+                event_id: uuid::Uuid::new_v4().to_string(),
+                op: "ADD".to_owned(),
+                payload: payload.clone(),
+                record: kogwistar_contracts::GraphRecordV1 {
+                    id,
+                    document: Some(document),
+                    metadata: record_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+                model_envelope: Some(envelope),
+            });
+        }
+    }
+    let mut index_jobs = Vec::with_capacity(mutations.len());
+    for mutation in &mutations {
+        index_jobs.push(GraphIndexJobInput {
+            job_id: uuid::Uuid::new_v4().to_string(),
+            namespace: scope.namespace.clone(),
+            entity_kind: mutation.entity_kind.clone(),
+            entity_id: mutation.record.id.clone(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 10,
+        });
+    }
+    let batch = GraphMutationBatchInput {
+        contract_version: 1,
+        atomic: true,
+        mutations,
+        index_jobs,
+    };
+    if !batch.mutations.is_empty() {
+        batch.validate().map_err(|error| error.to_string())?;
+    }
+    Ok((batch, result_nodes, result_edges))
+}
+
+#[cfg(test)]
+mod graph_upsert_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn extraction_fixture() -> GraphExtractionRequestV1 {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-extraction-v1.json"
+        )))
+        .expect("shared graph extraction fixture")
+    }
+
+    fn principal_scope() -> Value {
+        json!({
+            "storage_namespace": "tenant-a",
+            "workspace": "workspace-a",
+            "graph_space": "facts",
+        })
+    }
+
+    #[test]
+    fn graph_upsert_builds_typed_atomic_batch_from_shared_fixture() {
+        let input = extraction_fixture();
+        let (batch, nodes, edges) = graph_upsert_mutation_batch(&input, &principal_scope())
+            .expect("valid fixture converts to a native graph batch");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(edges.len(), 1);
+        assert!(nodes.iter().all(|id| !id.starts_with("nn:")));
+        assert!(edges.iter().all(|id| !id.starts_with("ne:")));
+        assert_eq!(batch.mutations.len(), 3);
+        assert_eq!(batch.index_jobs.len(), 3);
+        batch.validate().expect("atomic batch is valid");
+        let mutations = graph_mutation_batch_value(batch.clone()).expect("store DTO conversion");
+        validate_graph_mutation_envelopes(&batch, &mutations)
+            .expect("persistent graph envelopes match their mutations");
+        let edge = batch
+            .mutations
+            .iter()
+            .find(|mutation| mutation.entity_kind == "edge")
+            .expect("edge mutation");
+        assert_eq!(edge.payload["source_ids"][0], nodes[0]);
+        assert_eq!(edge.payload["target_ids"][0], nodes[1]);
+        assert_eq!(edge.scope.namespace, "tenant-a");
+        assert_eq!(edge.scope.workspace_id.as_deref(), Some("workspace-a"));
+        assert_eq!(edge.scope.graph_space.as_deref(), Some("facts"));
+    }
+
+    #[test]
+    fn graph_upsert_checks_exact_source_and_does_not_accept_caller_acl_metadata() {
+        let mut input = extraction_fixture();
+        input.nodes[0].insert(
+            "metadata".to_owned(),
+            json!({"lifecycle_status":"tombstoned", "acl_mode":"public"}),
+        );
+        let (batch, _, _) = graph_upsert_mutation_batch(&input, &principal_scope())
+            .expect("LLM-only input is normalized without trusting metadata");
+        let node = batch
+            .mutations
+            .iter()
+            .find(|mutation| mutation.entity_kind == "node")
+            .expect("node mutation");
+        assert_eq!(node.payload["metadata"]["lifecycle_status"], "active");
+        assert!(node.payload["metadata"].get("acl_mode").is_none());
+
+        let mut tampered = extraction_fixture();
+        tampered.nodes[0]["references"][0]["excerpt"] = json!("Fabricated");
+        let sources = BTreeMap::from([(
+            tampered.doc_id.clone(),
+            tampered.content.clone().expect("fixture source text"),
+        )]);
+        assert!(tampered.validate_source_spans(&sources).is_err());
+    }
+
+    #[test]
+    fn graph_upsert_rejects_dangling_node_endpoints() {
+        let mut input = extraction_fixture();
+        input.edges[0]["source_ids"][0] = json!("nn:unknown");
+        assert!(graph_upsert_mutation_batch(&input, &principal_scope()).is_err());
+    }
+
+    #[test]
+    fn graph_upsert_orders_hyperedges_by_dependency_not_input_order() {
+        let mut input = extraction_fixture();
+        input.edges[0]["source_edge_ids"] = json!(["ne:inner"]);
+        let mut inner = input.edges[0].clone();
+        inner.insert("local_id".to_owned(), json!("ne:inner"));
+        inner.insert("id".to_owned(), json!("ne:inner"));
+        inner.insert("source_edge_ids".to_owned(), Value::Null);
+        inner.insert("target_edge_ids".to_owned(), Value::Null);
+        input.edges.push(inner);
+        let (batch, _, edge_ids) = graph_upsert_mutation_batch(&input, &principal_scope())
+            .expect("forward-declared hyperedge is topologically ordered");
+        assert_eq!(edge_ids.len(), 2);
+        let ordered = batch
+            .mutations
+            .iter()
+            .filter(|mutation| mutation.entity_kind == "edge")
+            .map(|mutation| mutation.record.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ordered, [edge_ids[1].as_str(), edge_ids[0].as_str()]);
+        input.edges[1]["source_edge_ids"] = json!(["ne:connects"]);
+        assert!(graph_upsert_mutation_batch(&input, &principal_scope())
+            .is_err_and(|error| error.contains("cycle")));
+    }
 }
 
 fn request_approval_syscall(

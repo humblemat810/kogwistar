@@ -207,7 +207,7 @@ def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> No
         encoding="utf-8"
     )
 
-    assert pending_count == 8
+    assert pending_count == 7
     assert f"the {pending_count} currently frozen" in status
 
 

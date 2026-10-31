@@ -3950,6 +3950,168 @@ impl PostgresRunApplicationService {
         }
     }
 
+    async fn public_graph_upsert_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !self.store.graph_authority_capability().supports_atomic_index_jobs()
+            || !self.document_authority_capability().supports_projection_upsert()
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The selected Rust store does not own atomic graph and document projections",
+            );
+        }
+        if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph upsert requires write_graph capability",
+            );
+        }
+        let input = match graph_upsert_request(request) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let security_scope = security_scope_value(&request.principal);
+        let (batch, node_ids, edge_ids) = match graph_upsert_mutation_batch(&input, &security_scope) {
+            Ok(batch) => batch,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        if batch.mutations.is_empty() {
+            let scope = GraphScope {
+                namespace: security_scope["storage_namespace"]
+                    .as_str()
+                    .unwrap_or("docs")
+                    .to_owned(),
+                workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
+                graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
+            };
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("doc_type".to_owned(), json!(input.doc_type));
+            metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
+            if let Err(error) = self.store.upsert_document_projection(DocumentProjectionUpsert {
+                scope,
+                record: GraphRecord {
+                    id: input.doc_id.clone(),
+                    document: input.content.clone(),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }).await {
+                return effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+                    error.to_string(),
+                );
+            }
+            return json_effect(
+                StatusCode::OK,
+                json!({
+                    "document_id": input.doc_id,
+                    "node_ids": [],
+                    "edge_ids": [],
+                    "nodes_added": 0,
+                    "edges_added": 0,
+                }),
+            );
+        }
+        let mutations = match graph_mutation_batch_value(batch.clone()) {
+            Ok(mutations) => mutations,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        if let Err(error) = validate_graph_mutation_envelopes(&batch, &mutations) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
+        }
+        if mutations
+            .iter()
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Graph mutation scope is outside the principal storage scope",
+            );
+        }
+        let document_scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .unwrap_or("docs")
+                .to_owned(),
+            workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
+            graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
+        };
+        let mut document_metadata = serde_json::Map::new();
+        document_metadata.insert("doc_type".to_owned(), json!(input.doc_type));
+        document_metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
+        let document_write = DocumentProjectionUpsert {
+            scope: document_scope,
+            record: GraphRecord {
+                id: input.doc_id.clone(),
+                document: input.content.clone(),
+                metadata: document_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        if let Err(error) = self.store.upsert_document_projection(document_write).await {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+                error.to_string(),
+            );
+        }
+        let index_jobs = match graph_index_jobs_value(&batch, &mutations) {
+            Ok(jobs) => jobs,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        match self
+            .store
+            .apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                mutations,
+                index_jobs,
+            })
+            .await
+        {
+            Ok(_) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "document_id": input.doc_id,
+                    "node_ids": node_ids,
+                    "edge_ids": edge_ids,
+                    "nodes_added": node_ids.len(),
+                    "edges_added": edge_ids.len(),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_GRAPH_MUTATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
         if is_pending_server_cutover_route(&request.method, &request.path_and_query) {
             return effect_error(
@@ -4137,6 +4299,9 @@ impl PostgresRunApplicationService {
                 return json_effect(StatusCode::OK, json!({"status": "ok"}));
             }
             return response;
+        }
+        if is_public_graph_upsert_route(&request.method, &request.path_and_query) {
+            return self.public_graph_upsert_effect(&request).await;
         }
         if let Some(response) = visualization_shell_effect(&request) {
             return response;

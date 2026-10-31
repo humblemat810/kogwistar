@@ -69,7 +69,6 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/viz/d3.bundle"),
     ("POST", "/api/add_index_entries"),
     ("POST", "/api/document.upsert_tree"),
-    ("POST", "/api/graph/upsert"),
 ];
 
 pub const TRANSPORT_OWNED_HTTP_ROUTES: &[(&str, &str)] = &[

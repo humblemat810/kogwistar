@@ -760,6 +760,9 @@ impl ApplicationService for PostgresRunApplicationService {
         FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
+            && (method != "POST" || path != "/api/graph/upsert"
+                || self.graph_authority_capability().supports_atomic_index_jobs()
+                    && self.document_authority_capability().supports_projection_upsert())
     }
 
     fn execute(

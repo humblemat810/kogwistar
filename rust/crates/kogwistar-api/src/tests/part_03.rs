@@ -614,6 +614,14 @@
             .batch_execute(&format!(
                 r#"CREATE EXTENSION IF NOT EXISTS vector;
                 CREATE SCHEMA "{schema}";
+                CREATE TABLE "{schema}"."gke_documents" (
+                    id TEXT PRIMARY KEY,
+                    document TEXT NULL,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    embedding vector(3) NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
                 CREATE TABLE "{schema}"."gke_nodes" (
                     id TEXT PRIMARY KEY,
                     document TEXT NULL,
@@ -828,6 +836,127 @@
                 Arc::new(service.clone()),
             )
         };
+        let graph_upsert_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "rw",
+                "roles": ["reader", "rw"],
+                "ns": "workflow",
+                "storage_ns": "alpha",
+                "workspace": "workspace-a",
+                "graph_space": "facts",
+                "capabilities": ["write_graph"],
+                "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(key.as_bytes()),
+        )
+        .unwrap();
+        let mut extraction: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-extraction-v1.json"
+        )))
+        .unwrap();
+        extraction["doc_id"] = json!("public-graph-upsert-doc");
+        extraction["nodes"][0]["references"][0]["doc_id"] =
+            json!("public-graph-upsert-doc");
+        extraction["nodes"][1]["mentions"][0]["spans"][0]["doc_id"] =
+            json!("public-graph-upsert-doc");
+        extraction["edges"][0]["references"][0]["doc_id"] =
+            json!("public-graph-upsert-doc");
+        let denied_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_token(&[], "alpha")),
+                    )
+                    .body(Body::from(serde_json::to_vec(&extraction).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_upsert.status(), StatusCode::FORBIDDEN);
+        let denied_document_count: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"gke_documents\" WHERE id=$1"),
+                &[&"public-graph-upsert-doc"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(denied_document_count, 0);
+
+        let upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {graph_upsert_token}"))
+                    .body(Body::from(serde_json::to_vec(&extraction).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(upsert.status(), StatusCode::OK);
+        let upsert_body: Value =
+            serde_json::from_slice(&to_bytes(upsert.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(upsert_body["document_id"], "public-graph-upsert-doc");
+        let node_ids = upsert_body["node_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        let edge_ids = upsert_body["edge_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!((node_ids.len(), edge_ids.len()), (2, 1));
+        assert_eq!(upsert_body["nodes_added"], 2);
+        assert_eq!(upsert_body["edges_added"], 1);
+        let stored_document: String = client
+            .query_one(
+                &format!("SELECT document FROM \"{schema}\".\"gke_documents\" WHERE id=$1"),
+                &[&"public-graph-upsert-doc"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored_document, extraction["content"].as_str().unwrap());
+        let stored_nodes: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"gke_nodes\" WHERE id=ANY($1)"),
+                &[&node_ids],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let stored_edges: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"gke_edges\" WHERE id=ANY($1)"),
+                &[&edge_ids],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!((stored_nodes, stored_edges), (2, 1));
+        let stored_jobs: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"index_jobs\" WHERE entity_id=ANY($1) AND index_kind='node_embedding'"),
+                &[&node_ids.iter().chain(edge_ids.iter()).cloned().collect::<Vec<_>>()],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(stored_jobs, 3);
+
         let mcp_list = make_app()
             .oneshot(
                 Request::builder()
@@ -1061,14 +1190,14 @@
             .replay_raw_events("alpha", 0, 100)
             .await
             .unwrap();
-        assert_eq!(events.len(), 7);
+        assert_eq!(events.len(), 10);
         let jobs = service
             .store
             .list_index_jobs(Some("alpha"), None, None, None, None, 10)
             .await
             .unwrap();
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].job_id, "graph-route-index-1");
+        assert_eq!(jobs.len(), 4);
+        assert!(jobs.iter().any(|job| job.job_id == "graph-route-index-1"));
 
         let records = service
             .store
@@ -1202,7 +1331,7 @@
                 .await
                 .unwrap()
                 .len(),
-            7
+            10
         );
         assert_eq!(
             service
@@ -1262,7 +1391,7 @@
                 .await
                 .unwrap()
                 .len(),
-            7
+            10
         );
         assert!(
             service
