@@ -7152,6 +7152,48 @@
         let public_event_payload = serde_json::to_string(public_provider_event).unwrap();
         assert!(!public_event_payload.contains("The workflow runtime state is stored in the graph."));
         assert!(!public_event_payload.contains("The selected evidence states this directly."));
+        let mcp_events_response = client
+            .post(format!("{base_url}/mcp/workflow"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "jsonrpc":"2.0",
+                "id":71,
+                "method":"tools/call",
+                "params":{
+                    "name":"workflow.run_events",
+                    "arguments":{
+                        "run_id":"rust-only-answer-e2e",
+                        "after_seq":0,
+                        "limit":10_000
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            mcp_events_response.status().is_success(),
+            "authorized workflow.run_events MCP call should expose the durable event stream"
+        );
+        let mcp_events: Value = mcp_events_response.json().await.unwrap();
+        let mcp_provider_event = mcp_events["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| {
+                event["event_type"] == "workflow.provider_event.v1"
+                    && event["payload"]["provider_event"]["kind"] == "field_completed"
+                    && event["payload"]["provider_event"]["details"]["field_name"] == "text"
+            })
+            .expect("workflow.run_events returns the streamed provider event");
+        assert_eq!(
+            mcp_provider_event["payload"]["span_id"],
+            public_provider_event["payload"]["span_id"],
+            "REST and MCP expose the same trace identity"
+        );
+        let mcp_event_payload = serde_json::to_string(mcp_provider_event).unwrap();
+        assert!(!mcp_event_payload.contains("The workflow runtime state is stored in the graph."));
+        assert!(!mcp_event_payload.contains("The selected evidence states this directly."));
         let streamed_provider_events = durable_events
             .iter()
             .filter(|event| event.event_type == "workflow.provider_event.v1")
