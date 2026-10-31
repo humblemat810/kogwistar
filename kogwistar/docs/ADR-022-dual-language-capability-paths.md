@@ -351,8 +351,16 @@ An outbox provides eventual follow-up, not a claim of cross-language or
 cross-store ACID.
 
 Graph write ingress must remain generic over graph entity models and storage
-backends. Do not make a shared graph operation depend on `PureChromaNode`,
-`PureChromaEdge`, PostgreSQL, or any one graph/domain family. Preserve the
+backends. Conversation, knowledge, wisdom, and ACL data use the same base graph
+entity/store interface; they are not separate graph types. Select the target
+through graph scope and typed attributes (including the ACL batch's
+`default_acl.truth_graph` string), rather than introducing a domain-specific
+graph representation or storage route. Keep any existing domain-named public
+operation only as a compatibility adapter to the shared graph-mutation
+contract.
+
+Do not make shared graph persistence depend on `PureChromaNode`,
+`PureChromaEdge`, PostgreSQL, or one graph/domain family. Preserve the
 versioned model envelope and validate the selected registered model family;
 retain node/edge identity and incidence semantics, including edge-to-edge
 hyperedge references. Select persistence behavior from the configured backend's
@@ -362,9 +370,9 @@ atomic graph-plus-index-job transaction; conversely, an operation that truly
 requires that atomic guarantee must fail closed or use a separately specified
 eventual/outbox contract rather than pretending the backend provides it.
 Generic model handling does not bypass model validation, ACL, namespace,
-workspace, provenance, or ownership checks. System-managed model families must
-retain their own authority checks instead of being coerced into a generic
-user-writable graph shape.
+workspace, provenance, or ownership checks. Those checks remain policy applied
+to the shared graph interface, not reasons to create graph-specific storage
+types.
 
 The Rust internal graph-mutation seam therefore treats indexing as an explicit
 part of the command, not as an inferred side effect. A caller may attach
