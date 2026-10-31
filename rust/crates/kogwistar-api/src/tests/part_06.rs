@@ -7381,6 +7381,16 @@
             .expect("a visible semantic event should be claimable");
         assert_eq!(claimed_context["event"]["trace"]["run_id"], "rust-only-answer-e2e");
         assert_eq!(
+            claimed_context["event"]["trace"]["attempt"],
+            event_attempt,
+            "provider event attempt matches its producing workflow attempt"
+        );
+        assert_eq!(
+            claimed_context["event"]["trace"]["producer_attempt"],
+            event_attempt,
+            "producer attempt metadata remains aligned with the event attempt"
+        );
+        assert_eq!(
             claimed_context["claim"]["message_id"],
             format!("msg:{}", claimed_context["event"]["event_id"].as_str().unwrap())
         );

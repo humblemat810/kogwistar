@@ -1461,7 +1461,7 @@ impl PostgresRunApplicationService {
                                 "provider-response:{}",
                                 response_id.as_deref().unwrap_or("unknown")
                             ),
-                            attempt: 1,
+                            attempt,
                             producer_step_seq: Some(step_seq),
                             producer_attempt: Some(attempt),
                             trace_id: trace_context
