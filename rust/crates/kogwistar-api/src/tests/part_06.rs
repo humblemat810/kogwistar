@@ -4820,13 +4820,17 @@
 
     #[tokio::test]
     async fn sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{EncodingKey, Header, encode};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tower::ServiceExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..6 {
+            for _ in 0..8 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -4863,9 +4867,11 @@
                         ("start", json!({"entity_type":"conversation_start","conversation_id":"c1"})),
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
+                        ("turn-private", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":3,"role":"assistant","summary":"private"})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-2", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-2","acl_version":1,"acl_mode":"public"})),
+                        ("acl-turn-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
                     ];
                     let metadatas = nodes
                         .iter()
@@ -4880,9 +4886,9 @@
                         .collect::<Vec<_>>();
                     json!({
                         "ids": nodes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                        "documents": ["{}","{}","{}","{}","{}","{}"],
+                        "documents": ["{}","{}","{}","{}","{}","{}","{}","{}"],
                         "metadatas": metadatas,
-                        "embeddings": [null,null,null,null,null,null]
+                        "embeddings": [null,null,null,null,null,null,null,null]
                     })
                 } else {
                     json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})
@@ -4954,8 +4960,59 @@
             serde_json::from_slice::<Value>(&empty_transcript.body).unwrap()["result"]["messages"],
             json!([])
         );
+
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some("sqlite-chroma-transcript-secret".to_owned()),
+            ..AuthConfig::default()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation",
+                "ns":["conversation"], "capabilities":["read_graph"], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(b"sqlite-chroma-transcript-secret"),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service.clone()),
+        );
+        let http_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/syscall/v1/receive_message")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(r#"{"version":"v1","args":{"conversation_id":"c1"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(http_response.status(), StatusCode::OK);
+        let http_payload: Value = serde_json::from_slice(
+            &to_bytes(http_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(http_payload["result"]["messages"][0]["node_id"], "turn-1");
+        assert_eq!(http_payload["result"]["messages"][1]["node_id"], "turn-2");
+        assert_eq!(http_payload["result"]["messages"].as_array().unwrap().len(), 2);
+
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 8);
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")
