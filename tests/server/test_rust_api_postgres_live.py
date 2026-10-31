@@ -7,13 +7,16 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
 import pytest
 
+from kogwistar.engine_core.embedding_profile import EmbeddingProfile
 from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
 
 pytestmark = [pytest.mark.ci]
@@ -748,6 +751,13 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         namespace=namespace,
         kg_graph_type=graph_type,
         embedding_function=build_test_embedding_function("constant", dim=3),
+        embedding_profile=EmbeddingProfile(
+            provider="ollama",
+            model="fixture-embedding-v1",
+            dimension=3,
+            similarity_metric="cosine",
+            embedding_kind="single_vector",
+        ),
         acl_enabled=True,
     )
     owner_token = claims_ctx.set(
@@ -795,6 +805,36 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
 
     port = _port()
     secret = uuid.uuid4().hex
+
+    class FixedEmbeddingHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/api/embed":
+                self.send_error(404)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(size))
+            inputs = request.get("input")
+            if not isinstance(inputs, list):
+                self.send_error(400)
+                return
+            body = json.dumps(
+                {"embeddings": [[0.01, 0.01, 0.01] for _ in inputs]}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    embedding_server = ThreadingHTTPServer(("127.0.0.1", 0), FixedEmbeddingHandler)
+    embedding_thread = threading.Thread(
+        target=embedding_server.serve_forever, daemon=True
+    )
+    embedding_thread.start()
+    embedding_endpoint = f"http://127.0.0.1:{embedding_server.server_port}"
     env = os.environ.copy()
     for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
         env.pop(name, None)
@@ -806,6 +846,10 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "KOGWISTAR_BACKEND": "pg",
             "KOGWISTAR_PG_DSN": pg_dsn,
             "KOGWISTAR_PG_SCHEMA_BASE": pg_schema,
+            "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
+            "KOGWISTAR_EMBEDDING_MODEL": "fixture-embedding-v1",
+            "KOGWISTAR_EMBEDDING_DIMENSION": "3",
+            "KOGWISTAR_EMBEDDING_ENDPOINT": embedding_endpoint,
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
@@ -866,6 +910,64 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "kg_neighbors", {"rid": source.id, "doc_id": doc_id}, claims
             )
 
+        def semantic_ids(
+            result: dict[str, object],
+        ) -> tuple[list[str], list[dict[str, set[str]]]]:
+            seeds = result["seeds"]
+            layers = result["layers"]
+            assert isinstance(seeds, list)
+            assert isinstance(layers, list)
+            seed_ids = [json.loads(item)["id"] for item in seeds]
+            layer_ids = []
+            for layer in layers:
+                assert isinstance(layer, dict)
+                layer_ids.append(
+                    {
+                        "nodes": {json.loads(item)["id"] for item in layer["nodes"]},
+                        "edges": {json.loads(item)["id"] for item in layer["edges"]},
+                    }
+                )
+            return seed_ids, layer_ids
+
+        owner_python_claims = {
+            **owner_claims,
+            "agent_id": "owner-a",
+            "ns": graph_type,
+        }
+        for principal_id, mcp_claims, python_claims in (
+            ("reader", reader_claims, reader_claims),
+            ("owner", owner_claims, owner_python_claims),
+        ):
+            python_token = claims_ctx.set(python_claims)
+            try:
+                python_semantic = GraphQuery(engine).semantic_seed_then_expand_text(
+                    "deterministic semantic parity query", top_k=10, hops=1
+                )
+            finally:
+                claims_ctx.reset(python_token)
+            rust_semantic = rust_mcp_tool(
+                "kg_semantic_seed_then_expand_text",
+                {
+                    "text": "deterministic semantic parity query",
+                    "top_k": 10,
+                    "hops": 1,
+                },
+                mcp_claims,
+            )
+            expected_seed_ids, expected_layers = semantic_ids(python_semantic)
+            actual_seed_ids, actual_layers = semantic_ids(rust_semantic)
+            assert set(actual_seed_ids) == set(expected_seed_ids), principal_id
+            assert len(actual_layers) == len(expected_layers), principal_id
+            for actual, expected in zip(actual_layers, expected_layers, strict=True):
+                assert actual == expected, principal_id
+            if principal_id == "reader":
+                assert private_target.id not in actual_seed_ids
+                assert private_endpoint_edge.id not in set().union(
+                    *(layer["edges"] for layer in actual_layers)
+                )
+            else:
+                assert private_target.id in actual_seed_ids
+
         response = httpx.post(
             f"{base}/internal/graph/neighbors",
             headers={
@@ -881,11 +983,6 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert rust_payload["nodes"] == [visible_target.id]
         assert rust_payload["edges"] == [visible_edge.id]
 
-        owner_python_claims = {
-            **owner_claims,
-            "agent_id": "owner-a",
-            "ns": graph_type,
-        }
         for principal_id, mcp_claims, python_claims in (
             ("reader", reader_claims, reader_claims),
             ("owner", owner_claims, owner_python_claims),
@@ -1273,3 +1370,6 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+        embedding_server.shutdown()
+        embedding_server.server_close()
+        embedding_thread.join(timeout=2)
