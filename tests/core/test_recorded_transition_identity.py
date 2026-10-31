@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
@@ -144,3 +145,54 @@ def test_postgres_metadata_store_rejects_duplicate_recorded_transition_ids(
         )
     assert store.list_server_run_events("run-rust") == [rust_event]
     assert store.list_server_run_events("run-python") == [python_event]
+
+
+@pytest.mark.ci_full
+def test_python_and_rust_postgres_metadata_schemas_match_shared_tables(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    if sa_engine is None or pg_dsn is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    pytest.importorskip("kogwistar._rust")
+
+    python_schema = f"{pg_schema}_python"
+    rust_schema = f"{pg_schema}_rust"
+    try:
+        EnginePostgresMetaStore(engine=sa_engine, schema=python_schema).ensure_initialized()
+        rust_result = store_postgres(
+            dsn=pg_dsn,
+            schema=rust_schema,
+            operation={"kind": "ensure_schema"},
+        )
+        assert rust_result == {"initialized": True}
+
+        inspector = sqlalchemy_inspect(sa_engine)
+
+        def schema_signature(schema: str) -> dict[str, object]:
+            tables = inspector.get_table_names(schema=schema)
+            signature: dict[str, object] = {}
+            for table in tables:
+                columns = inspector.get_columns(table, schema=schema)
+                primary_key = inspector.get_pk_constraint(table, schema=schema)
+                primary_key_columns = set(primary_key.get("constrained_columns") or ())
+                signature[table] = tuple(
+                    sorted(
+                        (
+                            column["name"],
+                            str(column["type"]).lower(),
+                            bool(column["nullable"]),
+                            column["name"] in primary_key_columns,
+                        )
+                        for column in columns
+                    )
+                )
+            return signature
+
+        python_signature = schema_signature(python_schema)
+        rust_signature = schema_signature(rust_schema)
+        assert python_signature.keys() == rust_signature.keys()
+        assert python_signature == rust_signature
+    finally:
+        with sa_engine.begin() as conn:
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{python_schema}" CASCADE')
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{rust_schema}" CASCADE')
