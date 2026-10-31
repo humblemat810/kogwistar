@@ -433,6 +433,69 @@
     }
 
     #[test]
+    fn native_provider_event_receive_requires_host_claim_and_records_canonical_event() {
+        let mut fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+        )))
+        .unwrap();
+        let event = fixture["envelope"].take();
+        let event_id = event["event_id"].as_str().unwrap().to_owned();
+        let mut request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.receive".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-fixture-001".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "receive".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: Some("turn-fixture-001".to_owned()),
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        assert!(execute_native_step(&request).is_err());
+
+        request.ephemeral_context.insert(
+            "authorized_provider_event".to_owned(),
+            event.clone(),
+        );
+        request.ephemeral_context.insert(
+            "authorized_provider_event_claim".to_owned(),
+            json!({
+                "message_id": format!("msg:{event_id}"),
+                "claimed_by": "rust-native-agent-event:claim-1",
+                "event_id": event_id,
+            }),
+        );
+        let effect = execute_native_step(&request).unwrap();
+        assert_eq!(
+            serde_json::to_value(&effect.state_update).unwrap(),
+            json!([["u", {
+                "agent_event_current": event,
+                "agent_event_claim": {
+                    "message_id": format!("msg:{event_id}"),
+                    "claimed_by": "rust-native-agent-event:claim-1",
+                    "event_id": event_id,
+                }
+            }]])
+        );
+        assert!(effect.provider_event_acknowledgements.is_empty());
+
+        request.ephemeral_context["authorized_provider_event_claim"]["message_id"] =
+            json!("msg:unrelated-event");
+        assert!(execute_native_step(&request).is_err());
+
+        request.ephemeral_context["authorized_provider_event_claim"]["message_id"] =
+            json!(format!("msg:{event_id}"));
+        request.run_id = "another-run".to_owned();
+        assert!(execute_native_step(&request).is_err());
+    }
+
+    #[test]
     fn native_operation_recognition_is_strict_and_shared() {
         assert_eq!(native_operation_name("rust-native/noop"), Some("noop"));
         assert_eq!(native_operation_name("rust-native/"), None);

@@ -317,6 +317,7 @@ impl Default for NativeOperationRegistry {
         registry.insert_builtin("noop", native_noop);
         registry.insert_builtin("increment-counter", native_increment_counter);
         registry.insert_builtin("emit-result", native_emit_result);
+        registry.insert_builtin("agent.event.receive", native_provider_event_receive);
         registry
     }
 }
@@ -554,6 +555,80 @@ fn native_emit_result(
             "executor": RUST_NATIVE_EXECUTOR_TARGET,
             "operation": request.operation,
             "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+        })),
+    })
+}
+
+fn native_provider_event_receive(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let event = request
+        .ephemeral_context
+        .get("authorized_provider_event")
+        .and_then(Value::as_object)
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "host-authorized provider event is unavailable".to_owned(),
+        })?;
+    let claim = request
+        .ephemeral_context
+        .get("authorized_provider_event_claim")
+        .and_then(Value::as_object)
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "host-authorized provider event claim is unavailable".to_owned(),
+        })?;
+    let typed_event = serde_json::from_value::<kogwistar_contracts::DurableProviderEventV1>(
+        Value::Object(event.clone()),
+    )
+    .map_err(|_| RuntimeNativeExecutionError::OperationFailed {
+        operation: request.operation.clone(),
+        reason: "host-authorized provider event does not match its versioned contract".to_owned(),
+    })?;
+    let event_id = event
+        .get("event_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let claim_event_id = claim
+        .get("event_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let message_id = claim
+        .get("message_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let claimed_by = claim
+        .get("claimed_by")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    if event_id != claim_event_id
+        || event_id != Some(typed_event.event_id.as_str())
+        || message_id != event_id.map(|id| format!("msg:{id}")).as_deref()
+        || claimed_by.is_none()
+        || typed_event.trace.run_id != request.run_id
+    {
+        return Err(RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "provider event and claim identities do not match this run".to_owned(),
+        });
+    }
+    let mut update = Map::new();
+    update.insert(
+        "agent_event_current".to_owned(),
+        Value::Object(event.clone()),
+    );
+    update.insert(
+        "agent_event_claim".to_owned(),
+        Value::Object(claim.clone()),
+    );
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    Ok(NativeOperationOutput {
+        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "event_id": event_id,
         })),
     })
 }

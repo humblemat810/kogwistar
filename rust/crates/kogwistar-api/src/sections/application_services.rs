@@ -665,6 +665,38 @@ impl ApplicationService for PostgresRunApplicationService {
                         "inline native execution has no external caller principal"
                     ),
                 }
+            } else if native_request.operation == "agent.event.receive" {
+                match self.native_read_principal(&native_request, None).await {
+                    Ok(principal) => {
+                        let Some(context) = self
+                            .claim_native_provider_event_context(&native_request, &principal)
+                            .await?
+                        else {
+                            return Err(
+                                "no authorized provider event is currently claimable".to_owned(),
+                            );
+                        };
+                        native_request.ephemeral_context.insert(
+                            "authorized_provider_event".to_owned(),
+                            context["event"].clone(),
+                        );
+                        native_request.ephemeral_context.insert(
+                            "authorized_provider_event_claim".to_owned(),
+                            context["claim"].clone(),
+                        );
+                        native_result_from_request(
+                            handoff,
+                            native_request,
+                            &self.native_operations,
+                        )?
+                    }
+                    Err(_) => failed_native_result(
+                        handoff,
+                        &native_request,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "provider-event receive requires the run owner's current read_graph capability and admitted scope",
+                    ),
+                }
             } else {
                 native_result_from_request(handoff, native_request, &self.native_operations)?
             };

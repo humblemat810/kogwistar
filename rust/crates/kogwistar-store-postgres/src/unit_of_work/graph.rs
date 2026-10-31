@@ -305,6 +305,25 @@ impl PostgresUnitOfWork<'_> {
         .await
     }
 
+    /// Read and share-lock ACL records through this unit of work. Hold these
+    /// locks until related authorization-sensitive queue claims commit so a
+    /// concurrent ACL revocation cannot race the decision.
+    pub async fn graph_acl_records_for_entities_for_update(
+        &self,
+        scope: &GraphScope,
+        truth_graph: &str,
+        entity_ids: &[String],
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        graph_acl_records_for_entities_for_update(
+            &self.transaction,
+            &self.tables,
+            scope,
+            truth_graph,
+            entity_ids,
+        )
+        .await
+    }
+
     pub async fn graph_projection_vector_query(
         &self,
         query: GraphProjectionVectorQuery,

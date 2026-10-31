@@ -284,6 +284,35 @@ pub(crate) async fn graph_acl_records_for_entities<C>(
 where
     C: GenericClient + Sync,
 {
+    graph_acl_records_for_entities_with_lock(client, tables, scope, truth_graph, entity_ids, false)
+        .await
+}
+
+pub(crate) async fn graph_acl_records_for_entities_for_update<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &kogwistar_store::GraphScope,
+    truth_graph: &str,
+    entity_ids: &[String],
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
+    graph_acl_records_for_entities_with_lock(client, tables, scope, truth_graph, entity_ids, true)
+        .await
+}
+
+async fn graph_acl_records_for_entities_with_lock<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &kogwistar_store::GraphScope,
+    truth_graph: &str,
+    entity_ids: &[String],
+    lock_for_update: bool,
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
     if entity_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -319,10 +348,11 @@ where
         })
         .collect::<PostgresStoreResult<Vec<String>>>()?
         .join(" OR ");
+    let lock_clause = if lock_for_update { " FOR SHARE" } else { "" };
     let rows = client
         .query(
             &format!(
-                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {scope_filter} AND ({targets}) ORDER BY id"
+                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {scope_filter} AND ({targets}) ORDER BY id{lock_clause}"
             ),
             &values
                 .iter()

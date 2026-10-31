@@ -7354,6 +7354,77 @@
             streamed_text_field["parent_span_id"],
             format!("tok:rust-only-answer-e2e:{event_token_id}")
         );
+        let mut receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.receive".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "rust-only-answer-e2e".to_owned(),
+            workflow_id: "agentic_answering.v2".to_owned(),
+            node_id: "receive-provider-event".to_owned(),
+            conversation_id: "answer-e2e-conversation".to_owned(),
+            turn_node_id: Some("answer-user-turn".to_owned()),
+            token_id: "event-consumer-token".to_owned(),
+            parent_token_id: None,
+            step_seq: 99,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        let receive_principal = service
+            .native_read_principal(&receive_request, None)
+            .await
+            .unwrap_or_else(|_| panic!("the admitted run owner retains read_graph authority"));
+        let claimed_context = service
+            .claim_native_provider_event_context(&receive_request, &receive_principal)
+            .await
+            .unwrap()
+            .expect("a visible semantic event should be claimable");
+        assert_eq!(claimed_context["event"]["trace"]["run_id"], "rust-only-answer-e2e");
+        assert_eq!(
+            claimed_context["claim"]["message_id"],
+            format!("msg:{}", claimed_context["event"]["event_id"].as_str().unwrap())
+        );
+        receive_request.ephemeral_context.insert(
+            "authorized_provider_event".to_owned(),
+            claimed_context["event"].clone(),
+        );
+        receive_request.ephemeral_context.insert(
+            "authorized_provider_event_claim".to_owned(),
+            claimed_context["claim"].clone(),
+        );
+        let receive_effect = kogwistar_runtime::execute_native_step_with_registry(
+            &receive_request,
+            &kogwistar_runtime::NativeOperationRegistry::default(),
+        )
+        .unwrap();
+        let received_state = kogwistar_contracts::apply_state_update_pairs(
+            Value::Object(Map::new()),
+            receive_effect.state_update.iter().map(|update| match update {
+                kogwistar_runtime::RecordedStateUpdate::Pair((mode, payload)) => {
+                    (mode.as_str(), payload)
+                }
+                kogwistar_runtime::RecordedStateUpdate::Object { mode, payload } => {
+                    (mode.as_str(), payload)
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(received_state["agent_event_current"], claimed_context["event"]);
+        assert_eq!(received_state["agent_event_claim"], claimed_context["claim"]);
+        assert!(receive_effect.provider_event_acknowledgements.is_empty());
+        let claimed_lane = service
+            .store
+            .get_projected_lane_message(
+                claimed_context["claim"]["message_id"].as_str().unwrap(),
+            )
+            .await
+            .unwrap()
+            .expect("the provider event remains in its durable lane");
+        assert_eq!(claimed_lane.status, "claimed");
+        assert_eq!(
+            claimed_lane.claimed_by.as_deref(),
+            claimed_context["claim"]["claimed_by"].as_str()
+        );
         let durable_run = run.as_ref().expect("completed run remains durable");
         assert_eq!(durable_run.user_id.as_deref(), Some("alice"));
         let admission_event = durable_events
