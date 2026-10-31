@@ -1153,19 +1153,13 @@ fn graph_mutation_batch_value(
                 .map(|envelope| envelope.model_class.python_name().to_owned());
             let mut mutation = graph_mutation_into_store(raw);
             if let Some(model_class) = model_class {
-                match mutation.record.metadata.get("_class_name") {
-                    Some(existing) if existing.as_str() != Some(&model_class) => {
-                        return Err(format!(
-                            "record metadata _class_name conflicts with typed model envelope ({model_class})"
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        mutation.record.metadata.insert(
-                            "_class_name".to_owned(),
-                            Value::String(model_class),
-                        );
-                    }
+                ensure_model_class_marker(&mut mutation.record.metadata, &model_class)?;
+                if let Some(metadata) = mutation
+                    .payload
+                    .get_mut("metadata")
+                    .and_then(Value::as_object_mut)
+                {
+                    ensure_model_class_marker(metadata, &model_class)?;
                 }
             }
             Ok(mutation)
@@ -1203,6 +1197,22 @@ fn graph_mutation_batch_value(
     Ok(mutations)
 }
 
+fn ensure_model_class_marker(
+    metadata: &mut serde_json::Map<String, Value>,
+    model_class: &str,
+) -> Result<(), String> {
+    match metadata.get("_class_name") {
+        Some(existing) if existing.as_str() != Some(model_class) => Err(format!(
+            "metadata _class_name conflicts with typed model envelope ({model_class})"
+        )),
+        Some(_) => Ok(()),
+        None => {
+            metadata.insert("_class_name".to_owned(), Value::String(model_class.to_owned()));
+            Ok(())
+        }
+    }
+}
+
 fn graph_mutation_batch_v2_value(
     input: kogwistar_contracts::GraphMutationBatchV2,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), String> {
@@ -1225,7 +1235,24 @@ fn validate_graph_mutation_envelopes(
 ) -> Result<(), String> {
     for (raw, mutation) in input.mutations.iter().zip(mutations) {
         if let Some(envelope) = &raw.model_envelope {
-            validate_typed_graph_mutation(mutation, envelope)
+            let mut validation_mutation = mutation.clone();
+            let envelope_class = envelope.model_class.python_name();
+            let envelope_has_marker = envelope
+                .payload
+                .get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|metadata| metadata.get("_class_name"))
+                .and_then(Value::as_str)
+                == Some(envelope_class);
+            if !envelope_has_marker
+                && let Some(metadata) = validation_mutation
+                    .payload
+                    .get_mut("metadata")
+                    .and_then(Value::as_object_mut)
+            {
+                metadata.remove("_class_name");
+            }
+            validate_typed_graph_mutation(&validation_mutation, envelope)
                 .map_err(|error| format!("typed graph mutation is invalid: {error}"))?;
         }
     }

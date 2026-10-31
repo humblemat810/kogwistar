@@ -931,6 +931,7 @@
             serde_json::from_value(typed_body.clone()).unwrap();
         let typed_mutations = graph_mutation_batch_value(typed_input.clone()).unwrap();
         assert_eq!(typed_mutations[0].record.metadata["_class_name"], "Node");
+        assert_eq!(typed_mutations[0].payload["metadata"]["_class_name"], "Node");
         assert!(validate_graph_mutation_envelopes(&typed_input, &typed_mutations).is_ok());
 
         let runtime_metadata: Value = serde_json::from_str(include_str!(concat!(
@@ -963,6 +964,10 @@
             workflow_mutations[0].record.metadata["_class_name"],
             "WorkflowRunNode"
         );
+        assert_eq!(
+            workflow_mutations[0].payload["metadata"]["_class_name"],
+            "WorkflowRunNode"
+        );
         assert!(
             validate_graph_mutation_envelopes(&workflow_input, &workflow_mutations).is_ok()
         );
@@ -971,6 +976,13 @@
         let conflicting_input: GraphMutationBatchInput =
             serde_json::from_value(workflow_body).unwrap();
         assert!(graph_mutation_batch_value(conflicting_input).is_err());
+
+        let mut conflicting_payload = typed_body.clone();
+        conflicting_payload["mutations"][0]["payload"]["metadata"]["_class_name"] =
+            json!("Edge");
+        let conflicting_payload: GraphMutationBatchInput =
+            serde_json::from_value(conflicting_payload).unwrap();
+        assert!(graph_mutation_batch_value(conflicting_payload).is_err());
 
         typed_body["mutations"][0]["model_envelope"]["model_class"] = json!("edge");
         let wrong_kind: GraphMutationBatchInput = serde_json::from_value(typed_body).unwrap();

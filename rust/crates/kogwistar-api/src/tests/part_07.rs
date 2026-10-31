@@ -2300,7 +2300,12 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     node_payload["embedding"] = json!([1.0, 0.0]);
     node_payload["metadata"].as_object_mut().unwrap().remove("workspace_id");
     node_payload["metadata"].as_object_mut().unwrap().remove("graph_space");
-    batch["mutations"][0]["payload"] = node_payload;
+    batch["mutations"][0]["payload"] = node_payload.clone();
+    batch["mutations"][0]["model_envelope"] = json!({
+        "schema_version": 1,
+        "model_class": "node",
+        "payload": node_payload,
+    });
     let mut edge_mutation = batch["mutations"][0].clone();
     edge_mutation["table"] = json!("gke_edges");
     edge_mutation["entity_kind"] = json!("edge");
@@ -2312,7 +2317,12 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     edge_payload["source_ids"] = json!(["node-1"]);
     edge_payload["metadata"].as_object_mut().unwrap().remove("workspace_id");
     edge_payload["metadata"].as_object_mut().unwrap().remove("graph_space");
-    edge_mutation["payload"] = edge_payload;
+    edge_mutation["payload"] = edge_payload.clone();
+    edge_mutation["model_envelope"] = json!({
+        "schema_version": 1,
+        "model_class": "edge",
+        "payload": edge_payload,
+    });
     batch["mutations"].as_array_mut().unwrap().push(edge_mutation);
     let body = serde_json::to_vec(&batch).unwrap();
     let principal = json!({
@@ -2349,7 +2359,17 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(retry.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&retry.body));
     let retry_body: Value = serde_json::from_slice(&retry.body).unwrap();
     assert_eq!(retry_body["results"][0]["mutated"], false);
-    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 2);
+    let canonical_events = service.store.replay_raw_events("docs", 0, 10).unwrap();
+    assert_eq!(canonical_events.len(), 2);
+    for event in &canonical_events {
+        let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+        let expected_class = if payload["id"] == "node-1" {
+            "Node"
+        } else {
+            "Edge"
+        };
+        assert_eq!(payload["metadata"]["_class_name"], expected_class);
+    }
     let jobs = service
         .store
         .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
@@ -2376,7 +2396,17 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .unwrap()
         .with_chroma_graph(graph)
         .with_embedding_provider(provider);
-    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 2);
+    let recovered_events = service.store.replay_raw_events("docs", 0, 10).unwrap();
+    assert_eq!(recovered_events.len(), 2);
+    for event in &recovered_events {
+        let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+        let expected_class = if payload["id"] == "node-1" {
+            "Node"
+        } else {
+            "Edge"
+        };
+        assert_eq!(payload["metadata"]["_class_name"], expected_class);
+    }
     let recovered_jobs = service
         .store
         .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
@@ -2406,6 +2436,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert!(node_upsert.0.contains("collection-nodes"));
     assert_eq!(node_upsert.1["embeddings"][0], json!([0.6, 0.8]));
     assert_eq!(node_upsert.1["metadatas"][0]["namespace"], "docs");
+    assert_eq!(node_upsert.1["metadatas"][0]["_class_name"], "Node");
     let edge_upsert = chroma_upserts
         .iter()
         .find(|(_, body)| body["ids"][0] == "edge-1")
@@ -2413,6 +2444,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert!(edge_upsert.0.contains("collection-edges"));
     assert_eq!(edge_upsert.1["embeddings"][0], json!([0.6, 0.8]));
     assert_eq!(edge_upsert.1["metadatas"][0]["namespace"], "docs");
+    assert_eq!(edge_upsert.1["metadatas"][0]["_class_name"], "Edge");
 
     drop(service);
     remove_test_sqlite(&sqlite_path);
