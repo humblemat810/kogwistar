@@ -169,3 +169,116 @@ async fn postgres_integration_event_store_core() -> PostgresStoreResult<()> {
         .map_err(backend)?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn restored_raw_event_preserves_python_archive_envelope_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("restored_event");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    let namespace = format!("archive-{}", std::process::id());
+    let event = RestoredRawEntityEvent {
+        seq: 1,
+        event_id: "archive-event-1".to_owned(),
+        entity_kind: "source".to_owned(),
+        entity_id: "source-1".to_owned(),
+        op: "UPSERT".to_owned(),
+        payload_json: "{ \"title\": \"snow \u{96ea}\" }".to_owned(),
+        created_at: 1_700_000_000,
+    };
+
+    let first = store
+        .append_restored_raw_entity_event(&namespace, event.clone())
+        .await?;
+    let retry = store
+        .append_restored_raw_entity_event(&namespace, event.clone())
+        .await?;
+    assert!(first.inserted);
+    assert!(!retry.inserted);
+    assert_eq!(retry.event.seq, event.seq);
+    assert_eq!(retry.event.payload_json, event.payload_json);
+    for conflicting in [
+        RestoredRawEntityEvent {
+            seq: 2,
+            ..event.clone()
+        },
+        RestoredRawEntityEvent {
+            entity_kind: "edge".to_owned(),
+            ..event.clone()
+        },
+        RestoredRawEntityEvent {
+            entity_id: "source-2".to_owned(),
+            ..event.clone()
+        },
+        RestoredRawEntityEvent {
+            op: "DELETE".to_owned(),
+            ..event.clone()
+        },
+        RestoredRawEntityEvent {
+            payload_json: "{\"different\":true}".to_owned(),
+            ..event.clone()
+        },
+        RestoredRawEntityEvent {
+            created_at: event.created_at + 1,
+            ..event.clone()
+        },
+    ] {
+        assert!(matches!(
+            store
+                .append_restored_raw_entity_event(&namespace, conflicting)
+                .await,
+            Err(PostgresStoreError::Backend(message))
+                if message.contains("conflicts with stored event")
+        ));
+    }
+    assert!(matches!(
+        store
+            .append_restored_raw_entity_event("other-archive", event.clone(),)
+            .await,
+        Err(PostgresStoreError::EventIdNamespaceCollision { .. })
+    ));
+    assert!(matches!(
+        store
+            .append_restored_raw_entity_event(
+                &namespace,
+                RestoredRawEntityEvent { seq: 3, event_id: "gap".to_owned(), ..event },
+            )
+            .await,
+        Err(PostgresStoreError::Backend(message)) if message.contains("must be 2, got 3")
+    ));
+
+    let next = store
+        .append_raw_entity_event(&namespace, raw("next", "{}"))
+        .await?;
+    assert_eq!(next.event.seq, 2);
+    let rows = store.replay_raw_events(&namespace, 0, 10).await?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].payload_json, "{ \"title\": \"snow \u{96ea}\" }");
+    assert_eq!(rows[1].event_id, "next");
+
+    let cleaner = store.client().await?;
+    let created_at: i64 = cleaner
+        .query_one(
+            &format!(
+                "SELECT EXTRACT(EPOCH FROM created_at)::BIGINT FROM {} WHERE event_id=$1",
+                Tables::new(&schema)?.entity_events
+            ),
+            &[&event.event_id],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)?;
+    assert_eq!(created_at, event.created_at);
+    cleaner
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}

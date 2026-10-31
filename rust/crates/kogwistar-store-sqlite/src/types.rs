@@ -75,18 +75,6 @@ pub struct NewRawEntityEvent {
     pub payload_json: String,
 }
 
-/// An event imported from a portable archive with authoritative identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestoredRawEntityEvent {
-    pub seq: i64,
-    pub event_id: String,
-    pub entity_kind: String,
-    pub entity_id: String,
-    pub op: String,
-    pub payload_json: String,
-    pub created_at: i64,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppendedRawEvent {
     pub event: RawEntityEvent,

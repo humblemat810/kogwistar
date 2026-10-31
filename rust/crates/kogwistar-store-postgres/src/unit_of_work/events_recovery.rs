@@ -62,6 +62,14 @@ impl PostgresUnitOfWork<'_> {
         append_raw_entity_event(&self.transaction, &self.tables, namespace, event).await
     }
 
+    pub async fn append_restored_raw_entity_event(
+        &mut self,
+        namespace: &str,
+        event: RestoredRawEntityEvent,
+    ) -> PostgresStoreResult<AppendedRawEvent> {
+        append_restored_raw_entity_event(&self.transaction, &self.tables, namespace, event).await
+    }
+
     pub async fn replay_raw_events(
         &self,
         namespace: &str,

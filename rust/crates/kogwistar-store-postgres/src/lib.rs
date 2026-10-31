@@ -26,14 +26,15 @@ use kogwistar_store::{
     LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
     NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
-    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, VectorMatch, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
-    WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot,
-    WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
-    runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
-    validate_graph_lifecycle_target, validate_graph_mutation, validate_graph_mutation_batch,
-    validate_graph_mutation_replay, validate_graph_projection_target,
+    RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, RestoredRawEntityEvent,
+    ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
+    ServerRunWriteStore, StoreError, StoreResult, VectorMatch, WorkflowDesignDelta,
+    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace,
+    runtime_projection_write, runtime_status_namespace, validate_entity_rebuild_request,
+    validate_entity_recovery_request, validate_graph_lifecycle_target, validate_graph_mutation,
+    validate_graph_mutation_batch, validate_graph_mutation_replay,
+    validate_graph_projection_target,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};

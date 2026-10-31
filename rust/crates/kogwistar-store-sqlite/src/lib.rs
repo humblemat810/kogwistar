@@ -103,9 +103,10 @@ mod trait_impls;
 mod types;
 mod workflow_runtime;
 
+pub use kogwistar_store::RestoredRawEntityEvent;
 pub use types::{
-    AppendedRawEvent, NamedProjectionCas, NewRawEntityEvent, RawEntityEvent,
-    RestoredRawEntityEvent, SqliteStoreError, SqliteStoreResult,
+    AppendedRawEvent, NamedProjectionCas, NewRawEntityEvent, RawEntityEvent, SqliteStoreError,
+    SqliteStoreResult,
 };
 
 use auth_schema::initialize_auth_schema;

@@ -229,6 +229,113 @@ where
     })
 }
 
+pub(super) async fn append_restored_raw_entity_event<C>(
+    client: &C,
+    tables: &Tables,
+    namespace: &str,
+    event: RestoredRawEntityEvent,
+) -> PostgresStoreResult<AppendedRawEvent>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(namespace)?;
+    serde_json::from_str::<Value>(&event.payload_json)?;
+    event.seq.checked_add(1).ok_or_else(|| {
+        PostgresStoreError::Backend("restored event sequence exceeds PostgreSQL BIGINT".to_owned())
+    })?;
+
+    advisory_lock(client, &event.event_id, 0).await?;
+    if let Some(row) = client
+        .query_opt(
+            &format!(
+                "SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, \
+                 created_at::TEXT, EXTRACT(EPOCH FROM created_at)::BIGINT \
+                 FROM {} WHERE event_id=$1",
+                tables.entity_events
+            ),
+            &[&event.event_id],
+        )
+        .await
+        .map_err(backend)?
+    {
+        let existing = raw_event_from_row(&row)?;
+        if existing.namespace != namespace {
+            return Err(PostgresStoreError::EventIdNamespaceCollision {
+                event_id: event.event_id,
+                existing_namespace: existing.namespace,
+                requested_namespace: namespace.to_owned(),
+            });
+        }
+        let existing_created_at: i64 = row.try_get(8).map_err(backend)?;
+        if existing.seq != event.seq
+            || existing.entity_kind != event.entity_kind
+            || existing.entity_id != event.entity_id
+            || existing.op != event.op
+            || existing.payload_json != event.payload_json
+            || existing_created_at != event.created_at
+        {
+            return Err(PostgresStoreError::Backend(format!(
+                "restored event_id {:?} conflicts with stored event",
+                event.event_id
+            )));
+        }
+        return Ok(AppendedRawEvent {
+            event: existing,
+            inserted: false,
+        });
+    }
+
+    let latest = latest_retained_event_seq(client, tables, namespace).await?;
+    let expected = latest.checked_add(1).ok_or_else(|| {
+        PostgresStoreError::Backend("latest event sequence exceeds PostgreSQL BIGINT".to_owned())
+    })?;
+    if event.seq != expected {
+        return Err(PostgresStoreError::Backend(format!(
+            "restored event sequence for {namespace:?} must be {expected}, got {}",
+            event.seq
+        )));
+    }
+    let created_at = event.created_at as f64;
+    let row = client
+        .query_one(
+            &format!(
+                "INSERT INTO {}(namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at) \
+                 VALUES($1, $2, $3, $4, $5, $6, $7, to_timestamp($8)) \
+                 RETURNING namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at::TEXT",
+                tables.entity_events
+            ),
+            &[
+                &namespace,
+                &event.seq,
+                &event.event_id,
+                &event.entity_kind,
+                &event.entity_id,
+                &event.op,
+                &event.payload_json,
+                &created_at,
+            ],
+        )
+        .await
+        .map_err(backend)?;
+    let stored = raw_event_from_row(&row)?;
+    let next_seq = event.seq + 1;
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {}(namespace, next_seq) VALUES($1, $2) \
+                 ON CONFLICT(namespace) DO UPDATE SET next_seq=GREATEST({}.next_seq, EXCLUDED.next_seq)",
+                tables.namespace_seq, tables.namespace_seq
+            ),
+            &[&namespace, &next_seq],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(AppendedRawEvent {
+        event: stored,
+        inserted: true,
+    })
+}
+
 pub(super) fn graph_table(tables: &Tables, table: &str) -> PostgresStoreResult<String> {
     quote_identifier(table)?;
     qualified(&tables.quoted_schema, table)

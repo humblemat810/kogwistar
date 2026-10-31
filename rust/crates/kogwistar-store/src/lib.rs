@@ -1747,6 +1747,19 @@ pub struct AppendedEvent {
     pub inserted: bool,
 }
 
+/// Lossless event archive input shared by metadata backends. `namespace` is
+/// supplied separately to preserve the established SQLite restore API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoredRawEntityEvent {
+    pub seq: i64,
+    pub event_id: String,
+    pub entity_kind: String,
+    pub entity_id: String,
+    pub op: String,
+    pub payload_json: String,
+    pub created_at: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayCursor {
     pub namespace: String,

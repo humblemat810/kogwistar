@@ -50,6 +50,22 @@ impl PostgresStore {
         .await
     }
 
+    pub async fn append_restored_raw_entity_event(
+        &self,
+        namespace: &str,
+        event: RestoredRawEntityEvent,
+    ) -> PostgresStoreResult<AppendedRawEvent> {
+        require_namespace(namespace)?;
+        let namespace = namespace.to_owned();
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.append_restored_raw_entity_event(&namespace, event)
+                    .await
+            })
+        })
+        .await
+    }
+
     /// Raw replay is exclusive of `after_seq`, ordered ascending, and bounded.
     pub async fn replay_raw_events(
         &self,
