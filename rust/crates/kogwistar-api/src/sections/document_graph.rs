@@ -104,6 +104,10 @@ fn graph_upsert_request(request: &ApiEffectRequest) -> Result<GraphExtractionReq
     Ok(input)
 }
 
+fn graph_upsert_should_write_document(inline_content: Option<&str>, stored_content: Option<&str>) -> bool {
+    inline_content.is_some() || !stored_content.is_some_and(|content| !content.is_empty())
+}
+
 fn normalize_extraction_entity(
     raw: &serde_json::Map<String, Value>,
     doc_id: &str,
@@ -523,6 +527,14 @@ mod graph_upsert_tests {
         let (batch, nodes, edges) = graph_upsert_mutation_batch(&input, &source, &principal_scope())
             .expect("stored source text validates an extraction without inline content");
         assert_eq!((batch.mutations.len(), nodes.len(), edges.len()), (3, 2, 1));
+    }
+
+    #[test]
+    fn graph_upsert_creates_placeholder_when_stored_document_has_no_text() {
+        assert!(graph_upsert_should_write_document(None, None));
+        assert!(graph_upsert_should_write_document(None, Some("")));
+        assert!(!graph_upsert_should_write_document(None, Some("stored source")));
+        assert!(graph_upsert_should_write_document(Some(""), Some("stored source")));
     }
 
     #[test]

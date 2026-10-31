@@ -4013,6 +4013,12 @@ impl PostgresRunApplicationService {
                     .and_then(|record| record.document.clone())
             })
             .unwrap_or_default();
+        let should_write_document = graph_upsert_should_write_document(
+            input.content.as_deref(),
+            existing_document
+                .as_ref()
+                .and_then(|record| record.document.as_deref()),
+        );
         let (batch, node_ids, edge_ids) =
             match graph_upsert_mutation_batch(&input, &source_text, &security_scope) {
             Ok(batch) => batch,
@@ -4025,7 +4031,7 @@ impl PostgresRunApplicationService {
             }
         };
         if batch.mutations.is_empty() {
-            if input.content.is_some() || existing_document.is_none() {
+            if should_write_document {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("doc_type".to_owned(), json!(input.doc_type));
                 metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
@@ -4087,7 +4093,7 @@ impl PostgresRunApplicationService {
         let mut document_metadata = serde_json::Map::new();
         document_metadata.insert("doc_type".to_owned(), json!(input.doc_type));
         document_metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-        let document_write = (input.content.is_some() || existing_document.is_none()).then(|| {
+        let document_write = should_write_document.then(|| {
             PostgresGraphProjectionUpsert {
                 scope: document_scope.clone(),
                 table: "gke_documents".to_owned(),
