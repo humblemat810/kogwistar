@@ -1633,6 +1633,9 @@ fn provider_event_acknowledgement_contract_rejects_invalid_or_duplicate_claims()
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against disposable PostgreSQL"]
 async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
+    use crate::native_answer_generation::OpenAiCompatibleChatConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
     let schema = format!("provider_event_causal_{}", uuid::Uuid::new_v4().simple());
     let auth_path = std::env::temp_dir().join(format!(
@@ -1656,11 +1659,69 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
         ..AuthConfig::default()
     };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider_address = listener.local_addr().unwrap();
+    let provider_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let (header_end, content_length) = loop {
+            let mut chunk = [0_u8; 4096];
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(count, 0);
+            request.extend_from_slice(&chunk[..count]);
+            if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                let header_end = header_end + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .unwrap()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap();
+                if request.len() >= header_end + content_length {
+                    break (header_end, content_length);
+                }
+                while request.len() < header_end + content_length {
+                    let mut chunk = [0_u8; 4096];
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                break (header_end, content_length);
+            }
+        };
+        let body: Value = serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
+        assert_eq!(body["model"], "event-fixture-model");
+        assert_eq!(body["stream"], true);
+        let mut body = String::new();
+        for chunk in [
+            json!({"id":"causal-response","choices":[{"delta":{"content":"streamed text"},"finish_reason":null}]}).to_string(),
+            json!({"id":"causal-response","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+        ] {
+            body.push_str(&format!("data: {chunk}\r\n\r\n"));
+        }
+        body.push_str("data: [DONE]\r\n\r\n");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let provider = OpenAiCompatibleChatConfig::new(
+        format!("http://{provider_address}/v1/chat/completions"),
+        "event-fixture-model",
+        None,
+    )
+    .unwrap()
+    .with_streaming(true);
     let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
         .unwrap()
         .with_owner_auth_config(&owner_auth)
         .await
-        .unwrap();
+        .unwrap()
+        .with_chat_completion_provider(provider);
     service.ensure_schema().await.unwrap();
     service
         .store
@@ -1722,10 +1783,61 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         }
     })).unwrap();
     service.store.apply_recorded_runtime_transition(start, false).await.unwrap();
+    let provider_request = kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: "agent.event.request".to_owned(),
+        op_version: "v1".to_owned(),
+        run_id: run_id.to_owned(),
+        workflow_id: workflow_id.to_owned(),
+        node_id: "provider-step".to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        turn_node_id: Some("causal-user-turn".to_owned()),
+        token_id: run_id.to_owned(),
+        parent_token_id: None,
+        step_seq: 0,
+        state: serde_json::from_value(json!({
+            "provider_request": {
+                "contract_version": "v1",
+                "model": "event-fixture-model",
+                "instructions": "test only",
+                "input": "emit one response"
+            }
+        }))
+        .unwrap(),
+        runtime_routes: Vec::new(),
+        ephemeral_context: Map::from_iter([("_trace_attempt".to_owned(), json!(2))]),
+    };
+    let provider_result = service
+        .execute_native_provider_event_request(
+            kogwistar_runtime::RecordedWorkerHandoff {
+                message_id: "provider-request-handoff".to_owned(),
+                claimed_by: "provider-request-worker#1".to_owned(),
+                run_id: run_id.to_owned(),
+                step_id: "provider-step".to_owned(),
+                correlation_id: run_id.to_owned(),
+            },
+            provider_request,
+        )
+        .await
+        .unwrap();
+    provider_task.await.unwrap();
+    let provider_effect = provider_result.effect.expect("provider request returns an effect");
+    let provider_result_json = provider_effect.result.as_ref().unwrap();
+    assert!(provider_result_json["semantic_event_count"].as_i64().unwrap() > 0);
+    assert_eq!(provider_result_json["final_state"]["agent_event_route"], "receive");
+    let producer_event_seq = service
+        .store
+        .server_run_events(run_id, 0, 100)
+        .await
+        .unwrap()
+        .last()
+        .unwrap()
+        .seq;
+
     let producer: kogwistar_runtime::RecordedRuntimeTransition = serde_json::from_value(json!({
         "contract_version": 1,
         "transition_id": "causal-producer-step",
-        "expected_event_seq": 2,
+        "expected_event_seq": producer_event_seq,
         "kind": "recorded_step_success",
         "run_id": run_id,
         "workflow_id": workflow_id,
@@ -1733,43 +1845,22 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         "step_seq": 0,
         "node_id": "provider-step",
         "token_id": run_id,
-        "state_update": [["u", {}]],
+        "state_update": provider_effect.state_update,
         "frontier": {
             "pending": [["handler-step", 0, run_id, null]],
             "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
         },
-        "result": {"published": true}
+        "result": provider_effect.result
     })).unwrap();
     service.store.apply_recorded_runtime_transition(producer, false).await.unwrap();
-
-    let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_value(json!({
-        "event_id": "provider-event-causal-event",
-        "trace": {
-            "run_id": run_id,
-            "turn_id": "causal-user-turn",
-            "workflow_node_id": "provider.request",
-            "step_id": "provider-response:causal",
-            "producer_step_seq": 0,
-            "provider_id": "fixture-provider",
-            "provider_response_id": "causal-response"
-        },
-        "event": {
-            "kind": "field_completed",
-            "provider_event_id": "causal-response:1",
-            "provider_sequence": 1,
-            "response_id": "causal-response",
-            "field_name": "answer",
-            "value": "grounded test"
-        }
-    })).unwrap();
-    service
-        .persist_native_provider_event(
-            event.clone(),
-            conversation_id.to_owned(),
-            json!({"event": "provider.semantic_event.observed"}),
-        )
+    let handler_event_seq = service
+        .store
+        .server_run_events(run_id, 0, 100)
         .await
-        .unwrap();
+        .unwrap()
+        .last()
+        .unwrap()
+        .seq;
     let receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
         executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
         operation: "agent.event.receive".to_owned(),
@@ -1795,11 +1886,15 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         .await
         .unwrap()
         .expect("published event is visible and claimable by its run owner");
+    let event_id = claim["event"]["event_id"].as_str().unwrap().to_owned();
+    assert_eq!(claim["event"]["event"]["kind"], "response_started");
+    assert_eq!(claim["event"]["trace"]["step_id"], "provider-response:causal-response");
+    assert_eq!(claim["event"]["trace"]["attempt"], 1);
 
     let handler: kogwistar_runtime::RecordedRuntimeTransition = serde_json::from_value(json!({
         "contract_version": 1,
         "transition_id": "causal-handler-step",
-        "expected_event_seq": 4,
+        "expected_event_seq": handler_event_seq,
         "kind": "recorded_step_success",
         "run_id": run_id,
         "workflow_id": workflow_id,
@@ -1900,7 +1995,7 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     assert_eq!(
         service
             .store
-            .get_projected_lane_message(&format!("msg:{}", event.event_id))
+            .get_projected_lane_message(&format!("msg:{event_id}"))
             .await
             .unwrap()
             .unwrap()
@@ -1943,7 +2038,7 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     assert!(relations.iter().any(|relation| relation == "emitted_by_step"));
     assert!(relations.iter().any(|relation| relation == "handled_by_step"));
     assert_eq!(
-        service.store.get_projected_lane_message(&format!("msg:{}", event.event_id)).await.unwrap().unwrap().status,
+        service.store.get_projected_lane_message(&format!("msg:{event_id}")).await.unwrap().unwrap().status,
         "completed"
     );
 
