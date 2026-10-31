@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from kogwistar.server.chat_api import create_chat_router
 from kogwistar.server.chat_service import ChatRunService
 
 
@@ -37,4 +41,23 @@ def test_python_run_evidence_matches_shared_v1_contract() -> None:
                 },
             }
 
-    assert ChatRunService.run_evidence(ServiceStub(), expected["run_id"]) == expected
+        def run_evidence(self, run_id: str) -> dict[str, Any]:
+            return ChatRunService.run_evidence(self, run_id)
+
+    service = ServiceStub()
+    assert ChatRunService.run_evidence(service, expected["run_id"]) == expected
+
+    app = FastAPI()
+    app.include_router(
+        create_chat_router(
+            get_service=lambda: service,
+            require_role=lambda role: None,
+            require_namespace=lambda _namespaces: None,
+            conversation_namespace="conversation",
+            workflow_namespaces={"workflow"},
+        )
+    )
+    with TestClient(app) as client:
+        response = client.get(f"/api/runs/{expected['run_id']}/evidence")
+    assert response.status_code == 200
+    assert response.json() == expected
