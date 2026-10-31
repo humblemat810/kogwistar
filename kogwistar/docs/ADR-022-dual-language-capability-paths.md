@@ -351,13 +351,22 @@ An outbox provides eventual follow-up, not a claim of cross-language or
 cross-store ACID.
 
 Graph write ingress must remain generic over graph entity models and storage
-backends. Conversation, knowledge, wisdom, and ACL data use the same base graph
-entity/store interface; they are not separate graph types. Select the target
-through graph scope and typed attributes (including the ACL batch's
-`default_acl.truth_graph` string), rather than introducing a domain-specific
-graph representation or storage route. Keep any existing domain-named public
-operation only as a compatibility adapter to the shared graph-mutation
-contract.
+backends. Conversation, knowledge, and wisdom use the same graph entity models
+and write contract; do not introduce a new entity/store implementation for a
+domain name. ACL records are also persisted as ordinary graph entities, while
+ACL evaluation remains a separate authorization concern.
+
+Keep the selectors distinct rather than treating them as one generic graph
+scope: `kg_graph_type` configures the Python engine and its backend location
+(for example, a PostgreSQL schema or Chroma persistence directory); storage
+`namespace` scopes persisted records; ACL `truth_graph` identifies the graph
+whose ACL records are evaluated; and MCP `NameSpace` authorizes access to a
+tool. A Rust route or service may carry these as explicit configuration/input,
+but must preserve their independent meanings. In particular,
+`default_acl.truth_graph` is not a replacement for backend selection,
+storage namespace, or caller authorization. Keep any existing domain-named
+public operation only as a compatibility adapter to the shared graph-mutation
+contract, with its existing authorization requirements intact.
 
 Do not make shared graph persistence depend on `PureChromaNode`,
 `PureChromaEdge`, PostgreSQL, or one graph/domain family. Preserve the
