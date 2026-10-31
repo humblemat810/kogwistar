@@ -4,6 +4,7 @@
   "status": "inventory-in-progress",
   "sources_of_truth": {
     "capability_ownership": "contracts/rust-port-v1.json#/capability_ownership",
+    "public_operation_inventory": "contracts/dual-language-surface-inventory-v1.json",
     "rust_server_pending_routes": "rust/crates/kogwistar-api/src/lib.rs::PENDING_SERVER_CUTOVER_ROUTES",
     "rust_server_pending_syscalls": "rust/crates/kogwistar-api/src/lib.rs::PENDING_SYSCALL_CUTOVER_OPS"
   },

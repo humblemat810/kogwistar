@@ -1,0 +1,892 @@
+{
+  "schema_version": 1,
+  "contract_id": "kogwistar-dual-language-surface-inventory",
+  "status": "inventory-in-progress",
+  "interpretation": {
+    "python": "Presence in the frozen OpenAPI or MCP catalog records the public Python contract, not independent proof of every backend configuration.",
+    "rust_http": "Application routes are classified by the Rust cutover inventory; transport-owned routes and pending routes are explicit. This is not behavioral parity evidence.",
+    "rust_mcp": "Allowlist status is necessary but not sufficient: backend capability, ACL, namespace, and runtime checks still apply.",
+    "syscalls": "Pending syscall names are the explicit Rust cutover gaps; non-pending names are not thereby proven behaviorally equivalent."
+  },
+  "counts": {
+    "http_operations": 84,
+    "mcp_operations": 60,
+    "pending_http_operations": 7,
+    "allowlisted_mcp_operations": 46,
+    "pending_syscalls": 4
+  },
+  "http_operations": [
+    {
+      "method": "DELETE",
+      "path": "/admin/doc/{doc_id}",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/add_index_entries",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/callback",
+      "python": "openapi",
+      "rust": "transport-owned"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/login",
+      "python": "openapi",
+      "rust": "transport-owned"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "python": "openapi",
+      "rust": "transport-owned"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/me",
+      "python": "openapi",
+      "rust": "transport-owned"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/conversations",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/snapshots/latest",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/turns",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/conversations/{conversation_id}/turns:answer",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/document",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/document.upsert_tree",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/document.validate_graph",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/graph/upsert",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{run_id}/cancel",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/checkpoints",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/checkpoints/{step_seq}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/events",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/events/poll",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/evidence",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/replay",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{run_id}/resume",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/resume-contract",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/steps",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/search_index_hybrid",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/syscall/v1",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/syscall/v1/audit",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/syscall/v1/{op}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/viz/cytoscape.json",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/viz/d3.json",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/budget",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/budget/history",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/capabilities",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/capabilities/approve",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/capabilities/revoke",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/catalog/ops",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/dead-letters",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/dead-letters/{run_id}/replay",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/edges",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/workflow/design/{workflow_id}/edges/{edge_id}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/design/{workflow_id}/graph",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/design/{workflow_id}/history",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/nodes",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/workflow/design/{workflow_id}/nodes/{node_id}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/redo",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/undo",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/lane/progress",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/messages/repair-orphans",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/operator/dashboard",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/resources",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/runs",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/runs/{run_id}/cancel",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/checkpoints",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/checkpoints/{step_seq}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/events",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/lineage",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/replay",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/runs/{run_id}/resume",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/resume-contract",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/steps",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/scheduler/timeline",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/services",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/repair",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/services/{service_id}",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/disable",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/enable",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/services/{service_id}/events",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/heartbeat",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/repair",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/trigger",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/tools/audit",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/visibility",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "POST",
+      "path": "/auth/dev-token",
+      "python": "openapi",
+      "rust": "transport-owned"
+    },
+    {
+      "method": "GET",
+      "path": "/designer/capabilities",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "python": "openapi",
+      "rust": "transport-owned"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/cytoscape",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/d3",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/d3.bundle",
+      "python": "openapi",
+      "rust": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/go",
+      "python": "openapi",
+      "rust": "application-route-in-cutover-inventory"
+    }
+  ],
+  "mcp_operations": [
+    {
+      "surface": "conversation",
+      "name": "conversation.ask",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "conversation",
+      "name": "conversation.cancel_run",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "conversation",
+      "name": "conversation.create",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "conversation",
+      "name": "conversation.get_transcript",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "conversation",
+      "name": "conversation.run_status",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "root",
+      "name": "document_id_from_file_name",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "kg_find_edges",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "root",
+      "name": "kg_k_hop",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "root",
+      "name": "kg_load_persisted",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "kg_neighbors",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "root",
+      "name": "kg_propose_bruteforce",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "kg_semantic_seed_then_expand_text",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "kg_shortest_path",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "root",
+      "name": "kg_viz_cytoscape_json",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "kg_viz_d3_json",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "propose_vector",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.blocked_runs",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.budget_history",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.budget_snapshot",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.capabilities_snapshot",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.capability_approve",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.capability_revoke",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.dead_letter_replay",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.dead_letters",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_edge_delete",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_edge_upsert",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_history",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_node_delete",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_node_upsert",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_redo",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.design_undo",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.message_orphans_repair",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.operator_dashboard",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.operator_inbox",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.process_table",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.process_timeline",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_cancel",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_checkpoint_get",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_events",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_evidence",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_lineage",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_replay",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_resume",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_resume_contract",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_status",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_steps",
+      "python": "frozen-catalog",
+      "rust": "not-allowlisted"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.run_submit",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.scheduler_timeline",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_declare",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_disable",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_enable",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_events",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_get",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_heartbeat",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_list",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_repair",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.service_trigger",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.services_repair",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.tool_audit",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "workflow",
+      "name": "workflow.visibility_snapshot",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    }
+  ],
+  "pending_syscalls": [
+    "send_message",
+    "receive_message",
+    "mount_memory",
+    "invoke_tool"
+  ]
+}

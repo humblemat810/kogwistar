@@ -313,6 +313,38 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     assert gaps["pending_syscalls"] == expected_syscalls
 
 
+def test_dual_language_surface_inventory_is_current() -> None:
+    inventory_path = ROOT / "contracts" / "dual-language-surface-inventory-v1.json"
+    generator = ROOT / "scripts" / "generate_dual_language_surface_inventory.py"
+    crosswalk = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+
+    assert (
+        crosswalk["sources_of_truth"]["public_operation_inventory"]
+        == "contracts/dual-language-surface-inventory-v1.json"
+    )
+    assert inventory["schema_version"] == 1
+    assert inventory["status"] == "inventory-in-progress"
+    assert inventory["counts"]["http_operations"] == len(inventory["http_operations"])
+    assert inventory["counts"]["mcp_operations"] == len(inventory["mcp_operations"])
+    assert inventory["counts"]["pending_http_operations"] == sum(
+        operation["rust"] == "pending" for operation in inventory["http_operations"]
+    )
+    assert inventory["counts"]["allowlisted_mcp_operations"] == sum(
+        operation["rust"] == "allowlisted-subject-to-runtime-gates"
+        for operation in inventory["mcp_operations"]
+    )
+
+    result = subprocess.run(
+        ["python", str(generator), "--check"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
 def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
     crosswalk = json.loads(
         DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8")
