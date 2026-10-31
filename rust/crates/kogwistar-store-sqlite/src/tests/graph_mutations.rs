@@ -167,7 +167,7 @@ fn canonical_graph_batch_rejects_conflicting_payload_scope_before_writing() {
 }
 
 #[test]
-fn canonical_edge_mutation_queues_the_edge_embedding_projection_kind() {
+fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     let (store, path) = store("canonical-edge-projection-kind");
     let mut edge = mutation("edge-event-1", "edge-1");
     edge.table = "gke_edges".to_owned();
@@ -189,7 +189,7 @@ fn canonical_edge_mutation_queues_the_edge_embedding_projection_kind() {
         .unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].entity_kind, "edge");
-    assert_eq!(jobs[0].index_kind, "edge_embedding");
+    assert_eq!(jobs[0].index_kind, "node_embedding");
 
     drop(store);
     let _ = fs::remove_file(path);

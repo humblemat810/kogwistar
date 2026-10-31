@@ -91,12 +91,9 @@ impl SqliteUnitOfWork<'_> {
                     namespace: mutation.scope.namespace.clone(),
                     entity_kind: mutation.entity_kind.clone(),
                     entity_id: mutation.record.id.clone(),
-                    index_kind: if mutation.entity_kind == "edge" {
-                        "edge_embedding"
-                    } else {
-                        "node_embedding"
-                    }
-                    .to_owned(),
+                    // Python's indexing contract uses one embedding job kind
+                    // for both entity types; entity_kind selects the collection.
+                    index_kind: "node_embedding".to_owned(),
                     op: if revision.is_deleted() {
                         "DELETE".to_owned()
                     } else {
