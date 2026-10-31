@@ -153,19 +153,22 @@ impl PostgresRunApplicationService {
             }
         };
         let scope_value = security_scope_value(&request.principal);
-        let optional_scope_component = |key: &str| {
-            scope_value[key]
-                .as_str()
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        };
         let scope = GraphScope {
             namespace: scope_value["storage_namespace"]
                 .as_str()
                 .unwrap_or("default")
                 .to_owned(),
-            workspace_id: optional_scope_component("workspace"),
-            graph_space: optional_scope_component("graph_space"),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         };
         if required_namespace.is_some_and(|required| scope.namespace != required) {
             return effect_error(
