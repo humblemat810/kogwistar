@@ -911,6 +911,7 @@
             mutations[0].record.embedding.as_deref(),
             Some([1.0, 0.0].as_slice())
         );
+        assert!(mutations[0].record.metadata.is_empty());
 
         let graph_fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -929,7 +930,47 @@
         let typed_input: GraphMutationBatchInput =
             serde_json::from_value(typed_body.clone()).unwrap();
         let typed_mutations = graph_mutation_batch_value(typed_input.clone()).unwrap();
+        assert_eq!(typed_mutations[0].record.metadata["_class_name"], "Node");
         assert!(validate_graph_mutation_envelopes(&typed_input, &typed_mutations).is_ok());
+
+        let runtime_metadata: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-runtime-node-metadata-v1.json"
+        )))
+        .unwrap();
+        let mut workflow_payload = typed_payload.clone();
+        workflow_payload["metadata"] = runtime_metadata["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| {
+                case["model_class"] == "workflow_run_node" && case["valid"] == true
+            })
+            .unwrap()["metadata"]
+            .clone();
+        let mut workflow_body = body.clone();
+        workflow_body["mutations"][0]["payload"] = workflow_payload.clone();
+        workflow_body["mutations"][0]["record"]["id"] = workflow_payload["id"].clone();
+        workflow_body["mutations"][0]["model_envelope"] = json!({
+            "schema_version": 1,
+            "model_class": "workflow_run_node",
+            "payload": workflow_payload,
+        });
+        let workflow_input: GraphMutationBatchInput =
+            serde_json::from_value(workflow_body.clone()).unwrap();
+        let workflow_mutations = graph_mutation_batch_value(workflow_input.clone()).unwrap();
+        assert_eq!(
+            workflow_mutations[0].record.metadata["_class_name"],
+            "WorkflowRunNode"
+        );
+        assert!(
+            validate_graph_mutation_envelopes(&workflow_input, &workflow_mutations).is_ok()
+        );
+
+        workflow_body["mutations"][0]["record"]["metadata"]["_class_name"] = json!("Node");
+        let conflicting_input: GraphMutationBatchInput =
+            serde_json::from_value(workflow_body).unwrap();
+        assert!(graph_mutation_batch_value(conflicting_input).is_err());
 
         typed_body["mutations"][0]["model_envelope"]["model_class"] = json!("edge");
         let wrong_kind: GraphMutationBatchInput = serde_json::from_value(typed_body).unwrap();

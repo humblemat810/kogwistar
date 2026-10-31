@@ -1146,8 +1146,31 @@ fn graph_mutation_batch_value(
     let mutations = input
         .mutations
         .into_iter()
-        .map(graph_mutation_into_store)
-        .collect::<Vec<_>>();
+        .map(|raw| {
+            let model_class = raw
+                .model_envelope
+                .as_ref()
+                .map(|envelope| envelope.model_class.python_name().to_owned());
+            let mut mutation = graph_mutation_into_store(raw);
+            if let Some(model_class) = model_class {
+                match mutation.record.metadata.get("_class_name") {
+                    Some(existing) if existing.as_str() != Some(&model_class) => {
+                        return Err(format!(
+                            "record metadata _class_name conflicts with typed model envelope ({model_class})"
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        mutation.record.metadata.insert(
+                            "_class_name".to_owned(),
+                            Value::String(model_class),
+                        );
+                    }
+                }
+            }
+            Ok(mutation)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let first_scope = mutations[0].scope.clone();
     for mutation in &mutations {
         if mutation.scope.namespace.is_empty() {
