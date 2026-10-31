@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from contextlib import contextmanager
@@ -595,6 +596,31 @@ def test_native_session_rejects_direct_call_from_worker_callback(
         ):
             session.call("replace_named_projection")
 
+    assert calls == []
+
+
+def test_rust_postgres_async_facade_cannot_open_transaction_from_worker_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "kogwistar.engine_core.rust_postgres_session.store_postgres",
+        lambda *, operation, **_kwargs: calls.append(operation["kind"]),
+    )
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+
+    async def attempt_transaction() -> None:
+        with callback_execution_scope():
+            with pytest.raises(
+                RuntimeError,
+                match="transaction authority cannot be opened from a worker callback",
+            ):
+                async with store.async_transaction():
+                    pytest.fail("callback must not enter the Rust PostgreSQL UoW")
+
+    asyncio.run(attempt_transaction())
     assert calls == []
 
 
