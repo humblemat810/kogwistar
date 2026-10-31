@@ -694,7 +694,6 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
     from kogwistar.graph_query import GraphQuery
     from kogwistar.server.auth_middleware import claims_ctx
-    from tests._helpers.embeddings import build_test_embedding_function
     from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
     namespace = "alpha"
@@ -704,23 +703,54 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     source = build_entity_node(
         node_id=f"{id_prefix}-source",
         doc_id=doc_id,
+        label="Semantic source",
+        summary="Semantic source node",
         metadata={"visibility": "public"},
     )
     visible_target = build_entity_node(
         node_id=f"{id_prefix}-visible-target",
         doc_id=doc_id,
+        label="Semantic parity query match",
+        summary="Deterministic semantic parity query result",
         metadata={"visibility": "public"},
     )
     private_target = build_entity_node(
         node_id=f"{id_prefix}-private-target",
         doc_id=doc_id,
+        label="Private semantic target",
+        summary="Semantic confidential target",
         metadata={"visibility": "private", "owner_agent_id": "owner-a"},
     )
     other_doc_target = build_entity_node(
         node_id=f"{id_prefix}-other-doc-target",
         doc_id="D-neighbor-parity-other",
+        label="Unrelated filler",
+        summary="Unrelated material",
         metadata={"visibility": "public"},
     )
+
+    def fixture_vector(value: str) -> list[float]:
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            searchable = " ".join(
+                str(payload.get(field) or "") for field in ("label", "summary")
+            )
+        else:
+            searchable = value
+        normalized = searchable.casefold()
+        vector = [
+            float("semantic" in normalized),
+            float("parity" in normalized),
+            float("unrelated" in normalized),
+        ]
+        norm = sum(component * component for component in vector) ** 0.5
+        return [component / norm for component in vector] if norm else [0.0, 0.0, 1.0]
+
+    def fixture_embedding(values: list[str]) -> list[list[float]]:
+        return [fixture_vector(value) for value in values]
     visible_edge = build_relationship_edge(
         edge_id=f"{id_prefix}-visible-edge",
         src=source.id,
@@ -750,7 +780,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         backend=backend,
         namespace=namespace,
         kg_graph_type=graph_type,
-        embedding_function=build_test_embedding_function("constant", dim=3),
+        embedding_function=fixture_embedding,
         embedding_profile=EmbeddingProfile(
             provider="ollama",
             model="fixture-embedding-v1",
@@ -818,7 +848,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 self.send_error(400)
                 return
             body = json.dumps(
-                {"embeddings": [[0.01, 0.01, 0.01] for _ in inputs]}
+                {"embeddings": [fixture_vector(value) for value in inputs]}
             ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -940,11 +970,44 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         ):
             python_token = claims_ctx.set(python_claims)
             try:
+                query_text = "deterministic semantic parity query"
+                python_vector = engine._iterative_defensive_emb(query_text)
+                python_ranked = engine.read.query_nodes(
+                    query_embeddings=python_vector,
+                    n_results=10,
+                )
+                python_ranked_ids = [
+                    str(node.safe_get_id()) for node in python_ranked[0]
+                ] if python_ranked else []
                 python_semantic = GraphQuery(engine).semantic_seed_then_expand_text(
-                    "deterministic semantic parity query", top_k=10, hops=1
+                    query_text, top_k=10, hops=1
                 )
             finally:
                 claims_ctx.reset(python_token)
+
+            rust_vector_response = httpx.post(
+                f"{base}/internal/graph/vector-query",
+                headers={
+                    "Authorization": f"Bearer {_hs256_token(secret, mcp_claims)}"
+                },
+                json={
+                    "entity_kind": "node",
+                    "query_embeddings": [python_vector],
+                    "metric": "cosine",
+                    "truth_graph": graph_type,
+                    "n_results": 10,
+                    "include": ["distances"],
+                },
+                timeout=10,
+            )
+            assert rust_vector_response.status_code == 200, rust_vector_response.text
+            rust_vector_payload = rust_vector_response.json()
+            rust_ranked_ids = rust_vector_payload["ids"][0]
+            assert rust_ranked_ids == python_ranked_ids, (
+                f"{principal_id}: Python/Rust vector candidate order differs; "
+                f"python={python_ranked_ids}, rust={rust_ranked_ids}, "
+                f"distances={rust_vector_payload.get('distances')}"
+            )
             rust_semantic = rust_mcp_tool(
                 "kg_semantic_seed_then_expand_text",
                 {
@@ -956,7 +1019,9 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             )
             expected_seed_ids, expected_layers = semantic_ids(python_semantic)
             actual_seed_ids, actual_layers = semantic_ids(rust_semantic)
-            assert set(actual_seed_ids) == set(expected_seed_ids), principal_id
+            assert actual_seed_ids == expected_seed_ids, principal_id
+            assert expected_seed_ids[0] == visible_target.id
+            assert expected_seed_ids[-1] == other_doc_target.id
             assert len(actual_layers) == len(expected_layers), principal_id
             for actual, expected in zip(actual_layers, expected_layers, strict=True):
                 assert actual == expected, principal_id

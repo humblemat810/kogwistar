@@ -184,17 +184,20 @@ impl PostgresRunApplicationService {
             .map(|doc_id| BTreeMap::from([("doc_id".to_owned(), json!(doc_id))]))
             .unwrap_or_default();
         let matches = match store
-            .graph_projection_vector_query_batch(vec![GraphProjectionVectorQuery {
-                scope: scope.clone(),
-                table: "gke_nodes".to_owned(),
-                query: VectorQuery {
-                    embedding: query_embedding,
-                    limit: top_k,
-                    metadata: MetadataFilter { equals: metadata },
-                    metric,
-                },
-                embedding_dim: profile.dimension,
-            }])
+            .graph_projection_vector_query_batch_excluding_metadata(
+                vec![GraphProjectionVectorQuery {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    query: VectorQuery {
+                        embedding: query_embedding,
+                        limit: top_k,
+                        metadata: MetadataFilter { equals: metadata },
+                        metric,
+                    },
+                    embedding_dim: profile.dimension,
+                }],
+                BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+            )
             .await
         {
             Ok(mut rows) => rows.pop().unwrap_or_default(),

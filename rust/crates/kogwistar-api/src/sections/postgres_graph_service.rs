@@ -1071,7 +1071,10 @@ impl PostgresRunApplicationService {
             .collect();
         let matches_by_query = match self
             .store
-            .graph_projection_vector_query_batch(queries)
+            .graph_projection_vector_query_batch_excluding_metadata(
+                queries,
+                BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+            )
             .await
         {
             Ok(matches) => matches,
