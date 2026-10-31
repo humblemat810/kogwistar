@@ -64,6 +64,7 @@ fn route_template_matches(template: &str, path: &str) -> bool {
 pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("DELETE", "/admin/doc/{doc_id}"),
     ("GET", "/api/search_index_hybrid"),
+    ("GET", "/api/runs/{run_id}/evidence"),
     ("GET", "/api/viz/cytoscape.json"),
     ("GET", "/api/viz/d3.json"),
     ("GET", "/viz/d3.bundle"),

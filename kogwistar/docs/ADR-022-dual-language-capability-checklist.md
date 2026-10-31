@@ -12,7 +12,7 @@ Do not add checklist IDs without an explicit scope decision. A PASS item may cha
 
 ## Design and inventory
 
-The generated public-surface inventory identifies eight pending Rust REST operations, including run lineage. Lineage is explicitly not cut over until Rust can reproduce the persisted parent-chain and per-workflow authorization behavior.
+The generated public-surface inventory identifies nine pending Rust REST operations, including run lineage and run evidence. These remain deferred until Rust can reproduce the persisted parent chain and per-workflow access checks, and run-evidence source/ACL filtering.
 
 Rust MCP operation coverage now includes `workflow.run_steps`: it routes to the existing run-inspection service, and its advertisement plus SQLite MCP invocation are covered by `rust_mcp_advertisement_is_subset_of_implemented_handlers` and `sqlite_run_service_handles_get_events_and_cancel`. The generated inventory must be refreshed when the Rust allowlist changes.
 
