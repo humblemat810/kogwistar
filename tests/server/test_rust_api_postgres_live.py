@@ -864,6 +864,65 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         assert rust_mcp_initial["nodes"] == rust_payload["nodes"]
         assert rust_mcp_initial["edges"] == rust_payload["edges"]
 
+        writer_claims = {
+            **reader_claims,
+            "sub": "owner-a",
+            "role": "rw",
+            "roles": ["reader", "rw"],
+            "capabilities": ["read_graph", "write_graph"],
+        }
+        extraction = json.loads(
+            (ROOT / "contracts" / "golden" / "graph-extraction-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        extraction["doc_id"] = f"D-rust-upsert-{id_prefix}"
+        for entity in (*extraction["nodes"], *extraction["edges"]):
+            for reference in entity.get("references", []):
+                reference["doc_id"] = extraction["doc_id"]
+            for mention in entity.get("mentions", []):
+                for span in mention.get("spans", []):
+                    span["doc_id"] = extraction["doc_id"]
+        upsert_response = httpx.post(
+            f"{base}/api/graph/upsert",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, writer_claims)}"
+            },
+            json=extraction,
+            timeout=10,
+        )
+        assert upsert_response.status_code == 200, upsert_response.text
+        upsert_result = upsert_response.json()
+        assert upsert_result["document_id"] == extraction["doc_id"]
+        assert upsert_result["nodes_added"] == 2
+        assert upsert_result["edges_added"] == 1
+        assert len(upsert_result["node_ids"]) == 2
+        assert len(upsert_result["edge_ids"]) == 1
+
+        owner_token = claims_ctx.set(
+            {
+                **writer_claims,
+                "agent_id": "owner-a",
+                "sub": "owner-a",
+                "ns": graph_type,
+                "storage_ns": namespace,
+            }
+        )
+        try:
+            python_upsert_nodes = engine.read.get_nodes(ids=upsert_result["node_ids"])
+            python_upsert_edges = engine.read.get_edges(ids=upsert_result["edge_ids"])
+            python_upsert_neighbors = GraphQuery(engine).neighbors(
+                upsert_result["node_ids"][0], doc_id=extraction["doc_id"]
+            )
+        finally:
+            claims_ctx.reset(owner_token)
+        assert {node.id for node in python_upsert_nodes} == set(upsert_result["node_ids"])
+        assert {edge.id for edge in python_upsert_edges} == set(upsert_result["edge_ids"])
+        assert python_upsert_neighbors == {
+            "nodes": {upsert_result["node_ids"][1]},
+            "edges": {upsert_result["edge_ids"][0]},
+        }
+
         rust_target = build_entity_node(
             node_id=f"{id_prefix}-rust-target",
             doc_id=doc_id,
@@ -962,12 +1021,6 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
             "contract_version": 1,
             "atomic": True,
             "mutations": mutations,
-        }
-        writer_claims = {
-            **reader_claims,
-            "role": "rw",
-            "roles": ["reader", "rw"],
-            "capabilities": ["read_graph", "write_graph"],
         }
         mutation_response = httpx.post(
             f"{base}/internal/graph/mutations",

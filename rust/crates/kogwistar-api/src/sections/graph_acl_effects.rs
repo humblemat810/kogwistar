@@ -227,9 +227,15 @@ fn acl_record_mutation(
         "domain_id": null,
         "canonical_entity_id": null,
     });
+    let mut document_payload = payload.clone();
+    let document_object = document_payload
+        .as_object_mut()
+        .expect("ACL record payload is an object");
+    document_object.remove("metadata");
+    document_object.remove("embedding");
     let record = GraphRecord {
         id: node_id.clone(),
-        document: Some(summary),
+        document: Some(document_payload.to_string()),
         metadata: record_metadata,
         embedding: None,
     };
@@ -286,6 +292,7 @@ fn acl_supersedes_mutation(
         "embedding": null,
         "domain_id": null,
     });
+    let document = payload.to_string();
     GraphMutation {
         scope: scope.clone(),
         table: "gke_edges".to_owned(),
@@ -295,7 +302,7 @@ fn acl_supersedes_mutation(
         payload,
         record: GraphRecord {
             id: edge_id,
-            document: Some(summary.to_owned()),
+            document: Some(document),
             metadata: metadata.as_object().cloned().unwrap_or_default(),
             embedding: None,
         },
@@ -379,6 +386,13 @@ mod graph_acl_effects_unit_tests {
         assert_eq!(mutation.record.metadata["security_scope"], "tenant-a");
         assert_eq!(mutation.payload["id"], mutation.record.id);
         assert_eq!(mutation.payload["metadata"]["acl_target_entity_id"], "node-1");
+        let node_document: Value = serde_json::from_str(
+            mutation.record.document.as_deref().expect("ACL node document"),
+        )
+        .expect("ACL node document remains JSON for Python graph readers");
+        assert_eq!(node_document["id"], mutation.record.id);
+        assert!(node_document.get("metadata").is_none());
+        assert!(node_document.get("embedding").is_none());
         assert_eq!(mutation.event_id, stable_event_id("effect-1", &mutation.record.id));
         assert!(acl_index_jobs(&scope, &mutation, "effect-1")
             .iter()
@@ -397,6 +411,12 @@ mod graph_acl_effects_unit_tests {
         assert_eq!(supersedes.payload["relation"], "acl_supersedes");
         assert_eq!(supersedes.payload["source_ids"][0], mutation.record.id);
         assert_eq!(supersedes.payload["target_ids"][0], "previous-acl-id");
+        let edge_document: Value = serde_json::from_str(
+            supersedes.record.document.as_deref().expect("ACL edge document"),
+        )
+        .expect("ACL supersedes edge document remains JSON for Python graph readers");
+        assert_eq!(edge_document["id"], supersedes.record.id);
+        assert_eq!(edge_document["relation"], "acl_supersedes");
     }
 
     #[test]
