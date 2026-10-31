@@ -67,8 +67,12 @@ impl ChatCompletionEventStream {
             let frame = std::mem::take(&mut self.buffer);
             self.process_frame(&frame, &mut output)?;
         }
-        if !self.completed && self.started {
-            self.complete(&mut output, None);
+        if !self.completed {
+            self.fail(
+                &mut output,
+                "provider_stream_incomplete",
+                "provider stream ended before a terminal marker",
+            );
         }
         Ok(output)
     }
@@ -93,7 +97,13 @@ impl ChatCompletionEventStream {
             return Ok(());
         }
         if data == b"[DONE]" {
-            if self.saw_tool_calls {
+            if !self.started {
+                self.fail(
+                    output,
+                    "provider_stream_empty",
+                    "provider stream ended without response data",
+                );
+            } else if self.saw_tool_calls {
                 self.fail(
                     output,
                     "streamed_tool_calls_unsupported",
@@ -157,9 +167,9 @@ impl ChatCompletionEventStream {
                 }
             }
         }
-        if choice
+        if let Some(reason) = choice
             .get("finish_reason")
-            .is_some_and(|reason| !reason.is_null())
+            .filter(|reason| !reason.is_null())
         {
             if self.saw_tool_calls {
                 self.fail(
@@ -167,8 +177,19 @@ impl ChatCompletionEventStream {
                     "streamed_tool_calls_unsupported",
                     "provider emitted streamed tool arguments",
                 );
-            } else {
+            } else if reason.as_str() == Some("stop") {
                 self.complete(output, None);
+            } else {
+                let error_code = match reason.as_str() {
+                    Some("length") => "provider_output_truncated",
+                    Some("content_filter") => "provider_output_filtered",
+                    _ => "provider_unexpected_finish_reason",
+                };
+                self.fail(
+                    output,
+                    error_code,
+                    "provider did not finish with a normal stop reason",
+                );
             }
         }
         Ok(())
@@ -530,6 +551,57 @@ mod tests {
         );
         let events = parser.push(b"data: [DONE]\n\n").unwrap();
         assert!(events.iter().any(|event| matches!(event, ProviderEventV1::ResponseFailed { error_code, .. } if error_code == "streamed_tool_calls_unsupported")));
+    }
+
+    #[test]
+    fn eof_without_terminal_marker_is_failed_not_completed() {
+        let mut parser = ChatCompletionEventStream::default();
+        let events = parser
+            .push(
+                b"data: {\"id\":\"resp-truncated\",\"choices\":[{\"delta\":{\"content\":\"{\\\"answer\\\":\\\"partial\\\"}\"},\"finish_reason\":null}]}\n\n",
+            )
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ProviderEventV1::ResponseStarted { .. }))
+        );
+        let terminal = parser.finish().unwrap();
+        assert!(terminal.iter().any(|event| matches!(
+            event,
+            ProviderEventV1::ResponseFailed { error_code, .. }
+                if error_code == "provider_stream_incomplete"
+        )));
+        assert!(
+            !terminal
+                .iter()
+                .any(|event| matches!(event, ProviderEventV1::ResponseCompleted { .. }))
+        );
+    }
+
+    #[test]
+    fn non_success_finish_reasons_are_failed() {
+        for (reason, expected_code) in [
+            ("length", "provider_output_truncated"),
+            ("content_filter", "provider_output_filtered"),
+            ("unknown", "provider_unexpected_finish_reason"),
+        ] {
+            let mut parser = ChatCompletionEventStream::default();
+            let frame = format!(
+                "data: {{\"id\":\"resp-finish\",\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"{reason}\"}}]}}\n\n"
+            );
+            let events = parser.push(frame.as_bytes()).unwrap();
+            assert!(events.iter().any(|event| matches!(
+                event,
+                ProviderEventV1::ResponseFailed { error_code, .. }
+                    if error_code == expected_code
+            )));
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, ProviderEventV1::ResponseCompleted { .. }))
+            );
+        }
     }
 
     #[test]
