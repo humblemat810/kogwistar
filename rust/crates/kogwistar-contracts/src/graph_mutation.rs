@@ -366,17 +366,21 @@ mod tests {
     }
 
     #[test]
-    fn graph_roles_share_the_generic_node_edge_mutation_contract() {
+    fn graph_space_is_opaque_to_generic_node_edge_mutation_contract() {
         let fixture = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-mutation-batch-v1.json"
         ));
-        let roles = ["knowledge", "conversation", "workflow", "wisdom"];
+        let graph_spaces = ["facts", "custom:legal", "urn:tenant:graph:6"];
 
-        for role in roles {
+        for graph_space in graph_spaces {
             let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
-            batch.mutations[0].scope.graph_space = Some(role.to_owned());
-            assert_eq!(batch.validate(), Ok(()), "graph role {role} was rejected");
+            batch.mutations[0].scope.graph_space = Some(graph_space.to_owned());
+            assert_eq!(
+                batch.validate(),
+                Ok(()),
+                "graph space {graph_space} was rejected"
+            );
             assert_eq!(batch.mutations[0].entity_kind, "node");
             assert_eq!(batch.mutations[0].table, "gke_nodes");
 
@@ -386,7 +390,7 @@ mod tests {
             assert_eq!(
                 edge_batch.validate(),
                 Ok(()),
-                "edge in graph role {role} was rejected"
+                "edge in graph space {graph_space} was rejected"
             );
         }
     }
@@ -414,6 +418,16 @@ mod tests {
             scoped.default_acl.truth_graph = truth_graph.to_owned();
             assert_eq!(scoped.validate(), Ok(()));
             assert_eq!(scoped.mutations[0].entity_kind, "node");
+            assert_eq!(scoped.mutations[0].table, "gke_nodes");
+            assert_eq!(scoped.mutations[0].scope.namespace, "tenant-a");
+            assert_eq!(
+                scoped.mutations[0].scope.workspace_id.as_deref(),
+                Some("ws")
+            );
+            assert_eq!(
+                scoped.mutations[0].scope.graph_space.as_deref(),
+                Some("facts")
+            );
         }
 
         let v1_error = serde_json::from_str::<GraphMutationBatchV1>(fixture);

@@ -74,26 +74,26 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     assert batch.index_jobs == []
 
 
-@pytest.mark.parametrize("graph_role", ["knowledge", "conversation", "workflow", "wisdom"])
-def test_graph_roles_share_the_generic_node_edge_mutation_contract(
-    graph_role: str,
+@pytest.mark.parametrize("graph_space", ["facts", "custom:legal", "urn:tenant:graph:6"])
+def test_graph_space_is_opaque_to_generic_node_edge_mutation_contract(
+    graph_space: str,
 ) -> None:
     payload = _fixture()
-    payload["mutations"][0]["scope"]["graph_space"] = graph_role
+    payload["mutations"][0]["scope"]["graph_space"] = graph_space
 
     batch = validate_graph_mutation_batch(payload)
 
-    assert batch.mutations[0].scope.graph_space == graph_role
+    assert batch.mutations[0].scope.graph_space == graph_space
     assert batch.mutations[0].entity_kind == "node"
     assert batch.mutations[0].table == "gke_nodes"
 
     edge_payload = _fixture()
     edge_mutation = edge_payload["mutations"][0]
-    edge_mutation["scope"]["graph_space"] = graph_role
+    edge_mutation["scope"]["graph_space"] = graph_space
     edge_mutation["entity_kind"] = "edge"
     edge_mutation["table"] = "gke_edges"
     edge_batch = validate_graph_mutation_batch(edge_payload)
-    assert edge_batch.mutations[0].scope.graph_space == graph_role
+    assert edge_batch.mutations[0].scope.graph_space == graph_space
     assert edge_batch.mutations[0].entity_kind == "edge"
     assert edge_batch.mutations[0].table == "gke_edges"
 
@@ -120,6 +120,10 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
         scoped_batch = validate_graph_mutation_batch_v2(payload)
         assert scoped_batch.default_acl.truth_graph == truth_graph
         assert scoped_batch.mutations[0].entity_kind == "node"
+        assert scoped_batch.mutations[0].table == "gke_nodes"
+        assert scoped_batch.mutations[0].scope.namespace == "tenant-a"
+        assert scoped_batch.mutations[0].scope.workspace_id == "ws"
+        assert scoped_batch.mutations[0].scope.graph_space == "facts"
     with pytest.raises(GraphMutationContractError):
         validate_graph_mutation_batch(payload)
 

@@ -51,34 +51,32 @@ still apply.
 
 ### Universal graph contract invariant
 
-Knowledge, conversation, workflow, wisdom, and ACL-related data use the same
-base graph operations and backend contract. A graph kind is semantic/configuration
-data on a graph-engine instance; it may select a compatible model subtype,
-namespace, ACL truth-graph key, or deployment storage configuration, but it does
-not define a separate graph API or storage capability. Node/edge identity,
-lifecycle, provenance, scope, and mutation semantics remain governed by the
-shared graph contracts. ACL is a policy overlay over a truth graph, not another
-truth-graph API. Physical isolation (for example, one PostgreSQL schema per
-graph kind) is allowed as configuration and must not be confused with a
-different graph abstraction.
+Knowledge, conversation, workflow, and wisdom use the same base graph
+operations and backend contract. In Python, `kg_graph_type` is the graph-role
+value used for engine context and as the default ACL `truth_graph`; it is not
+the storage namespace or `graph_space`. A graph role does not define a separate
+graph API, entity kind, or storage capability. Node/edge identity, lifecycle,
+provenance, scope, and mutation semantics remain governed by shared graph
+contracts. ACL is a policy overlay keyed by `truth_graph`; ACL records use the
+same persisted graph entity mechanisms rather than a separate truth-graph API.
+Deployments may choose physical isolation as configuration, but that must not
+be hard-coded as a different graph abstraction or confused with graph role.
 
 This invariant follows the Python implementation: `GraphKnowledgeEngine`
 accepts the common `StorageBackend` contract and a `kg_graph_type`; typed
 conversation/workflow model defaults extend the common `Node`/`Edge` families;
-wisdom falls back to those base models. The wisdom MCP operation is domain
-specific at the tool boundary, but delegates persistence to the same
-`persist_graph()` operation. `ACLGraph` remains a rebuildable overlay keyed by
-`truth_graph`. Rust implementations must keep the same separation between
-graph kind, entity kind (`node`/`edge`), scope, and backend capability. A
-Rust-only endpoint may adapt a domain-specific request into the common graph
-mutation contract, but must not create a wisdom-only graph model or imply that
-one backend's transaction guarantees apply to another.
+wisdom falls back to those base models. Rust implementations must keep graph
+role (`truth_graph`), entity kind (`node`/`edge`), storage scope (namespace,
+workspace, `graph_space`), and backend capability as independent dimensions.
+A domain-specific endpoint may adapt its request into the common graph
+mutation contract, but must not create a role-specific graph model or imply
+that one backend's transaction guarantees apply to another.
 
 Existing regression coverage for this invariant includes Python
 `tests/core/test_lifecycle_read_contract.py` model-family checks,
 `tests/core/test_graph_model_adapter.py`,
-`tests/core/test_graph_mutation_contract.py` graph-kind fixtures, and Rust/Python
-graph mutation differential tests. These are contract evidence, not by
+`tests/core/test_graph_mutation_contract.py` role/scope separation fixtures, and
+Rust/Python graph mutation differential tests. These are contract evidence, not by
 themselves proof of full backend or endpoint parity.
 
 ```mermaid
