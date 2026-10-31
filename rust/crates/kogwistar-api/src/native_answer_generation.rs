@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use kogwistar_contracts::ProviderEventV1;
 use kogwistar_contracts::{GraphDefaultAclIntentV1, GraphMutationBatchV2, stable_id};
 use kogwistar_runtime::{
     NativeOperationOutput, NativeOperationRegistrationError, NativeOperationRegistry,
@@ -20,6 +21,7 @@ pub(crate) struct OpenAiCompatibleChatConfig {
     model: String,
     api_key: Option<String>,
     timeout: Duration,
+    streaming: bool,
 }
 
 impl OpenAiCompatibleChatConfig {
@@ -387,7 +389,13 @@ impl OpenAiCompatibleChatConfig {
             model,
             api_key,
             timeout: Duration::from_secs(90),
+            streaming: false,
         })
+    }
+
+    pub(crate) fn with_streaming(mut self, enabled: bool) -> Self {
+        self.streaming = enabled;
+        self
     }
 
     pub(crate) async fn answer(
@@ -472,7 +480,8 @@ impl OpenAiCompatibleChatConfig {
                     "strict": true,
                     "schema": answer_schema()
                 }
-            }
+            },
+            "stream": self.streaming
         });
         let request_bytes = serde_json::to_vec(&request_body)
             .map_err(|_| "could not encode structured chat request".to_owned())?;
@@ -508,11 +517,21 @@ impl OpenAiCompatibleChatConfig {
         }
         let mut response = response;
         let mut response_bytes = Vec::new();
+        let mut event_stream = crate::native_event_stream::ChatCompletionEventStream::default();
+        let mut provider_events = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
             .map_err(|_| "could not read structured chat provider response".to_owned())?
         {
+            if self.streaming {
+                provider_events.extend(
+                    event_stream.push(&chunk).map_err(|_| {
+                        "could not normalize structured chat event stream".to_owned()
+                    })?,
+                );
+                continue;
+            }
             if response_bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
                 return Err(
                     "structured chat provider response exceeds the configured size limit"
@@ -520,6 +539,26 @@ impl OpenAiCompatibleChatConfig {
                 );
             }
             response_bytes.extend_from_slice(&chunk);
+        }
+        if self.streaming {
+            provider_events.extend(
+                event_stream
+                    .finish()
+                    .map_err(|_| "could not finish structured chat event stream".to_owned())?,
+            );
+            let Some(structured_output) =
+                provider_events.into_iter().find_map(|event| match event {
+                    ProviderEventV1::ResponseCompleted {
+                        structured_output: Some(value),
+                        ..
+                    } => Some(Value::Object(value.into_iter().collect())),
+                    ProviderEventV1::ResponseFailed { .. } => None,
+                    _ => None,
+                })
+            else {
+                return Ok(None);
+            };
+            return Ok(serde_json::from_value(structured_output).ok());
         }
         let Ok(response) = serde_json::from_slice::<ChatCompletionResponse>(&response_bytes) else {
             return Ok(None);
@@ -1289,6 +1328,78 @@ mod tests {
             result["claims"][0]["citations"][0]["source_node_id"],
             "canonical-node-secret"
         );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_provider_normalizes_sse_into_the_existing_answer_contract() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let header_end = loop {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break index + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let count = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(count, 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let body: Value =
+                serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
+            assert_eq!(body["stream"], true);
+            let answer =
+                json!({"text":"streamed answer","reasoning":"brief rationale","claims":[]})
+                    .to_string();
+            let chunks = [
+                json!({"id":"resp-stream","choices":[{"delta":{"content":answer},"finish_reason":null}]}).to_string(),
+                json!({"id":"resp-stream","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+            ];
+            let mut body = String::new();
+            for chunk in chunks {
+                body.push_str(&format!("data: {chunk}\r\n\r\n"));
+            }
+            body.push_str("data: [DONE]\r\n\r\n");
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            for chunk in wire.as_bytes().chunks(11) {
+                stream.write_all(chunk).await.unwrap();
+            }
+        });
+        let provider = OpenAiCompatibleChatConfig::new(
+            format!("http://{address}/v1/chat/completions"),
+            "fixture-model",
+            None,
+        )
+        .unwrap()
+        .with_streaming(true);
+        let result = provider
+            .complete_answer("system", "question")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.text, "streamed answer");
+        assert_eq!(result.reasoning, "brief rationale");
         server.await.unwrap();
     }
 

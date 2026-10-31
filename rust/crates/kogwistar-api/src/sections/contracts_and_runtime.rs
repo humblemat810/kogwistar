@@ -334,9 +334,21 @@ fn chat_completion_provider_from_environment(
             let api_key = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_API_KEY")
                 .ok()
                 .filter(|value| !value.is_empty());
+            let streaming = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_STREAMING")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| {
+                    parse_inline_worker_flag(
+                        "KOGWISTAR_CHAT_COMPLETIONS_STREAMING",
+                        Some(&value),
+                    )
+                })
+                .transpose()?
+                .unwrap_or(false);
             crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
                 endpoint, model, api_key,
             )
+            .map(|provider| provider.with_streaming(streaming))
             .map(Some)
         }
         _ => Err(

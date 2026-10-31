@@ -49,6 +49,10 @@ tests, and optional integrations.
 | `KOGWISTAR_EMBEDDING_MODEL` | Rust `kogwistar-server` | Ollama embedding model name; required when the provider is configured. |
 | `KOGWISTAR_EMBEDDING_DIMENSION` | Rust `kogwistar-server` | Positive vector dimension expected from the configured provider. |
 | `KOGWISTAR_EMBEDDING_ENDPOINT` | Rust `kogwistar-server` | Ollama endpoint; defaults to `http://127.0.0.1:11434`. |
+| `KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT` | Rust `kogwistar-server` | Optional OpenAI-compatible structured chat endpoint; must be configured with the model. |
+| `KOGWISTAR_CHAT_COMPLETIONS_MODEL` | Rust `kogwistar-server` | Model name for the optional native structured-answer provider. |
+| `KOGWISTAR_CHAT_COMPLETIONS_API_KEY` | Rust `kogwistar-server` | Optional bearer credential for the configured chat endpoint. |
+| `KOGWISTAR_CHAT_COMPLETIONS_STREAMING` | Rust `kogwistar-server` | Opts the structured-answer provider into bounded Chat Completions SSE normalization; defaults to `false`. Streamed tool calls fail closed and are not dispatched. |
 | `KOGWISTAR_EMBEDDING_WORKER_INLINE` | Rust `kogwistar-server` | Opts into an in-process Rust worker that polls supported embedding-job queues (batches up to 32, 60-second leases). Defaults off. Enabling it without a supported graph backend and configured provider fails startup. |
 | `KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` | Rust `kogwistar-server` | Optional low-frequency full-namespace Chroma projection reconciliation interval in seconds. Defaults to `0` (off); enabling requires SQLite metadata plus `KOGWISTAR_CHROMA_ENDPOINT`. It can run without enabling embedding polling. |
 | `KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE` | Rust `kogwistar-server` | Namespace reconciled by the optional Rust Chroma scanner. Required when `KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` is positive. Configure only one designated scanner per namespace. |
