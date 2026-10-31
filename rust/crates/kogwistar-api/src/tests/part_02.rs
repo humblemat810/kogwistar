@@ -504,7 +504,8 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("workflow", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(supported, 37);
+        assert_eq!(supported, 38);
+        assert!(rust_mcp_tool_supported("workflow", "workflow.run_steps"));
     }
 
     #[tokio::test]

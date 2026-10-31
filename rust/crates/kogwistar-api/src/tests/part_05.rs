@@ -2336,6 +2336,28 @@
         assert_eq!(mcp_value["id"], 7);
         assert_eq!(mcp_value["result"]["run_id"], "run-1");
 
+        let mcp_steps = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"workflow.run_steps","arguments":{"run_id":"run-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_steps.status(), StatusCode::OK);
+        let mcp_steps_body = to_bytes(mcp_steps.into_body(), 8192).await.unwrap();
+        let mcp_steps_value = serde_json::from_slice::<Value>(&mcp_steps_body).unwrap();
+        assert_eq!(mcp_steps_value["id"], 9);
+        assert_eq!(mcp_steps_value["result"]["run_id"], "run-1");
+        assert_eq!(mcp_steps_value["result"]["steps"], json!([]));
+
         let mcp_events = app
             .clone()
             .oneshot(

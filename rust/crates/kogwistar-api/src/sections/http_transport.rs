@@ -334,6 +334,13 @@ async fn mcp_handler(
                     principal: principal.clone(),
                 })
             }
+            "workflow.run_steps" if !run_id.is_empty() => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/steps"),
+                body: Vec::new(),
+                principal: principal.clone(),
+            }),
             "workflow.run_cancel" | "conversation.cancel_run" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,

@@ -165,6 +165,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.run_resume"
                 | "workflow.run_resume_contract"
                 | "workflow.run_status"
+                | "workflow.run_steps"
                 | "workflow.run_submit"
                 | "workflow.scheduler_timeline"
                 | "workflow.service_declare"

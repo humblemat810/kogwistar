@@ -14,6 +14,8 @@ Do not add checklist IDs without an explicit scope decision. A PASS item may cha
 
 The generated public-surface inventory identifies seven pending Rust REST operations; use it as authoritative where the older DL-02 prose below still says eight.
 
+Rust MCP operation coverage now includes `workflow.run_steps`: it routes to the existing run-inspection service, and its advertisement plus SQLite MCP invocation are covered by `rust_mcp_advertisement_is_subset_of_implemented_handlers` and `sqlite_run_service_handles_get_events_and_cancel`. The generated inventory must be refreshed when the Rust allowlist changes.
+
 Current public-surface evidence for DL-02/DL-03: `contracts/dual-language-surface-inventory-v1.json` enumerates the frozen REST and MCP operations and pending syscalls. Rust MCP allowlisting is explicitly not equivalent to runtime/backend authorization; the inventory is not behavioral parity or cutover authorization. Its source-drift check is `tests/core/test_rust_port_contract_manifest.py::test_dual_language_surface_inventory_is_current`.
 
 | ID | Status | Gate / evidence |
