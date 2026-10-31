@@ -154,7 +154,10 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
         from kogwistar.graph_query import GraphQuery
         from kogwistar.server.auth_middleware import claims_ctx
-        from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+        from tests._helpers.graph_builders import (
+            build_entity_node,
+            build_relationship_edge,
+        )
 
         monkeypatch.setattr(
             engine_module,
@@ -567,7 +570,7 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
 
         import kogwistar.engine_core.engine as engine_module
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
-        from tests._helpers.graph_builders import build_entity_node
+        from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
         monkeypatch.setattr(
             engine_module,
@@ -581,7 +584,9 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
         )
         monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
         namespace = f"python-rust-worker-{uuid.uuid4().hex}"
-        entity_id = f"{namespace}-node"
+        source_id = f"{namespace}-source"
+        target_id = f"{namespace}-target"
+        edge_id = f"{namespace}-edge"
         data_path = tmp_path / "shared-meta"
         writer = GraphKnowledgeEngine(
             persist_directory=str(data_path),
@@ -593,18 +598,41 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
         try:
             writer.write.add_node(
                 build_entity_node(
-                    node_id=entity_id,
+                    node_id=source_id,
                     doc_id="cross-language-worker-doc",
-                    label="Python staged node",
+                    label="Python staged source node",
                 )
             )
-            assert writer.meta_sqlite.get_stage1_node_projection(
-                namespace, entity_id
-            ) is not None
-            jobs = writer.meta_sqlite.list_index_jobs(
-                namespace=namespace, entity_kind="node", entity_id=entity_id
+            writer.write.add_node(
+                build_entity_node(
+                    node_id=target_id,
+                    doc_id="cross-language-worker-doc",
+                    label="Python staged target node",
+                )
             )
-            assert jobs and jobs[0].status == "PENDING"
+            writer.write.add_edge(
+                build_relationship_edge(
+                    edge_id=edge_id,
+                    src=source_id,
+                    tgt=target_id,
+                    doc_id="cross-language-worker-doc",
+                    label="Python staged relationship",
+                )
+            )
+            assert all(
+                writer.meta_sqlite.get_stage1_node_projection(namespace, node_id)
+                is not None
+                for node_id in (source_id, target_id)
+            )
+            assert writer.meta_sqlite.get_stage1_node_projection(
+                namespace, f"edge:{edge_id}"
+            )
+            pending = writer.meta_sqlite.list_index_jobs(namespace=namespace)
+            assert {job.entity_id for job in pending if job.status == "PENDING"} >= {
+                source_id,
+                target_id,
+                edge_id,
+            }
         finally:
             writer.close()
 
@@ -652,30 +680,41 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
         assert health.get("embedding_inline_worker_enabled") is True, health
         deadline = time.monotonic() + 30
         client = chromadb.HttpClient(host="127.0.0.1", port=chroma_port)
-        collection = client.get_collection("nodes")
-        projected = None
+        expected_projection = {
+            "nodes": {source_id, target_id},
+            "edges": {edge_id},
+        }
+        projected: dict[str, dict[str, object]] = {}
         while time.monotonic() < deadline:
-            result = collection.get(
-                ids=[entity_id], include=["embeddings", "metadatas"]
-            )
-            if result["ids"]:
-                projected = result
+            for collection_name, entity_ids in expected_projection.items():
+                result = client.get_collection(collection_name).get(
+                    ids=sorted(entity_ids), include=["embeddings", "metadatas"]
+                )
+                if set(result["ids"]) == entity_ids:
+                    projected[collection_name] = result
+            if set(projected) == set(expected_projection):
                 break
             if rust_process.poll() is not None:
                 raise AssertionError(
                     f"Rust API exited before projection: {rust_process.returncode}"
                 )
             time.sleep(0.1)
-        if projected is None:
+        if set(projected) != set(expected_projection):
             rust_log.flush()
             details = rust_log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
             raise AssertionError(
-                "Rust inline worker did not promote Stage-1; "
+                "Rust inline worker did not promote Python Stage-1 nodes and edge; "
                 f"embedding_requests={embedding_requests!r}; server_log_tail={details!r}"
             )
-        assert projected["metadatas"][0]["_kogwistar_stage2_ready"] is True
-        assert projected["metadatas"][0]["namespace"] == namespace
-        assert projected["embeddings"][0] == pytest.approx([0.6, 0.8])
+        for collection_name in ("nodes", "edges"):
+            for metadata, embedding in zip(
+                projected[collection_name]["metadatas"],
+                projected[collection_name]["embeddings"],
+                strict=True,
+            ):
+                assert metadata["_kogwistar_stage2_ready"] is True
+                assert metadata["namespace"] == namespace
+                assert embedding == pytest.approx([0.6, 0.8])
 
         rust_process.terminate()
         rust_process.wait(timeout=10)
@@ -689,13 +728,33 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
             embedding_function=lambda texts: [[0.01, 0.01] for _ in texts],
         )
         try:
-            assert verifier.meta_sqlite.get_stage1_node_projection(
-                namespace, entity_id
-            ) is None
-            completed = verifier.meta_sqlite.list_index_jobs(
-                namespace=namespace, entity_kind="node", entity_id=entity_id
+            assert all(
+                verifier.meta_sqlite.get_stage1_node_projection(namespace, node_id)
+                is None
+                for node_id in (source_id, target_id)
             )
-            assert completed and completed[0].status == "DONE"
+            assert (
+                verifier.meta_sqlite.get_stage1_node_projection(
+                    namespace, f"edge:{edge_id}"
+                )
+                is None
+            )
+            for entity_kind, entity_ids in (
+                ("node", (source_id, target_id)),
+                ("edge", (edge_id,)),
+            ):
+                for entity_id in entity_ids:
+                    completed = verifier.meta_sqlite.list_index_jobs(
+                        namespace=namespace,
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                    )
+                    assert completed and completed[0].status == "DONE"
+            python_edge = verifier.backend.edge_get(
+                ids=[edge_id], include=["embeddings", "metadatas"]
+            )
+            assert python_edge["ids"] == [edge_id]
+            assert python_edge["embeddings"][0] == pytest.approx([0.6, 0.8])
         finally:
             verifier.close()
     finally:
