@@ -694,7 +694,11 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
     from kogwistar.graph_query import GraphQuery
     from kogwistar.server.auth_middleware import claims_ctx
-    from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+    from tests._helpers.graph_builders import (
+        build_entity_node,
+        build_relationship_edge,
+        mk_document_grounding,
+    )
 
     namespace = "alpha"
     graph_type = "knowledge"
@@ -727,6 +731,14 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         label="Unrelated filler",
         summary="Unrelated material",
         metadata={"visibility": "public"},
+    )
+    restricted_evidence_target = build_entity_node(
+        node_id=f"{id_prefix}-restricted-evidence-target",
+        doc_id=doc_id,
+        label="Restricted source payload",
+        summary="Semantic parity evidence with unrelated source context",
+        metadata={"visibility": "public"},
+        mentions=[mk_document_grounding(doc_id)],
     )
 
     def fixture_vector(value: str) -> list[float]:
@@ -800,10 +812,29 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         }
     )
     try:
-        for node in (source, visible_target, private_target, other_doc_target):
+        for node in (
+            source,
+            visible_target,
+            private_target,
+            other_doc_target,
+            restricted_evidence_target,
+        ):
             engine.write.add_node(node)
         for edge in (visible_edge, private_endpoint_edge, other_doc_edge):
             engine.write.add_edge(edge)
+        _grounding_ids, span_ids = engine.acl.usage_ids_for_item(
+            restricted_evidence_target
+        )
+        assert len(span_ids) == 1
+        engine.acl.record_acl(
+            grain="span",
+            truth_graph=graph_type,
+            entity_id=restricted_evidence_target.id,
+            target_item_id=span_ids[0],
+            version=2,
+            mode="private",
+            owner_id="owner-a",
+        )
     finally:
         claims_ctx.reset(owner_token)
 
@@ -1027,11 +1058,13 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 assert actual == expected, principal_id
             if principal_id == "reader":
                 assert private_target.id not in actual_seed_ids
+                assert restricted_evidence_target.id not in actual_seed_ids
                 assert private_endpoint_edge.id not in set().union(
                     *(layer["edges"] for layer in actual_layers)
                 )
             else:
                 assert private_target.id in actual_seed_ids
+                assert restricted_evidence_target.id in actual_seed_ids
 
         response = httpx.post(
             f"{base}/internal/graph/neighbors",
