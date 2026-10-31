@@ -458,12 +458,56 @@
 
     #[tokio::test]
     async fn sqlite_design_capability_mutates_graph_and_undoes_atomically() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
         let path = std::env::temp_dir().join(format!(
             "kogwistar-design-write-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
         let service = SqliteRunApplicationService::open(&path).unwrap();
         let store = SqliteStore::open(&path).unwrap();
+        let key = "design-secret";
+        let auth = AuthConfig {
+            mode: "jwt".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(key.to_owned()),
+            ..AuthConfig::default()
+        };
+        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"],"exp":4102444800_u64});
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(key.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service.clone()),
+        );
+        macro_rules! public_call {
+            ($method:expr, $path:expr, $body:expr) => {{
+                app.clone()
+                    .oneshot(
+                        Request::builder()
+                            .method($method)
+                            .uri($path)
+                            .header("content-type", "application/json")
+                            .header("authorization", format!("Bearer {token}"))
+                            .body(Body::from(serde_json::to_vec(&$body).unwrap()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            }};
+        }
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {
@@ -478,16 +522,18 @@
             json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
             json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),
         ] {
-            assert_eq!(
-                call("POST", "/api/workflow/design/wf-write/nodes", body).status,
-                200
-            );
+            let response = public_call!("POST", "/api/workflow/design/wf-write/nodes", body);
+            assert_eq!(response.status(), StatusCode::OK);
         }
-        assert_eq!(call("POST", "/api/workflow/design/wf-write/edges", json!({
+        let response = public_call!("POST", "/api/workflow/design/wf-write/edges", json!({
             "designer_id":"alice","edge_id":"edge","src":"start","dst":"end","is_default":true
-        })).status, 200);
-        let graph = call("GET", "/api/workflow/design/wf-write/graph", json!({}));
-        let graph: Value = serde_json::from_slice(&graph.body).unwrap();
+        }));
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = public_call!("GET", "/api/workflow/design/wf-write/graph", json!({}));
+        let graph: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
         assert_eq!(graph["nodes"].as_array().unwrap().len(), 2);
         assert_eq!(graph["edges"].as_array().unwrap().len(), 1);
         let projection = store
@@ -502,18 +548,17 @@
         assert_eq!(design_snapshot.version, 3);
         assert!(runtime_graph_plan_from_snapshot(&design_snapshot.payload_json).is_some());
         assert!(exact_runtime_graph_plan(Some(projection), Some(design_snapshot)).is_some());
-        let submitted = call(
-            "POST",
-            "/api/workflow/runs",
-            json!({
-                "run_id": "run-from-rust-design",
-                "workflow_id": "wf-write",
-                "conversation_id": "conversation-from-rust-design",
-                "initial_state": {"counter": 1}
-            }),
-        );
-        assert_eq!(submitted.status, 202);
-        let submitted: Value = serde_json::from_slice(&submitted.body).unwrap();
+        let submitted = public_call!("POST", "/api/workflow/runs", json!({
+            "run_id": "run-from-rust-design",
+            "workflow_id": "wf-write",
+            "conversation_id": "conversation-from-rust-design",
+            "initial_state": {"counter": 1}
+        }));
+        assert_eq!(submitted.status(), StatusCode::ACCEPTED);
+        let submitted: Value = serde_json::from_slice(
+            &to_bytes(submitted.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
         let lane = store
             .list_projected_lane_messages(LaneMessageFilter {
                 namespace: Some("workflow".to_owned()),
@@ -630,68 +675,40 @@
                 .materialization_status,
             "rust_event_only"
         );
-        assert_eq!(
-            call(
-                "POST",
-                "/api/workflow/design/wf-write/undo",
-                json!({"designer_id":"alice"})
-            )
-            .status,
-            200
+        let response = public_call!(
+            "POST",
+            "/api/workflow/design/wf-write/undo",
+            json!({"designer_id":"alice"})
         );
-        let graph = call("GET", "/api/workflow/design/wf-write/graph", json!({}));
-        let graph: Value = serde_json::from_slice(&graph.body).unwrap();
-        assert!(graph["edges"].as_array().unwrap().is_empty());
-        assert!(store.get_workflow_design_snapshot("wf-write", 2, 1).unwrap().is_some());
-        assert_eq!(
-            call(
-                "POST",
-                "/api/workflow/design/wf-write/redo",
-                json!({"designer_id":"alice"})
-            )
-            .status,
-            200
-        );
-        assert!(store.get_workflow_design_snapshot("wf-write", 3, 1).unwrap().is_some());
-        assert_eq!(
-            call(
-                "DELETE",
-                "/api/workflow/design/wf-write/edges/edge",
-                json!({"designer_id":"alice"})
-            )
-            .status,
-            200
-        );
-        let key = "design-secret";
-        let auth = AuthConfig {
-            mode: "jwt".to_owned(),
-            algorithm: Some("HS256".to_owned()),
-            key: Some(key.to_owned()),
-            ..AuthConfig::default()
-        };
-        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"],"exp":4102444800_u64});
-        let token = encode(
-            &Header::new(Algorithm::HS256),
-            &claims,
-            &EncodingKey::from_secret(key.as_bytes()),
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = public_call!("GET", "/api/workflow/design/wf-write/graph", json!({}));
+        let graph: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 65_536).await.unwrap(),
         )
         .unwrap();
-        let app = router_with_application(
-            ApiState {
-                health: snapshot(),
-                required_roles: vec!["reader".to_owned()],
-                implementation: ImplementationSnapshot::default(),
-                auth,
-            },
-            Arc::new(service.clone()),
+        assert!(graph["edges"].as_array().unwrap().is_empty());
+        assert!(store.get_workflow_design_snapshot("wf-write", 2, 1).unwrap().is_some());
+        let response = public_call!(
+            "POST",
+            "/api/workflow/design/wf-write/redo",
+            json!({"designer_id":"alice"})
         );
-        let mcp = app.oneshot(Request::builder().method("POST").uri("/mcp/workflow")
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(store.get_workflow_design_snapshot("wf-write", 3, 1).unwrap().is_some());
+        let response = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-write/edges/edge",
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+        let mcp = app.clone().oneshot(Request::builder().method("POST").uri("/mcp/workflow")
             .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
             .body(Body::from(r#"{"jsonrpc":"2.0","id":"node","method":"tools/call","params":{"name":"workflow.design_node_upsert","arguments":{"workflow_id":"wf-mcp-design","designer_id":"alice","node_id":"mcp-node","label":"MCP"}}}"#)).unwrap()).await.unwrap();
         assert_eq!(mcp.status(), StatusCode::OK);
         let body: Value =
             serde_json::from_slice(&to_bytes(mcp.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(body["result"]["node_id"], "mcp-node");
+        drop(app);
         drop(service);
         drop(store);
         std::fs::remove_file(path).unwrap();
