@@ -88,6 +88,10 @@ pub(super) fn schema_sql(tables: &Tables) -> String {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),claim_token TEXT NULL,claim_attempts INTEGER NOT NULL DEFAULT 0,\
             accepted_result_json TEXT NULL,accepted_result_sha256 TEXT NULL,accepted_at TIMESTAMPTZ NULL\
          );\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default';\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT '';\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL;\
+         ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10;\
          ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS claim_token TEXT NULL;\
          ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS claim_attempts INTEGER NOT NULL DEFAULT 0;\
          ALTER TABLE {index_jobs} ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL;\

@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from sqlalchemy import inspect as sqlalchemy_inspect
+from sqlalchemy import inspect as sqlalchemy_inspect, text as sqlalchemy_text
 from sqlalchemy.exc import IntegrityError
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
@@ -192,6 +192,85 @@ def test_python_and_rust_postgres_metadata_schemas_match_shared_tables(
         rust_signature = schema_signature(rust_schema)
         assert python_signature.keys() == rust_signature.keys()
         assert python_signature == rust_signature
+    finally:
+        with sa_engine.begin() as conn:
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{python_schema}" CASCADE')
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{rust_schema}" CASCADE')
+
+
+@pytest.mark.ci_full
+def test_python_and_rust_migrate_legacy_postgres_index_jobs_equivalently(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    if sa_engine is None or pg_dsn is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    pytest.importorskip("kogwistar._rust")
+
+    python_schema = f"{pg_schema}_python_legacy"
+    rust_schema = f"{pg_schema}_rust_legacy"
+    legacy_index_jobs = """
+        CREATE TABLE {schema}.index_jobs (
+            job_id TEXT PRIMARY KEY,
+            entity_kind TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            index_kind TEXT NOT NULL,
+            op TEXT NOT NULL,
+            status TEXT NOT NULL,
+            lease_until TIMESTAMPTZ NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NULL,
+            payload_json TEXT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+        INSERT INTO {schema}.index_jobs (
+            job_id, entity_kind, entity_id, index_kind, op, status, payload_json
+        ) VALUES ('legacy-job', 'node', 'n1', 'node_embedding', 'UPSERT', 'PENDING', '{"legacy":true}');
+    """
+    try:
+        with sa_engine.begin() as conn:
+            for schema in (python_schema, rust_schema):
+                conn.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+                conn.exec_driver_sql(
+                    legacy_index_jobs.replace("{schema}", f'"{schema}"')
+                )
+
+        EnginePostgresMetaStore(engine=sa_engine, schema=python_schema).ensure_initialized()
+        assert store_postgres(
+            dsn=pg_dsn,
+            schema=rust_schema,
+            operation={"kind": "ensure_schema"},
+        ) == {"initialized": True}
+
+        inspector = sqlalchemy_inspect(sa_engine)
+
+        def index_jobs_signature(schema: str) -> tuple[tuple[object, ...], ...]:
+            primary_key = inspector.get_pk_constraint("index_jobs", schema=schema)
+            primary_key_columns = set(primary_key.get("constrained_columns") or ())
+            return tuple(
+                sorted(
+                    (
+                        column["name"],
+                        str(column["type"]).lower(),
+                        bool(column["nullable"]),
+                        column["name"] in primary_key_columns,
+                    )
+                    for column in inspector.get_columns("index_jobs", schema=schema)
+                )
+            )
+
+        assert index_jobs_signature(python_schema) == index_jobs_signature(rust_schema)
+        expected_row = ("default", "", None, 10, 0, '{"legacy":true}')
+        for schema in (python_schema, rust_schema):
+            with sa_engine.connect() as conn:
+                row = conn.execute(
+                    sqlalchemy_text(
+                        f'SELECT namespace, coalesce_key, next_run_at, max_retries, '
+                        f'claim_attempts, payload_json FROM "{schema}".index_jobs '
+                        "WHERE job_id='legacy-job'"
+                    )
+                ).one()
+            assert tuple(row) == expected_row
     finally:
         with sa_engine.begin() as conn:
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{python_schema}" CASCADE')

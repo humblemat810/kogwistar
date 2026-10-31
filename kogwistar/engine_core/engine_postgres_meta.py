@@ -324,10 +324,6 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     accepted_at TIMESTAMPTZ NULL
                 )
             """,
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)",
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)",
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL",
@@ -337,6 +333,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)",
             f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'",
             f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
