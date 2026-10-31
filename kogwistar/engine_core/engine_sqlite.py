@@ -20,6 +20,7 @@ from .meta_lane_messages import LaneMessageMetaStoreMixin
 from .sqlite_context import SQLiteDatabaseLease, acquire_sqlite_database
 
 JsonObject: TypeAlias = dict[str, JsonValue]
+SQLITE_METADATA_SCHEMA_VERSION = 1
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
@@ -285,6 +286,14 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         self.persistent_directory.mkdir(parents=True, exist_ok=True)
 
         with self.connect() as conn:
+            schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            if schema_version > SQLITE_METADATA_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "unsupported SQLite metadata schema version "
+                    f"{schema_version}; this implementation supports up to "
+                    f"{SQLITE_METADATA_SCHEMA_VERSION}"
+                )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS global_seq (
@@ -583,6 +592,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id "
                 "ON server_run_events(json_extract(payload_json, '$.transition_id')) "
                 "WHERE event_type='workflow.recorded_transition.v1'"
+            )
+            conn.execute(
+                f"PRAGMA user_version = {SQLITE_METADATA_SCHEMA_VERSION}"
             )
 
     # ------------------------------------------------------------------

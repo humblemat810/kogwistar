@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -120,6 +121,8 @@ def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path
     db = EngineSQLite(tmp_path)
     db.ensure_initialized()
     path = db.db_path
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
     assert _rust(path, {"kind": "open_init"}) == {"initialized": True}
 
     assert db.next_global_seq() == 1
@@ -148,7 +151,6 @@ def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path
     assert _rust(path, {"kind": "cursor_get", "namespace": "alpha", "consumer": "sink"})[
         "last_seq"
     ] == 9
-
     appended = _rust(
         path,
         {
@@ -203,6 +205,26 @@ def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path
             },
         )
     assert collision.value.code == "KOGWISTAR_STORE_EVENT_ID_NAMESPACE_COLLISION"
+
+
+def test_python_rejects_newer_sqlite_schema_without_mutating_database(
+    tmp_path: Path,
+) -> None:
+    db = EngineSQLite(tmp_path)
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO sentinel VALUES ('preserve')")
+        conn.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(RuntimeError, match="unsupported SQLite metadata schema version 2"):
+        db.ensure_initialized()
+
+    with sqlite3.connect(db.db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("preserve",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='global_seq'"
+        ).fetchone() is None
 
 
 def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tmp_path: Path) -> None:
