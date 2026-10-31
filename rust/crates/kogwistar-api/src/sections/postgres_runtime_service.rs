@@ -525,6 +525,7 @@ impl PostgresRunApplicationService {
                 embedding_storage_scope,
                 wisdom_embedding_storage_scope,
                 chat_completion_provider: None,
+                transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
             })
     }
 
@@ -1424,6 +1425,7 @@ impl PostgresRunApplicationService {
             .ok_or_else(|| "native answer generation requires a turn node ID".to_owned())?;
         let trace_context = kogwistar_runtime::native_trace_context_fields(request);
         let model = provider.model().to_owned();
+        let client_sequence = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
         provider
             .answer_with_event_sink(
                 system_prompt,
@@ -1441,7 +1443,25 @@ impl PostgresRunApplicationService {
                     let turn_node_id = turn_node_id.clone();
                     let trace_context = trace_context.clone();
                     let model = model.clone();
+                    let client_sequence = client_sequence.clone();
                     async move {
+                        if let kogwistar_contracts::ProviderEventV1::TextDelta {
+                            delta, ..
+                        } = &event
+                        {
+                            if delta.chars().count() > 4096 {
+                                return Err(
+                                    "transient text delta exceeds the configured size limit"
+                                        .to_owned(),
+                                );
+                            }
+                            // Client delivery is observational; bounded-buffer failure must not fail the workflow.
+                            let sequence = client_sequence
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                .saturating_add(1);
+                            let _ = service.transient_run_deltas.publish(&run_id, sequence, delta);
+                            return Ok(());
+                        }
                         let Some(provider_event) =
                             crate::native_answer_generation::semantic_event_trace_summary(&event)
                         else {
@@ -5918,13 +5938,44 @@ impl PostgresRunApplicationService {
                     .list_server_run_events(&run_id, after_seq, limit as usize)
                     .await
                 {
-                    Ok(events) => json_effect(
-                        StatusCode::OK,
-                        json!({
+                    Ok(events) => {
+                        let mut body = json!({
                             "run_id": run_id,
                             "events": events.into_iter().map(server_run_event_value).collect::<Vec<_>>(),
-                        }),
-                    ),
+                        });
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                            let caller_id = authenticated_run_owner_id(&request.principal);
+                            if caller_id.is_none() || run.user_id.as_deref() != caller_id {
+                                return effect_error(
+                                    StatusCode::FORBIDDEN,
+                                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                                    "transient run deltas are visible only to the run owner",
+                                );
+                            }
+                            let after_client_sequence = query_integer(
+                                &request.path_and_query,
+                                "after_client_sequence",
+                                0,
+                            )
+                            .max(0);
+                            let client_deltas = match self.transient_run_deltas.list(
+                                &run_id,
+                                after_client_sequence,
+                                limit as usize,
+                            ) {
+                                Ok(deltas) => deltas,
+                                Err(error) => {
+                                    return effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_TRANSIENT_EVENT_ERROR",
+                                        error,
+                                    );
+                                }
+                            };
+                            body["client_deltas"] = json!(client_deltas);
+                        }
+                        json_effect(StatusCode::OK, body)
+                    }
                     Err(error) => effect_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "KOGWISTAR_STORE_ERROR",
@@ -5961,6 +6012,46 @@ impl PostgresRunApplicationService {
                                 &event_payload,
                                 Some(&event.seq.to_string()),
                             ));
+                        }
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                            let caller_id = authenticated_run_owner_id(&request.principal);
+                            if caller_id.is_none() || run.user_id.as_deref() != caller_id {
+                                return effect_error(
+                                    StatusCode::FORBIDDEN,
+                                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                                    "transient run deltas are visible only to the run owner",
+                                );
+                            }
+                            let after_client_sequence = query_integer(
+                                &request.path_and_query,
+                                "after_client_sequence",
+                                0,
+                            )
+                            .max(0);
+                            let deltas = match self.transient_run_deltas.list(
+                                &run_id,
+                                after_client_sequence,
+                                MAX_TRANSIENT_DELTA_PAGE,
+                            ) {
+                                Ok(deltas) => deltas,
+                                Err(error) => {
+                                    return effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_TRANSIENT_EVENT_ERROR",
+                                        error,
+                                    );
+                                }
+                            };
+                            for mut delta in deltas {
+                                let event_type = delta["event_type"]
+                                    .as_str()
+                                    .unwrap_or("response.text.delta")
+                                    .to_owned();
+                                let sequence = delta["client_sse_sequence"].as_i64().unwrap_or_default();
+                                delta["run_id"] = json!(run_id);
+                                let event_id = format!("delta-{sequence}");
+                                body.push_str(&sse_frame(&event_type, &delta, Some(&event_id)));
+                            }
                         }
                         ApiEffectResponse {
                             status: StatusCode::OK.as_u16(),

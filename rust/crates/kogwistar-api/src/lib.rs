@@ -68,6 +68,7 @@ mod native_answer_view;
 mod native_event_stream;
 mod native_memory_pin;
 mod runtime_contract;
+mod transient_deltas;
 pub use cutover::{ImplementationSnapshot, TRANSPORT_OWNED_HTTP_ROUTES};
 use cutover::{is_pending_server_cutover_route, is_transport_owned_http_route};
 use runtime_contract::{

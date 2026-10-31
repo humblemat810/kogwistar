@@ -1,3 +1,5 @@
+const MAX_TRANSIENT_DELTA_PAGE: usize = 65;
+
 fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
     ApiEffectResponse {
         status: status.as_u16(),
@@ -224,6 +226,16 @@ fn query_integer(path_and_query: &str, name: &str, default: i64) -> i64 {
             (key == name).then(|| value.parse::<i64>().ok()).flatten()
         })
         .unwrap_or(default)
+}
+
+fn query_parameter_present(path_and_query: &str, name: &str) -> bool {
+    path_and_query
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default()
+        .split('&')
+        .filter_map(|pair| pair.split_once('=').map(|(key, _)| key))
+        .any(|key| key == name)
 }
 
 fn query_string(path_and_query: &str, name: &str) -> Option<String> {

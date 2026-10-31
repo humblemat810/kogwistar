@@ -2462,13 +2462,44 @@ impl SqliteRunApplicationService {
                     .store
                     .list_server_run_events(&run_id, after_seq, limit as usize)
                 {
-                    Ok(events) => json_effect(
-                        StatusCode::OK,
-                        json!({
+                    Ok(events) => {
+                        let mut body = json!({
                             "run_id": run_id,
                             "events": events.into_iter().map(server_run_event_value).collect::<Vec<_>>(),
-                        }),
-                    ),
+                        });
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                            let caller_id = authenticated_run_owner_id(&request.principal);
+                            if caller_id.is_none() || run.user_id.as_deref() != caller_id {
+                                return effect_error(
+                                    StatusCode::FORBIDDEN,
+                                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                                    "transient run deltas are visible only to the run owner",
+                                );
+                            }
+                            let after_client_sequence = query_integer(
+                                &request.path_and_query,
+                                "after_client_sequence",
+                                0,
+                            )
+                            .max(0);
+                            let client_deltas = match self.transient_run_deltas.list(
+                                &run_id,
+                                after_client_sequence,
+                                limit as usize,
+                            ) {
+                                Ok(deltas) => deltas,
+                                Err(error) => {
+                                    return effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_TRANSIENT_EVENT_ERROR",
+                                        error,
+                                    );
+                                }
+                            };
+                            body["client_deltas"] = json!(client_deltas);
+                        }
+                        json_effect(StatusCode::OK, body)
+                    }
                     Err(error) => effect_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "KOGWISTAR_STORE_ERROR",
@@ -2504,6 +2535,46 @@ impl SqliteRunApplicationService {
                                 &event_payload,
                                 Some(&event.seq.to_string()),
                             ));
+                        }
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                            let caller_id = authenticated_run_owner_id(&request.principal);
+                            if caller_id.is_none() || run.user_id.as_deref() != caller_id {
+                                return effect_error(
+                                    StatusCode::FORBIDDEN,
+                                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                                    "transient run deltas are visible only to the run owner",
+                                );
+                            }
+                            let after_client_sequence = query_integer(
+                                &request.path_and_query,
+                                "after_client_sequence",
+                                0,
+                            )
+                            .max(0);
+                            let deltas = match self.transient_run_deltas.list(
+                                &run_id,
+                                after_client_sequence,
+                                MAX_TRANSIENT_DELTA_PAGE,
+                            ) {
+                                Ok(deltas) => deltas,
+                                Err(error) => {
+                                    return effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_TRANSIENT_EVENT_ERROR",
+                                        error,
+                                    );
+                                }
+                            };
+                            for mut delta in deltas {
+                                let event_type = delta["event_type"]
+                                    .as_str()
+                                    .unwrap_or("response.text.delta")
+                                    .to_owned();
+                                let sequence = delta["client_sse_sequence"].as_i64().unwrap_or_default();
+                                delta["run_id"] = json!(run_id);
+                                let event_id = format!("delta-{sequence}");
+                                body.push_str(&sse_frame(&event_type, &delta, Some(&event_id)));
+                            }
                         }
                         ApiEffectResponse {
                             status: StatusCode::OK.as_u16(),

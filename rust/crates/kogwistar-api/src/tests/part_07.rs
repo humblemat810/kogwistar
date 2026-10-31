@@ -1,4 +1,97 @@
     #[tokio::test]
+    async fn sqlite_run_transient_delta_routes_preserve_owner_and_sequence_contract() {
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-transient-delta-route-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: "delta-route-run".to_owned(),
+                conversation_id: "delta-route-conversation".to_owned(),
+                workflow_id: "delta-route-workflow".to_owned(),
+                user_id: Some("owner".to_owned()),
+                user_turn_node_id: "delta-route-turn".to_owned(),
+                status: "running".to_owned(),
+            })
+            .unwrap();
+        service
+            .transient_run_deltas
+            .publish("delta-route-run", 4, "visible chunk")
+            .unwrap();
+        let principal = json!({
+            "sub": "owner",
+            "user_id": "owner",
+            "ns": ["workflow"],
+            "capabilities": ["workflow.run.read"]
+        });
+
+        let legacy = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/runs/delta-route-run/events/poll?after_seq=0".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(legacy.status, StatusCode::OK.as_u16());
+        assert!(serde_json::from_slice::<Value>(&legacy.body)
+            .unwrap()
+            .get("client_deltas")
+            .is_none());
+
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/runs/delta-route-run/events/poll?after_seq=0&after_client_sequence=3".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "not-owner",
+                    "user_id": "not-owner",
+                    "ns": ["workflow"],
+                    "capabilities": ["workflow.run.read"]
+                }),
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+        let poll = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/runs/delta-route-run/events/poll?after_seq=0&after_client_sequence=3".to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(poll.status, StatusCode::OK.as_u16());
+        let poll_body: Value = serde_json::from_slice(&poll.body).unwrap();
+        assert_eq!(poll_body["client_deltas"][0]["client_sse_sequence"], 4);
+        assert_eq!(poll_body["client_deltas"][0]["delta"], "visible chunk");
+
+        let sse = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/runs/delta-route-run/events?after_client_sequence=3".to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        assert_eq!(sse.status, StatusCode::OK.as_u16());
+        let sse_body = String::from_utf8(sse.body).unwrap();
+        assert!(sse_body.contains("id: delta-4\nevent: response.text.delta"));
+        assert!(sse_body.contains("visible chunk"));
+        assert!(!sse_body.contains("id: 4\n"));
+
+        drop(service);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[tokio::test]
     async fn workflow_lineage_checks_authority_before_run_lookup() {
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-lineage-auth-order-{}.sqlite",

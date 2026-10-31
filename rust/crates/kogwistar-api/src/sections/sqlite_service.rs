@@ -7,6 +7,7 @@ pub struct SqliteRunApplicationService {
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
+    transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
 }
 
 #[derive(Clone)]
@@ -1112,6 +1113,7 @@ impl SqliteRunApplicationService {
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
+                transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
             })
             .map_err(|error| error.to_string())
     }
