@@ -366,6 +366,32 @@ mod tests {
     }
 
     #[test]
+    fn graph_roles_share_the_generic_node_edge_mutation_contract() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        ));
+        let roles = ["knowledge", "conversation", "workflow", "wisdom", "acl"];
+
+        for role in roles {
+            let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
+            batch.mutations[0].scope.graph_space = Some(role.to_owned());
+            assert_eq!(batch.validate(), Ok(()), "graph role {role} was rejected");
+            assert_eq!(batch.mutations[0].entity_kind, "node");
+            assert_eq!(batch.mutations[0].table, "gke_nodes");
+
+            let mut edge_batch = batch;
+            edge_batch.mutations[0].entity_kind = "edge".to_owned();
+            edge_batch.mutations[0].table = "gke_edges".to_owned();
+            assert_eq!(
+                edge_batch.validate(),
+                Ok(()),
+                "edge in graph role {role} was rejected"
+            );
+        }
+    }
+
+    #[test]
     fn acl_aware_graph_batch_v2_is_explicit_and_v1_stays_strict() {
         let fixture = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -378,6 +404,10 @@ mod tests {
         assert_eq!(scope.namespace, "tenant-a");
         assert_eq!(scope.workspace_id.as_deref(), Some("ws"));
         assert_eq!(scope.graph_space.as_deref(), Some("facts"));
+        assert_ne!(
+            batch.default_acl.truth_graph,
+            scope.graph_space.as_deref().unwrap()
+        );
 
         let v1_error = serde_json::from_str::<GraphMutationBatchV1>(fixture);
         assert!(

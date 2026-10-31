@@ -74,6 +74,30 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     assert batch.index_jobs == []
 
 
+@pytest.mark.parametrize("graph_role", ["knowledge", "conversation", "workflow", "wisdom", "acl"])
+def test_graph_roles_share_the_generic_node_edge_mutation_contract(
+    graph_role: str,
+) -> None:
+    payload = _fixture()
+    payload["mutations"][0]["scope"]["graph_space"] = graph_role
+
+    batch = validate_graph_mutation_batch(payload)
+
+    assert batch.mutations[0].scope.graph_space == graph_role
+    assert batch.mutations[0].entity_kind == "node"
+    assert batch.mutations[0].table == "gke_nodes"
+
+    edge_payload = _fixture()
+    edge_mutation = edge_payload["mutations"][0]
+    edge_mutation["scope"]["graph_space"] = graph_role
+    edge_mutation["entity_kind"] = "edge"
+    edge_mutation["table"] = "gke_edges"
+    edge_batch = validate_graph_mutation_batch(edge_payload)
+    assert edge_batch.mutations[0].scope.graph_space == graph_role
+    assert edge_batch.mutations[0].entity_kind == "edge"
+    assert edge_batch.mutations[0].table == "gke_edges"
+
+
 def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
     root = Path(__file__).resolve().parents[2]
     payload = json.loads(
@@ -90,6 +114,7 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
     assert batch.mutations[0].scope.namespace == "tenant-a"
     assert batch.mutations[0].scope.workspace_id == "ws"
     assert batch.mutations[0].scope.graph_space == "facts"
+    assert batch.default_acl.truth_graph != batch.mutations[0].scope.graph_space
     with pytest.raises(GraphMutationContractError):
         validate_graph_mutation_batch(payload)
 
