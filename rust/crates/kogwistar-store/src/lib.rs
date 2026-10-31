@@ -1257,6 +1257,30 @@ pub fn validate_graph_mutation(mutation: &GraphMutation) -> StoreResult<()> {
     Ok(())
 }
 
+/// Ensure an event-ID retry is the same graph effect before treating it as
+/// idempotent. Raw event stores intentionally return the first event for a
+/// repeated ID; graph mutation owners must apply this stricter comparison.
+pub fn validate_graph_mutation_replay(
+    mutation: &GraphMutation,
+    existing: &EntityEvent,
+) -> StoreResult<()> {
+    if existing.namespace != mutation.scope.namespace
+        || existing.event_id != mutation.event_id
+        || existing.entity_kind != mutation.entity_kind
+        || existing.entity_id != mutation.record.id
+        || existing.op != mutation.op
+        || existing.payload != mutation.payload
+    {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: format!(
+                "graph mutation event id {:?} was reused with different input",
+                mutation.event_id
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Validate a store-owned atomic batch before opening its transaction.
 pub fn validate_graph_mutation_batch(batch: &GraphMutationBatch) -> StoreResult<()> {
     let first = batch
@@ -4879,6 +4903,40 @@ mod tests {
             validate_graph_mutation(&mutation),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
+    }
+
+    #[test]
+    fn graph_mutation_replay_requires_identical_effect_identity_and_payload() {
+        let mutation = typed_mutation("node", fixture_payload(0));
+        let event = EntityEvent {
+            namespace: mutation.scope.namespace.clone(),
+            seq: 1,
+            event_id: mutation.event_id.clone(),
+            entity_kind: mutation.entity_kind.clone(),
+            entity_id: mutation.record.id.clone(),
+            op: mutation.op.clone(),
+            payload: mutation.payload.clone(),
+        };
+        assert_eq!(validate_graph_mutation_replay(&mutation, &event), Ok(()));
+
+        let mut altered = event.clone();
+        altered.entity_kind = "edge".to_owned();
+        assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
+        let mut altered = event.clone();
+        altered.entity_id.push_str("-other");
+        assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
+        let mut altered = event.clone();
+        altered.op = "REPLACE".to_owned();
+        assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
+        let mut altered = event.clone();
+        altered.payload["summary"] = Value::String("different".to_owned());
+        assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
+        let mut altered = event.clone();
+        altered.event_id.push_str("-other");
+        assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
+        let mut altered = event;
+        altered.namespace.push_str("-other");
+        assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
     }
 
     #[test]

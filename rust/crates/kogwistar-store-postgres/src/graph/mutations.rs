@@ -49,22 +49,10 @@ where
         },
     )
     .await?;
-    if !appended.inserted {
-        let existing_payload: Value = serde_json::from_str(&appended.event.payload_json)
-            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
-        if appended.event.entity_kind != mutation.entity_kind
-            || appended.event.entity_id != mutation.record.id
-            || appended.event.op != mutation.op
-            || existing_payload != mutation.payload
-        {
-            return Err(PostgresStoreError::Backend(format!(
-                "graph mutation event id {:?} was reused with different input",
-                mutation.event_id
-            )));
-        }
-    }
     let event = raw_to_entity_event(appended.event)?;
     if !appended.inserted {
+        validate_graph_mutation_replay(&mutation, &event)
+            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
         return Ok(AppliedGraphMutation {
             event,
             inserted: false,

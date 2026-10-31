@@ -33,7 +33,7 @@ use kogwistar_store::{
     WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace, runtime_projection_write,
     runtime_status_namespace, validate_entity_rebuild_request, validate_entity_recovery_request,
     validate_graph_lifecycle_target, validate_graph_mutation, validate_graph_mutation_batch,
-    validate_graph_projection_target,
+    validate_graph_mutation_replay, validate_graph_projection_target,
 };
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
