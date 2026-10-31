@@ -856,14 +856,24 @@ impl ApplicationService for SqliteRunApplicationService {
         let is_composed_conversation_transcript = self.chroma_graph.is_some()
             && method == "GET"
             && conversation_transcript_id(path).is_some();
+        let is_composed_conversation_detail = self.chroma_graph.is_some()
+            && method == "GET"
+            && conversation_detail_id(path).is_some();
+        let is_composed_conversation_list = self.chroma_graph.is_some()
+            && method == "GET"
+            && is_conversation_list_route(path);
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
-            || is_composed_conversation_transcript)
+            || is_composed_conversation_transcript
+            || is_composed_conversation_detail
+            || is_composed_conversation_list)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
                 || is_composed_graph_read
-                || is_composed_conversation_transcript)
+                || is_composed_conversation_transcript
+                || is_composed_conversation_detail
+                || is_composed_conversation_list)
     }
 
     fn execute(
@@ -878,6 +888,14 @@ impl ApplicationService for SqliteRunApplicationService {
                 return self
                     .sqlite_chroma_conversation_transcript_effect(&request)
                     .await;
+            }
+            if request.method == "GET" && self.chroma_graph.is_some() {
+                if conversation_detail_id(&request.path_and_query).is_some() {
+                    return self.sqlite_chroma_conversation_detail_effect(&request).await;
+                }
+                if is_conversation_list_route(&request.path_and_query) {
+                    return self.sqlite_chroma_conversation_list_effect(&request).await;
+                }
             }
             if request.method == "POST" && self.chroma_graph.is_some() {
                 match request.path_and_query.split('?').next() {

@@ -4830,7 +4830,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..14 {
+            for _ in 0..22 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -4864,7 +4864,7 @@
                     })
                 } else if head.lines().next().unwrap().contains("collection-nodes/get") {
                     let nodes = [
-                        ("start", json!({"entity_type":"conversation_start","conversation_id":"c1"})),
+                        ("start", json!({"entity_type":"conversation_start","conversation_id":"c1","user_id":"reader-1","status":"active"})),
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
                         ("turn-private", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":3,"role":"assistant","summary":"private"})),
@@ -4932,6 +4932,13 @@
             method: "POST".to_owned(),
             path_and_query: format!("/api/syscall/v1/{operation}"),
             body: json!({"version":"v1","args":args}).to_string().into_bytes(),
+            principal,
+        };
+        let read_request = |path: &str, principal: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: path.to_owned(),
+            body: Vec::new(),
             principal,
         };
         let principal = json!({
@@ -5131,8 +5138,101 @@
         assert!(transcript_payload["turns"][0].get("schema_version").is_none());
         assert!(service.supports_http_operation("GET", "/api/conversations/c1/turns"));
 
+        for (uri, expected_path) in [
+            ("/api/conversations/c1", "detail"),
+            ("/api/conversations", "list"),
+        ] {
+            let response = router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: vec![],
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig {
+                        mode: "dev".to_owned(),
+                        algorithm: Some("HS256".to_owned()),
+                        key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                        ..AuthConfig::default()
+                    },
+                },
+                Arc::new(service.clone()),
+            )
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            let status = response.status();
+            let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "conversation {expected_path} response: {}",
+                String::from_utf8_lossy(&body)
+            );
+            let payload: Value = serde_json::from_slice(&body).unwrap();
+            match expected_path {
+                "detail" => {
+                    assert_eq!(payload["conversation_id"], "c1");
+                    assert_eq!(payload["turn_count"], 2);
+                }
+                "list" => {
+                    assert_eq!(payload["conversations"].as_array().unwrap().len(), 1);
+                    assert_eq!(payload["conversations"][0]["turn_count"], 2);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let detail = service
+            .execute(read_request("/api/conversations/c1", principal.clone()))
+            .await;
+        assert_eq!(detail.status, StatusCode::OK.as_u16());
+        let detail: Value = serde_json::from_slice(&detail.body).unwrap();
+        assert_eq!(detail["conversation_id"], "c1");
+        assert_eq!(detail["user_id"], "reader-1");
+        assert_eq!(detail["turn_count"], 2);
+        assert!(detail.get("schema_version").is_none());
+
+        let conversations = service
+            .execute(read_request("/api/conversations", principal.clone()))
+            .await;
+        assert_eq!(conversations.status, StatusCode::OK.as_u16());
+        let conversations: Value = serde_json::from_slice(&conversations.body).unwrap();
+        assert_eq!(conversations["conversations"].as_array().unwrap().len(), 1);
+        assert_eq!(conversations["conversations"][0]["id"], "c1");
+        assert_eq!(conversations["conversations"][0]["turn_count"], 2);
+        assert!(service.supports_http_operation("GET", "/api/conversations/c1"));
+        assert!(service.supports_http_operation("GET", "/api/conversations"));
+
+        let denied_detail = service
+            .execute(read_request(
+                "/api/conversations/c1",
+                json!({"ns":["conversation"],"capabilities":[]}),
+            ))
+            .await;
+        assert_eq!(denied_detail.status, StatusCode::FORBIDDEN.as_u16());
+        let denied_list = service
+            .execute(read_request(
+                "/api/conversations",
+                json!({"sub":"reader-1","ns":["docs"],"capabilities":["read_graph"]}),
+            ))
+            .await;
+        assert_eq!(denied_list.status, StatusCode::FORBIDDEN.as_u16());
+        let no_identity = service
+            .execute(read_request(
+                "/api/conversations",
+                json!({"ns":["conversation"],"capabilities":["read_graph"]}),
+            ))
+            .await;
+        assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
+
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 14);
+        assert_eq!(requests.len(), 22);
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")

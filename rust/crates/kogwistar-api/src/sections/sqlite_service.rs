@@ -1978,6 +1978,124 @@ impl SqliteRunApplicationService {
         json_effect(StatusCode::OK, payload)
     }
 
+    async fn sqlite_chroma_conversation_detail_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation reads require read_graph capability",
+            );
+        }
+        let Some(conversation_id) = conversation_detail_id(&request.path_and_query) else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation route was not found",
+            );
+        };
+        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let summary = match conversation_summary_from_visible_records(&nodes, &conversation_id) {
+            Ok(summary) => summary,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut payload = serde_json::to_value(summary).expect("conversation summary serializes");
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("schema_version");
+        }
+        json_effect(StatusCode::OK, payload)
+    }
+
+    async fn sqlite_chroma_conversation_list_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Conversation reads require read_graph capability",
+            );
+        }
+        let user_id = request
+            .principal
+            .get("sub")
+            .or_else(|| request.principal.get("user_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(user_id) = user_id else {
+            return effect_error(
+                StatusCode::UNAUTHORIZED,
+                "KOGWISTAR_USER_IDENTITY_REQUIRED",
+                "User Identity required",
+            );
+        };
+        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let candidates = compact_conversation_list_candidates(&nodes);
+        let mut conversations = ConversationListAccumulator::new(user_id);
+        conversations.extend_visible_records(&candidates);
+        let conversations = conversations
+            .finish()
+            .into_iter()
+            .map(|entry| {
+                json!({
+                    "id": entry.id,
+                    "start_node_id": entry.start_node_id,
+                    "status": entry.status,
+                    "turn_count": entry.turn_count,
+                })
+            })
+            .collect::<Vec<_>>();
+        json_effect(StatusCode::OK, json!({"conversations": conversations}))
+    }
+
     async fn chroma_graph_neighbors_effect(
         &self,
         request: &ApiEffectRequest,
