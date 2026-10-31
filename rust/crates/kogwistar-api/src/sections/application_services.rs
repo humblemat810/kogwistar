@@ -752,8 +752,38 @@ impl ApplicationService for PostgresRunApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         rust_mcp_tool_supported(surface, name)
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
+            && (name != "wisdom.kg_upsert_graph"
+                || self
+                    .wisdom_store
+                    .graph_authority_capability()
+                    .supports_atomic_index_jobs())
             && (name != "workflow.tool_audit"
                 || self.graph_authority_capability().supports_single_mutation())
+    }
+
+    fn supports_mcp_tool_for_principal(
+        &self,
+        surface: &str,
+        name: &str,
+        principal: &Value,
+    ) -> bool {
+        if name != "wisdom.kg_upsert_graph" {
+            return self.supports_mcp_tool(surface, name);
+        }
+        if surface != "root"
+            || principal_role(principal) != "rw"
+            || !principal_strings(principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "wisdom" || namespace == "*")
+        {
+            return false;
+        }
+        let state = self
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        effective_capabilities(principal, &state).contains("write_graph")
+            && self.supports_mcp_tool(surface, name)
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {

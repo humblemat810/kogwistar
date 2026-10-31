@@ -89,6 +89,7 @@ include!("sections/contracts_and_runtime.rs");
 include!("sections/response_policy.rs");
 include!("sections/graph_acl_effects.rs");
 include!("sections/document_graph.rs");
+include!("sections/wisdom_graph.rs");
 include!("sections/workflow_design.rs");
 include!("sections/sqlite_service.rs");
 include!("sections/postgres_contracts.rs");

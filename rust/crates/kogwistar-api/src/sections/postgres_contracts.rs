@@ -1,12 +1,14 @@
 #[derive(Clone)]
 pub struct PostgresRunApplicationService {
     store: PostgresStore,
+    wisdom_store: PostgresStore,
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
     owner_auth_store: Option<Arc<AuthStore>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     embedding_storage_scope: Result<String, String>,
+    wisdom_embedding_storage_scope: Result<String, String>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
 }
 

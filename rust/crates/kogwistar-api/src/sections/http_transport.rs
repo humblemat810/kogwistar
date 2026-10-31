@@ -121,6 +121,7 @@ async fn mcp_handler(
         _ => "root",
     };
     if method == "tools/list" {
+        let principal = request_principal(&headers, &state.api.auth);
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON)
             .expect("committed MCP tool contract is valid JSON");
         let tools = contract["surfaces"][surface]
@@ -131,7 +132,13 @@ async fn mcp_handler(
                     .filter(|tool| {
                         tool.get("name")
                             .and_then(Value::as_str)
-                            .is_some_and(|name| state.application.supports_mcp_tool(surface, name))
+                            .is_some_and(|name| {
+                                state.application.supports_mcp_tool_for_principal(
+                                    surface,
+                                    name,
+                                    &principal,
+                                )
+                            })
                     })
                     .cloned()
                     .collect::<Vec<_>>()
@@ -146,7 +153,10 @@ async fn mcp_handler(
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !state.application.supports_mcp_tool(surface, tool_name) {
+        if !state
+            .application
+            .supports_mcp_tool_for_principal(surface, tool_name, &principal)
+        {
             return Json(json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -325,6 +335,14 @@ async fn mcp_handler(
                         principal: principal.clone(),
                     }
                 }),
+            "wisdom.kg_upsert_graph" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/wisdom/graph/upsert".to_owned(),
+                body: serde_json::to_vec(&arguments)
+                    .expect("MCP wisdom graph arguments serialize"),
+                principal: principal.clone(),
+            }),
             "workflow.run_status" | "conversation.run_status" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,

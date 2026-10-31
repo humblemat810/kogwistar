@@ -191,7 +191,11 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
         ),
         "root" => matches!(
             name,
-            "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
+            "kg_find_edges"
+                | "kg_k_hop"
+                | "kg_neighbors"
+                | "kg_shortest_path"
+                | "wisdom.kg_upsert_graph"
         ),
         _ => false,
     }
@@ -688,6 +692,15 @@ pub trait ApplicationService: Send + Sync + 'static {
     /// partially wired backend from claiming the static catalog's operations.
     fn supports_mcp_tool(&self, _surface: &str, _name: &str) -> bool {
         false
+    }
+
+    fn supports_mcp_tool_for_principal(
+        &self,
+        surface: &str,
+        name: &str,
+        _principal: &Value,
+    ) -> bool {
+        self.supports_mcp_tool(surface, name)
     }
 
     /// Report which frozen HTTP operations this concrete service can execute.

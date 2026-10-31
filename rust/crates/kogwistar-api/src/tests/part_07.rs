@@ -603,3 +603,197 @@
         drop(auth);
         let _ = std::fs::remove_file(auth_path);
     }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; exercises a disposable wisdom schema"]
+    async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_wisdom_upsert_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        service
+            .wisdom_store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let profile = kogwistar_engine::embedding::EmbeddingProfile {
+            provider: "test".to_owned(),
+            model: "wisdom-fixed-v1".to_owned(),
+            dimension: 3,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        };
+        let service = service.with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+            profile: profile.clone(),
+            vector: vec![0.0, 0.0, 1.0],
+            calls: calls.clone(),
+            fail: None,
+        }));
+        service.ensure_embedding_profile_binding(&profile).await.unwrap();
+        let primary_embedding_binding = service
+            .store
+            .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, service.embedding_storage_scope.as_ref().unwrap())
+            .await
+            .unwrap();
+        let wisdom_embedding_binding = service
+            .wisdom_store
+            .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, service.wisdom_embedding_storage_scope.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert!(primary_embedding_binding.is_some());
+        assert!(wisdom_embedding_binding.is_some());
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .unwrap();
+        let mut node = fixture["cases"][0]["payload"].clone();
+        node["id"] = json!("wisdom-private-node");
+        node["embedding"] = json!([1.0, 0.0, 0.0]);
+        let mut edge = fixture["cases"][1]["payload"].clone();
+        edge["id"] = json!("wisdom-private-edge");
+        edge["source_ids"] = json!(["wisdom-private-node"]);
+        edge["target_ids"] = json!([]);
+        edge["embedding"] = json!([0.0, 1.0, 0.0]);
+        let alice = json!({
+            "sub": "alice", "user_id": "alice", "role": "rw",
+            "ns": ["wisdom"], "storage_ns": "wisdom",
+            "capabilities": ["write_graph"]
+        });
+        let response = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"inp": {"nodes": [node.clone()], "edges": [edge.clone()]}})).unwrap(),
+            principal: alice,
+        }).await;
+        assert_eq!(response.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&response.body));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                vec![
+                    "Python node: A complete Pydantic node payload crosses the Rust persistence seam.".to_owned(),
+                    "supports: The typed edge preserves both endpoint and source-span data.".to_owned(),
+                ],
+            ]
+        );
+
+        let wisdom_nodes = service.wisdom_store.graph_projection_records(GraphProjectionRead {
+            scope: GraphScope { namespace: "wisdom".to_owned(), workspace_id: None, graph_space: None },
+            table: "gke_nodes".to_owned(), ids: Some(vec!["wisdom-private-node".to_owned()]),
+            metadata: MetadataFilter::default(), limit: 1,
+        }).await.unwrap();
+        assert_eq!(wisdom_nodes.len(), 1);
+        assert_eq!(wisdom_nodes[0].embedding.as_deref(), Some([0.0, 0.0, 1.0].as_slice()));
+        let primary_nodes = service.store.graph_projection_records(GraphProjectionRead {
+            scope: GraphScope { namespace: "wisdom".to_owned(), workspace_id: None, graph_space: None },
+            table: "gke_nodes".to_owned(), ids: Some(vec!["wisdom-private-node".to_owned()]),
+            metadata: MetadataFilter::default(), limit: 1,
+        }).await.unwrap();
+        assert!(primary_nodes.is_empty(), "wisdom writes stay in the isolated schema");
+
+        let bob = json!({
+            "sub": "bob", "user_id": "bob", "role": "rw",
+            "ns": ["wisdom"], "storage_ns": "wisdom",
+            "capabilities": ["write_graph"]
+        });
+        let overwrite = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"inp": {"nodes": [node], "edges": []}})).unwrap(),
+            principal: bob,
+        }).await;
+        assert_ne!(overwrite.status, StatusCode::OK.as_u16());
+
+        let mut hidden_reference_edge = edge.clone();
+        hidden_reference_edge["id"] = json!("bob-reference-edge");
+        hidden_reference_edge["source_ids"] = json!(["wisdom-private-node"]);
+        hidden_reference_edge["target_ids"] = json!([]);
+        let hidden_reference = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"inp": {"nodes": [], "edges": [hidden_reference_edge]}})).unwrap(),
+            principal: json!({
+                "sub": "bob", "user_id": "bob", "role": "rw", "ns": ["wisdom"],
+                "storage_ns": "wisdom", "capabilities": ["write_graph"]
+            }),
+        }).await;
+        assert_ne!(hidden_reference.status, StatusCode::OK.as_u16());
+
+        let missing_endpoint = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"inp": {"nodes": [], "edges": [{
+                "id": "missing-endpoint-edge", "label": "references", "type": "relationship",
+                "summary": "references a missing node", "relation": "references",
+                "source_ids": ["absent-wisdom-node"], "target_ids": [],
+                "source_edge_ids": [], "target_edge_ids": [], "metadata": {},
+                "mentions": [], "embedding": null
+            }]}})).unwrap(),
+            principal: json!({
+                "sub": "alice", "user_id": "alice", "role": "rw", "ns": ["wisdom"],
+                "storage_ns": "wisdom", "capabilities": ["write_graph"]
+            }),
+        }).await;
+        assert_eq!(missing_endpoint.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        drop(service);
+        let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let cleanup_task = tokio::spawn(connection);
+        cleanup.batch_execute(&format!(
+            "DROP SCHEMA \"{schema}\" CASCADE; DROP SCHEMA \"{schema}_wisdom\" CASCADE"
+        )).await.unwrap();
+        drop(cleanup);
+        cleanup_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn wisdom_mcp_tool_discovery_requires_authorized_wisdom_write_scope() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "wisdom_tool_discovery",
+        )
+        .unwrap();
+        for principal in [
+            json!({"role": "rw", "ns": ["wisdom"], "capabilities": ["read_graph"]}),
+            json!({"role": "ro", "ns": ["wisdom"], "capabilities": ["write_graph"]}),
+            json!({"role": "rw", "ns": ["docs"], "capabilities": ["write_graph"]}),
+        ] {
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "wisdom.kg_upsert_graph",
+                &principal,
+            ));
+        }
+        let authorized = json!({
+            "role": "rw", "ns": ["wisdom"], "capabilities": ["write_graph"]
+        });
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.kg_upsert_graph",
+            &authorized,
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "conversation",
+            "wisdom.kg_upsert_graph",
+            &authorized,
+        ));
+    }

@@ -179,6 +179,12 @@ def test_workflow_mcp_tool_names_are_declared_once() -> None:
 
 
 def test_committed_mcp_tool_schema_matches_live_registry() -> None:
+    from kogwistar.server.auth_middleware import (
+        reset_claims_ctx,
+        reset_current_role,
+        set_claims_ctx,
+        set_current_role,
+    )
     from kogwistar.server.mcp_tools import conversation_mcp, workflow_mcp
     from kogwistar.server_mcp_with_admin import mcp
 
@@ -199,8 +205,20 @@ def test_committed_mcp_tool_schema_matches_live_registry() -> None:
         )
 
     async def surfaces() -> dict[str, list[dict]]:
+        root = await contracts(mcp)
+        claims_token = set_claims_ctx(
+            {"role": "rw", "ns": ["wisdom"], "capabilities": ["write_graph"]}
+        )
+        role_token = set_current_role("rw")
+        try:
+            wisdom_tools = await contracts(mcp)
+        finally:
+            reset_current_role(role_token)
+            reset_claims_ctx(claims_token)
+        root_by_name = {tool["name"]: tool for tool in root}
+        root_by_name.update({tool["name"]: tool for tool in wisdom_tools})
         return {
-            "root": await contracts(mcp),
+            "root": sorted(root_by_name.values(), key=lambda item: item["name"]),
             "conversation": await contracts(conversation_mcp),
             "workflow": await contracts(workflow_mcp),
         }

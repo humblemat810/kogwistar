@@ -493,7 +493,7 @@
     fn frozen_mcp_tools_are_unique_and_versioned() {
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON).unwrap();
         assert_eq!(contract["contract_version"], "1.0.0");
-        for (surface, expected) in [("root", 11), ("conversation", 5), ("workflow", 44)] {
+        for (surface, expected) in [("root", 13), ("conversation", 5), ("workflow", 44)] {
             let tools = contract["surfaces"][surface].as_array().unwrap();
             assert_eq!(tools.len(), expected);
             let mut names = tools
@@ -514,11 +514,12 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(root_supported, 4);
+        assert_eq!(root_supported, 5);
         assert!(rust_mcp_tool_supported("root", "kg_find_edges"));
         assert!(rust_mcp_tool_supported("root", "kg_k_hop"));
         assert!(rust_mcp_tool_supported("root", "kg_neighbors"));
         assert!(rust_mcp_tool_supported("root", "kg_shortest_path"));
+        assert!(rust_mcp_tool_supported("root", "wisdom.kg_upsert_graph"));
         let conversation = contract["surfaces"]["conversation"].as_array().unwrap();
         let conversation_supported = conversation
             .iter()

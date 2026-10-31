@@ -14,7 +14,7 @@ async def _tool_contracts(registry) -> list[dict]:
             "title": tool.title,
             "description": tool.description,
             "inputSchema": tool.input_schema,
-            "outputSchema": tool.outputSchema,
+            "outputSchema": tool.output_schema,
         }
         for tool in tools
     ]
@@ -34,11 +34,29 @@ def main() -> int:
     )
     args = parser.parse_args()
     async def collect() -> dict[str, list[dict]]:
+        from kogwistar.server.auth_middleware import (
+            reset_claims_ctx,
+            reset_current_role,
+            set_claims_ctx,
+            set_current_role,
+        )
         from kogwistar.server.mcp_tools import conversation_mcp, workflow_mcp
         from kogwistar.server_mcp_with_admin import mcp
 
+        root = await _tool_contracts(mcp)
+        claims_token = set_claims_ctx(
+            {"role": "rw", "ns": ["wisdom"], "capabilities": ["write_graph"]}
+        )
+        role_token = set_current_role("rw")
+        try:
+            wisdom_tools = await _tool_contracts(mcp)
+        finally:
+            reset_current_role(role_token)
+            reset_claims_ctx(claims_token)
+        root_by_name = {tool["name"]: tool for tool in root}
+        root_by_name.update({tool["name"]: tool for tool in wisdom_tools})
         return {
-            "root": await _tool_contracts(mcp),
+            "root": sorted(root_by_name.values(), key=lambda item: item["name"]),
             "conversation": await _tool_contracts(conversation_mcp),
             "workflow": await _tool_contracts(workflow_mcp),
         }

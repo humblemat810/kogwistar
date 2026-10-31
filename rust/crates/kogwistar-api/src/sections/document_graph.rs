@@ -191,12 +191,18 @@ fn graph_upsert_should_write_document(inline_content: Option<&str>, stored_conte
 }
 
 fn graph_upsert_endpoint_snapshot_matches(actual: &[GraphRecord], expected: &[GraphRecord]) -> bool {
-    actual.len() == expected.len()
-        && actual.iter().zip(expected).all(|(actual, expected)| {
-            actual.id == expected.id
-                && actual.document == expected.document
-                && actual.metadata == expected.metadata
+    if actual.len() != expected.len() {
+        return false;
+    }
+    let expected_by_id = expected
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect::<BTreeMap<_, _>>();
+    actual.iter().all(|record| {
+        expected_by_id.get(record.id.as_str()).is_some_and(|expected| {
+            record.document == expected.document && record.metadata == expected.metadata
         })
+    })
 }
 
 #[derive(Clone, Debug, Default)]

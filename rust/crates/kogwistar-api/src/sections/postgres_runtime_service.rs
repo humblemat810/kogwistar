@@ -189,6 +189,66 @@ fn validate_embedding_profile_projection(
     Ok(())
 }
 
+async fn ensure_embedding_profile_binding_for_store(
+    store: &PostgresStore,
+    configured: &kogwistar_engine::embedding::EmbeddingProfile,
+    storage_scope: &str,
+) -> Result<(), String> {
+    configured.validate().map_err(|error| error.to_string())?;
+    if let Some(current) = store
+        .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, storage_scope)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return validate_embedding_profile_projection(&current, configured, storage_scope);
+    }
+    if store
+        .has_graph_projection_rows()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(format!(
+            "embedding profile is unbound for non-empty PostgreSQL vector storage {}; bind or migrate it with the Python embedding profile registry before enabling Rust embedding",
+            storage_scope
+        ));
+    }
+
+    let payload = json!({
+        "profile_schema_version": EMBEDDING_PROFILE_SCHEMA_VERSION,
+        "embedding_profile": configured.as_value(),
+        "embedding_fingerprint": configured.fingerprint(),
+        "legacy_adopted": false,
+    })
+    .as_object()
+    .cloned()
+    .ok_or_else(|| "could not serialize embedding profile binding".to_owned())?;
+    let inserted = store
+        .compare_and_swap_named_projection(
+            EMBEDDING_PROFILE_NAMESPACE,
+            storage_scope,
+            None,
+            None,
+            NamedProjectionWrite {
+                payload,
+                last_authoritative_seq: 0,
+                last_materialized_seq: 0,
+                projection_schema_version: EMBEDDING_PROFILE_SCHEMA_VERSION,
+                materialization_status: "bound".to_owned(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    if inserted {
+        return Ok(());
+    }
+    let winner = store
+        .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, storage_scope)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "embedding profile binding disappeared during startup".to_owned())?;
+    validate_embedding_profile_projection(&winner, configured, storage_scope)
+}
+
 fn conversation_record_value(record: &GraphRecord, field: &str) -> Option<Value> {
     record
         .metadata
@@ -307,22 +367,32 @@ impl PostgresRunApplicationService {
         let embedding_storage_scope = rust_pgvector_embedding_scope(&config, schema);
         let native_operations = crate::native_answer_persist::registry()
             .map_err(|error| format!("could not register native conversation operations: {error}"))?;
-        PostgresStore::from_dsn(&dsn, schema)
-            .map(|store| Self {
+        let wisdom_schema = format!("{schema}_wisdom");
+        let wisdom_embedding_storage_scope = rust_pgvector_embedding_scope(&config, &wisdom_schema);
+        let store = PostgresStore::from_config(config.clone(), schema)
+            .map_err(|error| error.to_string())?;
+        let wisdom_store = PostgresStore::from_config(config, &wisdom_schema)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
                 store,
+                wisdom_store,
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations,
                 owner_auth_store: None,
                 embedding_provider: None,
                 embedding_storage_scope,
+                wisdom_embedding_storage_scope,
                 chat_completion_provider: None,
             })
-            .map_err(|error| error.to_string())
     }
 
     pub async fn ensure_schema(&self) -> Result<(), String> {
         self.store
+            .ensure_schema()
+            .await
+            .map_err(|error| error.to_string())?;
+        self.wisdom_store
             .ensure_schema()
             .await
             .map_err(|error| error.to_string())?;
@@ -336,68 +406,14 @@ impl PostgresRunApplicationService {
         &self,
         configured: &kogwistar_engine::embedding::EmbeddingProfile,
     ) -> Result<(), String> {
-        configured.validate().map_err(|error| error.to_string())?;
-        let storage_scope = self
-            .embedding_storage_scope
+        let storage_scope = self.embedding_storage_scope.as_ref().map_err(Clone::clone)?;
+        ensure_embedding_profile_binding_for_store(&self.store, configured, storage_scope).await?;
+        let wisdom_scope = self
+            .wisdom_embedding_storage_scope
             .as_ref()
             .map_err(Clone::clone)?;
-        if let Some(current) = self
-            .store
-            .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, storage_scope)
+        ensure_embedding_profile_binding_for_store(&self.wisdom_store, configured, wisdom_scope)
             .await
-            .map_err(|error| error.to_string())?
-        {
-            return validate_embedding_profile_projection(&current, configured, storage_scope);
-        }
-        if self
-            .store
-            .has_graph_projection_rows()
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            return Err(format!(
-                "embedding profile is unbound for non-empty PostgreSQL vector storage {}; bind or migrate it with the Python embedding profile registry before enabling Rust embedding",
-                storage_scope
-            ));
-        }
-
-        let payload = json!({
-            "profile_schema_version": EMBEDDING_PROFILE_SCHEMA_VERSION,
-            "embedding_profile": configured.as_value(),
-            "embedding_fingerprint": configured.fingerprint(),
-            "legacy_adopted": false,
-        })
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "could not serialize embedding profile binding".to_owned())?;
-        let write = NamedProjectionWrite {
-            payload,
-            last_authoritative_seq: 0,
-            last_materialized_seq: 0,
-            projection_schema_version: EMBEDDING_PROFILE_SCHEMA_VERSION,
-            materialization_status: "bound".to_owned(),
-        };
-        let inserted = self
-            .store
-            .compare_and_swap_named_projection(
-                EMBEDDING_PROFILE_NAMESPACE,
-                storage_scope,
-                None,
-                None,
-                write,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        if inserted {
-            return Ok(());
-        }
-        let winner = self
-            .store
-            .get_named_projection(EMBEDDING_PROFILE_NAMESPACE, storage_scope)
-            .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "embedding profile binding disappeared during startup".to_owned())?;
-        validate_embedding_profile_projection(&winner, configured, storage_scope)
     }
 
     /// Compose trusted application-owned Rust operations into the opt-in native
@@ -4688,6 +4704,9 @@ impl PostgresRunApplicationService {
         }
         if is_public_graph_upsert_route(&request.method, &request.path_and_query) {
             return self.public_graph_upsert_effect(&request).await;
+        }
+        if is_public_wisdom_graph_upsert_route(&request.method, &request.path_and_query) {
+            return self.public_wisdom_graph_upsert_effect(&request).await;
         }
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
