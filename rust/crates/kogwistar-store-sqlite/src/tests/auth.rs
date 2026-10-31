@@ -82,3 +82,34 @@ fn auth_store_links_existing_python_user_by_email() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn auth_store_reads_python_workflow_acl_roles_without_falling_back() {
+    let path = database_path("workflow-acl");
+    let store = SqliteAuthStore::open(&path).unwrap();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('alice', 'alice@example.com', 1, CURRENT_TIMESTAMP)",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('wf-private', 'alice', 'ro')",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    assert_eq!(
+        block_on(store.workflow_acl_role("wf-private", "alice")).unwrap(),
+        Some("ro".to_owned())
+    );
+    assert_eq!(
+        block_on(store.workflow_acl_role("wf-private", "bob")).unwrap(),
+        None
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}

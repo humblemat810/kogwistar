@@ -2369,11 +2369,11 @@
             )
             .await
             .unwrap();
-        assert_eq!(lineage.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(lineage.status(), StatusCode::SERVICE_UNAVAILABLE);
         let lineage_body = to_bytes(lineage.into_body(), 8192).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&lineage_body).unwrap()["code"],
-            "KOGWISTAR_ROUTE_DEFERRED"
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
         );
 
         let run_evidence = app

@@ -869,6 +869,8 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_conversation_list)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
+            && (path != "/api/workflow/runs/{run_id}/lineage"
+                || self.graph_authority_capability().supports_single_mutation())
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
                 || is_composed_graph_read
                 || is_composed_conversation_transcript
@@ -2257,6 +2259,32 @@ impl SqliteRunApplicationService {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);
         };
+        let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && tail == ["lineage"] {
+            let namespaces = principal_strings(&request.principal, "ns");
+            if !namespaces
+                .iter()
+                .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                    "Workflow lineage reads require workflow namespace",
+                );
+            }
+            if !capability_allowed(
+                &request,
+                &self.capabilities,
+                "workflow.run.read",
+                &["workflow.run.read"],
+            ) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading workflow run lineage requires workflow.run.read capability",
+                );
+            }
+        }
         let run = match self.get_run(&run_id) {
             Ok(Some(run)) => run,
             Ok(None) => {
@@ -2274,7 +2302,13 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && tail == ["lineage"] {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "SQLite runtime metadata does not provide authoritative workflow graph lineage",
+            );
+        }
         if request.method == "GET" && is_runtime_inspection_tail(&tail) {
             return match self.store.list_server_run_events(&run_id, 0, 200_000) {
                 Ok(events) => runtime_inspection_effect(&request, &run_id, &tail, events),

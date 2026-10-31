@@ -4809,6 +4809,32 @@ impl PostgresRunApplicationService {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);
         };
+        let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && tail == ["lineage"] {
+            let namespaces = principal_strings(&request.principal, "ns");
+            if !namespaces
+                .iter()
+                .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                    "Workflow lineage reads require workflow namespace",
+                );
+            }
+            if !capability_allowed(
+                &request,
+                &self.capabilities,
+                "workflow.run.read",
+                &["workflow.run.read"],
+            ) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading workflow run lineage requires workflow.run.read capability",
+                );
+            }
+        }
         let run = match self.store.get_server_run(&run_id).await {
             Ok(Some(run)) => run,
             Ok(None) => {
@@ -4826,7 +4852,180 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && tail == ["lineage"] {
+            let user_id = request
+                .principal
+                .get("user_id")
+                .or_else(|| request.principal.get("sub"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("anonymous"));
+            if let Some(user_id) = user_id {
+                let Some(auth_store) = self.owner_auth_store.as_ref() else {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_AUTH_UNAVAILABLE",
+                        "Workflow ACL authority is not configured",
+                    );
+                };
+                match auth_store
+                    .workflow_access_allowed(&run.workflow_id, user_id, "ro")
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return effect_error(
+                            StatusCode::FORBIDDEN,
+                            "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                            "User does not have read access to this workflow",
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_AUTH_STORE_ERROR",
+                            error,
+                        );
+                    }
+                }
+            }
+            let (scope, acl_principal) =
+                conversation_graph_scope_and_acl_principal(&request.principal);
+            let mut lineage = Vec::new();
+            let mut current = run_id.clone();
+            let mut seen = BTreeSet::new();
+            while !current.is_empty() && seen.insert(current.clone()) {
+                let node_id = format!("wf_run|{current}");
+                let records = match graph_projection_records_all(
+                    &self.store,
+                    GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: "gke_nodes".to_owned(),
+                        ids: Some(vec![node_id.clone()]),
+                        metadata: MetadataFilter::default(),
+                        limit: 1,
+                    },
+                )
+                .await
+                {
+                    Ok(records) => records,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let acl_records = match graph_projection_records_all(
+                    &self.store,
+                    GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: "gke_nodes".to_owned(),
+                        ids: None,
+                        metadata: MetadataFilter {
+                            equals: BTreeMap::from([
+                                ("entity_type".to_owned(), json!("acl_record")),
+                                ("acl_truth_graph".to_owned(), json!("conversation")),
+                                ("acl_target_grain".to_owned(), json!("node")),
+                                ("acl_target_entity_id".to_owned(), json!(node_id)),
+                            ]),
+                        },
+                        limit: 10_000,
+                    },
+                )
+                .await
+                {
+                    Ok(records) => records,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let mut acl_index_records = records;
+                acl_index_records.extend(acl_records);
+                let (visible_records, _) = graph_records_visible_by_acl(
+                    &acl_index_records,
+                    &[],
+                    "conversation",
+                    &acl_principal,
+                );
+                let Some(record) = visible_records.first() else {
+                    if lineage.is_empty() {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Workflow run not found: {run_id}"),
+                        );
+                    }
+                    break;
+                };
+                if matches!(
+                    conversation_record_string(record, "lifecycle_status").as_deref(),
+                    Some("tombstoned" | "deleted")
+                ) {
+                    if lineage.is_empty() {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Workflow run not found: {run_id}"),
+                        );
+                    }
+                    break;
+                }
+                let workflow_id = conversation_record_string(record, "workflow_id")
+                    .unwrap_or_default();
+                if let Some(user_id) = user_id
+                    && !workflow_id.is_empty()
+                {
+                    let Some(auth_store) = self.owner_auth_store.as_ref() else {
+                        return effect_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "KOGWISTAR_AUTH_UNAVAILABLE",
+                            "Workflow ACL authority is not configured",
+                        );
+                    };
+                    match auth_store
+                        .workflow_access_allowed(&workflow_id, user_id, "ro")
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return effect_error(
+                                StatusCode::FORBIDDEN,
+                                "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                                "User does not have read access to every workflow in this lineage",
+                            );
+                        }
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_AUTH_STORE_ERROR",
+                                error,
+                            );
+                        }
+                    }
+                }
+                let parent = conversation_record_value(record, "parent_run_id");
+                lineage.push(json!({
+                    "run_id": current,
+                    "workflow_id": workflow_id,
+                    "parent_run_id": parent,
+                    "status": conversation_record_string(record, "status").unwrap_or_default(),
+                    "wf_invoked": conversation_record_value(record, "wf_invoked"),
+                }));
+                current = parent
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+            }
+            return json_effect(
+                StatusCode::OK,
+                json!({"run_id": run_id, "lineage": lineage}),
+            );
+        }
         if request.method == "GET" && is_runtime_inspection_tail(&tail) {
             return match self.store.list_server_run_events(&run_id, 0, 200_000).await {
                 Ok(events) => runtime_inspection_effect(&request, &run_id, &tail, events),

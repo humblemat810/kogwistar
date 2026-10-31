@@ -83,6 +83,22 @@ impl AuthIdentityStore for SqliteAuthStore {
             .map_err(|error| sqlite_store_error(error.into()))
     }
 
+    async fn workflow_acl_role(
+        &self,
+        workflow_id: &str,
+        user_id: &str,
+    ) -> StoreResult<Option<String>> {
+        let connection = self.connection().map_err(sqlite_store_error)?;
+        connection
+            .query_row(
+                "SELECT role FROM workflow_acl WHERE workflow_id = ?1 AND user_id = ?2",
+                params![workflow_id, user_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| sqlite_store_error(error.into()))
+    }
+
     async fn resolve_external_identity(
         &self,
         request: ResolveExternalIdentity,

@@ -83,6 +83,14 @@ pub trait AuthIdentityStore: Send + Sync {
         issuer: &str,
         subject: &str,
     ) -> impl Future<Output = StoreResult<Option<ExternalIdentity>>> + Send;
+    /// Read the Python-compatible per-workflow role from the shared auth DB.
+    fn workflow_acl_role(
+        &self,
+        _workflow_id: &str,
+        _user_id: &str,
+    ) -> impl Future<Output = StoreResult<Option<String>>> + Send {
+        async { Ok(None) }
+    }
     fn resolve_external_identity(
         &self,
         request: ResolveExternalIdentity,

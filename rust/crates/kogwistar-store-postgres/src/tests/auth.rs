@@ -45,6 +45,20 @@ async fn auth_store_links_python_user_and_retries_identity_when_dsn_available()
     let linked = store.resolve_external_identity(request.clone()).await?;
     assert_eq!(linked.user_id, "python-user");
     assert_eq!(linked.global_role.as_deref(), Some("rw"));
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {quoted_schema}.workflow_acl (workflow_id, user_id, role) VALUES ('wf-private', 'python-user', 'ro')"
+            ),
+            &[],
+        )
+        .await
+        .map_err(backend)?;
+    assert_eq!(
+        store.workflow_acl_role("wf-private", "python-user").await?,
+        Some("ro".to_owned())
+    );
+    assert_eq!(store.workflow_acl_role("wf-private", "other").await?, None);
     let retried = store
         .resolve_external_identity(ResolveExternalIdentity {
             new_user_id: "must-not-win".to_owned(),

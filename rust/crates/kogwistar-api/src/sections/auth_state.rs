@@ -305,6 +305,33 @@ impl AuthStore {
         }
         .map_err(|error| error.to_string())
     }
+
+    async fn workflow_acl_role(
+        &self,
+        workflow_id: &str,
+        user_id: &str,
+    ) -> Result<Option<String>, String> {
+        match self {
+            Self::Sqlite(store) => store.workflow_acl_role(workflow_id, user_id).await,
+            Self::Postgres(store) => store.workflow_acl_role(workflow_id, user_id).await,
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    async fn workflow_access_allowed(
+        &self,
+        workflow_id: &str,
+        user_id: &str,
+        required_role: &str,
+    ) -> Result<bool, String> {
+        let Some(role) = self.workflow_acl_role(workflow_id, user_id).await? else {
+            return Ok(false);
+        };
+        Ok(match (role.as_str(), required_role) {
+            ("rw", "ro" | "rw") | ("ro", "ro") => true,
+            _ => false,
+        })
+    }
 }
 
 fn runtime_principal_from_auth_user(user: &AuthUser) -> Value {

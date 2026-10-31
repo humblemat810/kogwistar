@@ -129,6 +129,22 @@ impl AuthIdentityStore for PostgresAuthStore {
             .map_err(|error| auth_store_error(backend(error)))
     }
 
+    async fn workflow_acl_role(
+        &self,
+        workflow_id: &str,
+        user_id: &str,
+    ) -> StoreResult<Option<String>> {
+        let client = self.client().await.map_err(auth_store_error)?;
+        client
+            .query_opt(
+                "SELECT role FROM workflow_acl WHERE workflow_id = $1 AND user_id = $2",
+                &[&workflow_id, &user_id],
+            )
+            .await
+            .map(|row| row.map(|row| row.get(0)))
+            .map_err(|error| auth_store_error(backend(error)))
+    }
+
     async fn resolve_external_identity(
         &self,
         request: ResolveExternalIdentity,

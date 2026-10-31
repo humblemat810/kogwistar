@@ -1947,6 +1947,10 @@
             "conversation.get_transcript"
         ));
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations"));
+        assert!(!sqlite.supports_http_operation(
+            "GET",
+            "/api/workflow/runs/{run_id}/lineage"
+        ));
         assert!(!sqlite.supports_http_operation("POST", "/api/conversations"));
         assert!(!sqlite.supports_http_operation("POST", "/api/document"));
         assert!(!sqlite.supports_http_operation(
@@ -1969,6 +1973,10 @@
             "document_route_contract",
         )
         .unwrap();
+        assert!(postgres.supports_http_operation(
+            "GET",
+            "/api/workflow/runs/{run_id}/lineage"
+        ));
 
         for service in [&sqlite as &dyn ApplicationService, &postgres] {
             for &(method, path) in PENDING_SERVER_CUTOVER_ROUTES {

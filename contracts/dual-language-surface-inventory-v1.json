@@ -11,7 +11,7 @@
   "counts": {
     "http_operations": 84,
     "mcp_operations": 60,
-    "pending_http_operations": 9,
+    "pending_http_operations": 8,
     "allowlisted_mcp_operations": 47,
     "pending_syscalls": 4
   },
@@ -374,7 +374,7 @@
       "method": "GET",
       "path": "/api/workflow/runs/{run_id}/lineage",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "GET",
