@@ -1240,6 +1240,59 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
 }
 
 #[test]
+fn provider_event_handling_graph_mutations_link_event_to_execution_step() {
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let mutations = provider_event_handling_graph_mutations(
+        "event-a",
+        "run-a",
+        "conversation-a",
+        "agent.event.v1",
+        "handle-event",
+        7,
+        "effect-a",
+        &scope,
+    );
+
+    assert_eq!(mutations.len(), 2);
+    let step = &mutations[0];
+    assert_eq!(step.entity_kind, "node");
+    assert_eq!(step.record.id, "wf_step|run-a|7");
+    assert_eq!(step.record.metadata["entity_type"], "workflow_step_exec");
+    assert_eq!(step.record.metadata["workflow_node_id"], "handle-event");
+    assert_eq!(
+        step.record.metadata["result_json"],
+        "{\"event_id\":\"event-a\",\"handled\":true}"
+    );
+    assert_eq!(step.payload["summary"], "step=7, op=handle-event, status=ok");
+    assert_eq!(step.scope, scope);
+
+    let edge = &mutations[1];
+    assert_eq!(edge.entity_kind, "edge");
+    assert_eq!(edge.payload["relation"], "handled_by");
+    assert_eq!(edge.payload["source_ids"], json!(["msg:event-a"]));
+    assert_eq!(edge.payload["target_ids"], json!(["wf_step|run-a|7"]));
+    assert_eq!(edge.record.metadata["event_id"], "event-a");
+    assert_eq!(edge.record.metadata["step_seq"], 7);
+    assert_eq!(edge.scope, scope);
+
+    let replay = provider_event_handling_graph_mutations(
+        "event-a",
+        "run-a",
+        "conversation-a",
+        "agent.event.v1",
+        "handle-event",
+        7,
+        "effect-a",
+        &scope,
+    );
+    assert_eq!(mutations, replay, "replay uses deterministic graph identities");
+}
+
+#[test]
 fn provider_event_acknowledgement_contract_rejects_invalid_or_duplicate_claims() {
     use kogwistar_runtime::ProviderEventAcknowledgementV1;
 

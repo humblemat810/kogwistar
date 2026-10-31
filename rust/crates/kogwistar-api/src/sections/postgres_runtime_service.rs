@@ -3990,6 +3990,7 @@ impl PostgresRunApplicationService {
                             (applied, effect_id, terminal_result, usage, trace_events)
                         };
                     if !applied.idempotent {
+                        let mut linked_step_nodes = BTreeSet::new();
                         for acknowledgement in &provider_event_acknowledgements {
                             if acknowledgement.message_id
                                 != format!("msg:{}", acknowledgement.event_id)
@@ -4086,6 +4087,73 @@ impl PostgresRunApplicationService {
                                         "provider event acknowledgement is not bound to the active run claim".to_owned(),
                                     ),
                                 );
+                            }
+                            let workflow_node_id = applied
+                                .reduced
+                                .state
+                                .last_node_id
+                                .as_deref()
+                                .filter(|value| !value.trim().is_empty())
+                                .ok_or_else(|| {
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event handling step has no workflow node identity".to_owned(),
+                                    )
+                                })?;
+                            let step_seq = applied.reduced.state.last_step_seq;
+                            if step_seq < 0 {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event handling step has an invalid sequence".to_owned(),
+                                    ),
+                                );
+                            }
+                            let graph_scope = GraphScope {
+                                namespace: ack_namespace.clone(),
+                                workspace_id: current_scope
+                                    .get("workspace")
+                                    .and_then(Value::as_str)
+                                    .filter(|value| !value.is_empty())
+                                    .map(str::to_owned),
+                                graph_space: Some("conversation".to_owned()),
+                            };
+                            if !graph_mutation_scope_allowed(&graph_scope, &current_scope) {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event handling graph scope changed before commit".to_owned(),
+                                    ),
+                                );
+                            }
+                            let mut causal_mutations = provider_event_handling_graph_mutations(
+                                &acknowledgement.event_id,
+                                &runtime_run_id,
+                                &lane.conversation_id,
+                                &applied.reduced.state.workflow_id,
+                                workflow_node_id,
+                                step_seq,
+                                &effect_id,
+                                &graph_scope,
+                            );
+                            if !linked_step_nodes.insert(causal_mutations[0].record.id.clone()) {
+                                causal_mutations.remove(0);
+                            }
+                            let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                                uow,
+                                &graph_scope,
+                                &causal_mutations,
+                                "conversation",
+                                ack_owner_id,
+                                current_scope["security_scope"].as_str(),
+                                &acknowledgement.event_id,
+                            )
+                            .await?;
+                            for mutation in causal_mutations {
+                                uow.apply_graph_mutation(mutation).await?;
+                            }
+                            for mutation in acl_mutations {
+                                uow.apply_graph_mutation(mutation).await?;
+                            }
+                            for job in acl_jobs {
+                                uow.enqueue_index_job(job).await?;
                             }
                             uow.ack_claimed_projected_lane_message(
                                 &acknowledgement.message_id,

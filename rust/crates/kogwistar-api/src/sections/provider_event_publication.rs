@@ -214,6 +214,102 @@ fn provider_event_node_mutation(
     }
 }
 
+fn provider_event_handling_graph_mutations(
+    event_id: &str,
+    run_id: &str,
+    conversation_id: &str,
+    workflow_id: &str,
+    workflow_node_id: &str,
+    step_seq: i64,
+    effect_id: &str,
+    scope: &GraphScope,
+) -> Vec<GraphMutation> {
+    let step_node_id = format!("wf_step|{run_id}|{step_seq}");
+    let step_summary = format!("step={step_seq}, op={workflow_node_id}, status=ok");
+    let step_metadata = json!({
+        "entity_type": "workflow_step_exec",
+        "doc_id": step_node_id.clone(),
+        "run_id": run_id,
+        "conversation_id": conversation_id,
+        "workflow_id": workflow_id,
+        "workflow_node_id": workflow_node_id,
+        "step_seq": step_seq,
+        "op": workflow_node_id,
+        "status": "ok",
+        "duration_ms": 0,
+        "result_json": json!({"event_id": event_id, "handled": true}).to_string(),
+        "effect_id": effect_id,
+        "namespace": scope.namespace,
+        "workspace_id": scope.workspace_id,
+        "graph_space": scope.graph_space,
+        "in_conversation_chain": false
+    });
+    let mut mutations = vec![provider_event_node_mutation(
+        scope,
+        step_node_id.clone(),
+        format!("WF step {step_seq}: {workflow_node_id}"),
+        step_summary,
+        step_metadata.as_object().cloned().unwrap_or_default(),
+        None,
+    )];
+
+    let message_id = format!("msg:{event_id}");
+    let edge_id = stable_id(
+        "provider_event_handled_by",
+        &[event_id.to_owned(), step_node_id.clone()],
+    )
+    .to_string();
+    let metadata = json!({
+        "entity_type": "provider_event_causal_edge",
+        "relation_kind": "handled_by",
+        "event_id": event_id,
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "workflow_node_id": workflow_node_id,
+        "step_seq": step_seq,
+        "effect_id": effect_id,
+        "namespace": scope.namespace,
+        "workspace_id": scope.workspace_id,
+        "graph_space": scope.graph_space,
+        "in_conversation_chain": false
+    });
+    let payload = json!({
+        "id": edge_id,
+        "label": "provider_event_handled_by",
+        "type": "relationship",
+        "summary": "Provider event was handled by a workflow execution step",
+        "doc_id": format!("run:{run_id}"),
+        "relation": "handled_by",
+        "source_ids": [message_id],
+        "target_ids": [step_node_id],
+        "source_edge_ids": [],
+        "target_edge_ids": [],
+        "metadata": metadata,
+        "properties": {},
+        "embedding": null
+    });
+    mutations.push(GraphMutation {
+        scope: scope.clone(),
+        table: "gke_edges".to_owned(),
+        entity_kind: "edge".to_owned(),
+        event_id: stable_id(
+            "agent_provider_event_handled_graph_mutation",
+            &[event_id.to_owned(), "edge".to_owned(), edge_id.clone()],
+        )
+        .to_string(),
+        op: "ADD".to_owned(),
+        record: GraphRecord {
+            id: edge_id,
+            document: Some(payload.to_string()),
+            metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+            embedding: None,
+        },
+        payload,
+        embedding_dim: 0,
+    });
+    mutations
+}
+
 fn provider_event_payloads_match(left: &str, right: &str) -> bool {
     let (Ok(mut left), Ok(mut right)) = (
         serde_json::from_str::<Value>(left),
