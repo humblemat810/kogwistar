@@ -539,6 +539,161 @@ fn provider_event_payloads_match(left: &str, right: &str) -> bool {
     left == right
 }
 
+impl SqliteRunApplicationService {
+    async fn claim_native_provider_event_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        principal: &Value,
+    ) -> Result<Option<Value>, String> {
+        let security_scope = security_scope_value(principal);
+        let scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .ok_or_else(|| "provider-event owner has no storage namespace".to_owned())?
+                .to_owned(),
+            workspace_id: principal
+                .get("workspace_id")
+                .or_else(|| principal.get("workspace"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let owner_id = authenticated_run_owner_id(principal)
+            .ok_or_else(|| "provider-event receive requires an authenticated run owner".to_owned())?
+            .to_owned();
+        let acl_principal = graph_acl_principal_from_claims(
+            principal,
+            security_scope["security_scope"].as_str(),
+        );
+        let request = request.clone();
+        let claim_owner = format!("rust-native-agent-event:{}", uuid::Uuid::new_v4());
+        let outcome = self.store.immediate_transaction(|uow| {
+            let run = uow
+                .get_server_run(&request.run_id)?
+                .ok_or_else(|| SqliteStoreError::RecordedRuntimeConflict(
+                    "provider-event run is missing".to_owned(),
+                ))?;
+            if run.user_id.as_deref() != Some(owner_id.as_str())
+                || run.conversation_id != request.conversation_id
+            {
+                return Err(SqliteStoreError::RecordedRuntimeConflict(
+                    "provider-event receive run owner or conversation changed".to_owned(),
+                ));
+            }
+            let candidate_lanes = uow.list_projected_lane_messages(&LaneMessageFilter {
+                namespace: Some(scope.namespace.clone()),
+                purpose: Some("agent_event".to_owned()),
+                inbox_id: Some("agent-provider-events".to_owned()),
+                conversation_id: Some(request.conversation_id.clone()),
+                msg_type: Some("agent.provider_event".to_owned()),
+                recipient_id: Some("agent-event-consumer".to_owned()),
+                limit: 20_001,
+                ..LaneMessageFilter::default()
+            })?;
+            if candidate_lanes.len() > 20_000 {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "provider-event receive exceeded its 20000-candidate safety bound".to_owned(),
+                ));
+            }
+            let matching_lanes = candidate_lanes
+                .into_iter()
+                .filter(|lane| lane.run_id.as_deref() == Some(request.run_id.as_str()))
+                .collect::<Vec<_>>();
+            let message_ids = matching_lanes
+                .iter()
+                .map(|lane| lane.message_id.clone())
+                .collect::<Vec<_>>();
+            if message_ids.is_empty() {
+                return Ok(None);
+            }
+            let acl_records = uow.graph_acl_records_for_entities(
+                &scope,
+                "conversation",
+                &message_ids,
+            )?;
+            let mut acl_index = GraphAclIndex::default();
+            acl_index.extend_from_records(&acl_records, "conversation");
+            let candidate_nodes = matching_lanes
+                .iter()
+                .map(|lane| GraphRecord {
+                    id: lane.message_id.clone(),
+                    document: None,
+                    metadata: BTreeMap::from([
+                        ("entity_type".to_owned(), json!("lane_message")),
+                        ("mentions".to_owned(), json!([])),
+                    ])
+                    .into_iter()
+                    .collect(),
+                    embedding: None,
+                })
+                .collect::<Vec<_>>();
+            let (visible_nodes, _) = graph_records_visible_by_acl_with_index(
+                &candidate_nodes,
+                &[],
+                &acl_index,
+                &acl_principal,
+            );
+            let visible_ids = visible_nodes
+                .into_iter()
+                .map(|node| node.id)
+                .collect::<Vec<_>>();
+            if visible_ids.is_empty() {
+                return Ok(None);
+            }
+            let mut claimed = uow.claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                namespace: scope.namespace.clone(),
+                inbox_id: "agent-provider-events".to_owned(),
+                claimed_by: claim_owner.clone(),
+                message_ids: Some(visible_ids),
+                run_id: Some(request.run_id.clone()),
+                msg_type: Some("agent.provider_event".to_owned()),
+                recipient_id: Some("agent-event-consumer".to_owned()),
+                limit: 1,
+                lease_seconds: 60,
+            })?;
+            let Some(lane) = claimed.pop() else {
+                return Ok(None);
+            };
+            let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_str(
+                lane.payload_json.as_deref().unwrap_or(""),
+            )
+            .map_err(|_| {
+                SqliteStoreError::RecordedRuntimeConflict(
+                    "claimed provider event payload is invalid".to_owned(),
+                )
+            })?;
+            if lane.namespace != scope.namespace
+                || lane.purpose != "agent_event"
+                || lane.inbox_id != "agent-provider-events"
+                || lane.conversation_id != request.conversation_id
+                || lane.recipient_id != "agent-event-consumer"
+                || lane.sender_id != "agent-runtime"
+                || lane.msg_type != "agent.provider_event"
+                || lane.status != "claimed"
+                || lane.claimed_by.as_deref() != Some(claim_owner.as_str())
+                || lane.run_id.as_deref() != Some(request.run_id.as_str())
+                || lane.correlation_id.as_deref() != Some(event.event_id.as_str())
+                || lane.message_id != format!("msg:{}", event.event_id)
+                || event.trace.run_id != request.run_id
+            {
+                return Err(SqliteStoreError::RecordedRuntimeConflict(
+                    "claimed provider event does not match its authorized run and lane".to_owned(),
+                ));
+            }
+            Ok(Some(json!({
+                "event": event,
+                "claim": {
+                    "message_id": lane.message_id,
+                    "claimed_by": claim_owner,
+                    "event_id": event.event_id,
+                }
+            })))
+        });
+        outcome.map_err(|_| "provider-event claim failed closed".to_owned())
+    }
+}
+
 impl PostgresRunApplicationService {
     async fn claim_native_provider_event_context(
         &self,

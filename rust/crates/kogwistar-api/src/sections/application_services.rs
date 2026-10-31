@@ -927,7 +927,35 @@ impl ApplicationService for SqliteRunApplicationService {
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
-            let result = native_result_for_claimed_work(work, &self.native_operations)?;
+            let result = if work.payload.get("op").and_then(Value::as_str)
+                == Some("agent.event.receive")
+            {
+                let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
+                let principal = self
+                    .resolve_inline_native_owner_principal(&handoff.run_id, "read_graph")
+                    .await
+                    .map_err(|_| {
+                        "provider-event receive requires the run owner's current read_graph authority"
+                            .to_owned()
+                    })?;
+                let Some(context) = self
+                    .claim_native_provider_event_context(&native_request, &principal)
+                    .await?
+                else {
+                    return Err("no authorized provider event is currently claimable".to_owned());
+                };
+                native_request.ephemeral_context.insert(
+                    "authorized_provider_event".to_owned(),
+                    context["event"].clone(),
+                );
+                native_request.ephemeral_context.insert(
+                    "authorized_provider_event_claim".to_owned(),
+                    context["claim"].clone(),
+                );
+                native_result_from_request(handoff, native_request, &self.native_operations)?
+            } else {
+                native_result_for_claimed_work(work, &self.native_operations)?
+            };
             let inline_principal = if result.effect.as_ref().is_some_and(|effect| {
                 effect.graph_mutation_batch.is_some()
                     || effect.graph_mutation_batch_v2.is_some()

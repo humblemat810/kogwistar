@@ -2783,6 +2783,74 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
     assert_eq!(provider_lane.status, "pending");
     assert_eq!(provider_lane.run_id.as_deref(), Some("sqlite-runtime-graph-run"));
     assert_eq!(provider_lane.msg_type, "agent.provider_event");
+    let receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: "agent.event.receive".to_owned(),
+        op_version: "v1".to_owned(),
+        run_id: "sqlite-runtime-graph-run".to_owned(),
+        workflow_id: "sqlite-runtime-graph-workflow".to_owned(),
+        node_id: "receive-step".to_owned(),
+        conversation_id: "sqlite-runtime-graph-conversation".to_owned(),
+        turn_node_id: Some("turn-1".to_owned()),
+        token_id: "sqlite-runtime-graph-run".to_owned(),
+        parent_token_id: None,
+        step_seq: 1,
+        state: Map::new(),
+        runtime_routes: Vec::new(),
+        ephemeral_context: Map::new(),
+    };
+    let receive_principal = json!({
+        "sub": "runtime-owner", "user_id": "runtime-owner", "role": "rw",
+        "ns": ["conversation"], "storage_ns": "conversation",
+        "workspace": "workspace-a", "graph_space": "conversation",
+        "capabilities": ["read_graph"]
+    });
+    let wrong_receive_principal = json!({
+        "sub": "other-owner", "user_id": "other-owner", "role": "rw",
+        "ns": ["conversation"], "storage_ns": "conversation",
+        "workspace": "workspace-a", "graph_space": "conversation",
+        "capabilities": ["read_graph"]
+    });
+    assert!(service
+        .claim_native_provider_event_context(&receive_request, &wrong_receive_principal)
+        .await
+        .is_err());
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message("msg:sqlite-runtime-provider-event-1")
+            .unwrap()
+            .unwrap()
+            .status,
+        "pending"
+    );
+    let claimed_event = service
+        .claim_native_provider_event_context(&receive_request, &receive_principal)
+        .await
+        .unwrap()
+        .expect("visible event should be claimable by its run owner");
+    assert_eq!(
+        claimed_event["event"]["event_id"],
+        "sqlite-runtime-provider-event-1"
+    );
+    assert_eq!(
+        claimed_event["claim"]["message_id"],
+        "msg:sqlite-runtime-provider-event-1"
+    );
+    assert!(service
+        .claim_native_provider_event_context(&receive_request, &receive_principal)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message("msg:sqlite-runtime-provider-event-1")
+            .unwrap()
+            .unwrap()
+            .status,
+        "claimed"
+    );
     let jobs = service.store.list_index_jobs(
         Some("conversation"),
         Some("PENDING"),
