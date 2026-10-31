@@ -334,6 +334,7 @@ impl Default for NativeOperationRegistry {
         registry.insert_builtin("noop", native_noop);
         registry.insert_builtin("increment-counter", native_increment_counter);
         registry.insert_builtin("emit-result", native_emit_result);
+        registry.insert_builtin("agent.event.request", native_provider_event_request);
         registry.insert_builtin_routed("agent.event.receive", native_provider_event_receive);
         registry.insert_builtin_routed_with_effects(
             "agent.event.ack",
@@ -665,6 +666,57 @@ fn event_route_successor(
         node_id: route.target_node_id.clone(),
         join_mask: route.join_mask,
     }])
+}
+
+fn native_provider_event_request(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let result = request
+        .ephemeral_context
+        .get("provider_event_request_result")
+        .and_then(Value::as_object)
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "host provider-event request result is unavailable".to_owned(),
+        })?;
+    let sequence = |field: &'static str| {
+        result
+            .get(field)
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0)
+            .ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "provider_event_request_result",
+                reason: "expected non-negative event counters",
+            })
+    };
+    let provider_sequence = sequence("provider_sequence")?;
+    let client_sse_sequence = sequence("client_sse_sequence")?;
+    let semantic_event_count = sequence("semantic_event_count")?;
+    if semantic_event_count == 0 {
+        return Err(RuntimeNativeExecutionError::InvalidState {
+            field: "provider_event_request_result.semantic_event_count",
+            reason: "provider request must publish at least one semantic event",
+        });
+    }
+
+    let mut update = Map::new();
+    update.insert("agent_event_route".to_owned(), json!("receive"));
+    update.insert("agent_event_provider_sequence".to_owned(), json!(provider_sequence));
+    update.insert(
+        "agent_event_client_sse_sequence".to_owned(),
+        json!(client_sse_sequence),
+    );
+    update.insert("agent_event_advisory_response_hook_count".to_owned(), json!(0));
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    Ok(NativeOperationOutput {
+        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "semantic_event_count": semantic_event_count,
+        })),
+    })
 }
 
 fn event_route_for_claim(

@@ -51,6 +51,30 @@ pub struct DurableProviderEventPublicationV1 {
     pub event: DurableProviderEventV1,
 }
 
+/// Build the replay-stable envelope used by the Python provider-event journal.
+/// The identity is computed from the original attempt coordinates first; the
+/// stored trace then uses the provider response as its stable step identity.
+pub fn durable_provider_event(
+    trace: &EventTraceMetadataV1,
+    event: ProviderEventV1,
+) -> DurableProviderEventV1 {
+    let event_id = durable_provider_event_id(trace, &event);
+    let event_value = serde_json::to_value(&event).expect("provider events are serializable");
+    let response_id = event_value
+        .get("response_id")
+        .and_then(Value::as_str)
+        .or(trace.provider_response_id.as_deref())
+        .unwrap_or("unknown");
+    let mut stable_trace = trace.clone();
+    stable_trace.step_id = format!("provider-response:{response_id}");
+    stable_trace.attempt = 1;
+    DurableProviderEventV1 {
+        event_id,
+        trace: stable_trace,
+        event,
+    }
+}
+
 /// Return the same replay-stable provider event ID used by the Python journal.
 pub fn durable_provider_event_id(trace: &EventTraceMetadataV1, event: &ProviderEventV1) -> String {
     let event_value = serde_json::to_value(event).expect("provider events are serializable");
@@ -134,5 +158,42 @@ mod tests {
                 "accepted invalid envelope {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn durable_provider_event_stabilizes_trace_without_losing_producer_attempt() {
+        let trace = EventTraceMetadataV1 {
+            run_id: "run-1".to_owned(),
+            turn_id: "turn-1".to_owned(),
+            workflow_node_id: "wf:agent.event.v1:request".to_owned(),
+            step_id: "17".to_owned(),
+            attempt: 3,
+            producer_step_seq: Some(17),
+            producer_attempt: Some(3),
+            trace_id: None,
+            span_id: None,
+            parent_span_id: None,
+            provider_id: "fixture".to_owned(),
+            provider_response_id: Some("resp-1".to_owned()),
+            provider_sequence: Some(2),
+            client_sse_sequence: Some(4),
+        };
+        let event: ProviderEventV1 = serde_json::from_value(json!({
+            "contract_version": "v1",
+            "provider_event_id": "resp-1:2",
+            "provider_sequence": 2,
+            "response_id": "resp-1",
+            "kind": "response_completed",
+            "has_tool_calls": false
+        }))
+        .expect("valid provider event");
+        let expected_id = durable_provider_event_id(&trace, &event);
+        let durable = durable_provider_event(&trace, event);
+
+        assert_eq!(durable.event_id, expected_id);
+        assert_eq!(durable.trace.step_id, "provider-response:resp-1");
+        assert_eq!(durable.trace.attempt, 1);
+        assert_eq!(durable.trace.producer_step_seq, Some(17));
+        assert_eq!(durable.trace.producer_attempt, Some(3));
     }
 }

@@ -134,7 +134,21 @@ impl PostgresRunApplicationService {
             Ok(None) => {}
             Err(response) => return response,
         }
-        let result = if native_request.operation == "aa_validate_or_repair_citations" {
+        let result = if native_request.operation == "agent.event.request" {
+            match self
+                .execute_native_provider_event_request(handoff.clone(), native_request.clone())
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_PROVIDER_EVENT_UNAVAILABLE",
+                        "Rust-native provider event request is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        } else if native_request.operation == "aa_validate_or_repair_citations" {
             match self
                 .execute_native_citation_repair(handoff.clone(), native_request.clone())
                 .await
@@ -464,7 +478,10 @@ impl ApplicationService for PostgresRunApplicationService {
                 return Ok(false);
             };
             let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
-            let mut result = if native_request.operation == "aa_validate_or_repair_citations" {
+            let mut result = if native_request.operation == "agent.event.request" {
+                self.execute_native_provider_event_request(handoff.clone(), native_request.clone())
+                    .await?
+            } else if native_request.operation == "aa_validate_or_repair_citations" {
                 self.execute_native_citation_repair(handoff.clone(), native_request.clone())
                     .await?
             } else if native_request.operation == "aa_generate_answer_with_citations" {

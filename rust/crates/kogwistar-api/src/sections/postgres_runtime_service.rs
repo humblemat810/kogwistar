@@ -1372,6 +1372,246 @@ impl PostgresRunApplicationService {
         self
     }
 
+    async fn persist_native_stream_semantic_event(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        event: kogwistar_contracts::ProviderEventV1,
+        provider_id: &str,
+        model: &str,
+        client_sse_sequence: i64,
+    ) -> Result<Value, String> {
+        let summary = crate::native_answer_generation::semantic_event_trace_summary(&event)
+            .ok_or_else(|| "provider emitted a non-semantic event".to_owned())?;
+        let event_value = serde_json::to_value(&event)
+            .map_err(|_| "provider event could not be encoded".to_owned())?;
+        let attempt = kogwistar_runtime::native_trace_context_fields(request)
+            .get("attempt")
+            .and_then(Value::as_i64)
+            .filter(|attempt| *attempt > 0)
+            .unwrap_or(1);
+        let trace_context = kogwistar_runtime::native_trace_context_fields(request);
+        let event_trace = kogwistar_contracts::EventTraceMetadataV1 {
+            run_id: request.run_id.clone(),
+            turn_id: request
+                .turn_node_id
+                .clone()
+                .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_default(),
+            workflow_node_id: request.node_id.clone(),
+            step_id: request.step_seq.to_string(),
+            attempt,
+            producer_step_seq: Some(request.step_seq),
+            producer_attempt: Some(attempt),
+            trace_id: trace_context.get("trace_id").and_then(Value::as_str).map(str::to_owned),
+            span_id: trace_context.get("span_id").and_then(Value::as_str).map(str::to_owned),
+            parent_span_id: trace_context.get("parent_span_id").and_then(Value::as_str).map(str::to_owned),
+            provider_id: provider_id.to_owned(),
+            provider_response_id: event_value
+                .get("response_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            provider_sequence: event_value.get("provider_sequence").and_then(Value::as_i64),
+            client_sse_sequence: Some(client_sse_sequence),
+        };
+        let durable_event = kogwistar_contracts::durable_provider_event(&event_trace, event);
+        let mut trace_payload = json!({
+            "run_id": request.run_id,
+            "trace_id": request.run_id,
+            "workflow_id": request.workflow_id,
+            "conversation_id": request.conversation_id,
+            "turn_node_id": request.turn_node_id,
+            "step_id": request.node_id,
+            "step_seq": request.step_seq,
+            "token_id": request.token_id,
+            "parent_token_id": request.parent_token_id,
+            "executor_target": "rust-native",
+            "provider_id": provider_id,
+            "provider_model": model,
+            "client_sse_sequence": client_sse_sequence,
+            "provider_event": summary,
+        });
+        if let Some(fields) = trace_payload.as_object_mut() {
+            fields.extend(trace_context);
+        }
+        self.persist_native_provider_event(
+            durable_event,
+            request.conversation_id.clone(),
+            trace_payload,
+        )
+        .await?;
+        Ok(summary)
+    }
+
+    async fn execute_native_provider_event_request(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        mut request: kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<RuntimeWorkerResultRequest, String> {
+        let Some(provider) = self.chat_completion_provider.as_ref() else {
+            return Ok(failed_native_result(
+                handoff,
+                &request,
+                "KOGWISTAR_CHAT_PROVIDER_NOT_CONFIGURED",
+                "Rust-native provider-event streaming requires a configured chat provider",
+            ));
+        };
+        let provider_request: kogwistar_contracts::ProviderRequestV1 = serde_json::from_value(
+            request.state.get("provider_request").cloned().ok_or_else(|| {
+                "agent.event.request requires provider_request state".to_owned()
+            })?,
+        )
+        .map_err(|_| "provider_request does not match the v1 contract".to_owned())?;
+        provider_request
+            .validate()
+            .map_err(|_| "provider_request does not match the v1 contract".to_owned())?;
+        if provider_request.model != provider.model() {
+            return Err("provider_request model does not match the configured model".to_owned());
+        }
+        let principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
+            .await?;
+        if !capability_allowed_for_principal(
+            &principal,
+            &self.capabilities,
+            "write_graph.provider_event.request",
+            &["write_graph"],
+        ) || !principal_strings(&principal, "capabilities")
+            .iter()
+            .any(|capability| capability == "write_graph")
+        {
+            return Err("provider-event request requires current run-owner write_graph authority".to_owned());
+        }
+        if !self
+            .store
+            .graph_authority_capability()
+            .supports_atomic_index_jobs()
+        {
+            return Err("provider-event request requires atomic graph authority".to_owned());
+        }
+        let run = self
+            .store
+            .server_run(&request.run_id)
+            .await
+            .map_err(|_| "provider-event run could not be verified".to_owned())?
+            .ok_or_else(|| "provider-event run is missing".to_owned())?;
+        if run.conversation_id != request.conversation_id {
+            return Err("provider-event conversation does not match the admitted run".to_owned());
+        }
+
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let client_sequence = Arc::new(AtomicI64::new(
+            request
+                .state
+                .get("agent_event_client_sse_sequence")
+                .and_then(Value::as_i64)
+                .filter(|sequence| *sequence >= 0)
+                .unwrap_or(0),
+        ));
+        let semantic_count = Arc::new(AtomicI64::new(0));
+        let provider_sequence = Arc::new(AtomicI64::new(0));
+        let saw_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let summaries = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sink_error = Arc::new(Mutex::new(None::<String>));
+        let provider_id = "openai_compatible_chat_completions";
+        let model = provider.model().to_owned();
+        let stream_result = provider
+            .stream_request_events(&provider_request, |event| {
+                let client_sequence = Arc::clone(&client_sequence);
+                let semantic_count = Arc::clone(&semantic_count);
+                let provider_sequence = Arc::clone(&provider_sequence);
+                let saw_failure = Arc::clone(&saw_failure);
+                let summaries = Arc::clone(&summaries);
+                let sink_error = Arc::clone(&sink_error);
+                let request = request.clone();
+                let model = model.clone();
+                let service = self;
+                async move {
+                    if let kogwistar_contracts::ProviderEventV1::TextDelta { delta, .. } = &event {
+                        if delta.chars().count() > 4096 {
+                            return Err("transient text delta exceeds the configured size limit".to_owned());
+                        }
+                        let sequence = client_sequence.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+                        let _ = service.transient_run_deltas.publish(&request.run_id, sequence, delta);
+                        return Ok(());
+                    }
+                    let event_value = serde_json::to_value(&event)
+                        .map_err(|_| "provider event could not be encoded".to_owned())?;
+                    provider_sequence.fetch_max(
+                        event_value.get("provider_sequence").and_then(Value::as_i64).unwrap_or(0),
+                        Ordering::Relaxed,
+                    );
+                    if matches!(event, kogwistar_contracts::ProviderEventV1::ResponseFailed { .. }) {
+                        saw_failure.store(true, Ordering::Relaxed);
+                    }
+                    let sequence = client_sequence.load(Ordering::Relaxed);
+                    match service
+                        .persist_native_stream_semantic_event(&request, event, provider_id, &model, sequence)
+                        .await
+                    {
+                        Ok(summary) => {
+                            semantic_count.fetch_add(1, Ordering::Relaxed);
+                            if let Ok(mut values) = summaries.lock() {
+                                values.push(summary);
+                            }
+                            Ok(())
+                        }
+                        Err(error) => {
+                            if let Ok(mut saved) = sink_error.lock() {
+                                *saved = Some(error.clone());
+                            }
+                            Err(error)
+                        }
+                    }
+                }
+            })
+            .await;
+        if let Some(error) = sink_error.lock().ok().and_then(|mut saved| saved.take()) {
+            return Err(error);
+        }
+        if (stream_result.is_err() || semantic_count.load(Ordering::Relaxed) == 0)
+            && !saw_failure.load(Ordering::Relaxed)
+        {
+            let failure = kogwistar_contracts::ProviderEventV1::ResponseFailed {
+                contract_version: kogwistar_contracts::PROVIDER_EVENT_CONTRACT_VERSION.to_owned(),
+                provider_event_id: None,
+                provider_sequence: Some(provider_sequence.load(Ordering::Relaxed)),
+                response_id: None,
+                error_code: if stream_result.is_err() {
+                    "provider_stream_error".to_owned()
+                } else {
+                    "empty_provider_stream".to_owned()
+                },
+                message: "provider request did not complete with semantic output".to_owned(),
+                retryable: false,
+            };
+            let summary = self
+                .persist_native_stream_semantic_event(
+                    &request,
+                    failure,
+                    provider_id,
+                    &model,
+                    client_sequence.load(Ordering::Relaxed),
+                )
+                .await?;
+            semantic_count.fetch_add(1, Ordering::Relaxed);
+            summaries.lock().map_err(|_| "provider trace summary is unavailable".to_owned())?.push(summary);
+        }
+        request.ephemeral_context.insert(
+            "provider_event_request_result".to_owned(),
+            json!({
+                "provider_sequence": provider_sequence.load(Ordering::Relaxed),
+                "client_sse_sequence": client_sequence.load(Ordering::Relaxed),
+                "semantic_event_count": semantic_count.load(Ordering::Relaxed),
+            }),
+        );
+        request.ephemeral_context.insert(
+            "_provider_event_trace_summaries".to_owned(),
+            Value::Array(summaries.lock().map_err(|_| "provider trace summary is unavailable".to_owned())?.clone()),
+        );
+        request.ephemeral_context.insert("provider_model".to_owned(), json!(model));
+        native_result_from_request(handoff, request, &self.native_operations)
+    }
+
     async fn native_generate_answer(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,

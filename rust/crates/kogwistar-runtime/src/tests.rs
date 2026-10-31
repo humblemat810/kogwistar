@@ -517,6 +517,54 @@
     }
 
     #[test]
+    fn native_provider_event_request_updates_only_after_host_reports_durable_events() {
+        let mut request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.request".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-request-001".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "request".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: Some("turn".to_owned()),
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 3,
+            state: Map::from_iter([("agent_event_client_sse_sequence".to_owned(), json!(4))]),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        assert!(execute_native_step(&request).is_err());
+
+        request.ephemeral_context.insert(
+            "provider_event_request_result".to_owned(),
+            json!({
+                "provider_sequence": 12,
+                "client_sse_sequence": 7,
+                "semantic_event_count": 3,
+            }),
+        );
+        let effect = execute_native_step(&request).unwrap();
+        assert_eq!(
+            serde_json::to_value(&effect.state_update).unwrap(),
+            json!([[
+                "u",
+                {
+                    "agent_event_route": "receive",
+                    "agent_event_provider_sequence": 12,
+                    "agent_event_client_sse_sequence": 7,
+                    "agent_event_advisory_response_hook_count": 0,
+                }
+            ]])
+        );
+        assert_eq!(effect.result.as_ref().unwrap()["semantic_event_count"], 3);
+
+        request.ephemeral_context["provider_event_request_result"]["semantic_event_count"] =
+            json!(0);
+        assert!(execute_native_step(&request).is_err());
+    }
+
+    #[test]
     fn native_provider_event_nodes_route_through_frozen_python_workflow_edges() {
         let mut fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
