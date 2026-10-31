@@ -6200,7 +6200,7 @@
             &json!({
                 "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
                 "ns":"alpha","storage_ns":"alpha",
-                "capabilities":["workflow.run.write","read_graph","write_graph"],
+                "capabilities":["workflow.run.write","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
                 "exp": now_seconds + 300
             }),
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
@@ -6785,6 +6785,128 @@
                 format!("tok:rust-only-answer-e2e:{token_id}")
             );
         }
+
+        let design_id = "packaged-rust-native-design-e2e";
+        for node in [
+            json!({
+                "designer_id":"alice","node_id":"start","label":"Increment",
+                "op":"increment-counter","start":true,
+                "metadata":{"wf_executor_target":"rust-native"}
+            }),
+            json!({
+                "designer_id":"alice","node_id":"end","label":"Finish",
+                "op":"emit-result","terminal":true,
+                "metadata":{"wf_executor_target":"rust-native"}
+            }),
+        ] {
+            let response = client
+                .post(format!("{base_url}/api/workflow/design/{design_id}/nodes"))
+                .bearer_auth(&token)
+                .json(&node)
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.text().await.unwrap();
+            assert_eq!(status.as_u16(), StatusCode::OK.as_u16(), "{body}");
+        }
+        let edge_response = client
+            .post(format!("{base_url}/api/workflow/design/{design_id}/edges"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "designer_id":"alice","edge_id":"start-to-end",
+                "src":"start","dst":"end","is_default":true
+            }))
+            .send()
+            .await
+            .unwrap();
+        let edge_status = edge_response.status();
+        let edge_body = edge_response.text().await.unwrap();
+        assert_eq!(edge_status.as_u16(), StatusCode::OK.as_u16(), "{edge_body}");
+
+        let design_graph_response = client
+            .get(format!("{base_url}/api/workflow/design/{design_id}/graph"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        let design_graph_status = design_graph_response.status();
+        let design_graph_body = design_graph_response.text().await.unwrap();
+        assert_eq!(
+            design_graph_status.as_u16(),
+            StatusCode::OK.as_u16(),
+            "{design_graph_body}"
+        );
+        let design_graph: Value = serde_json::from_str(&design_graph_body).unwrap();
+        assert_eq!(design_graph["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(design_graph["edges"].as_array().unwrap().len(), 1);
+        let start = design_graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "start")
+            .unwrap();
+        assert_eq!(start["metadata"]["wf_op"], "increment-counter");
+        assert_eq!(start["metadata"]["wf_executor_target"], "rust-native");
+
+        let design_run_id = "packaged-rust-native-design-run-e2e";
+        let design_submit = client
+            .post(format!("{base_url}/api/workflow/runs"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "run_id":design_run_id,"workflow_id":design_id,
+                "conversation_id":"packaged-rust-native-design-conversation",
+                "user_id":"alice","initial_state":{"counter":1}
+            }))
+            .send()
+            .await
+            .unwrap();
+        let design_submit_status = design_submit.status();
+        let design_submit_body = design_submit.text().await.unwrap();
+        assert_eq!(
+            design_submit_status.as_u16(),
+            StatusCode::ACCEPTED.as_u16(),
+            "{design_submit_body}"
+        );
+        let mut design_run_status = String::new();
+        for _ in 0..300 {
+            let response = client
+                .get(format!("{base_url}/api/workflow/runs/{design_run_id}"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.text().await.unwrap();
+            assert!(status.is_success(), "{status}: {body}");
+            let run: Value = serde_json::from_str(&body).unwrap();
+            design_run_status = run["status"].as_str().unwrap_or_default().to_owned();
+            if matches!(design_run_status.as_str(), "succeeded" | "failed" | "cancelled") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(design_run_status, "succeeded");
+        let design_runtime = service
+            .store
+            .read_recorded_runtime_state(
+                design_run_id,
+                design_id,
+                "packaged-rust-native-design-conversation",
+            )
+            .await
+            .unwrap()
+            .expect("packaged Rust design run persists its final runtime state");
+        assert_eq!(design_runtime.state["counter"], 2);
+        let design_events = service
+            .store
+            .list_server_run_events(design_run_id, 0, 100)
+            .await
+            .unwrap();
+        assert!(design_events.iter().any(|event| {
+            event.event_type == "workflow.trace.v1"
+                && event.payload_json.contains("\"seam_crossings\":[]")
+        }));
         drop(server_process);
         drop(service);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
