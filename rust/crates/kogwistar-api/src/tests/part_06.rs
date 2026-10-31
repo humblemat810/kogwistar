@@ -371,6 +371,35 @@
             })
             .await
             .unwrap();
+        let runtime_start: kogwistar_runtime::RecordedRuntimeTransition =
+            serde_json::from_value(json!({
+                "contract_version": 1,
+                "transition_id": "owned-run-start",
+                "expected_event_seq": 0,
+                "kind": "start",
+                "run_id": "owned-run",
+                "workflow_id": "workflow",
+                "conversation_id": "conversation",
+                "user_id": "run-owner",
+                "user_turn_node_id": "turn",
+                "step_seq": 0,
+                "node_id": "step-1",
+                "token_id": "owned-run",
+                "initial_state": {},
+                "frontier": {
+                    "pending": [["step-1", 0, "owned-run", null]],
+                    "suspended": [],
+                    "join_node_ids": [],
+                    "join_outstanding": [],
+                    "join_waiters": {}
+                }
+            }))
+            .unwrap();
+        service
+            .store
+            .apply_recorded_runtime_transition(runtime_start, false)
+            .await
+            .unwrap();
         service
             .store
             .project_lane_message(NewProjectedLaneMessage {
@@ -388,7 +417,15 @@
                 run_id: Some("owned-run".to_owned()),
                 step_id: Some("step-1".to_owned()),
                 correlation_id: Some("owned-run".to_owned()),
-                payload_json: Some("{}".to_owned()),
+                payload_json: Some(
+                    json!({
+                        "workflow_id": "workflow",
+                        "conversation_id": "conversation",
+                        "token_id": "owned-run",
+                        "parent_token_id": null
+                    })
+                    .to_string(),
+                ),
                 error_json: None,
             })
             .await
@@ -402,8 +439,7 @@
         assert_eq!(claimed[0].message_id, "lane-1");
         assert_eq!(claimed[0].status, "claimed");
 
-        let response = service
-            .execute(ApiEffectRequest {
+        let worker_result = |principal: Value| ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: "/internal/runtime/results".to_owned(),
@@ -430,19 +466,29 @@
                                 "payload": {"id": "owner-check-node"},
                                 "record": {"id": "owner-check-node"},
                                 "embedding_dim": 0
+                            }],
+                            "index_jobs": [{
+                                "job_id": "owner-check-job",
+                                "namespace": "alpha",
+                                "entity_kind": "node",
+                                "entity_id": "owner-check-node",
+                                "index_kind": "node_embedding",
+                                "op": "UPSERT"
                             }]
                         }
                     }
                 }))
                 .unwrap(),
-                principal: json!({
+                principal,
+            };
+        let response = service
+            .execute(worker_result(json!({
                     "user_id":"different-user",
                     "sub":"different-user",
                     "role":"rw",
                     "storage_ns":"alpha",
                     "capabilities":["write_graph"]
-                }),
-            })
+                })))
             .await;
         assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
         assert_eq!(
@@ -465,6 +511,92 @@
             .await
             .unwrap();
         assert!(records.is_empty(), "unauthorized graph effects must not persist");
+
+        let authorized_request = worker_result(json!({
+            "user_id":"run-owner",
+            "sub":"run-owner",
+            "role":"rw",
+            "storage_ns":"alpha",
+            "capabilities":["write_graph"]
+        }));
+        let committed = service.execute(authorized_request.clone()).await;
+        assert_eq!(
+            committed.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&committed.body)
+        );
+        let run_events_after_commit = service
+            .store
+            .list_server_run_events("owned-run", 0, usize::MAX)
+            .await
+            .unwrap()
+            .len();
+
+        // The caller did not observe the first response and retries the exact
+        // request. Graph, index intent, runtime event, and lane ack share one
+        // PostgreSQL transaction and must remain single-application effects.
+        let retry = service.execute(authorized_request).await;
+        assert_eq!(retry.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            service
+                .store
+                .list_server_run_events("owned-run", 0, usize::MAX)
+                .await
+                .unwrap()
+                .len(),
+            run_events_after_commit
+        );
+        let replayed_events = service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_events
+                .iter()
+                .filter(|event| event.event_id == "owner-check-event")
+                .count(),
+            1
+        );
+        let replayed_records = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["owner-check-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(replayed_records.len(), 1);
+        let replayed_jobs = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            replayed_jobs
+                .iter()
+                .filter(|job| job.job_id == "owner-check-job")
+                .count(),
+            1
+        );
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message("lane-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
     }
 
     #[tokio::test]
