@@ -627,6 +627,7 @@
                     document TEXT NULL,
                     metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     embedding vector(3) NULL,
+                    CHECK (id <> 'public-rollback-node'),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
@@ -889,6 +890,54 @@
             .unwrap()
             .get(0);
         assert_eq!(denied_document_count, 0);
+
+        let mut rollback_extraction = extraction.clone();
+        rollback_extraction["doc_id"] = json!("public-graph-upsert-rollback-doc");
+        rollback_extraction["nodes"][0]["local_id"] = json!("public-rollback-node");
+        rollback_extraction["nodes"][0]["id"] = json!("public-rollback-node");
+        rollback_extraction["edges"][0]["source_ids"][0] = json!("public-rollback-node");
+        rollback_extraction["nodes"][0]["references"][0]["doc_id"] =
+            json!("public-graph-upsert-rollback-doc");
+        rollback_extraction["nodes"][1]["mentions"][0]["spans"][0]["doc_id"] =
+            json!("public-graph-upsert-rollback-doc");
+        rollback_extraction["edges"][0]["references"][0]["doc_id"] =
+            json!("public-graph-upsert-rollback-doc");
+        let rollback_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/graph/upsert")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {graph_upsert_token}"),
+                    )
+                    .body(Body::from(
+                        serde_json::to_vec(&rollback_extraction).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let rollback_status = rollback_upsert.status();
+        let rollback_body = to_bytes(rollback_upsert.into_body(), 65_536)
+            .await
+            .unwrap();
+        assert_eq!(
+            rollback_status,
+            StatusCode::CONFLICT,
+            "{}",
+            String::from_utf8_lossy(&rollback_body)
+        );
+        let rolled_back_document_count: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"gke_documents\" WHERE id=$1"),
+                &[&"public-graph-upsert-rollback-doc"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(rolled_back_document_count, 0);
 
         let upsert = make_app()
             .oneshot(

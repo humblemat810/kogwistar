@@ -47,6 +47,7 @@ use kogwistar_store::{
     tool_audit_items_from_visible_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{
+    GraphProjectionUpsert as PostgresGraphProjectionUpsert,
     NewRawEntityEvent as PostgresNewRawEntityEvent, PostgresAuthStore, PostgresStore,
 };
 use kogwistar_store_sqlite::{

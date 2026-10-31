@@ -4059,8 +4059,9 @@ impl PostgresRunApplicationService {
         let mut document_metadata = serde_json::Map::new();
         document_metadata.insert("doc_type".to_owned(), json!(input.doc_type));
         document_metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-        let document_write = DocumentProjectionUpsert {
+        let document_write = PostgresGraphProjectionUpsert {
             scope: document_scope,
+            table: "gke_documents".to_owned(),
             record: GraphRecord {
                 id: input.doc_id.clone(),
                 document: input.content.clone(),
@@ -4069,13 +4070,6 @@ impl PostgresRunApplicationService {
             },
             embedding_dim: 0,
         };
-        if let Err(error) = self.store.upsert_document_projection(document_write).await {
-            return effect_error(
-                StatusCode::CONFLICT,
-                "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
-                error.to_string(),
-            );
-        }
         let index_jobs = match graph_index_jobs_value(&batch, &mutations) {
             Ok(jobs) => jobs,
             Err(error) => {
@@ -4088,13 +4082,21 @@ impl PostgresRunApplicationService {
         };
         match self
             .store
-            .apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
-                mutations,
-                index_jobs,
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    uow.upsert_graph_projection(document_write).await?;
+                    for mutation in mutations {
+                        uow.apply_graph_mutation(mutation).await?;
+                    }
+                    for job in index_jobs {
+                        uow.enqueue_index_job(job).await?;
+                    }
+                    Ok(())
+                })
             })
             .await
         {
-            Ok(_) => json_effect(
+            Ok(()) => json_effect(
                 StatusCode::OK,
                 json!({
                     "document_id": input.doc_id,
@@ -4106,7 +4108,7 @@ impl PostgresRunApplicationService {
             ),
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
-                "KOGWISTAR_GRAPH_MUTATION_CONFLICT",
+                "KOGWISTAR_GRAPH_UPSERT_CONFLICT",
                 error.to_string(),
             ),
         }
