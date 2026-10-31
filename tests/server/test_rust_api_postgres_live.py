@@ -664,7 +664,7 @@ def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
             process.wait(timeout=10)
 
 
-def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
+def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     pg_dsn: str | None,
     pg_schema: str | None,
     sa_engine,
@@ -778,6 +778,15 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         "capabilities": ["read_graph"],
         "exp": 4_102_444_800,
     }
+    owner_claims: dict[str, object] = {
+        "sub": "owner-a",
+        "role": "rw",
+        "roles": ["reader", "rw"],
+        "ns": ["docs"],
+        "storage_ns": namespace,
+        "capabilities": ["read_graph", "write_graph"],
+        "exp": 4_102_444_800,
+    }
     reader_token = claims_ctx.set(reader_claims)
     try:
         python_result = GraphQuery(engine).neighbors(source.id, doc_id=doc_id)
@@ -826,7 +835,11 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         else:
             raise AssertionError("Rust PostgreSQL server did not become ready")
 
-        def rust_mcp_neighbors(claims: dict[str, object]) -> dict[str, object]:
+        def rust_mcp_tool(
+            tool_name: str,
+            arguments: dict[str, object],
+            claims: dict[str, object],
+        ) -> dict[str, object]:
             response = httpx.post(
                 f"{base}/mcp",
                 headers={
@@ -834,11 +847,11 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
                 },
                 json={
                     "jsonrpc": "2.0",
-                    "id": "graph-neighbor-parity",
+                    "id": f"graph-read-parity-{tool_name}",
                     "method": "tools/call",
                     "params": {
-                        "name": "kg_neighbors",
-                        "arguments": {"rid": source.id, "doc_id": doc_id},
+                        "name": tool_name,
+                        "arguments": arguments,
                     },
                 },
                 timeout=10,
@@ -847,6 +860,11 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
             result = response.json().get("result")
             assert isinstance(result, dict), response.text
             return result
+
+        def rust_mcp_neighbors(claims: dict[str, object]) -> dict[str, object]:
+            return rust_mcp_tool(
+                "kg_neighbors", {"rid": source.id, "doc_id": doc_id}, claims
+            )
 
         response = httpx.post(
             f"{base}/internal/graph/neighbors",
@@ -862,17 +880,79 @@ def test_rust_postgres_graph_neighbors_match_python_over_shared_projection(
         assert sorted(rust_payload["edges"]) == sorted(python_result["edges"])
         assert rust_payload["nodes"] == [visible_target.id]
         assert rust_payload["edges"] == [visible_edge.id]
+
+        owner_python_claims = {
+            **owner_claims,
+            "agent_id": "owner-a",
+            "ns": graph_type,
+        }
+        for principal_id, mcp_claims, python_claims in (
+            ("reader", reader_claims, reader_claims),
+            ("owner", owner_claims, owner_python_claims),
+        ):
+            acl_token = claims_ctx.set(python_claims)
+            try:
+                python_graph = GraphQuery(engine)
+                expected_edges = set(python_graph.find_edges(doc_id=doc_id))
+                expected_layers = python_graph.k_hop(
+                    [source.id], k=1, doc_id=doc_id
+                )
+                expected_private_path = python_graph.shortest_path(
+                    source.id, private_target.id, doc_id=doc_id
+                )
+            finally:
+                claims_ctx.reset(acl_token)
+
+            mcp_edges = rust_mcp_tool(
+                "kg_find_edges", {"doc_id": doc_id}, mcp_claims
+            )
+            assert set(mcp_edges["edges"]) == expected_edges, principal_id
+
+            mcp_layers = rust_mcp_tool(
+                "kg_k_hop",
+                {"start_ids": [source.id], "k": 1, "doc_id": doc_id},
+                mcp_claims,
+            )["layers"]
+            assert len(mcp_layers) == len(expected_layers), principal_id
+            for actual, expected in zip(mcp_layers, expected_layers, strict=True):
+                assert set(actual["nodes"]) == expected["nodes"], principal_id
+                assert set(actual["edges"]) == expected["edges"], principal_id
+
+            mcp_private_path = rust_mcp_tool(
+                "kg_shortest_path",
+                {
+                    "src_id": source.id,
+                    "dst_id": private_target.id,
+                    "doc_id": doc_id,
+                },
+                mcp_claims,
+            )["path"]
+            assert mcp_private_path == expected_private_path, principal_id
+
+        assert not rust_mcp_tool(
+            "kg_shortest_path",
+            {
+                "src_id": source.id,
+                "dst_id": private_target.id,
+                "doc_id": doc_id,
+            },
+            reader_claims,
+        )["path"]
+        assert rust_mcp_tool(
+            "kg_shortest_path",
+            {
+                "src_id": source.id,
+                "dst_id": private_target.id,
+                "doc_id": doc_id,
+            },
+            owner_claims,
+        )["path"] == [source.id, private_endpoint_edge.id, private_target.id]
+
         rust_mcp_initial = rust_mcp_neighbors(reader_claims)
         assert rust_mcp_initial["nodes"] == rust_payload["nodes"]
         assert rust_mcp_initial["edges"] == rust_payload["edges"]
 
-        writer_claims = {
-            **reader_claims,
-            "sub": "owner-a",
-            "role": "rw",
-            "roles": ["reader", "rw"],
-            "capabilities": ["read_graph", "write_graph"],
-        }
+        writer_claims = owner_claims
         extraction = json.loads(
             (ROOT / "contracts" / "golden" / "graph-extraction-v1.json").read_text(
                 encoding="utf-8"
