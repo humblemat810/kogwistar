@@ -1608,6 +1608,120 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn streaming_provider_rejects_length_terminated_structured_output_and_retries() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for attempt in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                let header_end = loop {
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length: "))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap();
+                while request.len() < header_end + content_length {
+                    let count = stream.read(&mut buffer).await.unwrap();
+                    assert_ne!(count, 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let request_body: Value =
+                    serde_json::from_slice(&request[header_end..header_end + content_length])
+                        .unwrap();
+                assert_eq!(request_body["stream"], true);
+
+                let answer = json!({
+                    "text":"must not be accepted",
+                    "reasoning":"truncated rationale",
+                    "claims":[]
+                })
+                .to_string();
+                let frame = format!(
+                    "data: {}\r\n\r\n",
+                    json!({
+                        "id":format!("resp-truncated-{attempt}"),
+                        "choices":[{
+                            "delta":{"content":answer},
+                            "finish_reason":"length"
+                        }]
+                    })
+                );
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    frame.len(),
+                    frame
+                );
+                stream.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+        let provider = OpenAiCompatibleChatConfig::new(
+            format!("http://{address}/v1/chat/completions"),
+            "fixture-model",
+            None,
+        )
+        .unwrap()
+        .with_streaming(true);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_by_sink = std::sync::Arc::clone(&observed);
+        let result = provider
+            .answer_with_event_sink(
+                "system",
+                "question",
+                &json!({"nodes": [], "edges": []}),
+                &[],
+                move |event| {
+                    let observed = std::sync::Arc::clone(&observed_by_sink);
+                    async move {
+                        if let Some(summary) = semantic_event_trace_summary(&event) {
+                            observed.lock().unwrap().push(summary);
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "length-terminated structured JSON is not a successful answer"
+        );
+        let observed = observed.lock().unwrap();
+        let failures = observed
+            .iter()
+            .filter(|event| event["kind"] == "response_failed")
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), 3, "each bounded retry reports its failure");
+        assert!(
+            failures
+                .iter()
+                .all(|event| { event["details"]["error_code"] == "provider_output_truncated" })
+        );
+        assert!(
+            observed
+                .iter()
+                .all(|event| event["kind"] != "response_completed")
+        );
+        let serialized = serde_json::to_string(&*observed).unwrap();
+        assert!(!serialized.contains("must not be accepted"));
+        assert!(!serialized.contains("truncated rationale"));
+        server.await.unwrap();
+    }
+
     #[test]
     fn provider_trace_summaries_exclude_text_and_arguments() {
         let events = vec![
