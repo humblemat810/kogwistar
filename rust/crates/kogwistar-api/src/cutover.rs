@@ -67,6 +67,7 @@ pub const PENDING_SERVER_CUTOVER_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/viz/cytoscape.json"),
     ("GET", "/api/viz/d3.json"),
     ("GET", "/viz/d3.bundle"),
+    ("GET", "/api/workflow/runs/{run_id}/lineage"),
     ("POST", "/api/add_index_entries"),
     ("POST", "/api/document.upsert_tree"),
 ];

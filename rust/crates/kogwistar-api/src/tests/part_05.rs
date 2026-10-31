@@ -2358,6 +2358,24 @@
         assert_eq!(mcp_steps_value["result"]["run_id"], "run-1");
         assert_eq!(mcp_steps_value["result"]["steps"], json!([]));
 
+        let lineage = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/runs/run-1/lineage")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lineage.status(), StatusCode::NOT_IMPLEMENTED);
+        let lineage_body = to_bytes(lineage.into_body(), 8192).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&lineage_body).unwrap()["code"],
+            "KOGWISTAR_ROUTE_DEFERRED"
+        );
+
         let mcp_events = app
             .clone()
             .oneshot(
