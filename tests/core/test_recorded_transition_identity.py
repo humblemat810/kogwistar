@@ -241,6 +241,14 @@ def test_python_and_rust_migrate_legacy_postgres_index_jobs_equivalently(
             schema=rust_schema,
             operation={"kind": "ensure_schema"},
         ) == {"initialized": True}
+        # Each implementation must be able to reopen and bootstrap the
+        # legacy schema first migrated by the other implementation.
+        assert store_postgres(
+            dsn=pg_dsn,
+            schema=python_schema,
+            operation={"kind": "ensure_schema"},
+        ) == {"initialized": True}
+        EnginePostgresMetaStore(engine=sa_engine, schema=rust_schema).ensure_initialized()
 
         inspector = sqlalchemy_inspect(sa_engine)
 
