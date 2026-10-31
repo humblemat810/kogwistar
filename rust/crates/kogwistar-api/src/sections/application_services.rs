@@ -2048,6 +2048,44 @@ impl SqliteRunApplicationService {
     }
 
     fn execute_sync(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "GET"
+            && runtime_run_route(&request.path_and_query)
+                .is_some_and(|(_, tail)| tail.as_slice() == ["evidence"])
+        {
+            let namespaces = principal_strings(&request.principal, "ns");
+            if !namespaces.iter().any(|namespace| {
+                matches!(namespace.as_str(), "*" | "workflow" | "conversation")
+            }) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                    "Run evidence reads require workflow or conversation namespace",
+                );
+            }
+            for (action, message) in [
+                (
+                    "workflow.run.read",
+                    "Reading run evidence requires workflow.run.read capability",
+                ),
+                (
+                    "project_view",
+                    "Reading run evidence snapshots requires project_view capability",
+                ),
+            ] {
+                if !capability_allowed(&request, &self.capabilities, action, &[action]) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        message,
+                    );
+                }
+            }
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "SQLite runtime metadata does not provide authoritative run evidence",
+            );
+        }
         if is_pending_server_cutover_route(&request.method, &request.path_and_query) {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,

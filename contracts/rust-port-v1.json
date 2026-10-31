@@ -521,22 +521,6 @@
             "path": "/api/add_index_entries"
           }
         ]
-      },
-      {
-        "name": "run-evidence-inspection",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "workflow-runtime",
-          "graph-pgvector"
-        ],
-        "exit_evidence": "run-scoped evidence selection, source provenance, ACL filtering, and public route conformance",
-        "operations": [
-          {
-            "method": "GET",
-            "path": "/api/runs/{run_id}/evidence"
-          }
-        ]
       }
     ],
     "syscall_group": {

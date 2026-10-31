@@ -2387,11 +2387,11 @@
             )
             .await
             .unwrap();
-        assert_eq!(run_evidence.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(run_evidence.status(), StatusCode::SERVICE_UNAVAILABLE);
         let evidence_body = to_bytes(run_evidence.into_body(), 8192).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&evidence_body).unwrap()["code"],
-            "KOGWISTAR_ROUTE_DEFERRED"
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
         );
 
         let mcp_events = app
