@@ -10,9 +10,9 @@
   },
   "counts": {
     "http_operations": 84,
-    "mcp_operations": 60,
+    "mcp_operations": 62,
     "pending_http_operations": 6,
-    "allowlisted_mcp_operations": 47,
+    "allowlisted_mcp_operations": 50,
     "pending_syscalls": 4
   },
   "http_operations": [
@@ -592,7 +592,7 @@
       "surface": "root",
       "name": "kg_semantic_seed_then_expand_text",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "root",
@@ -617,6 +617,18 @@
       "name": "propose_vector",
       "python": "frozen-catalog",
       "rust": "not-allowlisted"
+    },
+    {
+      "surface": "root",
+      "name": "wisdom.kg_upsert_graph",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
+    },
+    {
+      "surface": "root",
+      "name": "wisdom.semantic_seed_then_expand",
+      "python": "frozen-catalog",
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "workflow",

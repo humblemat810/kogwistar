@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -316,8 +317,10 @@ def test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop(tmp_path
     ]
 
 
-def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path) -> None:
-    """A Python reducer must replay and checkpoint against the Rust-owned facade."""
+def _assert_python_projection_recovery_over_rust_owned_store(
+    open_store: Callable[[], RustEngineSQLite],
+) -> None:
+    """Run the shared Python reducer over a Rust-owned durable metadata store."""
 
     def decode_current(row: dict[str, Any]) -> ProjectionLoadResult[dict[str, int]]:
         payload = dict(row["payload"])
@@ -397,7 +400,7 @@ def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path)
             )
         )
 
-    first = RustEngineSQLite(tmp_path)
+    first = open_store()
     first.ensure_initialized()
     for event_id, delta in (("rust-1", 2), ("rust-2", 3)):
         assert (
@@ -414,7 +417,7 @@ def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path)
     assert refresh(first, rebuild_from_scratch=True)["total"] == 5
     first.close()
 
-    reopened = RustEngineSQLite(tmp_path)
+    reopened = open_store()
     reopened.ensure_initialized()
     replayed = refresh(reopened, rebuild_from_scratch=True)
     assert replayed["total"] == 5
@@ -434,6 +437,22 @@ def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path)
     assert refresh(reopened)["total"] == 12
     assert refresh(reopened)["total"] == 12
     reopened.close()
+
+
+def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path) -> None:
+    _assert_python_projection_recovery_over_rust_owned_store(
+        lambda: RustEngineSQLite(tmp_path)
+    )
+
+
+def test_python_projection_recovery_over_rust_owned_postgres_store(
+    pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    if pg_dsn is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    _assert_python_projection_recovery_over_rust_owned_store(
+        lambda: RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    )
 
 
 def test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop(

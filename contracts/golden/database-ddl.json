@@ -2,17 +2,13 @@
   "baseline_version": 1,
   "postgresql": {
     "schema_placeholder": "kogwistar",
-    "sha256": "d8a828fa7b00d451ca876e6c7fef8b0b06bc83438aee4f369edc042abd9b5e5f",
+    "sha256": "be3dc96c54e54e99d0fd9cb184f0682eb9131a6774aff62daf1a1a96c881e2f4",
     "statements": [
       "CREATE SCHEMA IF NOT EXISTS kogwistar",
       "CREATE TABLE IF NOT EXISTS kogwistar.global_seq (value BIGINT NOT NULL)",
       "INSERT INTO kogwistar.global_seq(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM kogwistar.global_seq)",
       "CREATE TABLE IF NOT EXISTS kogwistar.user_seq (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)",
       "CREATE TABLE IF NOT EXISTS kogwistar.index_jobs ( job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default', entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, index_kind TEXT NOT NULL, coalesce_key TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL, lease_until TIMESTAMPTZ NULL, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NULL, payload_json TEXT NULL, next_run_at TIMESTAMPTZ NULL, max_retries INTEGER NOT NULL DEFAULT 10, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), accepted_result_json TEXT NULL, accepted_result_sha256 TEXT NULL, accepted_at TIMESTAMPTZ NULL )",
-      "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON kogwistar.index_jobs(status, lease_until)",
-      "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON kogwistar.index_jobs(status, next_run_at)",
-      "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON kogwistar.index_jobs(entity_kind, entity_id, index_kind)",
-      "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON kogwistar.index_jobs(namespace)",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL",
@@ -22,6 +18,10 @@
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL",
       "ALTER TABLE kogwistar.index_jobs ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON kogwistar.index_jobs(status, lease_until)",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON kogwistar.index_jobs(status, next_run_at)",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON kogwistar.index_jobs(entity_kind, entity_id, index_kind)",
+      "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON kogwistar.index_jobs(namespace)",
       "CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON kogwistar.index_jobs(namespace, coalesce_key) WHERE status='PENDING'",
       "CREATE TABLE IF NOT EXISTS kogwistar.index_applied_state ( namespace TEXT NOT NULL DEFAULT 'default', coalesce_key TEXT NOT NULL, applied_fingerprint TEXT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_job_id TEXT NULL, PRIMARY KEY(namespace, coalesce_key) )",
       "CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON kogwistar.index_applied_state(coalesce_key)",
@@ -42,7 +42,8 @@
       "CREATE TABLE IF NOT EXISTS kogwistar.server_runs ( run_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, workflow_id TEXT NOT NULL, user_id TEXT NULL, user_turn_node_id TEXT NULL, assistant_turn_node_id TEXT NULL, status TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0, result_json TEXT NULL, error_json TEXT NULL, created_at_ms BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL, started_at_ms BIGINT NULL, finished_at_ms BIGINT NULL )",
       "CREATE TABLE IF NOT EXISTS kogwistar.server_run_events ( seq BIGSERIAL PRIMARY KEY, run_id TEXT NOT NULL, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at_ms BIGINT NOT NULL )",
       "CREATE INDEX IF NOT EXISTS idx_server_runs_status ON kogwistar.server_runs(status, updated_at_ms)",
-      "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON kogwistar.server_run_events(run_id, seq)"
+      "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON kogwistar.server_run_events(run_id, seq)",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id ON kogwistar.server_run_events ((payload_json::jsonb->>'transition_id')) WHERE event_type='workflow.recorded_transition.v1'"
     ]
   },
   "sqlite": {
@@ -99,6 +100,12 @@
         "name": "idx_named_projections_namespace",
         "sql": "CREATE INDEX idx_named_projections_namespace ON named_projections(namespace, updated_at_ms)",
         "table": "named_projections",
+        "type": "index"
+      },
+      {
+        "name": "idx_server_run_events_recorded_transition_id",
+        "sql": "CREATE UNIQUE INDEX idx_server_run_events_recorded_transition_id ON server_run_events(json_extract(payload_json, '$.transition_id')) WHERE event_type='workflow.recorded_transition.v1'",
+        "table": "server_run_events",
         "type": "index"
       },
       {
@@ -210,6 +217,6 @@
         "type": "table"
       }
     ],
-    "sha256": "021858ca25eeda22fcc1994735e7fd783df98217884f9085399ad7d26d674697"
+    "sha256": "d2cab4fae12cd1fa19c808d0619c0347643708cac2fe6c82acb7b55aa2605139"
   }
 }
