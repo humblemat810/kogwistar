@@ -413,7 +413,13 @@ mod tests {
             scope.graph_space.as_deref().unwrap()
         );
 
-        for truth_graph in ["knowledge", "conversation", "workflow", "wisdom"] {
+        for truth_graph in [
+            "knowledge",
+            "conversation",
+            "workflow",
+            "wisdom",
+            "custom:research",
+        ] {
             let mut scoped = batch.clone();
             scoped.default_acl.truth_graph = truth_graph.to_owned();
             assert_eq!(scoped.validate(), Ok(()));

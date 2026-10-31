@@ -11,6 +11,11 @@ from kogwistar.engine_core import (
     validate_graph_mutation_batch,
     validate_graph_mutation_batch_v2,
 )
+from kogwistar.engine_core.models import Edge, Node
+from kogwistar.entity_registry import (
+    default_edge_type_for_graph_kind,
+    default_node_type_for_graph_kind,
+)
 
 
 def _fixture() -> dict[str, object]:
@@ -115,7 +120,13 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
     assert batch.mutations[0].scope.workspace_id == "ws"
     assert batch.mutations[0].scope.graph_space == "facts"
     assert batch.default_acl.truth_graph != batch.mutations[0].scope.graph_space
-    for truth_graph in ["knowledge", "conversation", "workflow", "wisdom"]:
+    for truth_graph in [
+        "knowledge",
+        "conversation",
+        "workflow",
+        "wisdom",
+        "custom:research",
+    ]:
         payload["default_acl"]["truth_graph"] = truth_graph
         scoped_batch = validate_graph_mutation_batch_v2(payload)
         assert scoped_batch.default_acl.truth_graph == truth_graph
@@ -124,6 +135,9 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
         assert scoped_batch.mutations[0].scope.namespace == "tenant-a"
         assert scoped_batch.mutations[0].scope.workspace_id == "ws"
         assert scoped_batch.mutations[0].scope.graph_space == "facts"
+
+    assert default_node_type_for_graph_kind("custom:research") is Node
+    assert default_edge_type_for_graph_kind("custom:research") is Edge
     with pytest.raises(GraphMutationContractError):
         validate_graph_mutation_batch(payload)
 
