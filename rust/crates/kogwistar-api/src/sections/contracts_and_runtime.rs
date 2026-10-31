@@ -1092,6 +1092,7 @@ fn failed_native_result(
             graph_mutation_batch: None,
             graph_mutation_batch_v2: None,
             provider_event_publications: Vec::new(),
+            provider_event_acknowledgements: Vec::new(),
         }),
     }
 }

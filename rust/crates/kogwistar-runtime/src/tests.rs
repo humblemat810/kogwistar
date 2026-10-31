@@ -477,6 +477,36 @@
         }
     }
 
+#[test]
+fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
+    let legacy: RecordedWorkerSuccessEffect = serde_json::from_value(serde_json::json!({
+        "contract_version": 1,
+        "effect_id": "legacy-effect"
+    }))
+    .unwrap();
+    assert!(legacy.provider_event_acknowledgements.is_empty());
+    assert!(serde_json::to_value(&legacy)
+        .unwrap()
+        .get("provider_event_acknowledgements")
+        .is_none());
+
+    let current: RecordedWorkerSuccessEffect = serde_json::from_value(serde_json::json!({
+        "contract_version": 1,
+        "effect_id": "event-handled-effect",
+        "provider_event_acknowledgements": [{
+            "message_id": "msg:agent-event-1",
+            "claimed_by": "event-worker#lease-1",
+            "event_id": "agent-event-1"
+        }]
+    }))
+    .unwrap();
+    assert_eq!(current.provider_event_acknowledgements.len(), 1);
+    assert_eq!(
+        current.provider_event_acknowledgements[0].event_id,
+        "agent-event-1"
+    );
+}
+
     #[test]
     fn native_graph_registry_validates_batches_and_preserves_effect_contract() {
         let mut registry = NativeOperationRegistry::default();

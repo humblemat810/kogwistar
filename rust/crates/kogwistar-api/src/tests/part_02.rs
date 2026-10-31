@@ -485,6 +485,41 @@
             worker_graph_body["code"],
             "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
         );
+        let worker_event_ack = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "handoff": {
+                    "message_id": "lane-1",
+                    "claimed_by": "worker-1",
+                    "run_id": "run-1",
+                    "step_id": "step-1",
+                    "correlation_id": "run-1"
+                },
+                "effect": {
+                    "contract_version": 1,
+                    "effect_id": "effect-event-ack",
+                    "provider_event_acknowledgements": [{
+                        "message_id": "msg:event-1",
+                        "claimed_by": "event-worker#lease-1",
+                        "event_id": "event-1"
+                    }]
+                }
+            }))
+            .unwrap(),
+            principal: json!({"sub":"alice","role":"rw","capabilities":["*"]}),
+        });
+        assert_eq!(
+            worker_event_ack.status,
+            StatusCode::NOT_IMPLEMENTED.as_u16()
+        );
+        let worker_event_ack_body: Value =
+            serde_json::from_slice(&worker_event_ack.body).unwrap();
+        assert_eq!(
+            worker_event_ack_body["code"],
+            "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
+        );
         drop(service);
         remove_test_sqlite(&path);
     }

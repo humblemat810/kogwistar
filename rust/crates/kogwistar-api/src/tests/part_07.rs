@@ -1094,6 +1094,7 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
     }))
     .unwrap();
     assert!(legacy_effect.provider_event_publications.is_empty());
+    assert!(legacy_effect.provider_event_acknowledgements.is_empty());
 
     let publication_value = json!({
         "namespace": "tenant-a",
@@ -1234,6 +1235,41 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
         &[transient_delta],
         &mutations,
         "run-a",
+    )
+    .is_err());
+}
+
+#[test]
+fn provider_event_acknowledgement_contract_rejects_invalid_or_duplicate_claims() {
+    use kogwistar_runtime::ProviderEventAcknowledgementV1;
+
+    let valid = ProviderEventAcknowledgementV1 {
+        message_id: "msg:event-1".to_owned(),
+        claimed_by: "consumer#lease-1".to_owned(),
+        event_id: "event-1".to_owned(),
+    };
+    assert!(validate_provider_event_acknowledgements(std::slice::from_ref(&valid)).is_ok());
+    assert!(validate_provider_event_acknowledgements(&[valid.clone(), valid.clone()]).is_err());
+    assert!(validate_provider_event_acknowledgements(&[ProviderEventAcknowledgementV1 {
+        message_id: "msg:other".to_owned(),
+        claimed_by: "consumer#lease-1".to_owned(),
+        event_id: "event-1".to_owned(),
+    }])
+    .is_err());
+    assert!(validate_provider_event_acknowledgements(&[ProviderEventAcknowledgementV1 {
+        message_id: "msg:event-1".to_owned(),
+        claimed_by: " ".to_owned(),
+        event_id: "event-1".to_owned(),
+    }])
+    .is_err());
+    assert!(validate_provider_event_acknowledgements(
+        &(0..101)
+            .map(|index| ProviderEventAcknowledgementV1 {
+                message_id: format!("msg:event-{index}"),
+                claimed_by: "consumer#lease-1".to_owned(),
+                event_id: format!("event-{index}"),
+            })
+            .collect::<Vec<_>>()
     )
     .is_err());
 }

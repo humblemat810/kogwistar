@@ -52,6 +52,19 @@ pub struct RecordedWorkerSuccessEffect {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_event_publications:
         Vec<kogwistar_contracts::DurableProviderEventPublicationV1>,
+    /// A provider-event lane claim is acknowledged in the same transaction as
+    /// this runtime effect, so replay cannot lose an event between handling
+    /// and checkpoint commit.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_event_acknowledgements: Vec<ProviderEventAcknowledgementV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderEventAcknowledgementV1 {
+    pub message_id: String,
+    pub claimed_by: String,
+    pub event_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

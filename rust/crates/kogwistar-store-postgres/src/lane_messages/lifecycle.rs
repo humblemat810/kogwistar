@@ -13,6 +13,33 @@ where
     c.execute(&format!("UPDATE {} SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=$1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=$2 AND lease_until>=NOW()))",t.projected_lane_messages),&[&id,&owner]).await.map_err(backend)?;
     Ok(())
 }
+
+pub(crate) async fn ack_claimed_projected_lane_message<C>(
+    c: &C,
+    t: &Tables,
+    id: &str,
+    owner: &str,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    let changed = c
+        .execute(
+            &format!(
+                "UPDATE {} SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=$1 AND status='claimed' AND claimed_by=$2 AND lease_until>=NOW()",
+                t.projected_lane_messages
+            ),
+            &[&id, &owner],
+        )
+        .await
+        .map_err(backend)?;
+    if changed != 1 {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(format!(
+            "lane message {id:?} is not actively claimed by the acknowledging worker"
+        )));
+    }
+    Ok(())
+}
 pub(crate) async fn requeue_projected_lane_message<C>(
     c: &C,
     t: &Tables,

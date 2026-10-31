@@ -3131,13 +3131,16 @@ impl SqliteRunApplicationService {
             .effect
             .as_ref()
             .is_some_and(|effect| {
-                effect.graph_mutation_batch.is_some() || effect.graph_mutation_batch_v2.is_some()
+                effect.graph_mutation_batch.is_some()
+                    || effect.graph_mutation_batch_v2.is_some()
+                    || !effect.provider_event_publications.is_empty()
+                    || !effect.provider_event_acknowledgements.is_empty()
             })
         {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
-                "Worker graph effects require atomic graph authority with index jobs",
+                "Worker graph and provider-event effects require atomic graph authority with index jobs",
             );
         }
         if let Some(effect) = input.effect.as_ref()

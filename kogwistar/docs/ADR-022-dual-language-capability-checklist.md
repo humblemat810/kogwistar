@@ -250,6 +250,20 @@ and Python (**3**). This closes live Rust API event publication for the native
 answer callback only. The Rust reusable event-agent loop, lane claim/handle/
 ack workflow, and atomicity between a separately configured auth database and
 the PostgreSQL graph transaction remain incomplete under this existing gate.
+The runtime worker-effect contract now also accepts an optional, bounded
+`ProviderEventAcknowledgementV1` list. PostgreSQL verifies the durable event,
+run/conversation binding, current run-owner `write_graph` scope, and active
+lease owner, then acknowledges the event and commits the runtime transition
+and handled trace in the same UoW; stale or wrong-owner claims fail closed.
+SQLite rejects this effect rather than silently ignoring it. Backward
+compatibility and malformed/duplicate acknowledgements are covered by Rust
+runtime/API tests; live PostgreSQL tests
+`provider_event_ack_requires_the_live_claim_owner` and
+`provider_event_ack_and_runtime_transition_share_one_transaction` both pass,
+including injected rollback. This is the atomic acknowledgement primitive,
+not a Rust event-agent loop: Rust-side event claiming/routing, handling-step
+causal graph links, hooks, and workflow-design publication/consumption remain
+open under DL-16BQ.
 
 ## Completion rule
 

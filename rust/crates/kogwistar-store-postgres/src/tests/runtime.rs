@@ -420,6 +420,219 @@ async fn rust_projection_worker_uses_postgres_native_writes_and_tombstone_gate()
         .map_err(backend)?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn provider_event_ack_requires_the_live_claim_owner() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("provider_event_ack");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: "msg:agent-event-1".to_owned(),
+            namespace: "tenant-a".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: "conversation-a".to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("run-a".to_owned()),
+            step_id: Some("provider-response:response-a".to_owned()),
+            correlation_id: Some("agent-event-1".to_owned()),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        })
+        .await?;
+    let claimed = store
+        .claim_projected_lane_messages("tenant-a", "agent-provider-events", "event-worker", 1, 60)
+        .await?;
+    assert_eq!(claimed.len(), 1);
+    let claim_owner = claimed[0].claimed_by.as_deref().unwrap();
+
+    let wrong_owner: PostgresStoreResult<()> = store
+        .transaction(|uow| {
+            Box::pin(async move {
+                uow.ack_claimed_projected_lane_message("msg:agent-event-1", "other-worker")
+                    .await
+            })
+        })
+        .await;
+    assert!(matches!(
+        wrong_owner,
+        Err(PostgresStoreError::RecordedRuntimeConflict(_))
+    ));
+    assert_eq!(
+        store
+            .get_projected_lane_message("msg:agent-event-1")
+            .await?
+            .unwrap()
+            .status,
+        "claimed"
+    );
+
+    let claim_owner = claim_owner.to_owned();
+    store
+        .transaction(|uow| {
+            let claim_owner = claim_owner.clone();
+            Box::pin(async move {
+                uow.ack_claimed_projected_lane_message("msg:agent-event-1", &claim_owner)
+                    .await
+            })
+        })
+        .await?;
+    assert_eq!(
+        store
+            .get_projected_lane_message("msg:agent-event-1")
+            .await?
+            .unwrap()
+            .status,
+        "completed"
+    );
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn provider_event_ack_and_runtime_transition_share_one_transaction() -> PostgresStoreResult<()>
+{
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("provider_event_ack_transition");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+
+    let start = store
+        .apply_recorded_runtime_transition(runtime_start("event-run", "event-run-start"), false)
+        .await?;
+    store
+        .project_lane_message(runtime_lane("event-run", "event-run-worker-lane"))
+        .await?;
+    let runtime_claim = store
+        .claim_projected_lane_messages("runtime", "python-workers", "runtime-worker", 1, 60)
+        .await?;
+    assert_eq!(runtime_claim.len(), 1);
+
+    store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: "msg:atomic-event".to_owned(),
+            namespace: "tenant-a".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: "conv-1".to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("event-run".to_owned()),
+            step_id: Some("provider-response:response-a".to_owned()),
+            correlation_id: Some("atomic-event".to_owned()),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        })
+        .await?;
+    let event_claim = store
+        .claim_projected_lane_messages("tenant-a", "agent-provider-events", "event-consumer", 1, 60)
+        .await?;
+    assert_eq!(event_claim.len(), 1);
+    let event_claimed_by = event_claim[0].claimed_by.clone().unwrap();
+    let transition = runtime_result("event-run", "event-run-step", start.event_seq, "handled");
+    let handoff = runtime_handoff("event-run", "event-run-worker-lane", "runtime-worker");
+
+    let rollback: PostgresStoreResult<()> = store
+        .transaction(|uow| {
+            let transition = transition.clone();
+            let handoff = handoff.clone();
+            let event_claimed_by = event_claimed_by.clone();
+            Box::pin(async move {
+                uow.apply_claimed_recorded_runtime_transition(handoff, transition, false)
+                    .await?;
+                uow.ack_claimed_projected_lane_message("msg:atomic-event", &event_claimed_by)
+                    .await?;
+                Err(PostgresStoreError::TransactionAborted(
+                    "verify event acknowledgement rollback".to_owned(),
+                ))
+            })
+        })
+        .await;
+    assert!(matches!(
+        rollback,
+        Err(PostgresStoreError::TransactionAborted(_))
+    ));
+    assert_eq!(
+        store
+            .get_projected_lane_message("msg:atomic-event")
+            .await?
+            .unwrap()
+            .status,
+        "claimed"
+    );
+    assert_eq!(
+        store
+            .read_recorded_runtime_state("event-run", "wf-1", "conv-1")
+            .await?
+            .unwrap()
+            .state["answer"],
+        "seed"
+    );
+
+    store
+        .transaction(|uow| {
+            let transition = transition.clone();
+            let handoff = handoff.clone();
+            let event_claimed_by = event_claimed_by.clone();
+            Box::pin(async move {
+                uow.apply_claimed_recorded_runtime_transition(handoff, transition, false)
+                    .await?;
+                uow.ack_claimed_projected_lane_message("msg:atomic-event", &event_claimed_by)
+                    .await
+            })
+        })
+        .await?;
+    assert_eq!(
+        store
+            .get_projected_lane_message("msg:atomic-event")
+            .await?
+            .unwrap()
+            .status,
+        "completed"
+    );
+    assert_eq!(
+        store
+            .read_recorded_runtime_state("event-run", "wf-1", "conv-1")
+            .await?
+            .unwrap()
+            .state["answer"],
+        "handled"
+    );
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available()

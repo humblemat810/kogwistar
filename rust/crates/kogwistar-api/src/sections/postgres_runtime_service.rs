@@ -125,6 +125,27 @@ fn validate_provider_event_publications(
     Ok(())
 }
 
+fn validate_provider_event_acknowledgements(
+    acknowledgements: &[kogwistar_runtime::ProviderEventAcknowledgementV1],
+) -> Result<(), &'static str> {
+    if acknowledgements.len() > 100 {
+        return Err("provider event acknowledgement batch exceeds 100 entries");
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for acknowledgement in acknowledgements {
+        if acknowledgement.event_id.trim().is_empty()
+            || acknowledgement.claimed_by.trim().is_empty()
+            || acknowledgement.message_id != format!("msg:{}", acknowledgement.event_id)
+        {
+            return Err("provider event acknowledgement identity is invalid");
+        }
+        if !seen.insert(acknowledgement.event_id.as_str()) {
+            return Err("provider event acknowledgement event IDs must be unique");
+        }
+    }
+    Ok(())
+}
+
 enum NativeEvidenceContextError {
     CallerNotRunOwner,
     OwnerAuthorization,
@@ -3691,11 +3712,124 @@ impl PostgresRunApplicationService {
             .as_ref()
             .map(|effect| effect.provider_event_publications.clone())
             .unwrap_or_default();
+        let provider_event_acknowledgements = input
+            .effect
+            .as_ref()
+            .map(|effect| effect.provider_event_acknowledgements.clone())
+            .unwrap_or_default();
+        let runtime_run_id = input.handoff.run_id.clone();
+        if validate_provider_event_acknowledgements(&provider_event_acknowledgements).is_err() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "provider event acknowledgements must be unique, complete, and limited to 100",
+            );
+        }
+        if !provider_event_acknowledgements.is_empty()
+            && input.effect.as_ref().is_none_or(|effect| {
+                effect.status != kogwistar_runtime::RuntimeWorkerEffectStatus::Success
+            })
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "provider events can only be acknowledged with a successful durable handling step",
+            );
+        }
+        if provider_event_acknowledgements.iter().any(|ack| {
+            provider_event_publications
+                .iter()
+                .any(|publication| publication.event.event_id == ack.event_id)
+        }) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "one worker effect cannot publish and acknowledge the same provider event",
+            );
+        }
+        let provider_event_ack_scope = if provider_event_acknowledgements.is_empty() {
+            None
+        } else {
+            let principal = match self
+                .resolve_inline_native_owner_principal(&runtime_run_id, "write_graph")
+                .await
+            {
+                Ok(principal) => principal,
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "provider event acknowledgement requires the run owner's current write_graph authority",
+                    );
+                }
+            };
+            let owner_id = match authenticated_run_owner_id(&principal) {
+                Some(owner_id) => owner_id.to_owned(),
+                None => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "provider event acknowledgement requires an authenticated run owner",
+                    );
+                }
+            };
+            let namespace = match security_scope_value(&principal)["storage_namespace"]
+                .as_str()
+                .map(str::to_owned)
+            {
+                Some(namespace) => namespace,
+                None => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_SCOPE_FORBIDDEN",
+                        "provider event acknowledgement has no admitted storage namespace",
+                    );
+                }
+            };
+            let admission = match self.store.list_server_run_events(&runtime_run_id, 0, 1).await {
+                Ok(events) => events.into_iter().find(|event| event.event_type == "run.created"),
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_RUN_OWNER_UNAVAILABLE",
+                        "provider event run admission could not be revalidated",
+                    );
+                }
+            };
+            let Some(admission) = admission else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "provider event run admission binding is missing",
+                );
+            };
+            let binding = serde_json::from_str::<Value>(&admission.payload_json)
+                .ok()
+                .and_then(|payload| payload.get("runtime_owner_binding").cloned())
+                .and_then(|binding| serde_json::from_value::<RuntimeOwnerBindingV1>(binding).ok());
+            let Some(binding) = binding.filter(|binding| binding.user_id == owner_id) else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "provider event run owner does not match its admission binding",
+                );
+            };
+            let Some(auth_store) = self.owner_auth_store.clone() else {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_RUN_OWNER_UNAVAILABLE",
+                    "provider event run owner revalidation is not configured",
+                );
+            };
+            Some((namespace, owner_id, binding, auth_store))
+        };
         let commit_capabilities = self.capabilities.clone();
         let expected_executor_target = executor_target.to_owned();
         let outcome = self
             .store
             .transaction(|uow| {
+                let provider_event_ack_scope = provider_event_ack_scope.clone();
+                let commit_capabilities = commit_capabilities.clone();
                 Box::pin(async move {
                     let lane = uow
                         .get_projected_lane_message(&input.handoff.message_id)
@@ -3855,6 +3989,123 @@ impl PostgresRunApplicationService {
                                 .await?;
                             (applied, effect_id, terminal_result, usage, trace_events)
                         };
+                    if !applied.idempotent {
+                        for acknowledgement in &provider_event_acknowledgements {
+                            if acknowledgement.message_id
+                                != format!("msg:{}", acknowledgement.event_id)
+                            {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event acknowledgement message ID does not match its event".to_owned(),
+                                    ),
+                                );
+                            }
+                            let lane = uow
+                                .get_projected_lane_message(&acknowledgement.message_id)
+                                .await?
+                                .ok_or_else(|| {
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event acknowledgement lane does not exist".to_owned(),
+                                    )
+                                })?;
+                            let Some((ack_namespace, ack_owner_id, binding, auth_store)) =
+                                provider_event_ack_scope.as_ref()
+                            else {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event acknowledgement lacks a validated run-owner scope".to_owned(),
+                                    ),
+                                );
+                            };
+                            let event = lane
+                                .payload_json
+                                .as_deref()
+                                .and_then(|payload| {
+                                    serde_json::from_str::<kogwistar_contracts::DurableProviderEventV1>(payload).ok()
+                                });
+                            let run = uow.get_server_run(&runtime_run_id).await?;
+                            if !run.as_ref().is_some_and(|run| {
+                                run.user_id.as_deref() == Some(ack_owner_id.as_str())
+                            }) {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event run owner changed before acknowledgement".to_owned(),
+                                    ),
+                                );
+                            }
+                            let current_user = auth_store
+                                .auth_user(ack_owner_id)
+                                .await
+                                .map_err(|_| kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    "provider event run owner could not be revalidated".to_owned(),
+                                ))?
+                                .filter(|user| user.is_active)
+                                .ok_or_else(|| kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                    "provider event run owner is missing or inactive".to_owned(),
+                                ))?;
+                            let current_principal = revalidated_runtime_owner_principal(
+                                binding,
+                                &current_user,
+                                &commit_capabilities,
+                                "write_graph",
+                            )
+                            .map_err(|_| kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                "provider event run owner no longer has write_graph authority".to_owned(),
+                            ))?;
+                            let current_scope = security_scope_value(&current_principal);
+                            if current_scope["storage_namespace"].as_str()
+                                != Some(ack_namespace.as_str())
+                            {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event acknowledgement namespace is outside the current run-owner scope".to_owned(),
+                                    ),
+                                );
+                            }
+                            if lane.namespace.trim().is_empty()
+                                || lane.namespace != *ack_namespace
+                                || lane.purpose != "agent_event"
+                                || lane.inbox_id != "agent-provider-events"
+                                || lane.msg_type != "agent.provider_event"
+                                || lane.recipient_id != "agent-event-consumer"
+                                || lane.status != "claimed"
+                                || lane.claimed_by.as_deref()
+                                    != Some(acknowledgement.claimed_by.as_str())
+                                || lane.run_id.as_deref() != Some(runtime_run_id.as_str())
+                                || lane.conversation_id
+                                    != run.as_ref().map(|run| run.conversation_id.as_str()).unwrap_or_default()
+                                || lane.correlation_id.as_deref()
+                                    != Some(acknowledgement.event_id.as_str())
+                                || event.as_ref().is_none_or(|event| {
+                                    event.event_id != acknowledgement.event_id
+                                        || event.trace.run_id != runtime_run_id
+                                })
+                            {
+                                return Err(
+                                    kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                        "provider event acknowledgement is not bound to the active run claim".to_owned(),
+                                    ),
+                                );
+                            }
+                            uow.ack_claimed_projected_lane_message(
+                                &acknowledgement.message_id,
+                                &acknowledgement.claimed_by,
+                            )
+                            .await?;
+                            uow.append_server_run_event(
+                                &runtime_run_id,
+                                "workflow.provider_event.handled.v1",
+                                serde_json::to_string(&json!({
+                                    "event_id": acknowledgement.event_id,
+                                    "message_id": acknowledgement.message_id,
+                                    "workflow_node_id": applied.reduced.state.last_node_id,
+                                    "step_seq": applied.reduced.state.last_step_seq,
+                                    "effect_id": effect_id,
+                                }))?,
+                            )
+                            .await?;
+                        }
+                    }
                     let state = applied.reduced.state.clone();
                     let frontier = &state.frontier;
                     let unfinished = !frontier.pending.is_empty()

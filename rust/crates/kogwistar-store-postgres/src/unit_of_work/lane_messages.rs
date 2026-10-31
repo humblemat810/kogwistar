@@ -130,6 +130,13 @@ impl PostgresUnitOfWork<'_> {
     ) -> PostgresStoreResult<()> {
         ack_projected_lane_message(&self.transaction, &self.tables, id, owner).await
     }
+    pub async fn ack_claimed_projected_lane_message(
+        &mut self,
+        id: &str,
+        owner: &str,
+    ) -> PostgresStoreResult<()> {
+        ack_claimed_projected_lane_message(&self.transaction, &self.tables, id, owner).await
+    }
     pub async fn requeue_projected_lane_message(
         &mut self,
         id: &str,
