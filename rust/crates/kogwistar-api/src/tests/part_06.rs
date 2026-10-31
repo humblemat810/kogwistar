@@ -7263,7 +7263,9 @@
         );
         assert!(public_provider_event["payload"]["client_sse_sequence"]
             .as_i64()
-            .is_some_and(|sequence| sequence >= 0));
+            .is_some_and(|sequence| sequence >= 0),
+            "public provider event omitted client sequence: {public_provider_event:#?}"
+        );
         let public_event_payload = serde_json::to_string(public_provider_event).unwrap();
         assert!(!public_event_payload.contains("The workflow runtime state is stored in the graph."));
         assert!(!public_event_payload.contains("The selected evidence states this directly."));
