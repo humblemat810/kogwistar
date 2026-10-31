@@ -646,19 +646,36 @@ async fn recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available()
     let handled_handoff = runtime_worker_handoff("handled", "handled-request", "handled-worker");
     let handled_effect =
         runtime_failure_effect("handled-effect", &["recover"], serde_json::json!([]));
-    let handled = store
+    // Model a committed result whose response was lost: the caller retries the
+    // exact durable effect without observing the first return value.
+    let _lost_response = store
         .apply_claimed_recorded_worker_effect(handled_handoff.clone(), handled_effect.clone())
         .await?;
+    let handled_events_after_commit = store
+        .list_server_run_events("handled", 0, usize::MAX)
+        .await?
+        .len();
     let handled_retry = store
         .apply_claimed_recorded_worker_effect(handled_handoff, handled_effect)
         .await?;
-    assert!(!handled.idempotent && handled_retry.idempotent);
-    assert_eq!(handled.event_seq, handled_retry.event_seq);
+    assert!(handled_retry.idempotent);
     assert_eq!(
-        handled.reduced.state.status,
+        store
+            .list_server_run_events("handled", 0, usize::MAX)
+            .await?
+            .len(),
+        handled_events_after_commit,
+        "retry after a lost response must not append another run event"
+    );
+    let handled_state = store
+        .read_recorded_runtime_state("handled", "wf-1", "conv-1")
+        .await?
+        .unwrap();
+    assert_eq!(
+        handled_state.status,
         kogwistar_runtime::RecordedRunStatus::Running
     );
-    assert_eq!(handled.reduced.state.frontier.pending[0].0, "recover");
+    assert_eq!(handled_state.frontier.pending[0].0, "recover");
     assert_eq!(
         store
             .get_projected_lane_message("handled-request")
