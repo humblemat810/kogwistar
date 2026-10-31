@@ -128,6 +128,23 @@ pub(crate) fn ack_projected_lane_message(
     conn.execute("UPDATE projected_lane_messages SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=?1 AND status NOT IN ('completed','failed','cancelled','dead-letter') AND (claimed_by IS NULL OR (status='claimed' AND claimed_by=?2 AND lease_until>=?3))",params![id,owner,unix_epoch_seconds()])?;
     Ok(())
 }
+
+pub(crate) fn ack_claimed_projected_lane_message(
+    conn: &Connection,
+    id: &str,
+    owner: &str,
+) -> SqliteStoreResult<()> {
+    let changed = conn.execute(
+        "UPDATE projected_lane_messages SET status='completed',claimed_by=NULL,lease_until=NULL WHERE message_id=?1 AND status='claimed' AND claimed_by=?2 AND lease_until>=?3",
+        params![id, owner, unix_epoch_seconds()],
+    )?;
+    if changed != 1 {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(format!(
+            "lane message {id:?} is not actively claimed by the acknowledging worker"
+        )));
+    }
+    Ok(())
+}
 pub(crate) fn requeue_projected_lane_message(
     conn: &Connection,
     id: &str,

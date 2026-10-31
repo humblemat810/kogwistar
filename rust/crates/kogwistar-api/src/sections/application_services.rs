@@ -959,6 +959,7 @@ impl ApplicationService for SqliteRunApplicationService {
             let inline_principal = if result.effect.as_ref().is_some_and(|effect| {
                 effect.graph_mutation_batch.is_some()
                     || effect.graph_mutation_batch_v2.is_some()
+                    || !effect.provider_event_acknowledgements.is_empty()
             }) {
                 match self
                     .resolve_inline_native_owner_principal(
@@ -1090,6 +1091,28 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE {
+                if let Ok(input) = serde_json::from_slice::<RuntimeWorkerResultRequest>(&request.body)
+                    && input.effect.as_ref().is_some_and(|effect| {
+                        !effect.provider_event_acknowledgements.is_empty()
+                    })
+                {
+                    let owner_principal = match self
+                        .resolve_inline_native_owner_principal(&input.handoff.run_id, "write_graph")
+                        .await
+                    {
+                        Ok(principal) => principal,
+                        Err(_) => {
+                            return effect_error(
+                                StatusCode::FORBIDDEN,
+                                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                                "provider event acknowledgement requires the run owner's current write_graph authority",
+                            );
+                        }
+                    };
+                    return self.apply_runtime_result_with_principal(&request, &owner_principal);
+                }
+            }
             if request.method == "GET"
                 && self.chroma_graph.is_some()
                 && conversation_transcript_id(&request.path_and_query).is_some()

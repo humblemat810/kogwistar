@@ -2899,6 +2899,385 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
 }
 
 #[tokio::test]
+async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_atomically() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let chroma_setup = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            )
+            .unwrap();
+            let response = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space": "cosine"}
+            })
+            .to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(), response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("provider-event-nodes"),
+        chroma_config("provider-event-edges"),
+    )
+    .await
+    .unwrap();
+    chroma_setup.await.unwrap();
+
+    let path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-provider-event-ack-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-provider-event-ack-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth_store = SqliteAuthStore::open(&auth_path).unwrap();
+    auth_store
+        .resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "sqlite-ack-owner".to_owned(),
+            email: "sqlite-ack-owner@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "sqlite-ack-owner".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "conversation".to_owned(),
+        })
+        .await
+        .unwrap();
+    drop(auth_store);
+    let owner_auth = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_owner_auth_config(&owner_auth)
+        .await
+        .unwrap();
+    let run_id = "sqlite-provider-ack-run";
+    let workflow_id = "sqlite-provider-ack-workflow";
+    let conversation_id = "sqlite-provider-ack-conversation";
+    let owner_principal = json!({
+        "sub": "sqlite-ack-owner", "user_id": "sqlite-ack-owner", "role": "rw",
+        "ns": ["conversation"], "storage_ns": "conversation",
+        "workspace": "workspace-a", "graph_space": "conversation",
+        "capabilities": ["read_graph", "write_graph"]
+    });
+    let binding = runtime_owner_binding_v1(&owner_principal, &service.capabilities).unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            user_id: Some("sqlite-ack-owner".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "running".to_owned(),
+        })
+        .unwrap();
+    let admission = service
+        .store
+        .append_server_run_event(
+            run_id,
+            "run.created",
+            json!({"runtime_owner_binding": binding}).to_string(),
+        )
+        .unwrap();
+    let start: RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "sqlite-provider-ack-start",
+        "expected_event_seq": admission.seq,
+        "kind": "start",
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "conversation_id": conversation_id,
+        "step_seq": 0,
+        "node_id": "start-step",
+        "token_id": run_id,
+        "initial_state": {},
+        "frontier": {
+            "pending": [["handler-step", 0, run_id, null]],
+            "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
+        }
+    }))
+    .unwrap();
+    let started = service
+        .store
+        .apply_recorded_runtime_transition(start, false)
+        .unwrap();
+    let handler: RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "sqlite-provider-ack-handler",
+        "expected_event_seq": started.event_seq,
+        "kind": "recorded_step_success",
+        "run_id": run_id,
+        "workflow_id": workflow_id,
+        "conversation_id": conversation_id,
+        "step_seq": 1,
+        "node_id": "handler-step",
+        "token_id": run_id,
+        "state_update": [["u", {"agent_event_handling_step_seq": 1}]],
+        "frontier": {
+            "pending": [["ack-step", 0, run_id, null]],
+            "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
+        },
+        "result": {"handled": true}
+    }))
+    .unwrap();
+    service
+        .store
+        .apply_recorded_runtime_transition(handler, false)
+        .unwrap();
+
+    let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_value(json!({
+        "event_id": "sqlite-provider-ack-event",
+        "trace": {
+            "run_id": run_id,
+            "turn_id": "turn-1",
+            "workflow_node_id": "provider-step",
+            "step_id": "provider-response",
+            "provider_id": "test-provider"
+        },
+        "event": {
+            "contract_version": "v1",
+            "provider_event_id": "response:1",
+            "provider_sequence": 1,
+            "response_id": "response",
+            "kind": "field_completed",
+            "field_name": "text",
+            "value": "durable answer"
+        }
+    }))
+    .unwrap();
+    let event_message_id = format!("msg:{}", event.event_id);
+    service
+        .store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: event_message_id.clone(),
+            namespace: "conversation".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("provider-response".to_owned()),
+            correlation_id: Some(event.event_id.clone()),
+            payload_json: Some(serde_json::to_string(&event).unwrap()),
+            error_json: None,
+        })
+        .unwrap();
+    let event_claim = service
+        .store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "conversation".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            claimed_by: "event-consumer-attempt".to_owned(),
+            message_ids: Some(vec![event_message_id.clone()]),
+            run_id: Some(run_id.to_owned()),
+            msg_type: Some("agent.provider_event".to_owned()),
+            recipient_id: Some("agent-event-consumer".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        })
+        .unwrap();
+    assert_eq!(event_claim.len(), 1);
+
+    let runtime_message_id = "sqlite-provider-ack-runtime";
+    service
+        .store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: runtime_message_id.to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("ack-step".to_owned()),
+            correlation_id: Some(run_id.to_owned()),
+            payload_json: Some(json!({
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "token_id": run_id,
+                "parent_token_id": null,
+                "op": "app/event-ack"
+            }).to_string()),
+            error_json: None,
+        })
+        .unwrap();
+    let runtime_claim = service
+        .store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "workflow".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            claimed_by: "runtime-attempt".to_owned(),
+            message_ids: Some(vec![runtime_message_id.to_owned()]),
+            run_id: Some(run_id.to_owned()),
+            msg_type: Some("workflow.step.execute".to_owned()),
+            recipient_id: Some("python-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        })
+        .unwrap();
+    assert_eq!(runtime_claim.len(), 1);
+    let handoff = RecordedWorkerHandoff {
+        message_id: runtime_message_id.to_owned(),
+        claimed_by: "runtime-attempt".to_owned(),
+        run_id: run_id.to_owned(),
+        step_id: "ack-step".to_owned(),
+        correlation_id: run_id.to_owned(),
+    };
+    let acknowledgement = kogwistar_runtime::ProviderEventAcknowledgementV1 {
+        message_id: event_message_id,
+        claimed_by: "event-consumer-attempt".to_owned(),
+        event_id: event.event_id,
+    };
+    let effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+        "contract_version": 1,
+        "effect_id": "sqlite-provider-ack-effect",
+        "state_update": [],
+        "successors": [],
+        "result": {"handled": true},
+        "provider_event_acknowledgements": [acknowledgement.clone()]
+    }))
+    .unwrap();
+    let execute = |effect: RecordedWorkerSuccessEffect| {
+        let body = serde_json::to_vec(&json!({
+            "handoff": handoff,
+            "effect": effect
+        }))
+        .unwrap();
+        service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body,
+            principal: json!({
+                "sub": "python-runtime-worker",
+                "role": "admin",
+                "capabilities": ["runtime.submit_result"]
+            }),
+        })
+    };
+    let mut bad_effect = effect.clone();
+    bad_effect.provider_event_acknowledgements[0].claimed_by = "wrong-claimer".to_owned();
+    assert_eq!(
+        execute(bad_effect).await.status,
+        StatusCode::CONFLICT.as_u16()
+    );
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message(&format!("msg:{}", acknowledgement.event_id))
+            .unwrap()
+            .unwrap()
+            .status,
+        "claimed"
+    );
+    assert_eq!(
+        service
+            .store
+            .read_recorded_runtime_state(run_id, workflow_id, conversation_id)
+            .unwrap()
+            .unwrap()
+            .last_step_seq,
+        1
+    );
+    let applied = execute(effect).await;
+    assert_eq!(
+        applied.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&applied.body)
+    );
+    assert_eq!(
+        service
+            .store
+            .read_recorded_runtime_state(run_id, workflow_id, conversation_id)
+            .unwrap()
+            .unwrap()
+            .last_step_seq,
+        2
+    );
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message(&format!("msg:{}", acknowledgement.event_id))
+            .unwrap()
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let graph_events = service
+        .store
+        .replay_raw_events("conversation", 0, 100)
+        .unwrap();
+    assert!(graph_events.iter().any(|row| {
+        row.entity_id == format!("wf_step|{run_id}|2")
+    }));
+    assert!(graph_events.iter().any(|row| {
+        serde_json::from_str::<Value>(&row.payload_json).is_ok_and(|payload| {
+            payload["metadata"]["relation"] == "acknowledged_by_step"
+        })
+    }));
+    assert!(service
+        .store
+        .list_server_run_events(run_id, 0, 100)
+        .unwrap()
+        .iter()
+        .any(|event| event.event_type == "workflow.provider_event.handled.v1"));
+    drop(service);
+    remove_test_sqlite(&path);
+    remove_test_sqlite(&auth_path);
+}
+
+#[tokio::test]
 async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projection() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

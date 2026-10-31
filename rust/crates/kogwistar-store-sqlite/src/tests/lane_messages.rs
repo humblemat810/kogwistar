@@ -141,3 +141,73 @@ fn expired_lane_claim_cannot_be_finalized_before_reclaim() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn strict_lane_ack_requires_the_active_claim_owner_and_lease() {
+    let (store, path) = store("strict-lane-ack");
+    let message_id = "strict-ack-message";
+    let mut row = runtime_worker_lane("run-target", message_id);
+    row.available_at = 0;
+    store.project_lane_message(row).unwrap();
+
+    let pending_ack = store.immediate_transaction(|uow| {
+        uow.ack_claimed_projected_lane_message(message_id, "attempt-1")
+    });
+    assert!(matches!(
+        pending_ack,
+        Err(SqliteStoreError::RecordedRuntimeConflict(_))
+    ));
+
+    let claimed = store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "runtime".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            claimed_by: "attempt-1".to_owned(),
+            message_ids: Some(vec![message_id.to_owned()]),
+            run_id: Some("run-target".to_owned()),
+            msg_type: Some("workflow.worker.request.v1".to_owned()),
+            recipient_id: Some("python-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        })
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    let wrong_owner = store.immediate_transaction(|uow| {
+        uow.ack_claimed_projected_lane_message(message_id, "attempt-2")
+    });
+    assert!(matches!(
+        wrong_owner,
+        Err(SqliteStoreError::RecordedRuntimeConflict(_))
+    ));
+    assert_eq!(
+        store
+            .get_projected_lane_message(message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "claimed"
+    );
+
+    store
+        .immediate_transaction(|uow| {
+            uow.ack_claimed_projected_lane_message(message_id, "attempt-1")
+        })
+        .unwrap();
+    assert!(matches!(
+        store.immediate_transaction(|uow| {
+            uow.ack_claimed_projected_lane_message(message_id, "attempt-1")
+        }),
+        Err(SqliteStoreError::RecordedRuntimeConflict(_))
+    ));
+    assert_eq!(
+        store
+            .get_projected_lane_message(message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "completed"
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}

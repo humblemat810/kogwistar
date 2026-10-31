@@ -3340,6 +3340,14 @@ impl SqliteRunApplicationService {
     }
 
     fn apply_runtime_result(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        self.apply_runtime_result_with_principal(request, &request.principal)
+    }
+
+    fn apply_runtime_result_with_principal(
+        &self,
+        request: &ApiEffectRequest,
+        principal: &Value,
+    ) -> ApiEffectResponse {
         let input: RuntimeWorkerResultRequest = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
@@ -3350,7 +3358,7 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        self.apply_runtime_result_input(input, "python-worker", Some(&request.principal))
+        self.apply_runtime_result_input(input, "python-worker", Some(principal))
     }
 
     fn apply_runtime_result_input(
@@ -3375,13 +3383,34 @@ impl SqliteRunApplicationService {
                 "worker effect cannot carry both graph batch versions",
             );
         }
-        if input.effect.as_ref().is_some_and(|effect| {
-            !effect.provider_event_acknowledgements.is_empty()
-        }) {
+        let provider_event_acknowledgements = input
+            .effect
+            .as_ref()
+            .map(|effect| effect.provider_event_acknowledgements.clone())
+            .unwrap_or_default();
+        if validate_provider_event_acknowledgements(&provider_event_acknowledgements).is_err() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "provider event acknowledgements must be unique, complete, and limited to 100",
+            );
+        }
+        if !provider_event_acknowledgements.is_empty()
+            && input.effect.as_ref().is_none_or(|effect| {
+                effect.status != kogwistar_runtime::RuntimeWorkerEffectStatus::Success
+            })
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "provider events can only be acknowledged with a successful durable handling step",
+            );
+        }
+        if !provider_event_acknowledgements.is_empty() && self.chroma_graph.is_none() {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
-                "SQLite runtime provider-event acknowledgements are not implemented",
+                "SQLite provider-event acknowledgement requires the configured Chroma graph projection",
             );
         }
         let provider_event_publications = input
@@ -3389,6 +3418,76 @@ impl SqliteRunApplicationService {
             .as_ref()
             .map(|effect| effect.provider_event_publications.clone())
             .unwrap_or_default();
+        if provider_event_acknowledgements.iter().any(|ack| {
+            provider_event_publications
+                .iter()
+                .any(|publication| publication.event.event_id == ack.event_id)
+        }) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "one worker effect cannot publish and acknowledge the same provider event",
+            );
+        }
+        let provider_event_ack_scope = if provider_event_acknowledgements.is_empty() {
+            None
+        } else {
+            let Some(principal) = principal else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "provider event acknowledgement requires the run owner's current write_graph authority",
+                );
+            };
+            if !capability_allowed_for_principal(
+                principal,
+                &self.capabilities,
+                "write_graph",
+                &["write_graph"],
+            ) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "provider event acknowledgement requires the run owner's current write_graph authority",
+                );
+            }
+            let Some(owner_id) = authenticated_run_owner_id(principal).map(str::to_owned) else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "provider event acknowledgement requires an authenticated run owner",
+                );
+            };
+            let security_scope = security_scope_value(principal);
+            let Some(namespace) = security_scope["storage_namespace"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned)
+            else {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "provider event acknowledgement has no admitted storage namespace",
+                );
+            };
+            let scope = GraphScope {
+                namespace,
+                workspace_id: security_scope
+                    .get("workspace")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+                graph_space: Some("conversation".to_owned()),
+            };
+            if !graph_mutation_scope_allowed(&scope, &security_scope) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "provider event acknowledgement scope is outside the run owner's admitted scope",
+                );
+            }
+            Some((scope, owner_id, principal.clone()))
+        };
         let graph_batch = input.effect.as_ref().and_then(|effect| {
             match (
                 effect.graph_mutation_batch.as_ref(),
@@ -3517,7 +3616,9 @@ impl SqliteRunApplicationService {
                 message,
             );
         }
+        let runtime_run_id = input.handoff.run_id.clone();
         let outcome = self.store.immediate_transaction(|uow| {
+            let mut provider_event_handled_traces = Vec::new();
             if let Some((batch, owner_id, principal, default_acl_truth_graph, effect_id, publications)) = graph_batch.as_ref() {
                 if !capability_allowed_for_principal(
                     principal,
@@ -3706,6 +3807,40 @@ impl SqliteRunApplicationService {
                     },
                 )
             };
+            if !applied.idempotent {
+                if let Some((scope, owner_id, principal)) = provider_event_ack_scope.as_ref() {
+                    if !capability_allowed_for_principal(
+                        principal,
+                        &self.capabilities,
+                        "write_graph.commit",
+                        &["write_graph"],
+                    ) {
+                        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                            "provider event run owner no longer has write_graph authority".to_owned(),
+                        ));
+                    }
+                    let run = uow.get_server_run(&runtime_run_id)?;
+                    if !run.as_ref().is_some_and(|run| {
+                        run.user_id.as_deref() == Some(owner_id.as_str())
+                    }) {
+                        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                            "provider event run owner changed before acknowledgement".to_owned(),
+                        ));
+                    }
+                    for acknowledgement in &provider_event_acknowledgements {
+                        provider_event_handled_traces.push(apply_sqlite_provider_event_acknowledgement(
+                            uow,
+                            acknowledgement,
+                            &runtime_run_id,
+                            &applied.reduced.state,
+                            &transition.transition_id,
+                            scope,
+                            owner_id,
+                            principal,
+                        )?);
+                    }
+                }
+            }
             let frontier = &applied.reduced.state.frontier;
             let telemetry_run_id = transition.run_id.clone();
             let telemetry_step_id = transition.node_id.clone();
@@ -3852,6 +3987,13 @@ impl SqliteRunApplicationService {
                         }))?,
                     )?;
                 }
+                for trace in provider_event_handled_traces {
+                    uow.append_server_run_event(
+                        &telemetry_run_id,
+                        "workflow.provider_event.handled.v1",
+                        serde_json::to_string(&trace)?,
+                    )?;
+                }
             }
             Ok(result)
         });
@@ -3913,4 +4055,175 @@ impl SqliteRunApplicationService {
             None,
         )
     }
+}
+
+fn apply_sqlite_provider_event_acknowledgement(
+    uow: &mut SqliteUnitOfWork<'_>,
+    acknowledgement: &kogwistar_runtime::ProviderEventAcknowledgementV1,
+    run_id: &str,
+    state: &RecordedRuntimeState,
+    effect_id: &str,
+    scope: &GraphScope,
+    owner_id: &str,
+    principal: &Value,
+) -> Result<Value, kogwistar_store_sqlite::SqliteStoreError> {
+    let lane = uow
+        .get_projected_lane_message(&acknowledgement.message_id)?
+        .ok_or_else(|| {
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event acknowledgement lane does not exist".to_owned(),
+            )
+        })?;
+    let run = uow.get_server_run(run_id)?;
+    if !run
+        .as_ref()
+        .is_some_and(|run| run.user_id.as_deref() == Some(owner_id))
+    {
+        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+            "provider event run owner changed before acknowledgement".to_owned(),
+        ));
+    }
+    let event: kogwistar_contracts::DurableProviderEventV1 = lane
+        .payload_json
+        .as_deref()
+        .and_then(|payload| serde_json::from_str(payload).ok())
+        .ok_or_else(|| {
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event payload is unavailable for causal linkage".to_owned(),
+            )
+        })?;
+    if acknowledgement.message_id != format!("msg:{}", acknowledgement.event_id)
+        || lane.namespace != scope.namespace
+        || lane.purpose != "agent_event"
+        || lane.inbox_id != "agent-provider-events"
+        || lane.msg_type != "agent.provider_event"
+        || lane.recipient_id != "agent-event-consumer"
+        || lane.status != "claimed"
+        || lane.claimed_by.as_deref() != Some(acknowledgement.claimed_by.as_str())
+        || lane.run_id.as_deref() != Some(run_id)
+        || lane.conversation_id
+            != run
+                .as_ref()
+                .map(|run| run.conversation_id.as_str())
+                .unwrap_or_default()
+        || lane.correlation_id.as_deref() != Some(acknowledgement.event_id.as_str())
+        || event.event_id != acknowledgement.event_id
+        || event.trace.run_id != run_id
+        || state.conversation_id != lane.conversation_id
+        || state.run_id != run_id
+    {
+        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+            "provider event acknowledgement is not bound to the active run claim".to_owned(),
+        ));
+    }
+    let handler_step_seq = state
+        .state
+        .get("agent_event_handling_step_seq")
+        .and_then(Value::as_i64)
+        .filter(|step_seq| *step_seq >= 0)
+        .ok_or_else(|| {
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event has no valid durable handler step sequence".to_owned(),
+            )
+        })?;
+    let mut referenced_step_seqs = vec![handler_step_seq];
+    if let Some(producer_step_seq) = event.trace.producer_step_seq {
+        if producer_step_seq < 0 {
+            return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event has an invalid producer step sequence".to_owned(),
+            ));
+        }
+        referenced_step_seqs.push(producer_step_seq);
+    }
+    referenced_step_seqs.sort_unstable();
+    referenced_step_seqs.dedup();
+    let recorded_steps = uow.recorded_runtime_steps(run_id, &referenced_step_seqs)?;
+    let snapshots = provider_event_step_snapshots(
+        recorded_steps,
+        run_id,
+        &lane.conversation_id,
+        &state.workflow_id,
+        &referenced_step_seqs,
+    )
+    .map_err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict)?;
+    let workflow_node_id = state
+        .last_node_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event handling step has no workflow node identity".to_owned(),
+            )
+        })?;
+    let step_seq = state.last_step_seq;
+    if step_seq < 0
+        || handler_step_seq >= step_seq
+        || event
+            .trace
+            .producer_step_seq
+            .is_some_and(|producer_step_seq| producer_step_seq >= step_seq)
+    {
+        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+            "provider event causal steps must precede the acknowledgement step".to_owned(),
+        ));
+    }
+    let security_scope = security_scope_value(principal);
+    if !graph_mutation_scope_allowed(scope, &security_scope) {
+        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+            "provider event handling graph scope changed before commit".to_owned(),
+        ));
+    }
+    let mut causal_mutations = provider_event_ack_graph_mutations(
+        &acknowledgement.event_id,
+        run_id,
+        &lane.conversation_id,
+        &state.workflow_id,
+        workflow_node_id,
+        step_seq,
+        effect_id,
+        scope,
+    );
+    causal_mutations.extend(provider_event_step_link_mutations(
+        &acknowledgement.event_id,
+        run_id,
+        &lane.conversation_id,
+        event.trace.producer_step_seq,
+        handler_step_seq,
+        &snapshots,
+        scope,
+    ));
+    let mut linked_step_nodes = BTreeSet::new();
+    causal_mutations.retain(|mutation| {
+        mutation.entity_kind != "node" || linked_step_nodes.insert(mutation.record.id.clone())
+    });
+    let (targets, _) = acl_targets_for_graph_mutations(&causal_mutations);
+    let entity_ids = acl_target_entity_ids(&targets);
+    let existing = uow.graph_acl_records_for_entities(scope, "conversation", &entity_ids)?;
+    let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+        scope,
+        &causal_mutations,
+        targets,
+        existing,
+        "conversation",
+        &owner_id.to_ascii_lowercase(),
+        security_scope["security_scope"].as_str(),
+        &acknowledgement.event_id,
+    )
+    .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+    causal_mutations.extend(acl_mutations);
+    uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: causal_mutations,
+        index_jobs: acl_jobs,
+    })?;
+    uow.ack_claimed_projected_lane_message(
+        &acknowledgement.message_id,
+        &acknowledgement.claimed_by,
+    )?;
+    Ok(json!({
+        "event_id": acknowledgement.event_id,
+        "message_id": acknowledgement.message_id,
+        "workflow_node_id": workflow_node_id,
+        "step_seq": step_seq,
+        "effect_id": effect_id,
+    }))
 }
