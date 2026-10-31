@@ -1066,6 +1066,92 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 assert private_target.id in actual_seed_ids
                 assert restricted_evidence_target.id in actual_seed_ids
 
+        def add_scoped_pair(
+            *, scope_name: str, scope_value: str
+        ) -> tuple[Node, Node, Edge, str]:
+            scoped_doc_id = f"{doc_id}-{scope_name}"
+            start = build_entity_node(
+                node_id=f"{id_prefix}-{scope_name}-start",
+                doc_id=scoped_doc_id,
+                label=f"{scope_name} scoped start",
+                metadata={"visibility": "scope", "security_scope": scope_value},
+            )
+            target = build_entity_node(
+                node_id=f"{id_prefix}-{scope_name}-target",
+                doc_id=scoped_doc_id,
+                label=f"{scope_name} scoped target",
+                metadata={"visibility": "scope", "security_scope": scope_value},
+            )
+            edge = build_relationship_edge(
+                edge_id=f"{id_prefix}-{scope_name}-edge",
+                src=start.id,
+                tgt=target.id,
+                doc_id=scoped_doc_id,
+                metadata={"visibility": "scope", "security_scope": scope_value},
+            )
+            engine.write.add_node(start)
+            engine.write.add_node(target)
+            engine.write.add_edge(edge)
+            return start, target, edge, scoped_doc_id
+
+        owner_token = claims_ctx.set(owner_python_claims)
+        try:
+            project_scoped_pair = add_scoped_pair(
+                scope_name="project-scope", scope_value="project-alpha"
+            )
+            tenant_scoped_pair = add_scoped_pair(
+                scope_name="tenant-scope", scope_value="tenant-alpha"
+            )
+        finally:
+            claims_ctx.reset(owner_token)
+
+        for pair, allowed_claims, denied_claims in (
+            (
+                project_scoped_pair,
+                {**reader_claims, "project": "project-alpha"},
+                {**reader_claims, "project": "project-beta"},
+            ),
+            (
+                tenant_scoped_pair,
+                {
+                    **reader_claims,
+                    "tenant": "tenant-alpha",
+                    "project": "project-alpha",
+                },
+                {
+                    **reader_claims,
+                    "tenant": "tenant-beta",
+                    "project": "project-alpha",
+                },
+            ),
+        ):
+            scoped_start, scoped_target, scoped_edge, scoped_doc_id = pair
+            for claims, should_be_visible in (
+                (allowed_claims, True),
+                (denied_claims, False),
+            ):
+                python_token = claims_ctx.set(claims)
+                try:
+                    python_scoped = GraphQuery(engine).neighbors(
+                        scoped_start.id, doc_id=scoped_doc_id
+                    )
+                finally:
+                    claims_ctx.reset(python_token)
+                rust_scoped = rust_mcp_tool(
+                    "kg_neighbors",
+                    {"rid": scoped_start.id, "doc_id": scoped_doc_id},
+                    claims,
+                )
+                assert set(rust_scoped["nodes"]) == python_scoped["nodes"]
+                assert set(rust_scoped["edges"]) == python_scoped["edges"]
+                if should_be_visible:
+                    assert python_scoped == {
+                        "nodes": {scoped_target.id},
+                        "edges": {scoped_edge.id},
+                    }
+                else:
+                    assert python_scoped == {"nodes": set(), "edges": set()}
+
         response = httpx.post(
             f"{base}/internal/graph/neighbors",
             headers={
