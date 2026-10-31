@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -55,6 +57,46 @@ def test_non_runtime_events_do_not_share_transition_id_uniqueness(
         )
     assert len(store.list_server_run_events("run-1")) == 1
     assert len(store.list_server_run_events("run-2")) == 1
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_sqlite_metadata_schemas_match(tmp_path: Path) -> None:
+    pytest.importorskip("kogwistar._rust")
+    python = EngineSQLite(tmp_path / "python")
+    python.ensure_initialized()
+    rust = RustEngineSQLite(tmp_path / "rust")
+    rust.ensure_initialized()
+    rust.close()
+
+    def schema_signature(path: Path) -> dict[str, object]:
+        with sqlite3.connect(path) as conn:
+            table_names = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            result: dict[str, object] = {}
+            for table in table_names:
+                columns = tuple(
+                    tuple(row)
+                    for row in conn.execute(f'PRAGMA table_info("{table}")')
+                )
+                indexes = []
+                for row in conn.execute(f'PRAGMA index_list("{table}")'):
+                    index_name = row[1]
+                    sql_row = conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                        (index_name,),
+                    ).fetchone()
+                    sql = " ".join((sql_row[0] or "").split()).lower()
+                    sql = re.sub(r"\s*([(),=])\s*", r"\1", sql)
+                    indexes.append((index_name, row[2], row[3], row[4], sql))
+                result[table] = (columns, tuple(sorted(indexes)))
+            return result
+
+    assert schema_signature(python.db_path) == schema_signature(rust.db_path)
 
 
 @pytest.mark.ci_full
