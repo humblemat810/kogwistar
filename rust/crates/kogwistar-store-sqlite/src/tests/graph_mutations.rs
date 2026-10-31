@@ -1,0 +1,135 @@
+use super::*;
+use kogwistar_store::{GraphMutation, GraphMutationBatch, GraphRecord, GraphScope};
+
+fn mutation(event_id: &str, id: &str) -> GraphMutation {
+    GraphMutation {
+        scope: GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("conversation".to_owned()),
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: event_id.to_owned(),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": id, "label": id, "metadata": {"engine_type": "conversation"}}),
+        record: GraphRecord {
+            id: id.to_owned(),
+            document: Some(format!("{{\"id\":\"{id}\"}}")),
+            metadata: serde_json::Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    }
+}
+
+#[test]
+fn canonical_graph_batch_commits_events_and_projection_jobs_together() {
+    let (store, path) = store("canonical-graph-batch");
+    let applied = store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![mutation("event-1", "node-1"), mutation("event-2", "node-2")],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(applied.len(), 2);
+    assert!(applied.iter().all(|item| item.inserted && item.mutated));
+    let events = store.replay_raw_events("conversation", 0, 10).unwrap();
+    assert_eq!(events.len(), 2);
+    let jobs = store
+        .list_index_jobs(
+            Some("conversation"),
+            Some("PENDING"),
+            Some("node"),
+            None,
+            Some("node_embedding"),
+            10,
+        )
+        .unwrap();
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs.iter().all(|job| job.payload_json.is_some()));
+
+    let retried = store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![mutation("event-1", "node-1")],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(retried.len(), 1);
+    assert!(!retried[0].inserted && !retried[0].mutated);
+    assert_eq!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        store
+            .list_index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                None,
+                Some("node_embedding"),
+                10,
+            )
+            .unwrap()
+            .len(),
+        2
+    );
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn invalid_replayed_event_rolls_back_the_entire_canonical_batch() {
+    let (store, path) = store("canonical-graph-batch-rollback");
+    let result = store.immediate_transaction(|uow| {
+        uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![
+                mutation("shared-event", "node-1"),
+                mutation("shared-event", "node-2"),
+            ],
+            index_jobs: Vec::new(),
+        })
+    });
+    assert!(result.is_err());
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .list_index_jobs(Some("conversation"), Some("PENDING"), None, None, None, 10,)
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn canonical_graph_batch_rejects_mixed_scopes_before_writing() {
+    let (store, path) = store("canonical-graph-batch-scope");
+    let mut other = mutation("event-2", "node-2");
+    other.scope.namespace = "other".to_owned();
+    assert!(
+        store
+            .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: vec![mutation("event-1", "node-1"), other],
+                index_jobs: Vec::new(),
+            })
+            .is_err()
+    );
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    let _ = fs::remove_file(path);
+}

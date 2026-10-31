@@ -194,6 +194,8 @@ mod auth;
 mod authority;
 #[path = "tests/events.rs"]
 mod events;
+#[path = "tests/graph_mutations.rs"]
+mod graph_mutations;
 #[path = "tests/graph_projections.rs"]
 mod graph_projections;
 #[path = "tests/index_jobs.rs"]
