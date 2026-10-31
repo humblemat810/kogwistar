@@ -2,17 +2,18 @@
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent,
-    EventPruneStore, EventReadStore, EventWriteStore, GraphAuthorityCapability, GraphMutation,
-    GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead, GraphProjectionVectorQuery,
-    GraphReadStore, GraphRecord, GraphScope, GraphWriteStore, IndexJob, IndexJobReadStore,
-    IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore,
-    LaneMessageWriteStore, MetadataFilter, NamedProjection, NamedProjectionWrite, NewEntityEvent,
-    NewIndexJob, NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore,
-    ProjectionWriteStore, ReplayCursor, ServerRun, ServerRunCreate, ServerRunEvent,
-    ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore, StoreError, StoreResult, VectorMatch,
-    VectorQuery, WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
-    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
-    integer_timestamp, timestamp_i64, validate_graph_mutation,
+    EventPruneStore, EventReadStore, EventWriteStore, GraphAuthorityCapability, GraphEntityKind,
+    GraphMutation, GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead,
+    GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope, GraphWriteStore, IndexJob,
+    IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
+    LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter, NamedProjection,
+    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
+    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
+    StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
+    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
+    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
+    validate_graph_mutation,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -801,8 +802,8 @@ impl IndexJobWriteStore for InMemoryStore {
 
 #[derive(Debug, Default)]
 struct NamespaceState {
-    records: BTreeMap<String, GraphRecord>,
-    record_order: Vec<String>,
+    records: BTreeMap<(String, String), GraphRecord>,
+    record_order: Vec<(String, String)>,
     events: Vec<EntityEvent>,
     event_seq_by_id: BTreeMap<String, i64>,
     cursors: BTreeMap<String, i64>,
@@ -815,8 +816,8 @@ struct NamespaceState {
 /// namespace-local event log and idempotency contract.
 #[derive(Debug, Default)]
 struct GraphProjectionState {
-    records: BTreeMap<String, GraphRecord>,
-    record_order: Vec<String>,
+    records: BTreeMap<(String, String), GraphRecord>,
+    record_order: Vec<(String, String)>,
 }
 
 impl InMemoryStore {
@@ -892,10 +893,11 @@ impl InMemoryStore {
             .insert(event.event_id.clone(), seq);
         namespace_state.events.push(event.clone());
         let projection = state.graph_projections.entry(mutation.scope).or_default();
-        if !projection.records.contains_key(&record.id) {
-            projection.record_order.push(record.id.clone());
+        let record_key = (mutation.table, record.id.clone());
+        if !projection.records.contains_key(&record_key) {
+            projection.record_order.push(record_key.clone());
         }
-        projection.records.insert(record.id.clone(), record);
+        projection.records.insert(record_key, record);
         Ok(AppliedGraphMutation {
             event,
             inserted: true,
@@ -1006,7 +1008,8 @@ impl InMemoryStore {
                 projection
                     .record_order
                     .iter()
-                    .filter_map(|id| projection.records.get(id))
+                    .filter(|(table, _)| table == &read.table)
+                    .filter_map(|key| projection.records.get(key))
                     .filter(|record| read.metadata.matches(&record.metadata))
                     .cloned()
                     .collect::<Vec<_>>()
@@ -1173,6 +1176,12 @@ fn namespace(ns: &str) -> StoreResult<()> {
         Ok(())
     }
 }
+fn graph_kind_name(kind: GraphEntityKind) -> &'static str {
+    match kind {
+        GraphEntityKind::Node => "node",
+        GraphEntityKind::Edge => "edge",
+    }
+}
 fn now_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1259,8 +1268,35 @@ impl GraphReadStore for InMemoryStore {
     async fn graph_record(&self, ns: &str, id: &str) -> StoreResult<Option<GraphRecord>> {
         namespace(ns)?;
         let state = self.state.read().expect("in-memory store lock poisoned");
+        let matches = Self::scope(&state, ns)
+            .into_iter()
+            .flat_map(|scope| scope.record_order.iter())
+            .filter(|(_, record_id)| record_id == id)
+            .filter_map(|key| Self::scope(&state, ns)?.records.get(key))
+            .cloned()
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => Ok(None),
+            [record] => Ok(Some(record.clone())),
+            _ => Err(StoreError::Backend {
+                backend: "memory-graph-read".to_owned(),
+                message: "record ID is ambiguous across entity kinds; use a kind-aware read"
+                    .to_owned(),
+            }),
+        }
+    }
+
+    async fn graph_record_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        id: &str,
+    ) -> StoreResult<Option<GraphRecord>> {
+        namespace(ns)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let key = (graph_kind_name(kind).to_owned(), id.to_owned());
         Ok(Self::scope(&state, ns)
-            .and_then(|scope| scope.records.get(id))
+            .and_then(|scope| scope.records.get(&key))
             .cloned())
     }
     async fn graph_records(
@@ -1275,7 +1311,28 @@ impl GraphReadStore for InMemoryStore {
                 scope
                     .record_order
                     .iter()
-                    .filter_map(|id| scope.records.get(id))
+                    .filter_map(|key| scope.records.get(key))
+                    .filter(|record| filter.matches(&record.metadata))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+    async fn graph_records_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        filter: &MetadataFilter,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        namespace(ns)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        Ok(Self::scope(&state, ns)
+            .map(|scope| {
+                scope
+                    .record_order
+                    .iter()
+                    .filter(|(record_kind, _)| record_kind == graph_kind_name(kind))
+                    .filter_map(|key| scope.records.get(key))
                     .filter(|record| filter.matches(&record.metadata))
                     .cloned()
                     .collect()
@@ -1293,7 +1350,7 @@ impl GraphReadStore for InMemoryStore {
                     scope
                         .record_order
                         .iter()
-                        .filter_map(|id| scope.records.get(id))
+                        .filter_map(|key| scope.records.get(key))
                 })
                 .filter(|record| query.metadata.matches(&record.metadata))
                 .filter(|record| record.embedding.is_some())
@@ -1308,7 +1365,7 @@ impl GraphReadStore for InMemoryStore {
                     scope
                         .record_order
                         .iter()
-                        .filter_map(|id| scope.records.get(id))
+                        .filter_map(|key| scope.records.get(key))
                 })
                 .filter(|record| query.metadata.matches(&record.metadata))
                 .filter_map(|record| {
@@ -1328,6 +1385,51 @@ impl GraphReadStore for InMemoryStore {
         results.truncate(query.limit);
         Ok(results)
     }
+
+    async fn vector_query_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        namespace(ns)?;
+        finite(&query.embedding)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let records = Self::scope(&state, ns)
+            .into_iter()
+            .flat_map(|scope| {
+                scope
+                    .record_order
+                    .iter()
+                    .filter(|(record_kind, _)| record_kind == graph_kind_name(kind))
+                    .filter_map(|key| scope.records.get(key))
+            })
+            .filter(|record| query.metadata.matches(&record.metadata));
+        let mut results = match query.metric {
+            DistanceMetric::Cosine => records
+                .filter(|record| record.embedding.is_some())
+                .map(|record| VectorMatch {
+                    record: record.clone(),
+                    distance: cosine_memory_distance(&query.embedding, record.embedding.as_deref()),
+                })
+                .collect(),
+            DistanceMetric::L2 | DistanceMetric::InnerProduct => records
+                .filter_map(|record| {
+                    record.embedding.as_deref().map(|vector| {
+                        distance(query.metric, &query.embedding, vector).map(|distance| {
+                            VectorMatch {
+                                record: record.clone(),
+                                distance,
+                            }
+                        })
+                    })
+                })
+                .collect::<StoreResult<Vec<_>>>()?,
+        };
+        results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+        results.truncate(query.limit);
+        Ok(results)
+    }
 }
 
 impl GraphWriteStore for InMemoryStore {
@@ -1341,21 +1443,72 @@ impl GraphWriteStore for InMemoryStore {
         }
         let mut state = self.state.write().expect("in-memory store lock poisoned");
         let scope = Self::scope_mut(&mut state, ns);
-        if !scope.records.contains_key(&record.id) {
-            scope.record_order.push(record.id.clone());
+        let key = (String::new(), record.id.clone());
+        if !scope.records.contains_key(&key) {
+            scope.record_order.push(key.clone());
         }
-        scope.records.insert(record.id.clone(), record);
+        scope.records.insert(key, record);
         Ok(())
     }
     async fn delete_graph_record(&self, ns: &str, id: &str) -> StoreResult<bool> {
         namespace(ns)?;
         let mut state = self.state.write().expect("in-memory store lock poisoned");
         let scope = Self::scope_mut(&mut state, ns);
-        let deleted = scope.records.remove(id).is_some();
-        if deleted {
-            scope.record_order.retain(|record_id| record_id != id);
+        let matching_keys = scope
+            .record_order
+            .iter()
+            .filter(|(_, record_id)| record_id == id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if matching_keys.len() > 1 {
+            return Err(StoreError::Backend {
+                backend: "memory-graph-write".to_owned(),
+                message: "record ID is ambiguous across entity kinds; use a kind-aware delete"
+                    .to_owned(),
+            });
         }
-        Ok(deleted)
+        let Some(key) = matching_keys.first() else {
+            return Ok(false);
+        };
+        scope.record_order.retain(|record_key| record_key != key);
+        Ok(scope.records.remove(key).is_some())
+    }
+
+    async fn upsert_graph_record_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        record: GraphRecord,
+    ) -> StoreResult<()> {
+        namespace(ns)?;
+        if record.id.is_empty() {
+            return Err(StoreError::EmptyRecordId);
+        }
+        if let Some(vector) = &record.embedding {
+            finite(vector)?;
+        }
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let scope = Self::scope_mut(&mut state, ns);
+        let key = (graph_kind_name(kind).to_owned(), record.id.clone());
+        if !scope.records.contains_key(&key) {
+            scope.record_order.push(key.clone());
+        }
+        scope.records.insert(key, record);
+        Ok(())
+    }
+
+    async fn delete_graph_record_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        id: &str,
+    ) -> StoreResult<bool> {
+        namespace(ns)?;
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let scope = Self::scope_mut(&mut state, ns);
+        let key = (graph_kind_name(kind).to_owned(), id.to_owned());
+        scope.record_order.retain(|record_key| record_key != &key);
+        Ok(scope.records.remove(&key).is_some())
     }
 }
 
@@ -1415,7 +1568,8 @@ impl GraphMutationStore for InMemoryStore {
                     projection
                         .record_order
                         .iter()
-                        .filter_map(|id| projection.records.get(id))
+                        .filter(|(table, _)| table == &query.table)
+                        .filter_map(|key| projection.records.get(key))
                 })
                 .filter(|record| query.query.metadata.matches(&record.metadata))
                 .filter(|record| record.embedding.is_some())
@@ -1433,7 +1587,8 @@ impl GraphMutationStore for InMemoryStore {
                     projection
                         .record_order
                         .iter()
-                        .filter_map(|id| projection.records.get(id))
+                        .filter(|(table, _)| table == &query.table)
+                        .filter_map(|key| projection.records.get(key))
                 })
                 .filter(|record| query.query.metadata.matches(&record.metadata))
                 .filter_map(|record| {
@@ -1824,6 +1979,103 @@ mod tests {
     }
 
     #[test]
+    fn direct_graph_records_keep_node_and_edge_identity_disjoint() {
+        let store = InMemoryStore::new();
+        block_on(store.upsert_graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Node,
+            record("shared-id", "node", &[1.0, 0.0]),
+        ))
+        .unwrap();
+        block_on(store.upsert_graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Edge,
+            record("shared-id", "edge", &[0.0, 1.0]),
+        ))
+        .unwrap();
+
+        let node = block_on(store.graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Node,
+            "shared-id",
+        ))
+        .unwrap()
+        .unwrap();
+        let edge = block_on(store.graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Edge,
+            "shared-id",
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(node.metadata["team"], "node");
+        assert_eq!(edge.metadata["team"], "edge");
+        assert_eq!(
+            block_on(store.graph_records_of_kind(
+                "typed-direct",
+                GraphEntityKind::Node,
+                &MetadataFilter::default(),
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.graph_records_of_kind(
+                "typed-direct",
+                GraphEntityKind::Edge,
+                &MetadataFilter::default(),
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 5,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        let node_hits =
+            block_on(store.vector_query_of_kind("typed-direct", GraphEntityKind::Node, &query))
+                .unwrap();
+        let edge_hits =
+            block_on(store.vector_query_of_kind("typed-direct", GraphEntityKind::Edge, &query))
+                .unwrap();
+        assert_eq!(node_hits[0].distance, 0.0);
+        assert_eq!(edge_hits[0].distance, 1.0);
+        assert!(block_on(store.graph_record("typed-direct", "shared-id")).is_err());
+        assert!(block_on(store.delete_graph_record("typed-direct", "shared-id")).is_err());
+        assert!(
+            block_on(store.delete_graph_record_of_kind(
+                "typed-direct",
+                GraphEntityKind::Node,
+                "shared-id",
+            ))
+            .unwrap()
+        );
+        assert!(
+            block_on(store.graph_record_of_kind(
+                "typed-direct",
+                GraphEntityKind::Node,
+                "shared-id",
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            block_on(store.graph_record_of_kind(
+                "typed-direct",
+                GraphEntityKind::Edge,
+                "shared-id",
+            ))
+            .unwrap()
+            .is_some()
+        );
+    }
+
+    #[test]
     fn expired_claim_token_cannot_mutate_queue_state() {
         let store = InMemoryStore::new();
         for job_id in ["done", "failed", "retried", "requeued"] {
@@ -2070,6 +2322,56 @@ mod tests {
         .expect("visit pages without collecting projection records");
         assert_eq!(page_count, 2);
         assert_eq!(visited, vec!["a-parity-node", "parity-node"]);
+    }
+
+    #[test]
+    fn graph_projection_keeps_same_id_separate_by_table() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "same-id-projection".to_owned(),
+            workspace_id: Some("ws".to_owned()),
+            graph_space: Some("universal".to_owned()),
+        };
+        let node = graph_mutation(scope.clone(), "node-event", "shared-id", &[1.0, 0.0]);
+        block_on(store.apply_graph_mutation(node)).unwrap();
+
+        let mut edge = graph_mutation(scope.clone(), "edge-event", "shared-id", &[0.0, 1.0]);
+        edge.table = "gke_edges".to_owned();
+        edge.entity_kind = "edge".to_owned();
+        block_on(store.apply_graph_mutation(edge)).unwrap();
+
+        for (table, expected_embedding) in
+            [("gke_nodes", vec![1.0, 0.0]), ("gke_edges", vec![0.0, 1.0])]
+        {
+            let records = block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            }))
+            .unwrap();
+            assert_eq!(records.len(), 1, "{table}");
+            assert_eq!(records[0].id, "shared-id");
+            assert_eq!(records[0].embedding, Some(expected_embedding.clone()));
+
+            let hits = block_on(
+                store.graph_projection_vector_query(GraphProjectionVectorQuery {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    query: VectorQuery {
+                        embedding: vec![1.0, 0.0],
+                        limit: 10,
+                        metadata: MetadataFilter::default(),
+                        metric: DistanceMetric::Cosine,
+                    },
+                    embedding_dim: 2,
+                }),
+            )
+            .unwrap();
+            assert_eq!(hits.len(), 1, "{table}");
+            assert_eq!(hits[0].record.embedding, Some(expected_embedding));
+        }
     }
 
     #[test]
