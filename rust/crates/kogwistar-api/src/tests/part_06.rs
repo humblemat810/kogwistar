@@ -7122,6 +7122,36 @@
             .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
             .await
             .unwrap();
+        let public_events_response = client
+            .get(format!(
+                "{base_url}/api/runs/rust-only-answer-e2e/events/poll?after_seq=0&limit=10000"
+            ))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            public_events_response.status().is_success(),
+            "authorized run-event polling should expose the durable event stream"
+        );
+        let public_events: Value = public_events_response.json().await.unwrap();
+        let public_provider_event = public_events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| {
+                event["event_type"] == "workflow.provider_event.v1"
+                    && event["payload"]["provider_event"]["kind"] == "field_completed"
+                    && event["payload"]["provider_event"]["details"]["field_name"] == "text"
+            })
+            .expect("authorized run-event polling returns streamed semantic event metadata");
+        assert_eq!(
+            public_provider_event["payload"]["provider_event"]["details"]["field_name"],
+            "text"
+        );
+        let public_event_payload = serde_json::to_string(public_provider_event).unwrap();
+        assert!(!public_event_payload.contains("The workflow runtime state is stored in the graph."));
+        assert!(!public_event_payload.contains("The selected evidence states this directly."));
         let streamed_provider_events = durable_events
             .iter()
             .filter(|event| event.event_type == "workflow.provider_event.v1")
@@ -7138,6 +7168,11 @@
                     && event["provider_event"]["details"]["field_name"] == "text"
             })
             .expect("the completed text field event is durable");
+        assert_eq!(
+            public_provider_event["payload"]["span_id"],
+            streamed_text_field["span_id"],
+            "public run-event polling preserves canonical trace identity"
+        );
         assert_eq!(streamed_text_field["run_id"], "rust-only-answer-e2e");
         assert_eq!(streamed_text_field["trace_id"], "rust-only-answer-e2e");
         assert_eq!(streamed_text_field["workflow_id"], "agentic_answering.v2");
