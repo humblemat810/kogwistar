@@ -3229,7 +3229,7 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
             .last_step_seq,
         1
     );
-    let applied = execute(effect).await;
+    let applied = execute(effect.clone()).await;
     assert_eq!(
         applied.status,
         StatusCode::OK.as_u16(),
@@ -3272,6 +3272,38 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
         .unwrap()
         .iter()
         .any(|event| event.event_type == "workflow.provider_event.handled.v1"));
+    let graph_event_count = service
+        .store
+        .replay_raw_events("conversation", 0, 100)
+        .unwrap()
+        .len();
+    let handled_trace_count = service
+        .store
+        .list_server_run_events(run_id, 0, 100)
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == "workflow.provider_event.handled.v1")
+        .count();
+    let retried = execute(effect).await;
+    assert_eq!(retried.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        service
+            .store
+            .replay_raw_events("conversation", 0, 100)
+            .unwrap()
+            .len(),
+        graph_event_count
+    );
+    assert_eq!(
+        service
+            .store
+            .list_server_run_events(run_id, 0, 100)
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "workflow.provider_event.handled.v1")
+            .count(),
+        handled_trace_count
+    );
     drop(service);
     remove_test_sqlite(&path);
     remove_test_sqlite(&auth_path);
