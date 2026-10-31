@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::time::Duration;
 
-use kogwistar_contracts::ProviderEventV1;
 use kogwistar_contracts::{GraphDefaultAclIntentV1, GraphMutationBatchV2, stable_id};
+use kogwistar_contracts::{PROVIDER_REQUEST_CONTRACT_VERSION, ProviderEventV1, ProviderRequestV1};
 use kogwistar_runtime::{
     NativeOperationOutput, NativeOperationRegistrationError, NativeOperationRegistry,
     RecordedStateUpdate, RuntimeNativeExecutionError, RuntimeNativeStepRequest,
@@ -29,6 +29,56 @@ impl OpenAiCompatibleChatConfig {
     pub(crate) fn model(&self) -> &str {
         &self.model
     }
+}
+
+fn chat_completion_payload(
+    request: &ProviderRequestV1,
+    schema_name: &str,
+    streaming: bool,
+) -> Result<Value, String> {
+    request
+        .validate()
+        .map_err(|_| "provider request does not match the v1 contract".to_owned())?;
+    if request.previous_response_id.is_some() {
+        return Err(
+            "Chat Completions requires history in messages, not previous_response_id".to_owned(),
+        );
+    }
+
+    let mut messages = Vec::with_capacity(2);
+    if !request.instructions.is_empty() {
+        messages.push(json!({"role": "system", "content": request.instructions}));
+    }
+    messages.push(json!({"role": "user", "content": request.input}));
+
+    let mut payload = json!({
+        "model": request.model,
+        "messages": messages,
+        "stream": streaming
+    });
+    if let Some(max_output_tokens) = &request.max_output_tokens {
+        payload["max_completion_tokens"] = Value::Number(max_output_tokens.clone());
+    }
+    if let Some(response_schema) = &request.response_schema {
+        payload["response_format"] = json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": true,
+                "schema": response_schema
+            }
+        });
+    }
+    if !request.tools.is_empty() {
+        payload["tools"] = Value::Array(
+            request
+                .tools
+                .iter()
+                .map(|tool| Value::Object(tool.clone().into_iter().collect()))
+                .collect(),
+        );
+    }
+    Ok(payload)
 }
 
 pub(crate) fn register(
@@ -532,22 +582,25 @@ impl OpenAiCompatibleChatConfig {
         F: FnMut(ProviderEventV1) -> Fut,
         Fut: Future<Output = Result<(), String>>,
     {
-        let request_body = json!({
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "AnswerWithCitations",
-                    "strict": true,
-                    "schema": answer_schema()
-                }
-            },
-            "stream": self.streaming
-        });
+        let response_schema = answer_schema()
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "structured answer schema must be an object".to_owned())?
+            .into_iter()
+            .collect();
+        let provider_request = ProviderRequestV1 {
+            contract_version: PROVIDER_REQUEST_CONTRACT_VERSION.to_owned(),
+            model: self.model.clone(),
+            instructions: system_prompt.to_owned(),
+            input: user_prompt.to_owned(),
+            response_schema: Some(response_schema),
+            tools: Vec::new(),
+            previous_response_id: None,
+            max_output_tokens: None,
+        };
+        let request_body =
+            chat_completion_payload(&provider_request, "AnswerWithCitations", self.streaming)
+                .map_err(|_| "could not build structured chat provider request".to_owned())?;
         let request_bytes = serde_json::to_vec(&request_body)
             .map_err(|_| "could not encode structured chat request".to_owned())?;
         if request_bytes.len() > MAX_REQUEST_BYTES {
@@ -1557,6 +1610,23 @@ mod tests {
             let body: Value =
                 serde_json::from_slice(&request[header_end..header_end + content_length]).unwrap();
             assert_eq!(body["stream"], true);
+            assert_eq!(body["model"], "fixture-model");
+            assert_eq!(body["messages"][0]["role"], "system");
+            assert_eq!(body["messages"][0]["content"], "system");
+            assert_eq!(body["messages"][1]["role"], "user");
+            assert!(
+                body["messages"][1]["content"]
+                    .as_str()
+                    .is_some_and(|input| input.contains("question"))
+            );
+            assert_eq!(
+                body["response_format"]["json_schema"]["name"],
+                "AnswerWithCitations"
+            );
+            assert_eq!(
+                body["response_format"]["json_schema"]["schema"]["required"],
+                json!(["text", "reasoning", "claims"])
+            );
             let answer =
                 json!({"text":"streamed answer","reasoning":"brief rationale","claims":[]})
                     .to_string();
