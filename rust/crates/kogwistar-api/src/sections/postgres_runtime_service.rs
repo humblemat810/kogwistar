@@ -1276,6 +1276,8 @@ impl PostgresRunApplicationService {
         let step_seq = request.step_seq;
         let token_id = request.token_id.clone();
         let parent_token_id = request.parent_token_id.clone();
+        let turn_node_id = request.turn_node_id.clone();
+        let trace_context = kogwistar_runtime::native_trace_context_fields(request);
         let model = provider.model().to_owned();
         provider
             .answer_with_event_sink(
@@ -1291,6 +1293,8 @@ impl PostgresRunApplicationService {
                     let node_id = node_id.clone();
                     let token_id = token_id.clone();
                     let parent_token_id = parent_token_id.clone();
+                    let turn_node_id = turn_node_id.clone();
+                    let trace_context = trace_context.clone();
                     let model = model.clone();
                     async move {
                         let Some(provider_event) =
@@ -1298,18 +1302,25 @@ impl PostgresRunApplicationService {
                         else {
                             return Ok(());
                         };
-                        let payload = serde_json::to_string(&json!({
+                        let mut payload = json!({
                             "run_id": run_id,
+                            "trace_id": run_id,
                             "workflow_id": workflow_id,
                             "conversation_id": conversation_id,
+                            "turn_node_id": turn_node_id,
                             "step_id": node_id,
                             "step_seq": step_seq,
                             "token_id": token_id,
                             "parent_token_id": parent_token_id,
                             "executor_target": "rust-native",
+                            "provider_id": "openai_compatible_chat_completions",
                             "provider_model": model,
                             "provider_event": provider_event,
-                        }))
+                        });
+                        if let Some(fields) = payload.as_object_mut() {
+                            fields.extend(trace_context);
+                        }
+                        let payload = serde_json::to_string(&payload)
                         .map_err(|_| "could not encode provider event trace".to_owned())?;
                         store
                             .append_server_run_event(

@@ -7122,6 +7122,49 @@
             .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
             .await
             .unwrap();
+        let streamed_provider_events = durable_events
+            .iter()
+            .filter(|event| event.event_type == "workflow.provider_event.v1")
+            .filter_map(|event| serde_json::from_str::<Value>(&event.payload_json).ok())
+            .collect::<Vec<_>>();
+        assert!(
+            !streamed_provider_events.is_empty(),
+            "semantic provider events should have their own durable run-log entries"
+        );
+        let streamed_text_field = streamed_provider_events
+            .iter()
+            .find(|event| {
+                event["provider_event"]["kind"] == "field_completed"
+                    && event["provider_event"]["details"]["field_name"] == "text"
+            })
+            .expect("the completed text field event is durable");
+        assert_eq!(streamed_text_field["run_id"], "rust-only-answer-e2e");
+        assert_eq!(streamed_text_field["trace_id"], "rust-only-answer-e2e");
+        assert_eq!(streamed_text_field["workflow_id"], "agentic_answering.v2");
+        assert_eq!(
+            streamed_text_field["conversation_id"],
+            "answer-e2e-conversation"
+        );
+        assert_eq!(streamed_text_field["turn_node_id"], "answer-user-turn");
+        assert_eq!(
+            streamed_text_field["provider_id"],
+            "openai_compatible_chat_completions"
+        );
+        assert_eq!(streamed_text_field["executor_target"], "rust-native");
+        let event_token_id = streamed_text_field["token_id"].as_str().unwrap();
+        let event_step_id = streamed_text_field["step_id"].as_str().unwrap();
+        let event_step_seq = streamed_text_field["step_seq"].as_i64().unwrap();
+        let event_attempt = streamed_text_field["attempt"].as_u64().unwrap();
+        assert_eq!(
+            streamed_text_field["span_id"],
+            format!(
+                "stp:rust-only-answer-e2e:{event_token_id}:{event_step_seq}:{event_attempt}:{event_step_id}"
+            )
+        );
+        assert_eq!(
+            streamed_text_field["parent_span_id"],
+            format!("tok:rust-only-answer-e2e:{event_token_id}")
+        );
         let durable_run = run.as_ref().expect("completed run remains durable");
         assert_eq!(durable_run.user_id.as_deref(), Some("alice"));
         let admission_event = durable_events
