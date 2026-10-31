@@ -600,6 +600,11 @@ fn native_provider_event_receive(
     let mut update = Map::new();
     update.insert("agent_event_current".to_owned(), event.clone());
     update.insert("agent_event_claim".to_owned(), claim.clone());
+    update.insert("agent_event_route".to_owned(), json!("no_action"));
+    update.insert(
+        "agent_event_handling_step_seq".to_owned(),
+        json!(request.step_seq),
+    );
     let mut final_state = request.state.clone();
     final_state.extend(update.clone());
     Ok(NativeOperationOutput {

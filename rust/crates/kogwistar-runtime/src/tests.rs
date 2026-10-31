@@ -480,7 +480,9 @@
                     "message_id": format!("msg:{event_id}"),
                     "claimed_by": "rust-native-agent-event:claim-1",
                     "event_id": event_id,
-                }
+                },
+                "agent_event_route": "no_action",
+                "agent_event_handling_step_seq": 1
             }]])
         );
         assert!(effect.provider_event_acknowledgements.is_empty());
