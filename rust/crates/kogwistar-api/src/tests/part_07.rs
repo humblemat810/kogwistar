@@ -2594,6 +2594,76 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
     mutation["record"]["id"] = json!("runtime-effect-node");
     mutation["record"]["embedding"] = json!([1.0, 0.0, 0.0]);
     mutation["embedding_dim"] = json!(3);
+
+    let publication: kogwistar_contracts::DurableProviderEventPublicationV1 =
+        serde_json::from_value(json!({
+            "namespace": "conversation",
+            "conversation_id": "sqlite-runtime-graph-conversation",
+            "event": {
+                "event_id": "sqlite-runtime-provider-event-1",
+                "trace": {
+                    "run_id": "sqlite-runtime-graph-run",
+                    "turn_id": "turn-1",
+                    "workflow_node_id": "provider-stream",
+                    "step_id": "provider-response-1",
+                    "provider_id": "test-provider"
+                },
+                "event": {
+                    "contract_version": "v1",
+                    "provider_event_id": "response-1:1",
+                    "provider_sequence": 1,
+                    "response_id": "response-1",
+                    "kind": "field_completed",
+                    "field_name": "text",
+                    "value": "durable provider output"
+                }
+            }
+        }))
+        .unwrap();
+    let provider_mutations = provider_event_graph_mutations(
+        &publication,
+        &GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("conversation".to_owned()),
+        },
+        "workspace-a",
+        1,
+    );
+    batch["mutations"].as_array_mut().unwrap().extend(
+        provider_mutations.into_iter().map(|provider_mutation| {
+            json!({
+                "scope": {
+                    "namespace": provider_mutation.scope.namespace,
+                    "workspace_id": provider_mutation.scope.workspace_id,
+                    "graph_space": provider_mutation.scope.graph_space
+                },
+                "table": provider_mutation.table,
+                "entity_kind": provider_mutation.entity_kind,
+                "event_id": provider_mutation.event_id,
+                "op": provider_mutation.op,
+                "payload": provider_mutation.payload,
+                "record": {
+                    "id": provider_mutation.record.id,
+                    "document": provider_mutation.record.document,
+                    "metadata": provider_mutation.record.metadata,
+                    "embedding": provider_mutation.record.embedding
+                },
+                "embedding_dim": provider_mutation.embedding_dim,
+                "model_envelope": null
+            })
+        }),
+    );
+    batch["index_jobs"] = json!([{
+        "job_id": "runtime-effect-node-index-job",
+        "namespace": "conversation",
+        "entity_kind": "node",
+        "entity_id": "runtime-effect-node",
+        "index_kind": "node_embedding",
+        "op": "UPSERT",
+        "payload_json": null,
+        "max_retries": 10
+    }]);
     batch["contract_version"] = json!(2);
     batch["default_acl"] = json!({"truth_graph": "conversation"});
 
@@ -2611,7 +2681,8 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
                     "state_update": [["u", {"graph_written": true}]],
                     "successors": [],
                     "result": {"done": true},
-                    "graph_mutation_batch_v2": batch
+                    "graph_mutation_batch_v2": batch,
+                    "provider_event_publications": [publication]
                 }
             }))
     .unwrap();
@@ -2662,6 +2733,11 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
         .await;
     assert_eq!(rolled_back.status, StatusCode::CONFLICT.as_u16());
     assert!(service.store.replay_raw_events("conversation", 0, 100).unwrap().is_empty());
+    assert!(service
+        .store
+        .get_projected_lane_message("msg:sqlite-runtime-provider-event-1")
+        .unwrap()
+        .is_none());
 
     let mut forged_acl: Value = serde_json::from_slice(&result_body).unwrap();
     forged_acl["effect"]["graph_mutation_batch_v2"]["mutations"][0]["record"]["metadata"]["entity_type"] = json!("acl_record");
@@ -2698,10 +2774,24 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
                 && payload["metadata"]["acl_truth_graph"] == "conversation"
         })
     }));
+    let provider_lane = service
+        .store
+        .get_projected_lane_message("msg:sqlite-runtime-provider-event-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(provider_lane.purpose, "agent_event");
+    assert_eq!(provider_lane.status, "pending");
+    assert_eq!(provider_lane.run_id.as_deref(), Some("sqlite-runtime-graph-run"));
+    assert_eq!(provider_lane.msg_type, "agent.provider_event");
     let jobs = service.store.list_index_jobs(
-        Some("conversation"), Some("PENDING"), None, None, None, 20,
+        Some("conversation"),
+        Some("PENDING"),
+        None,
+        Some("runtime-effect-node"),
+        None,
+        20,
     ).unwrap();
-    assert!(jobs.iter().any(|job| job.entity_id == "runtime-effect-node"));
+    assert!(!jobs.is_empty());
     assert_eq!(
         service.store.get_server_run("sqlite-runtime-graph-run").unwrap().unwrap().status,
         "succeeded"
@@ -2723,7 +2813,14 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
     assert_eq!(
         service
             .store
-            .list_index_jobs(Some("conversation"), Some("PENDING"), None, None, None, 20)
+            .list_index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                None,
+                Some("runtime-effect-node"),
+                None,
+                20,
+            )
             .unwrap()
             .len(),
         jobs.len()

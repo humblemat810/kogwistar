@@ -3376,15 +3376,19 @@ impl SqliteRunApplicationService {
             );
         }
         if input.effect.as_ref().is_some_and(|effect| {
-            !effect.provider_event_publications.is_empty()
-                || !effect.provider_event_acknowledgements.is_empty()
+            !effect.provider_event_acknowledgements.is_empty()
         }) {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
-                "SQLite runtime provider-event effects are not implemented",
+                "SQLite runtime provider-event acknowledgements are not implemented",
             );
         }
+        let provider_event_publications = input
+            .effect
+            .as_ref()
+            .map(|effect| effect.provider_event_publications.clone())
+            .unwrap_or_default();
         let graph_batch = input.effect.as_ref().and_then(|effect| {
             match (
                 effect.graph_mutation_batch.as_ref(),
@@ -3394,6 +3398,12 @@ impl SqliteRunApplicationService {
                     "worker effect cannot carry both graph batch versions".to_owned(),
                 )),
                 (Some(v1), None) => Some((|| {
+                    if !provider_event_publications.is_empty() {
+                        return Err(
+                            "provider event publications require an ACL-aware graph batch V2"
+                                .to_owned(),
+                        );
+                    }
                     let mutations = graph_mutation_batch_value(v1.clone())?;
                     validate_graph_mutation_envelopes(v1, &mutations)?;
                     validate_runtime_graph_mutations(&mutations)?;
@@ -3403,6 +3413,19 @@ impl SqliteRunApplicationService {
                 (None, Some(v2)) => Some((|| {
                     let (mutations, index_jobs) = graph_mutation_batch_v2_value(v2.clone())?;
                     validate_runtime_graph_mutations(&mutations)?;
+                    if !provider_event_publications.is_empty() {
+                        if v2.default_acl.truth_graph != "conversation" {
+                            return Err(
+                                "provider event publications require conversation ACL context"
+                                    .to_owned(),
+                            );
+                        }
+                        validate_provider_event_publications(
+                            &provider_event_publications,
+                            &mutations,
+                            &input.handoff.run_id,
+                        )?;
+                    }
                     Ok((
                         GraphMutationBatch { mutations, index_jobs },
                         Some(v2.default_acl.truth_graph.clone()),
@@ -3469,6 +3492,7 @@ impl SqliteRunApplicationService {
                     principal.clone(),
                     default_acl_truth_graph,
                     effect_id,
+                    provider_event_publications.clone(),
                 ))
             }
             Some(Err(error)) => {
@@ -3494,7 +3518,7 @@ impl SqliteRunApplicationService {
             );
         }
         let outcome = self.store.immediate_transaction(|uow| {
-            if let Some((batch, owner_id, principal, default_acl_truth_graph, effect_id)) = graph_batch.as_ref() {
+            if let Some((batch, owner_id, principal, default_acl_truth_graph, effect_id, publications)) = graph_batch.as_ref() {
                 if !capability_allowed_for_principal(
                     principal,
                     &self.capabilities,
@@ -3512,6 +3536,15 @@ impl SqliteRunApplicationService {
                 {
                     return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
                         "runtime graph effect owner does not match the durable run owner".to_owned(),
+                    ));
+                }
+                if publications.iter().any(|publication| {
+                    run.as_ref().is_none_or(|run| {
+                        run.conversation_id != publication.conversation_id
+                    })
+                }) {
+                    return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                        "provider event conversation does not match its durable run".to_owned(),
                     ));
                 }
                 let scope = security_scope_value(principal);
@@ -3555,6 +3588,60 @@ impl SqliteRunApplicationService {
                     batch.index_jobs.extend(acl_jobs);
                 }
                 uow.apply_canonical_graph_mutation_batch(batch)?;
+                for publication in publications {
+                    let event = &publication.event;
+                    let message_id = format!("msg:{}", event.event_id);
+                    let payload_json = serde_json::to_string(event).map_err(|error| {
+                        kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                            format!("provider event serialization failed: {error}"),
+                        )
+                    })?;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|error| {
+                            kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                                format!("system clock is before Unix epoch: {error}"),
+                            )
+                        })?
+                        .as_secs() as i64;
+                    if let Some(existing) = uow.get_projected_lane_message(&message_id)? {
+                        let matches = existing.namespace == publication.namespace
+                            && existing.purpose == "agent_event"
+                            && existing.inbox_id == "agent-provider-events"
+                            && existing.conversation_id == publication.conversation_id
+                            && existing.recipient_id == "agent-event-consumer"
+                            && existing.sender_id == "agent-runtime"
+                            && existing.msg_type == "agent.provider_event"
+                            && existing.run_id.as_deref() == Some(input.handoff.run_id.as_str())
+                            && existing.step_id.as_deref() == Some(event.trace.step_id.as_str())
+                            && existing.correlation_id.as_deref() == Some(event.event_id.as_str())
+                            && existing.payload_json.as_deref() == Some(payload_json.as_str());
+                        if !matches {
+                            return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                                "provider event lane projection conflicts with the existing event".to_owned(),
+                            ));
+                        }
+                    } else {
+                        uow.project_lane_message(NewProjectedLaneMessage {
+                            message_id,
+                            namespace: publication.namespace.clone(),
+                            purpose: "agent_event".to_owned(),
+                            inbox_id: "agent-provider-events".to_owned(),
+                            conversation_id: publication.conversation_id.clone(),
+                            recipient_id: "agent-event-consumer".to_owned(),
+                            sender_id: "agent-runtime".to_owned(),
+                            msg_type: "agent.provider_event".to_owned(),
+                            status: "pending".to_owned(),
+                            created_at: now,
+                            available_at: now,
+                            run_id: Some(input.handoff.run_id.clone()),
+                            step_id: Some(event.trace.step_id.clone()),
+                            correlation_id: Some(event.event_id.clone()),
+                            payload_json: Some(payload_json),
+                            error_json: None,
+                        })?;
+                    }
+                }
             }
             let handoff = input.handoff;
             let lane = uow
