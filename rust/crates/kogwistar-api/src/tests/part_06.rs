@@ -4785,7 +4785,7 @@
                         json!({
                             "_kogwistar_namespace":"scope-a",
                             "workspace_id":"workspace-a",
-                            "graph_space":"knowledge",
+                            "graph_space":"facts",
                             "_kogwistar_original_metadata":original.to_string(),
                             "_test_document": document
                         })
@@ -4801,7 +4801,7 @@
                     let scoped = |document: &str| json!({
                         "_kogwistar_namespace":"scope-a",
                         "workspace_id":"workspace-a",
-                        "graph_space":"knowledge",
+                        "graph_space":"facts",
                         "_kogwistar_original_metadata":"{}",
                         "_test_document": document
                     });
@@ -4829,12 +4829,12 @@
                     ];
                     json!({"ids":["n1","n2","n3","n4","acl-n1","acl-n2","acl-n3","acl-n4","acl-e1"],
                         "documents":["{}","{}","{}","{}","{}","{}","{}","{}","{}"],
-                        "metadatas":metas.into_iter().map(|m| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","_kogwistar_original_metadata":m.to_string()})).collect::<Vec<_>>(),
+                        "metadatas":metas.into_iter().map(|m| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":m.to_string()})).collect::<Vec<_>>(),
                         "embeddings":[null,null,null,null,null,null,null,null,null]})
                 } else {
                     json!({"ids":["e1"],
                         "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"]}"#],
-                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","_kogwistar_original_metadata":"{}"})],
+                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{}"})],
                         "embeddings":[null]})
                 };
                 let body = payload.to_string();
@@ -4918,7 +4918,7 @@
                 &Header::new(jsonwebtoken::Algorithm::HS256),
                 &json!({
                     "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
-                    "graph_space":"knowledge", "capabilities":capabilities, "exp":now + 300
+                    "graph_space":"facts", "capabilities":capabilities, "exp":now + 300
                 }),
                 &EncodingKey::from_secret(b"sqlite-chroma-mcp-secret"),
             )
@@ -4988,7 +4988,7 @@
             method: "POST".to_owned(),
             path_and_query: path.to_owned(),
             body: serde_json::to_vec(&body).unwrap(),
-            principal: json!({"sub":"reader-1","storage_ns":"scope-a","workspace_id":"workspace-a","graph_space":"knowledge","capabilities":capabilities}),
+            principal: json!({"sub":"reader-1","storage_ns":"scope-a","workspace_id":"workspace-a","graph_space":"facts","capabilities":capabilities}),
         };
         let neighbor_body = json!({"rid":"n1","truth_graph":"knowledge"});
         let read_capability = json!(["read_graph"]);
