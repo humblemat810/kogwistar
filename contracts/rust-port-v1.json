@@ -521,6 +521,38 @@
             "path": "/api/add_index_entries"
           }
         ]
+      },
+      {
+        "name": "run-evidence-inspection",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "workflow-runtime",
+          "graph-pgvector"
+        ],
+        "exit_evidence": "run-scoped evidence selection, source provenance, ACL filtering, and public route conformance",
+        "operations": [
+          {
+            "method": "GET",
+            "path": "/api/runs/{run_id}/evidence"
+          }
+        ]
+      },
+      {
+        "name": "workflow-run-lineage",
+        "owner": "python",
+        "status": "intentionally-deferred",
+        "required_authority": [
+          "workflow-runtime",
+          "graph-pgvector"
+        ],
+        "exit_evidence": "persisted parent-chain reconstruction, per-workflow access checks for every lineage item, and public route conformance",
+        "operations": [
+          {
+            "method": "GET",
+            "path": "/api/workflow/runs/{run_id}/lineage"
+          }
+        ]
       }
     ],
     "syscall_group": {
