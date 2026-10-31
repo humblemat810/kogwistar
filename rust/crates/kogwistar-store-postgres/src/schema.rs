@@ -110,6 +110,7 @@ pub(super) fn schema_sql(tables: &Tables) -> String {
             available_at BIGINT NOT NULL,run_id TEXT NULL,step_id TEXT NULL,correlation_id TEXT NULL,payload_json TEXT NULL,error_json TEXT NULL,\
             prev_message_id TEXT NULL,next_message_id TEXT NULL,inbox_tail_message_id TEXT NULL,conversation_tail_message_id TEXT NULL\
          );\
+         ALTER TABLE {projected_lane_messages} ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'user_visible';\
          CREATE INDEX IF NOT EXISTS {lane_messages_namespace_inbox_seq_index} ON {projected_lane_messages}(namespace,inbox_id,seq);\
          CREATE INDEX IF NOT EXISTS {lane_messages_claim_index} ON {projected_lane_messages}(namespace,inbox_id,status,available_at,lease_until);\
          CREATE INDEX IF NOT EXISTS {lane_messages_conversation_seq_index} ON {projected_lane_messages}(namespace,conversation_id,conversation_seq);",

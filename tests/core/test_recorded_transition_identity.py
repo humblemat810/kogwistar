@@ -199,7 +199,7 @@ def test_python_and_rust_postgres_metadata_schemas_match_shared_tables(
 
 
 @pytest.mark.ci_full
-def test_python_and_rust_migrate_legacy_postgres_index_jobs_equivalently(
+def test_python_and_rust_migrate_legacy_postgres_metadata_tables_equivalently(
     sa_engine, pg_dsn: str | None, pg_schema: str | None
 ) -> None:
     if sa_engine is None or pg_dsn is None or pg_schema is None:
@@ -227,12 +227,51 @@ def test_python_and_rust_migrate_legacy_postgres_index_jobs_equivalently(
             job_id, entity_kind, entity_id, index_kind, op, status, payload_json
         ) VALUES ('legacy-job', 'node', 'n1', 'node_embedding', 'UPSERT', 'PENDING', '{"legacy":true}');
     """
+    legacy_lane_messages = """
+        CREATE TABLE {schema}.projected_lane_messages (
+            message_id TEXT PRIMARY KEY,
+            namespace TEXT NOT NULL DEFAULT 'default',
+            inbox_id TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            recipient_id TEXT NOT NULL,
+            sender_id TEXT NOT NULL,
+            msg_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            seq BIGINT NOT NULL,
+            conversation_seq BIGINT NOT NULL,
+            claimed_by TEXT NULL,
+            lease_until TIMESTAMPTZ NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            created_at BIGINT NOT NULL,
+            available_at BIGINT NOT NULL,
+            run_id TEXT NULL,
+            step_id TEXT NULL,
+            correlation_id TEXT NULL,
+            payload_json TEXT NULL,
+            error_json TEXT NULL,
+            prev_message_id TEXT NULL,
+            next_message_id TEXT NULL,
+            inbox_tail_message_id TEXT NULL,
+            conversation_tail_message_id TEXT NULL
+        );
+        INSERT INTO {schema}.projected_lane_messages (
+            message_id, inbox_id, conversation_id, recipient_id, sender_id,
+            msg_type, status, seq, conversation_seq, created_at, available_at,
+            payload_json
+        ) VALUES (
+            'legacy-message', 'inbox', 'conversation', 'recipient', 'sender',
+            'text', 'pending', 1, 1, 100, 100, '{"legacy":true}'
+        );
+    """
     try:
         with sa_engine.begin() as conn:
             for schema in (python_schema, rust_schema):
                 conn.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
                 conn.exec_driver_sql(
                     legacy_index_jobs.replace("{schema}", f'"{schema}"')
+                )
+                conn.exec_driver_sql(
+                    legacy_lane_messages.replace("{schema}", f'"{schema}"')
                 )
 
         EnginePostgresMetaStore(engine=sa_engine, schema=python_schema).ensure_initialized()
@@ -241,19 +280,11 @@ def test_python_and_rust_migrate_legacy_postgres_index_jobs_equivalently(
             schema=rust_schema,
             operation={"kind": "ensure_schema"},
         ) == {"initialized": True}
-        # Each implementation must be able to reopen and bootstrap the
-        # legacy schema first migrated by the other implementation.
-        assert store_postgres(
-            dsn=pg_dsn,
-            schema=python_schema,
-            operation={"kind": "ensure_schema"},
-        ) == {"initialized": True}
-        EnginePostgresMetaStore(engine=sa_engine, schema=rust_schema).ensure_initialized()
 
         inspector = sqlalchemy_inspect(sa_engine)
 
-        def index_jobs_signature(schema: str) -> tuple[tuple[object, ...], ...]:
-            primary_key = inspector.get_pk_constraint("index_jobs", schema=schema)
+        def table_signature(schema: str, table: str) -> tuple[tuple[object, ...], ...]:
+            primary_key = inspector.get_pk_constraint(table, schema=schema)
             primary_key_columns = set(primary_key.get("constrained_columns") or ())
             return tuple(
                 sorted(
@@ -263,22 +294,45 @@ def test_python_and_rust_migrate_legacy_postgres_index_jobs_equivalently(
                         bool(column["nullable"]),
                         column["name"] in primary_key_columns,
                     )
-                    for column in inspector.get_columns("index_jobs", schema=schema)
+                    for column in inspector.get_columns(table, schema=schema)
                 )
             )
 
-        assert index_jobs_signature(python_schema) == index_jobs_signature(rust_schema)
-        expected_row = ("default", "", None, 10, 0, '{"legacy":true}')
-        for schema in (python_schema, rust_schema):
-            with sa_engine.connect() as conn:
-                row = conn.execute(
-                    sqlalchemy_text(
-                        f'SELECT namespace, coalesce_key, next_run_at, max_retries, '
-                        f'claim_attempts, payload_json FROM "{schema}".index_jobs '
-                        "WHERE job_id='legacy-job'"
-                    )
-                ).one()
-            assert tuple(row) == expected_row
+        def assert_migrated_state() -> None:
+            for table in ("index_jobs", "projected_lane_messages"):
+                assert table_signature(python_schema, table) == table_signature(rust_schema, table)
+            expected_job = ("default", "", None, 10, 0, '{"legacy":true}')
+            for schema in (python_schema, rust_schema):
+                with sa_engine.connect() as conn:
+                    job = conn.execute(
+                        sqlalchemy_text(
+                            f'SELECT namespace, coalesce_key, next_run_at, max_retries, '
+                            f'claim_attempts, payload_json FROM "{schema}".index_jobs '
+                            "WHERE job_id='legacy-job'"
+                        )
+                    ).one()
+                    message = conn.execute(
+                        sqlalchemy_text(
+                            f'SELECT purpose, payload_json FROM "{schema}".projected_lane_messages '
+                            "WHERE message_id='legacy-message'"
+                        )
+                    ).one()
+                assert tuple(job) == expected_job
+                assert tuple(message) == ("user_visible", '{"legacy":true}')
+
+        # Inspect each implementation's migration before the other language
+        # can repair its schema and mask a missing additive migration.
+        assert_migrated_state()
+
+        # Each implementation must also reopen the legacy schema first
+        # migrated by the other implementation without changing preserved data.
+        assert store_postgres(
+            dsn=pg_dsn,
+            schema=python_schema,
+            operation={"kind": "ensure_schema"},
+        ) == {"initialized": True}
+        EnginePostgresMetaStore(engine=sa_engine, schema=rust_schema).ensure_initialized()
+        assert_migrated_state()
     finally:
         with sa_engine.begin() as conn:
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{python_schema}" CASCADE')
