@@ -485,12 +485,31 @@
         );
         assert!(effect.provider_event_acknowledgements.is_empty());
 
-        request.ephemeral_context["authorized_provider_event_claim"]["message_id"] =
-            json!("msg:unrelated-event");
+        let received_state = kogwistar_contracts::apply_state_update_pairs(
+            Value::Object(Map::new()),
+            effect.state_update.iter().map(|update| match update {
+                RecordedStateUpdate::Pair((mode, payload)) => (mode.as_str(), payload),
+                RecordedStateUpdate::Object { mode, payload } => (mode.as_str(), payload),
+            }),
+        )
+        .unwrap();
+        request.operation = "agent.event.ack".to_owned();
+        request.state = received_state.as_object().unwrap().clone();
+        request.ephemeral_context.clear();
+        let ack_effect = execute_native_step(&request).unwrap();
+        assert_eq!(
+            ack_effect.provider_event_acknowledgements,
+            vec![ProviderEventAcknowledgementV1 {
+                message_id: format!("msg:{event_id}"),
+                claimed_by: "rust-native-agent-event:claim-1".to_owned(),
+                event_id: event_id.clone(),
+            }]
+        );
+
+        request.state["agent_event_claim"]["message_id"] = json!("msg:unrelated-event");
         assert!(execute_native_step(&request).is_err());
 
-        request.ephemeral_context["authorized_provider_event_claim"]["message_id"] =
-            json!(format!("msg:{event_id}"));
+        request.state["agent_event_claim"]["message_id"] = json!(format!("msg:{event_id}"));
         request.run_id = "another-run".to_owned();
         assert!(execute_native_step(&request).is_err());
     }

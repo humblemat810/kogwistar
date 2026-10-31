@@ -318,6 +318,7 @@ impl Default for NativeOperationRegistry {
         registry.insert_builtin("increment-counter", native_increment_counter);
         registry.insert_builtin("emit-result", native_emit_result);
         registry.insert_builtin("agent.event.receive", native_provider_event_receive);
+        registry.insert_builtin_with_effects("agent.event.ack", native_provider_event_ack);
         registry
     }
 }
@@ -339,6 +340,25 @@ impl NativeOperationRegistry {
             .insert(
                 "v1".to_owned(),
                 RegisteredNativeOperation::State(Arc::new(handler)),
+            );
+    }
+
+    fn insert_builtin_with_effects(
+        &mut self,
+        operation: &str,
+        handler: impl Fn(
+            &RuntimeNativeStepRequest,
+        ) -> Result<NativeOperationEffectOutput, RuntimeNativeExecutionError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.handlers
+            .entry(operation.to_owned())
+            .or_default()
+            .insert(
+                "v1".to_owned(),
+                RegisteredNativeOperation::StateWithEffects(Arc::new(handler)),
             );
     }
 
@@ -565,7 +585,6 @@ fn native_provider_event_receive(
     let event = request
         .ephemeral_context
         .get("authorized_provider_event")
-        .and_then(Value::as_object)
         .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
             operation: request.operation.clone(),
             reason: "host-authorized provider event is unavailable".to_owned(),
@@ -573,23 +592,76 @@ fn native_provider_event_receive(
     let claim = request
         .ephemeral_context
         .get("authorized_provider_event_claim")
-        .and_then(Value::as_object)
         .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
             operation: request.operation.clone(),
             reason: "host-authorized provider event claim is unavailable".to_owned(),
         })?;
+    let (typed_event, _) = validated_provider_event_claim(request, event, claim)?;
+    let mut update = Map::new();
+    update.insert("agent_event_current".to_owned(), event.clone());
+    update.insert("agent_event_claim".to_owned(), claim.clone());
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    Ok(NativeOperationOutput {
+        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "event_id": typed_event.event_id,
+        })),
+    })
+}
+
+fn native_provider_event_ack(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationEffectOutput, RuntimeNativeExecutionError> {
+    let event = request
+        .state
+        .get("agent_event_current")
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "durable provider event is unavailable in workflow state".to_owned(),
+        })?;
+    let claim = request
+        .state
+        .get("agent_event_claim")
+        .ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: "durable provider event claim is unavailable in workflow state".to_owned(),
+        })?;
+    let (typed_event, acknowledgement) = validated_provider_event_claim(request, event, claim)?;
+    Ok(NativeOperationEffectOutput {
+        output: NativeOperationOutput {
+            state_update: Vec::new(),
+            result: Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": request.state,
+                "event_id": typed_event.event_id,
+            })),
+        },
+        provider_event_acknowledgements: vec![acknowledgement],
+    })
+}
+
+fn validated_provider_event_claim(
+    request: &RuntimeNativeStepRequest,
+    event: &Value,
+    claim: &Value,
+) -> Result<
+    (
+        kogwistar_contracts::DurableProviderEventV1,
+        ProviderEventAcknowledgementV1,
+    ),
+    RuntimeNativeExecutionError,
+> {
     let typed_event = serde_json::from_value::<kogwistar_contracts::DurableProviderEventV1>(
-        Value::Object(event.clone()),
+        event.clone(),
     )
     .map_err(|_| RuntimeNativeExecutionError::OperationFailed {
         operation: request.operation.clone(),
-        reason: "host-authorized provider event does not match its versioned contract".to_owned(),
+        reason: "provider event does not match its versioned contract".to_owned(),
     })?;
-    let event_id = event
-        .get("event_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty());
-    let claim_event_id = claim
+    let event_id = claim
         .get("event_id")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty());
@@ -601,8 +673,7 @@ fn native_provider_event_receive(
         .get("claimed_by")
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty());
-    if event_id != claim_event_id
-        || event_id != Some(typed_event.event_id.as_str())
+    if event_id != Some(typed_event.event_id.as_str())
         || message_id != event_id.map(|id| format!("msg:{id}")).as_deref()
         || claimed_by.is_none()
         || typed_event.trace.run_id != request.run_id
@@ -612,25 +683,14 @@ fn native_provider_event_receive(
             reason: "provider event and claim identities do not match this run".to_owned(),
         });
     }
-    let mut update = Map::new();
-    update.insert(
-        "agent_event_current".to_owned(),
-        Value::Object(event.clone()),
-    );
-    update.insert(
-        "agent_event_claim".to_owned(),
-        Value::Object(claim.clone()),
-    );
-    let mut final_state = request.state.clone();
-    final_state.extend(update.clone());
-    Ok(NativeOperationOutput {
-        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
-        result: Some(json!({
-            "workflow_status": "succeeded",
-            "final_state": final_state,
-            "event_id": event_id,
-        })),
-    })
+    Ok((
+        typed_event,
+        ProviderEventAcknowledgementV1 {
+            message_id: message_id.expect("checked non-empty above").to_owned(),
+            claimed_by: claimed_by.expect("checked non-empty above").to_owned(),
+            event_id: event_id.expect("checked non-empty above").to_owned(),
+        },
+    ))
 }
 
 /// Execute with the built-in native operation registry.
