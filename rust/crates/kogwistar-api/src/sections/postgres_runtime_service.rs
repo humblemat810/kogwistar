@@ -1217,7 +1217,7 @@ impl PostgresRunApplicationService {
     async fn native_generate_answer(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
-    ) -> Result<Value, String> {
+    ) -> Result<(Value, Vec<Value>), String> {
         let provider = self
             .chat_completion_provider
             .as_ref()
@@ -1253,7 +1253,7 @@ impl PostgresRunApplicationService {
             })
             .collect::<Result<Vec<_>, _>>()?;
         provider
-            .answer(system_prompt, question, evidence_pack, &used_node_ids)
+            .answer_with_events(system_prompt, question, evidence_pack, &used_node_ids)
             .await
     }
 
@@ -1399,10 +1399,14 @@ impl PostgresRunApplicationService {
             ));
         }
         self.persist_native_answer_context_snapshot(&request).await?;
-        let answer = self.native_generate_answer(&request).await?;
+        let (answer, provider_event_traces) = self.native_generate_answer(&request).await?;
         request
             .ephemeral_context
             .insert("provider_answer".to_owned(), answer);
+        request.ephemeral_context.insert(
+            "_provider_event_trace_summaries".to_owned(),
+            Value::Array(provider_event_traces),
+        );
         request.ephemeral_context.insert(
             "provider_model".to_owned(),
             json!(self

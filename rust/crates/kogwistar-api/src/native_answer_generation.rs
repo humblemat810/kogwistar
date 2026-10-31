@@ -405,10 +405,26 @@ impl OpenAiCompatibleChatConfig {
         evidence_pack: &Value,
         used_node_ids: &[String],
     ) -> Result<Value, String> {
+        self.answer_with_events(system_prompt, question, evidence_pack, used_node_ids)
+            .await
+            .map(|(answer, _)| answer)
+    }
+
+    pub(crate) async fn answer_with_events(
+        &self,
+        system_prompt: &str,
+        question: &str,
+        evidence_pack: &Value,
+        used_node_ids: &[String],
+    ) -> Result<(Value, Vec<Value>), String> {
         let (user_prompt, aliases) = answer_user_prompt(question, evidence_pack)?;
         for _ in 0..3 {
-            if let Some(answer) = self.complete_answer(system_prompt, &user_prompt).await? {
-                return restore_answer_aliases(answer, &aliases, used_node_ids);
+            if let Some((answer, events)) = self
+                .complete_answer_with_events(system_prompt, &user_prompt)
+                .await?
+            {
+                let answer = restore_answer_aliases(answer, &aliases, used_node_ids)?;
+                return Ok((answer, semantic_event_trace_summaries(&events)));
             }
         }
         Err(
@@ -467,6 +483,16 @@ impl OpenAiCompatibleChatConfig {
         system_prompt: &str,
         user_prompt: &str,
     ) -> Result<Option<AnswerWithCitations>, String> {
+        self.complete_answer_with_events(system_prompt, user_prompt)
+            .await
+            .map(|result| result.map(|(answer, _)| answer))
+    }
+
+    async fn complete_answer_with_events(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<Option<(AnswerWithCitations, Vec<ProviderEventV1>)>, String> {
         let request_body = json!({
             "model": self.model,
             "messages": [
@@ -546,19 +572,19 @@ impl OpenAiCompatibleChatConfig {
                     .finish()
                     .map_err(|_| "could not finish structured chat event stream".to_owned())?,
             );
-            let Some(structured_output) =
-                provider_events.into_iter().find_map(|event| match event {
-                    ProviderEventV1::ResponseCompleted {
-                        structured_output: Some(value),
-                        ..
-                    } => Some(Value::Object(value.into_iter().collect())),
-                    ProviderEventV1::ResponseFailed { .. } => None,
-                    _ => None,
-                })
-            else {
+            let Some(structured_output) = provider_events.iter().find_map(|event| match event {
+                ProviderEventV1::ResponseCompleted {
+                    structured_output: Some(value),
+                    ..
+                } => Some(Value::Object(value.clone().into_iter().collect())),
+                ProviderEventV1::ResponseFailed { .. } => None,
+                _ => None,
+            }) else {
                 return Ok(None);
             };
-            return Ok(serde_json::from_value(structured_output).ok());
+            return Ok(serde_json::from_value(structured_output)
+                .ok()
+                .map(|answer| (answer, provider_events)));
         }
         let Ok(response) = serde_json::from_slice::<ChatCompletionResponse>(&response_bytes) else {
             return Ok(None);
@@ -571,8 +597,73 @@ impl OpenAiCompatibleChatConfig {
         else {
             return Ok(None);
         };
-        Ok(serde_json::from_str(&content).ok())
+        Ok(serde_json::from_str(&content)
+            .ok()
+            .map(|answer| (answer, Vec::new())))
     }
+}
+
+fn semantic_event_trace_summaries(events: &[ProviderEventV1]) -> Vec<Value> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let (kind, response_id, event_id, sequence, details) = match event {
+                ProviderEventV1::ResponseStarted {
+                    response_id,
+                    provider_event_id,
+                    provider_sequence,
+                    ..
+                } => ("response_started", response_id, provider_event_id, provider_sequence, None),
+                ProviderEventV1::FieldCompleted {
+                    response_id,
+                    provider_event_id,
+                    provider_sequence,
+                    field_name,
+                    ..
+                } => ("field_completed", response_id, provider_event_id, provider_sequence, Some(json!({"field_name": field_name}))),
+                ProviderEventV1::ReasoningSummary {
+                    response_id,
+                    provider_event_id,
+                    provider_sequence,
+                    ..
+                } => ("reasoning_summary", response_id, provider_event_id, provider_sequence, None),
+                ProviderEventV1::ToolCallCompleted {
+                    response_id,
+                    provider_event_id,
+                    provider_sequence,
+                    call_id,
+                    name,
+                    ..
+                } => ("tool_call_completed", response_id, provider_event_id, provider_sequence, Some(json!({"call_id": call_id, "name": name}))),
+                ProviderEventV1::ResponseCompleted {
+                    response_id,
+                    provider_event_id,
+                    provider_sequence,
+                    input_tokens,
+                    output_tokens,
+                    has_tool_calls,
+                    ..
+                } => ("response_completed", response_id, provider_event_id, provider_sequence, Some(json!({"input_tokens": input_tokens, "output_tokens": output_tokens, "has_tool_calls": has_tool_calls}))),
+                ProviderEventV1::ResponseFailed {
+                    response_id,
+                    provider_event_id,
+                    provider_sequence,
+                    error_code,
+                    retryable,
+                    ..
+                } => ("response_failed", response_id, provider_event_id, provider_sequence, Some(json!({"error_code": error_code, "retryable": retryable}))),
+                ProviderEventV1::TextDelta { .. } => return None,
+            };
+            let truncate = |value: &Option<String>| value.as_deref().map(|text| text.chars().take(256).collect::<String>());
+            Some(json!({
+                "kind": kind,
+                "response_id": truncate(response_id),
+                "provider_event_id": truncate(event_id),
+                "provider_sequence": sequence,
+                "details": details,
+            }))
+        })
+        .collect()
 }
 
 fn answer_prompt_messages(
@@ -1401,6 +1492,31 @@ mod tests {
         assert_eq!(result.text, "streamed answer");
         assert_eq!(result.reasoning, "brief rationale");
         server.await.unwrap();
+    }
+
+    #[test]
+    fn provider_trace_summaries_exclude_text_and_arguments() {
+        let events = vec![
+            serde_json::from_value(json!({
+                "kind": "text_delta",
+                "delta": "private answer text"
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "kind": "tool_call_completed",
+                "call_id": "call-1",
+                "name": "search",
+                "arguments": {"query": "private query"}
+            }))
+            .unwrap(),
+        ];
+        let summaries = semantic_event_trace_summaries(&events);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0]["kind"], "tool_call_completed");
+        assert_eq!(summaries[0]["details"]["name"], "search");
+        let serialized = serde_json::to_string(&summaries).unwrap();
+        assert!(!serialized.contains("private"));
+        assert!(!serialized.contains("arguments"));
     }
 
     #[test]

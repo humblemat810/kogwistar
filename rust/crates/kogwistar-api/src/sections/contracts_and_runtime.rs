@@ -906,13 +906,120 @@ fn native_result_from_request(
     native_request: kogwistar_runtime::RuntimeNativeStepRequest,
     registry: &kogwistar_runtime::NativeOperationRegistry,
 ) -> Result<RuntimeWorkerResultRequest, String> {
-    let effect = kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
+    let mut effect = kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
         .map_err(|error| format!("native execution rejected: {error}"))?;
+    if let Some(events) = native_request
+        .ephemeral_context
+        .get("_provider_event_trace_summaries")
+        .and_then(Value::as_array)
+    {
+        const MAX_PROVIDER_EVENT_TRACES: usize = 256;
+        for (index, summary) in events.iter().take(MAX_PROVIDER_EVENT_TRACES).enumerate() {
+            let mut trace = json!({
+                "schema_version": 1,
+                "event": "provider.semantic_event.observed",
+                "provider_id": "openai_compatible_chat_completions",
+                "provider_model": native_request
+                    .ephemeral_context
+                    .get("provider_model")
+                    .and_then(Value::as_str),
+                "run_id": native_request.run_id,
+                "workflow_id": native_request.workflow_id,
+                "conversation_id": native_request.conversation_id,
+                "turn_node_id": native_request.turn_node_id,
+                "node_id": native_request.node_id,
+                "token_id": native_request.token_id,
+                "step_seq": native_request.step_seq,
+                "event_index": index,
+                "provider_event": summary,
+            });
+            if let Some(fields) = trace.as_object_mut() {
+                fields.extend(kogwistar_runtime::native_trace_context_fields(&native_request));
+            }
+            attach_rust_native_seam_attestation(&mut trace);
+            effect.trace_events.push(trace);
+        }
+        if events.len() > MAX_PROVIDER_EVENT_TRACES {
+            let mut trace = json!({
+                "schema_version": 1,
+                "event": "provider.semantic_event.trace_truncated",
+                "run_id": native_request.run_id,
+                "node_id": native_request.node_id,
+                "step_seq": native_request.step_seq,
+                "omitted_count": events.len() - MAX_PROVIDER_EVENT_TRACES,
+            });
+            if let Some(fields) = trace.as_object_mut() {
+                fields.extend(kogwistar_runtime::native_trace_context_fields(&native_request));
+            }
+            attach_rust_native_seam_attestation(&mut trace);
+            effect.trace_events.push(trace);
+        }
+    }
     Ok(RuntimeWorkerResultRequest {
         handoff,
         transition: None,
         effect: Some(effect),
     })
+}
+
+#[cfg(test)]
+mod provider_event_trace_tests {
+    use super::*;
+
+    #[test]
+    fn native_worker_result_carries_content_free_provider_event_trace() {
+        let mut request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-event-trace".to_owned(),
+            workflow_id: "workflow-event-trace".to_owned(),
+            node_id: "answer".to_owned(),
+            conversation_id: "conversation-event-trace".to_owned(),
+            turn_node_id: Some("turn-1".to_owned()),
+            token_id: "token-1".to_owned(),
+            parent_token_id: None,
+            step_seq: 3,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        request.ephemeral_context.insert(
+            "_provider_event_trace_summaries".to_owned(),
+            json!([{
+                "kind": "response_completed",
+                "response_id": "resp-1",
+                "provider_event_id": "resp-1:2",
+                "provider_sequence": 2,
+                "details": {"input_tokens": 8, "output_tokens": 13}
+            }]),
+        );
+        let result = native_result_from_request(
+            RecordedWorkerHandoff {
+                message_id: "lane-1".to_owned(),
+                claimed_by: "rust-native-worker".to_owned(),
+                run_id: "run-event-trace".to_owned(),
+                step_id: "answer".to_owned(),
+                correlation_id: "run-event-trace".to_owned(),
+            },
+            request,
+            &kogwistar_runtime::NativeOperationRegistry::default(),
+        )
+        .unwrap();
+        let effect = result.effect.unwrap();
+        let provider_trace = effect
+            .trace_events
+            .iter()
+            .find(|trace| trace["event"] == "provider.semantic_event.observed")
+            .unwrap();
+        assert_eq!(provider_trace["run_id"], "run-event-trace");
+        assert_eq!(
+            provider_trace["provider_id"],
+            "openai_compatible_chat_completions"
+        );
+        assert_eq!(provider_trace["step_seq"], 3);
+        assert_eq!(provider_trace["provider_event"]["kind"], "response_completed");
+    }
 }
 
 fn failed_native_result(
