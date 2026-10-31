@@ -371,7 +371,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-mutation-batch-v1.json"
         ));
-        let roles = ["knowledge", "conversation", "workflow", "wisdom", "acl"];
+        let roles = ["knowledge", "conversation", "workflow", "wisdom"];
 
         for role in roles {
             let mut batch: GraphMutationBatchV1 = serde_json::from_str(fixture).unwrap();
@@ -408,6 +408,13 @@ mod tests {
             batch.default_acl.truth_graph,
             scope.graph_space.as_deref().unwrap()
         );
+
+        for truth_graph in ["knowledge", "conversation", "workflow", "wisdom"] {
+            let mut scoped = batch.clone();
+            scoped.default_acl.truth_graph = truth_graph.to_owned();
+            assert_eq!(scoped.validate(), Ok(()));
+            assert_eq!(scoped.mutations[0].entity_kind, "node");
+        }
 
         let v1_error = serde_json::from_str::<GraphMutationBatchV1>(fixture);
         assert!(
