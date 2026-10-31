@@ -275,6 +275,16 @@ fn environment(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
 
+fn configured_wisdom_schema(base_schema: &str, configured: Option<&str>) -> Result<String, String> {
+    match configured {
+        Some(schema) if schema.trim().is_empty() => {
+            Err("KOGWISTAR_WISDOM_SCHEMA must not be empty".to_owned())
+        }
+        Some(schema) => Ok(schema.trim().to_owned()),
+        None => Ok(format!("{base_schema}_wisdom")),
+    }
+}
+
 fn embedding_provider_from_settings(
     provider: Option<&str>,
     model: Option<&str>,
@@ -481,9 +491,16 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     let application: Arc<dyn ApplicationService> = if backend == "pg" {
         match std::env::var("KOGWISTAR_PG_DSN") {
             Ok(dsn) if !dsn.trim().is_empty() => {
-                let mut service = PostgresRunApplicationService::from_dsn(
+                let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
+                let wisdom_schema = configured_wisdom_schema(
+                    &schema_base,
+                    std::env::var("KOGWISTAR_WISDOM_SCHEMA").ok().as_deref(),
+                )
+                .map_err(std::io::Error::other)?;
+                let mut service = PostgresRunApplicationService::from_dsn_with_wisdom_schema(
                     &dsn,
-                    &environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar"),
+                    &schema_base,
+                    &wisdom_schema,
                 )
                 .map_err(std::io::Error::other)?;
                 if let Some(provider) = chat_completion_provider_from_environment()

@@ -486,6 +486,15 @@ fn conversation_next_turn_distances(
 
 impl PostgresRunApplicationService {
     pub fn from_dsn(dsn: &str, schema: &str) -> Result<Self, String> {
+        let legacy_wisdom_schema = format!("{schema}_wisdom");
+        Self::from_dsn_with_wisdom_schema(dsn, schema, &legacy_wisdom_schema)
+    }
+
+    pub fn from_dsn_with_wisdom_schema(
+        dsn: &str,
+        schema: &str,
+        wisdom_schema: &str,
+    ) -> Result<Self, String> {
         let dsn = dsn
             .strip_prefix("postgresql+psycopg://")
             .map(|rest| format!("postgresql://{rest}"))
@@ -500,11 +509,10 @@ impl PostgresRunApplicationService {
         let embedding_storage_scope = rust_pgvector_embedding_scope(&config, schema);
         let native_operations = crate::native_answer_persist::registry()
             .map_err(|error| format!("could not register native conversation operations: {error}"))?;
-        let wisdom_schema = format!("{schema}_wisdom");
-        let wisdom_embedding_storage_scope = rust_pgvector_embedding_scope(&config, &wisdom_schema);
+        let wisdom_embedding_storage_scope = rust_pgvector_embedding_scope(&config, wisdom_schema);
         let store = PostgresStore::from_config(config.clone(), schema)
             .map_err(|error| error.to_string())?;
-        let wisdom_store = PostgresStore::from_config(config, &wisdom_schema)
+        let wisdom_store = PostgresStore::from_config(config, wisdom_schema)
             .map_err(|error| error.to_string())?;
         Ok(Self {
                 store,

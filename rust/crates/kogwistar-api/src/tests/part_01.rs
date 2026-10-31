@@ -27,6 +27,24 @@
     }
 
     #[test]
+    fn wisdom_storage_schema_is_configurable_with_legacy_default() {
+        assert_eq!(
+            configured_wisdom_schema("kg", None).unwrap(),
+            "kg_wisdom"
+        );
+        assert_eq!(
+            configured_wisdom_schema("kg", Some("kg")).unwrap(),
+            "kg",
+            "the generic graph store can be shared by graph roles"
+        );
+        assert_eq!(
+            configured_wisdom_schema("kg", Some("tenant_wisdom")).unwrap(),
+            "tenant_wisdom"
+        );
+        assert!(configured_wisdom_schema("kg", Some("  ")).is_err());
+    }
+
+    #[test]
     fn graph_acl_principal_identity_matches_shared_python_contract() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

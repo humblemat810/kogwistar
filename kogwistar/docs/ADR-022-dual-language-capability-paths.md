@@ -72,6 +72,12 @@ A domain-specific endpoint may adapt its request into the common graph
 mutation contract, but must not create a role-specific graph model or imply
 that one backend's transaction guarantees apply to another.
 
+The Rust PostgreSQL service preserves its historical wisdom schema by default
+for existing deployments, but `KOGWISTAR_WISDOM_SCHEMA` can select another
+schema, including the primary schema. This is physical-storage configuration;
+the wisdom role continues to use the generic graph mutation and ACL contracts.
+An empty explicit schema is rejected at startup.
+
 Existing regression coverage for this invariant includes Python
 `tests/core/test_lifecycle_read_contract.py` model-family checks,
 `tests/core/test_graph_model_adapter.py`,
