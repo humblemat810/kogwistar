@@ -1965,6 +1965,12 @@
     #[tokio::test]
     #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
     async fn sqlite_chroma_native_worker_promotes_to_real_chroma_after_restart() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{EncodingKey, Header, encode};
+        use kogwistar_store::GraphWriteStore;
+        use tower::ServiceExt;
+
         let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
             .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
         let suffix = uuid::Uuid::new_v4().simple().to_string();
@@ -2128,6 +2134,180 @@
             stored.metadata["_kogwistar_source_revision"],
             appended.event.seq
         );
+
+        let live_workspace = format!("workspace-{suffix}");
+        let conversation_id = format!("conversation-{suffix}");
+        let upsert_conversation_node = |id: String, mut metadata: serde_json::Map<String, Value>| async {
+            metadata.insert("workspace_id".to_owned(), json!(live_workspace));
+            metadata.insert("graph_space".to_owned(), json!("conversation"));
+            graph
+                .upsert_graph_record_of_kind(
+                    &namespace,
+                    GraphEntityKind::Node,
+                    GraphRecord {
+                        id,
+                        document: None,
+                        metadata,
+                        embedding: Some(vec![0.6, 0.8]),
+                    },
+                )
+                .await
+                .unwrap();
+        };
+        let conversation_node = |entity_type: &str, extra: Value| {
+            let mut metadata = extra.as_object().cloned().unwrap_or_default();
+            metadata.insert("entity_type".to_owned(), json!(entity_type));
+            metadata.insert("conversation_id".to_owned(), json!(conversation_id));
+            metadata
+        };
+        upsert_conversation_node(
+            format!("start-{suffix}"),
+            conversation_node(
+                "conversation_start",
+                json!({"user_id":"reader-live","status":"active"}),
+            ),
+        )
+        .await;
+        for (id, turn_index, role, summary) in [
+            ("turn-one", 1_i64, "user", "live question"),
+            ("turn-two", 2_i64, "assistant", "live answer"),
+            ("turn-private", 3_i64, "assistant", "must stay hidden"),
+        ] {
+            let node_id = format!("{id}-{suffix}");
+            upsert_conversation_node(
+                node_id.clone(),
+                conversation_node(
+                    "conversation_turn",
+                    json!({"turn_index":turn_index,"role":role,"summary":summary}),
+                ),
+            )
+            .await;
+            let is_private = id == "turn-private";
+            upsert_conversation_node(
+                format!("acl-{id}-{suffix}"),
+                conversation_node(
+                    "acl_record",
+                    json!({
+                        "acl_truth_graph":"conversation",
+                        "acl_target_grain":"node",
+                        "acl_target_entity_id":node_id,
+                        "acl_version":1,
+                        "acl_mode":if is_private {"private"} else {"public"},
+                        "acl_owner_id":if is_private {"other-reader"} else {"reader-live"}
+                    }),
+                ),
+            )
+            .await;
+        }
+        let mut conversation_start_acl = conversation_node(
+            "acl_record",
+            json!({
+                "acl_truth_graph":"conversation",
+                "acl_target_grain":"node",
+                "acl_target_entity_id":format!("start-{suffix}"),
+                "acl_version":1,
+                "acl_mode":"public",
+                "acl_owner_id":"reader-live"
+            }),
+        );
+        upsert_conversation_node(
+            format!("acl-start-{suffix}"),
+            std::mem::take(&mut conversation_start_acl),
+        )
+        .await;
+
+        let conversation_principal = json!({
+            "sub":"reader-live",
+            "storage_ns":namespace,
+            "workspace_id":live_workspace,
+            "graph_space":"conversation",
+            "ns":["conversation"],
+            "capabilities":["read_graph"]
+        });
+        let transcript_request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: format!("/api/conversations/{conversation_id}/turns"),
+            body: Vec::new(),
+            principal: conversation_principal,
+        };
+        assert!(service.supports_http_operation("GET", &transcript_request.path_and_query));
+        let transcript = service.execute(transcript_request).await;
+        assert_eq!(transcript.status, StatusCode::OK.as_u16());
+        let transcript: Value = serde_json::from_slice(&transcript.body).unwrap();
+        assert_eq!(transcript["conversation_id"], conversation_id);
+        assert_eq!(transcript["turns"].as_array().unwrap().len(), 2);
+        assert_eq!(transcript["turns"][0]["content"], "live question");
+        assert!(!transcript.to_string().contains("must stay hidden"));
+
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(format!("chroma-live-secret-{suffix}")),
+            ..AuthConfig::default()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"reader-live", "role":"ro", "storage_ns":namespace,
+                "workspace_id":live_workspace, "graph_space":"conversation",
+                "ns":["conversation"], "capabilities":["read_graph"], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(auth.key.as_deref().unwrap().as_bytes()),
+        )
+        .unwrap();
+        let router = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service.clone()),
+        );
+        let mcp = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(format!(
+                        "{{\"jsonrpc\":\"2.0\",\"id\":\"live-transcript\",\"method\":\"tools/call\",\"params\":{{\"name\":\"conversation.get_transcript\",\"arguments\":{{\"conversation_id\":\"{conversation_id}\"}}}}}}"
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), StatusCode::OK);
+        let mcp_body = to_bytes(mcp.into_body(), 65_536).await.unwrap();
+        let mcp: Value = serde_json::from_slice(&mcp_body).unwrap();
+        assert_eq!(mcp["result"]["conversation_id"], conversation_id);
+        assert_eq!(mcp["result"]["turns"].as_array().unwrap().len(), 2);
+        assert!(!mcp.to_string().contains("must stay hidden"));
+
+        let http_transcript = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/conversations/{conversation_id}/turns"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(http_transcript.status(), StatusCode::OK);
+        let http_transcript_body = to_bytes(http_transcript.into_body(), 65_536).await.unwrap();
+        let http_transcript: Value = serde_json::from_slice(&http_transcript_body).unwrap();
+        assert_eq!(http_transcript["conversation_id"], conversation_id);
+        assert_eq!(http_transcript["turns"].as_array().unwrap().len(), 2);
+        assert!(!http_transcript.to_string().contains("must stay hidden"));
 
         drop(graph);
         drop(service);
