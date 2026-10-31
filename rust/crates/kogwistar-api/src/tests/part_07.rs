@@ -1686,30 +1686,28 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         step_id: "ack-step".to_owned(),
         correlation_id: run_id.to_owned(),
     };
-    let ack_effect = kogwistar_runtime::RecordedWorkerSuccessEffect {
-        contract_version: 1,
-        effect_id: "causal-ack-effect".to_owned(),
-        status: kogwistar_runtime::RuntimeWorkerEffectStatus::Success,
-        state_update: Vec::new(),
-        update: None,
-        state_schema: Map::new(),
-        successors: Vec::new(),
-        route_next: Vec::new(),
-        result: Some(json!({"handled": true})),
-        errors: Vec::new(),
-        wait_reason: None,
-        resume_payload: None,
-        usage: None,
-        trace_events: Vec::new(),
-        graph_mutation_batch: None,
-        graph_mutation_batch_v2: None,
-        provider_event_publications: Vec::new(),
-        provider_event_acknowledgements: vec![kogwistar_runtime::ProviderEventAcknowledgementV1 {
-            message_id: claim["claim"]["message_id"].as_str().unwrap().to_owned(),
-            claimed_by: claim["claim"]["claimed_by"].as_str().unwrap().to_owned(),
-            event_id: event.event_id.clone(),
-        }],
+    let ack_request = kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: "agent.event.ack".to_owned(),
+        op_version: "v1".to_owned(),
+        run_id: run_id.to_owned(),
+        workflow_id: workflow_id.to_owned(),
+        node_id: "ack-step".to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        turn_node_id: Some("causal-user-turn".to_owned()),
+        token_id: run_id.to_owned(),
+        parent_token_id: None,
+        step_seq: 2,
+        state: Map::from_iter([
+            ("agent_event_current".to_owned(), claim["event"].clone()),
+            ("agent_event_claim".to_owned(), claim["claim"].clone()),
+            ("agent_event_route".to_owned(), json!("no_action")),
+            ("agent_event_handling_step_seq".to_owned(), json!(1)),
+        ]),
+        runtime_routes: Vec::new(),
+        ephemeral_context: Map::new(),
     };
+    let ack_effect = kogwistar_runtime::execute_native_step(&ack_request).unwrap();
     let request = |effect: kogwistar_runtime::RecordedWorkerSuccessEffect| RuntimeWorkerResultRequest {
         handoff: handoff.clone(),
         transition: None,
@@ -1754,10 +1752,8 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     drop(fault_cleanup);
     fault_cleanup_task.await.unwrap().unwrap();
 
-    let mut retry_effect = ack_effect.clone();
-    retry_effect.effect_id = "causal-ack-effect-retry".to_owned();
     let applied = service.apply_runtime_result_input(
-        request(retry_effect), None, None, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        request(ack_effect), None, None, kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
     ).await;
     assert_eq!(
         applied.status,

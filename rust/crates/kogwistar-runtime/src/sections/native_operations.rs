@@ -257,6 +257,16 @@ pub struct NativeRoutedOperationOutput {
     pub successors: Vec<RuntimeSuccessor>,
 }
 
+/// Routed native result that also requests durable host effects. This is used
+/// when routing and its effect (for example event acknowledgement) must commit
+/// as one worker result.
+#[derive(Clone, Debug)]
+pub struct NativeRoutedOperationEffectOutput {
+    pub output: NativeOperationOutput,
+    pub successors: Vec<RuntimeSuccessor>,
+    pub provider_event_acknowledgements: Vec<ProviderEventAcknowledgementV1>,
+}
+
 type NativeOperationHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
     + Send
     + Sync;
@@ -268,6 +278,12 @@ type NativeOperationEffectHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<
 type NativeRoutedOperationHandler = dyn Fn(
         &RuntimeNativeStepRequest,
     ) -> Result<NativeRoutedOperationOutput, RuntimeNativeExecutionError>
+    + Send
+    + Sync;
+
+type NativeRoutedOperationEffectHandler = dyn Fn(
+        &RuntimeNativeStepRequest,
+    ) -> Result<NativeRoutedOperationEffectOutput, RuntimeNativeExecutionError>
     + Send
     + Sync;
 
@@ -297,6 +313,7 @@ enum RegisteredNativeOperation {
     State(Arc<NativeOperationHandler>),
     StateWithEffects(Arc<NativeOperationEffectHandler>),
     RoutedState(Arc<NativeRoutedOperationHandler>),
+    RoutedStateWithEffects(Arc<NativeRoutedOperationEffectHandler>),
     Graph(Arc<NativeGraphOperationHandler>),
     GraphV2(Arc<NativeGraphV2OperationHandler>),
 }
@@ -317,8 +334,11 @@ impl Default for NativeOperationRegistry {
         registry.insert_builtin("noop", native_noop);
         registry.insert_builtin("increment-counter", native_increment_counter);
         registry.insert_builtin("emit-result", native_emit_result);
-        registry.insert_builtin("agent.event.receive", native_provider_event_receive);
-        registry.insert_builtin_with_effects("agent.event.ack", native_provider_event_ack);
+        registry.insert_builtin_routed("agent.event.receive", native_provider_event_receive);
+        registry.insert_builtin_routed_with_effects(
+            "agent.event.ack",
+            native_provider_event_ack,
+        );
         registry
     }
 }
@@ -343,12 +363,12 @@ impl NativeOperationRegistry {
             );
     }
 
-    fn insert_builtin_with_effects(
+    fn insert_builtin_routed(
         &mut self,
         operation: &str,
         handler: impl Fn(
             &RuntimeNativeStepRequest,
-        ) -> Result<NativeOperationEffectOutput, RuntimeNativeExecutionError>
+        ) -> Result<NativeRoutedOperationOutput, RuntimeNativeExecutionError>
         + Send
         + Sync
         + 'static,
@@ -358,7 +378,26 @@ impl NativeOperationRegistry {
             .or_default()
             .insert(
                 "v1".to_owned(),
-                RegisteredNativeOperation::StateWithEffects(Arc::new(handler)),
+                RegisteredNativeOperation::RoutedState(Arc::new(handler)),
+            );
+    }
+
+    fn insert_builtin_routed_with_effects(
+        &mut self,
+        operation: &str,
+        handler: impl Fn(
+            &RuntimeNativeStepRequest,
+        ) -> Result<NativeRoutedOperationEffectOutput, RuntimeNativeExecutionError>
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        self.handlers
+            .entry(operation.to_owned())
+            .or_default()
+            .insert(
+                "v1".to_owned(),
+                RegisteredNativeOperation::RoutedStateWithEffects(Arc::new(handler)),
             );
     }
 
@@ -431,6 +470,29 @@ impl NativeOperationRegistry {
             operation.into(),
             version.into(),
             RegisteredNativeOperation::RoutedState(Arc::new(handler)),
+        )
+    }
+
+    /// Register a trusted routed operation whose durable host effects and
+    /// successor selection must be committed together.
+    pub fn register_routed_with_effects<F>(
+        &mut self,
+        operation: impl Into<String>,
+        version: impl Into<String>,
+        handler: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+            ) -> Result<NativeRoutedOperationEffectOutput, RuntimeNativeExecutionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_handler(
+            operation.into(),
+            version.into(),
+            RegisteredNativeOperation::RoutedStateWithEffects(Arc::new(handler)),
         )
     }
 
@@ -579,9 +641,111 @@ fn native_emit_result(
     })
 }
 
+fn event_route_successor(
+    request: &RuntimeNativeStepRequest,
+    predicate: &str,
+) -> Result<Vec<RuntimeSuccessor>, RuntimeNativeExecutionError> {
+    if request.runtime_routes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut routes = request.runtime_routes.iter().filter(|route| {
+        route.source_node_id == request.node_id && route.predicate.as_deref() == Some(predicate)
+    });
+    let route = routes.next().ok_or_else(|| RuntimeNativeExecutionError::OperationFailed {
+        operation: request.operation.clone(),
+        reason: format!("frozen event workflow is missing route predicate {predicate:?}"),
+    })?;
+    if routes.next().is_some() {
+        return Err(RuntimeNativeExecutionError::OperationFailed {
+            operation: request.operation.clone(),
+            reason: format!("frozen event workflow has ambiguous route predicate {predicate:?}"),
+        });
+    }
+    Ok(vec![RuntimeSuccessor {
+        node_id: route.target_node_id.clone(),
+        join_mask: route.join_mask,
+    }])
+}
+
+fn event_route_for_claim(
+    request: &RuntimeNativeStepRequest,
+    event: &kogwistar_contracts::ProviderEventV1,
+) -> Result<(&'static str, &'static str), RuntimeNativeExecutionError> {
+    let hook_count = request
+        .state
+        .get("agent_event_advisory_hook_count")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let max_hooks = request
+        .state
+        .get("agent_event_max_advisory_hooks_per_run")
+        .map(|value| {
+            value.as_i64().filter(|count| *count >= 0).ok_or_else(|| {
+                RuntimeNativeExecutionError::InvalidState {
+                    field: "agent_event_max_advisory_hooks_per_run",
+                    reason: "expected a non-negative integer",
+                }
+            })
+        })
+        .transpose()?
+        .unwrap_or(8);
+    let advisory_field_names = request
+        .state
+        .get("agent_event_advisory_field_names")
+        .map(|value| {
+            let fields = value.as_array().ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "agent_event_advisory_field_names",
+                reason: "expected an array of strings",
+            })?;
+            fields
+                .iter()
+                .map(|field| {
+                    field.as_str().ok_or(RuntimeNativeExecutionError::InvalidState {
+                        field: "agent_event_advisory_field_names",
+                        reason: "expected an array of strings",
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let advisory_field = match event {
+        kogwistar_contracts::ProviderEventV1::FieldCompleted { field_name, .. } => {
+            advisory_field_names
+                .as_ref()
+                .is_some_and(|fields| fields.iter().any(|field| *field == field_name))
+        }
+        kogwistar_contracts::ProviderEventV1::ReasoningSummary { .. } => request
+            .state
+            .get("agent_event_allow_reasoning_summaries")
+            .map(|value| value.as_bool().ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "agent_event_allow_reasoning_summaries",
+                reason: "expected a boolean",
+            }))
+            .transpose()?
+            .unwrap_or(false),
+        _ => false,
+    };
+    if advisory_field && hook_count < max_hooks {
+        return Ok(("advisory", "event_is_advisory"));
+    }
+    match event {
+        kogwistar_contracts::ProviderEventV1::ToolCallCompleted { .. } => {
+            Ok(("tool", "event_is_tool_call"))
+        }
+        kogwistar_contracts::ProviderEventV1::ResponseCompleted { .. } => {
+            Ok(("final", "event_is_response_complete"))
+        }
+        kogwistar_contracts::ProviderEventV1::ResponseFailed { .. } => {
+            Ok(("failed", "event_is_response_failed"))
+        }
+        _ => Ok(("no_action", "event_requires_no_action")),
+    }
+}
+
 fn native_provider_event_receive(
     request: &RuntimeNativeStepRequest,
-) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+) -> Result<NativeRoutedOperationOutput, RuntimeNativeExecutionError> {
     let event = request
         .ephemeral_context
         .get("authorized_provider_event")
@@ -597,29 +761,33 @@ fn native_provider_event_receive(
             reason: "host-authorized provider event claim is unavailable".to_owned(),
         })?;
     let (typed_event, _) = validated_provider_event_claim(request, event, claim)?;
+    let (route, predicate) = event_route_for_claim(request, &typed_event.event)?;
     let mut update = Map::new();
     update.insert("agent_event_current".to_owned(), event.clone());
     update.insert("agent_event_claim".to_owned(), claim.clone());
-    update.insert("agent_event_route".to_owned(), json!("no_action"));
+    update.insert("agent_event_route".to_owned(), json!(route));
     update.insert(
         "agent_event_handling_step_seq".to_owned(),
         json!(request.step_seq),
     );
     let mut final_state = request.state.clone();
     final_state.extend(update.clone());
-    Ok(NativeOperationOutput {
-        state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
-        result: Some(json!({
-            "workflow_status": "succeeded",
-            "final_state": final_state,
-            "event_id": typed_event.event_id,
-        })),
+    Ok(NativeRoutedOperationOutput {
+        output: NativeOperationOutput {
+            state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
+            result: Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": final_state,
+                "event_id": typed_event.event_id,
+            })),
+        },
+        successors: event_route_successor(request, predicate)?,
     })
 }
 
 fn native_provider_event_ack(
     request: &RuntimeNativeStepRequest,
-) -> Result<NativeOperationEffectOutput, RuntimeNativeExecutionError> {
+) -> Result<NativeRoutedOperationEffectOutput, RuntimeNativeExecutionError> {
     let event = request
         .state
         .get("agent_event_current")
@@ -635,15 +803,33 @@ fn native_provider_event_ack(
             reason: "durable provider event claim is unavailable in workflow state".to_owned(),
         })?;
     let (typed_event, acknowledgement) = validated_provider_event_claim(request, event, claim)?;
-    Ok(NativeOperationEffectOutput {
+    let next_route = match request
+        .state
+        .get("agent_event_route")
+        .and_then(Value::as_str)
+        .unwrap_or("no_action")
+    {
+        "advisory" | "no_action" | "tool" => ("receive", "event_stream_has_more"),
+        "resume" => ("request", "event_turn_requires_model_resume"),
+        "final" => ("done", "event_run_succeeded"),
+        "failed" => ("failed_terminal", "event_run_failed"),
+        _ => ("failed_terminal", "event_run_failed"),
+    };
+    let mut update = Map::new();
+    update.insert("agent_event_route".to_owned(), json!(next_route.0));
+    update.insert("agent_event_claim".to_owned(), Value::Null);
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    Ok(NativeRoutedOperationEffectOutput {
         output: NativeOperationOutput {
-            state_update: Vec::new(),
+            state_update: vec![RecordedStateUpdate::Pair(("u".to_owned(), update))],
             result: Some(json!({
                 "workflow_status": "succeeded",
-                "final_state": request.state,
+                "final_state": final_state,
                 "event_id": typed_event.event_id,
             })),
         },
+        successors: event_route_successor(request, next_route.1)?,
         provider_event_acknowledgements: vec![acknowledgement],
     })
 }
@@ -771,6 +957,16 @@ pub fn execute_native_step_with_registry(
         RegisteredNativeOperation::RoutedState(handler) => {
             let routed = handler(request)?;
             (routed.output, None, None, routed.successors, Vec::new())
+        }
+        RegisteredNativeOperation::RoutedStateWithEffects(handler) => {
+            let routed = handler(request)?;
+            (
+                routed.output,
+                None,
+                None,
+                routed.successors,
+                routed.provider_event_acknowledgements,
+            )
         }
         RegisteredNativeOperation::Graph(handler) => {
             let (output, batch) = handler(request)?;

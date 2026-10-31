@@ -517,6 +517,225 @@
     }
 
     #[test]
+    fn native_provider_event_nodes_route_through_frozen_python_workflow_edges() {
+        let mut fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+        )))
+        .unwrap();
+        let event_id = fixture["envelope"]["event_id"].as_str().unwrap().to_owned();
+        let claim = json!({
+            "message_id": format!("msg:{event_id}"),
+            "claimed_by": "rust-native-agent-event:claim-1",
+            "event_id": event_id,
+        });
+        let receive_route = |predicate: &str, target: &str| RuntimeStaticRoute {
+            edge_id: format!("receive-{predicate}"),
+            source_node_id: "receive".to_owned(),
+            target_node_id: target.to_owned(),
+            aliases: Vec::new(),
+            join_mask: 0,
+            predicate: Some(predicate.to_owned()),
+            multiplicity: "one".to_owned(),
+            is_default: false,
+            priority: 100,
+            source_fanout: false,
+        };
+        let cases = [
+            (
+                json!({
+                    "kind": "field_completed", "field_name": "text", "value": "answer"
+                }),
+                Map::new(),
+                "no_action",
+                "ack",
+            ),
+            (
+                json!({
+                    "kind": "field_completed", "field_name": "text", "value": "answer"
+                }),
+                Map::from_iter([(
+                    "agent_event_advisory_field_names".to_owned(),
+                    json!(["text"]),
+                )]),
+                "advisory",
+                "hook",
+            ),
+            (
+                json!({
+                    "kind": "tool_call_completed", "call_id": "call-1", "name": "lookup", "arguments": {}
+                }),
+                Map::new(),
+                "tool",
+                "tool",
+            ),
+            (
+                json!({"kind": "response_completed", "text": "done"}),
+                Map::new(),
+                "final",
+                "finalize",
+            ),
+            (
+                json!({"kind": "response_failed", "error_code": "failed", "message": "provider failed"}),
+                Map::new(),
+                "failed",
+                "fail",
+            ),
+        ];
+        for (event, state, expected_route, expected_target) in cases {
+            let mut envelope = fixture["envelope"].clone();
+            envelope["event"] = event;
+            let request = RuntimeNativeStepRequest {
+                executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+                operation: "agent.event.receive".to_owned(),
+                op_version: "v1".to_owned(),
+                run_id: "run-fixture-001".to_owned(),
+                workflow_id: "workflow".to_owned(),
+                node_id: "receive".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                turn_node_id: Some("turn-fixture-001".to_owned()),
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                state,
+                runtime_routes: vec![
+                    receive_route("event_is_advisory", "hook"),
+                    receive_route("event_is_tool_call", "tool"),
+                    receive_route("event_is_response_complete", "finalize"),
+                    receive_route("event_is_response_failed", "fail"),
+                    receive_route("event_requires_no_action", "ack"),
+                ],
+                ephemeral_context: Map::from_iter([
+                    ("authorized_provider_event".to_owned(), envelope.clone()),
+                    ("authorized_provider_event_claim".to_owned(), claim.clone()),
+                ]),
+            };
+            let received = execute_native_step(&request).unwrap();
+            assert_eq!(received.successors.len(), 1);
+            assert_eq!(received.successors[0].node_id, expected_target);
+            if expected_route == "no_action" {
+                let mut missing_route = request.clone();
+                missing_route.runtime_routes.retain(|route| {
+                    route.predicate.as_deref() != Some("event_requires_no_action")
+                });
+                assert!(execute_native_step(&missing_route).is_err());
+                let mut ambiguous_route = request.clone();
+                ambiguous_route
+                    .runtime_routes
+                    .push(receive_route("event_requires_no_action", "other-ack"));
+                assert!(execute_native_step(&ambiguous_route).is_err());
+            }
+            let next_state = kogwistar_contracts::apply_state_update_pairs(
+                Value::Object(request.state.clone()),
+                received.state_update.iter().map(|update| match update {
+                    RecordedStateUpdate::Pair((mode, payload)) => (mode.as_str(), payload),
+                    RecordedStateUpdate::Object { mode, payload } => (mode.as_str(), payload),
+                }),
+            )
+            .unwrap();
+            assert_eq!(next_state["agent_event_route"], expected_route);
+
+            assert!(received.trace_events.iter().any(|trace| {
+                trace["event"] == "runtime.native.step.completed"
+                    && trace["operation"] == "agent.event.receive"
+            }));
+        }
+
+        for (route, predicate, target) in [
+            ("advisory", "event_stream_has_more", "receive"),
+            ("no_action", "event_stream_has_more", "receive"),
+            ("tool", "event_stream_has_more", "receive"),
+            ("resume", "event_turn_requires_model_resume", "request"),
+            ("final", "event_run_succeeded", "done"),
+            (
+                "failed",
+                "event_run_failed",
+                "failed_terminal",
+            ),
+        ] {
+            let mut envelope = fixture["envelope"].clone();
+            envelope["event"] = json!({"kind": "response_started"});
+            let request = RuntimeNativeStepRequest {
+                executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+                operation: "agent.event.ack".to_owned(),
+                op_version: "v1".to_owned(),
+                run_id: "run-fixture-001".to_owned(),
+                workflow_id: "workflow".to_owned(),
+                node_id: "ack".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                turn_node_id: Some("turn-fixture-001".to_owned()),
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 2,
+                state: Map::from_iter([
+                    ("agent_event_current".to_owned(), envelope),
+                    ("agent_event_claim".to_owned(), claim.clone()),
+                    ("agent_event_route".to_owned(), json!(route)),
+                ]),
+                runtime_routes: vec![RuntimeStaticRoute {
+                    edge_id: format!("ack-{predicate}"),
+                    source_node_id: "ack".to_owned(),
+                    target_node_id: target.to_owned(),
+                    aliases: Vec::new(),
+                    join_mask: 0,
+                    predicate: Some(predicate.to_owned()),
+                    multiplicity: "one".to_owned(),
+                    is_default: false,
+                    priority: 100,
+                    source_fanout: false,
+                }],
+                ephemeral_context: Map::new(),
+            };
+            let acknowledged = execute_native_step(&request).unwrap();
+            assert_eq!(acknowledged.successors[0].node_id, target);
+            assert_eq!(acknowledged.provider_event_acknowledgements.len(), 1);
+            let acknowledged_state = kogwistar_contracts::apply_state_update_pairs(
+                Value::Object(request.state.clone()),
+                acknowledged.state_update.iter().map(|update| match update {
+                    RecordedStateUpdate::Pair((mode, payload)) => (mode.as_str(), payload),
+                    RecordedStateUpdate::Object { mode, payload } => (mode.as_str(), payload),
+                }),
+            )
+            .unwrap();
+            assert_eq!(acknowledged_state["agent_event_route"], target);
+            assert!(acknowledged_state["agent_event_claim"].is_null());
+        }
+
+        fixture["envelope"]["event"] = json!({
+            "kind": "field_completed", "field_name": "text", "value": "answer"
+        });
+        let invalid = event_route_for_claim(
+            &RuntimeNativeStepRequest {
+                executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+                operation: "agent.event.receive".to_owned(),
+                op_version: "v1".to_owned(),
+                run_id: "run-fixture-001".to_owned(),
+                workflow_id: "workflow".to_owned(),
+                node_id: "receive".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                turn_node_id: None,
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                state: Map::from_iter([(
+                    "agent_event_advisory_field_names".to_owned(),
+                    json!(["text", 5]),
+                )]),
+                runtime_routes: Vec::new(),
+                ephemeral_context: Map::new(),
+            },
+            &serde_json::from_value(fixture["envelope"]["event"].clone()).unwrap(),
+        );
+        assert!(matches!(
+            invalid,
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "agent_event_advisory_field_names",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn native_operation_recognition_is_strict_and_shared() {
         assert_eq!(native_operation_name("rust-native/noop"), Some("noop"));
         assert_eq!(native_operation_name("rust-native/"), None);
