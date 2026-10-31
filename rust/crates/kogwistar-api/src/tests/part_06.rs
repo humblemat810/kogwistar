@@ -5411,6 +5411,7 @@
             let request: Value =
                 serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
             assert_eq!(request["response_format"]["type"], "json_schema");
+            assert_eq!(request["stream"], true);
             let snapshot_reader =
                 PostgresStore::from_dsn(&snapshot_dsn, &snapshot_schema).unwrap();
             let snapshots = snapshot_reader
@@ -5524,10 +5525,23 @@
                     "text":"The workflow runtime state is stored in the graph.",
                     "reasoning":"The selected evidence states this directly.",
                     "claims":[{"claim":"Workflow runtime state is stored in the graph.","citations":[{"source_node_id":"N1","mention_index":0,"span_index":0}]}]
-                }).to_string();
-            let response = json!({"choices":[{"message":{"content":answer}}]}).to_string();
+                })
+                .to_string();
+            let (text_field, remaining_fields) = answer
+                .split_once(",\"reasoning\"")
+                .expect("answer fixture has a top-level reasoning field");
+            let chunks = [
+                json!({"id":"resp-agentic-e2e","choices":[{"delta":{"content":format!("{text_field},")},"finish_reason":null}]}),
+                json!({"id":"resp-agentic-e2e","choices":[{"delta":{"content":format!("\"reasoning\"{remaining_fields}")},"finish_reason":null}]}),
+                json!({"id":"resp-agentic-e2e","choices":[{"delta":{},"finish_reason":"stop"}]}),
+            ];
+            let mut response = String::new();
+            for chunk in chunks {
+                response.push_str(&format!("data: {chunk}\r\n\r\n"));
+            }
+            response.push_str("data: [DONE]\r\n\r\n");
             let wire = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 response.len(),
                 response
             );
@@ -6255,6 +6269,7 @@
                 format!("http://{chat_address}/v1/chat/completions"),
             )
             .env("KOGWISTAR_CHAT_COMPLETIONS_MODEL", "fixture-answer-model")
+            .env("KOGWISTAR_CHAT_COMPLETIONS_STREAMING", "true")
             .env("KOGWISTAR_EMBEDDING_PROVIDER", "ollama")
             .env("KOGWISTAR_EMBEDDING_MODEL", "fixture-embedding-model")
             .env("KOGWISTAR_EMBEDDING_DIMENSION", "3")
@@ -6764,6 +6779,21 @@
             .filter(|event| event["trace"]["executor_target"] == "rust-native")
             .collect::<Vec<_>>();
         assert!(!native_traces.is_empty(), "native execution traces must be durable");
+        let provider_event_traces = native_traces
+            .iter()
+            .filter(|event| event["trace"]["event"] == "provider.semantic_event.observed")
+            .collect::<Vec<_>>();
+        assert!(
+            provider_event_traces.iter().any(|event| {
+                event["trace"]["provider_event"]["kind"] == "field_completed"
+                    && event["trace"]["provider_event"]["details"]["field_name"] == "text"
+            }),
+            "the streamed complete text field should be durably summarized: {provider_event_traces:#?}"
+        );
+        let provider_event_json = serde_json::to_string(&provider_event_traces).unwrap();
+        assert!(!provider_event_json.contains("The workflow runtime state is stored in the graph."));
+        assert!(!provider_event_json.contains("The selected evidence states this directly."));
+        assert!(!provider_event_json.contains("\"value\""));
         for event in native_traces {
             let trace = &event["trace"];
             let token_id = trace["token_id"].as_str().unwrap();

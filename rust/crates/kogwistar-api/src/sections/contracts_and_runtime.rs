@@ -918,6 +918,7 @@ fn native_result_from_request(
             let mut trace = json!({
                 "schema_version": 1,
                 "event": "provider.semantic_event.observed",
+                "executor_target": kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
                 "provider_id": "openai_compatible_chat_completions",
                 "provider_model": native_request
                     .ephemeral_context
@@ -1013,6 +1014,10 @@ mod provider_event_trace_tests {
             .find(|trace| trace["event"] == "provider.semantic_event.observed")
             .unwrap();
         assert_eq!(provider_trace["run_id"], "run-event-trace");
+        assert_eq!(
+            provider_trace["executor_target"],
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        );
         assert_eq!(
             provider_trace["provider_id"],
             "openai_compatible_chat_completions"
