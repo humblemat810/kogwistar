@@ -767,3 +767,157 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
         rust_log.close()
         chroma_process.terminate()
         chroma_process.wait(timeout=10)
+
+
+@pytest.mark.manual
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_rust_metadata_stage1_is_promoted_by_python_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Python's worker consumes Rust-owned Stage-1 node and edge records."""
+    script_name = "chroma.exe" if os.name == "nt" else "chroma"
+    interpreter_chroma = Path(sysconfig.get_path("scripts")) / script_name
+    chroma_command = (
+        str(interpreter_chroma)
+        if interpreter_chroma.is_file()
+        else shutil.which("chroma")
+    )
+    if chroma_command is None:
+        pytest.skip("install the Chroma extra and CLI to run this manual integration")
+
+    chroma_port = _port()
+    chroma_endpoint = f"http://127.0.0.1:{chroma_port}"
+    chroma_process = subprocess.Popen(
+        [
+            chroma_command,
+            "run",
+            "--path",
+            str(tmp_path / "chroma-data"),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(chroma_port),
+        ],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_for_http_process(
+            chroma_process, f"{chroma_endpoint}/api/v2/heartbeat", "Chroma"
+        )
+
+        import chromadb
+
+        import kogwistar.engine_core.engine as engine_module
+        from kogwistar.engine_core.engine import GraphKnowledgeEngine
+        from tests._helpers.graph_builders import (
+            build_entity_node,
+            build_relationship_edge,
+        )
+
+        monkeypatch.setattr(
+            engine_module,
+            "_import_chroma_client",
+            lambda: (
+                lambda _settings: chromadb.HttpClient(
+                    host="127.0.0.1", port=chroma_port
+                ),
+                chromadb.config.Settings,
+            ),
+        )
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        namespace = f"rust-python-worker-{uuid.uuid4().hex}"
+        source_id = f"{namespace}-source"
+        target_id = f"{namespace}-target"
+        edge_id = f"{namespace}-edge"
+        data_path = tmp_path / "shared-meta"
+        rust_meta_writer = GraphKnowledgeEngine(
+            persist_directory=str(data_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda texts: [[0.01, 0.01] for _ in texts],
+        )
+        try:
+            rust_meta_writer.write.add_node(
+                build_entity_node(
+                    node_id=source_id,
+                    doc_id="rust-stage1-chroma-doc",
+                    label="Rust metadata source node",
+                )
+            )
+            rust_meta_writer.write.add_node(
+                build_entity_node(
+                    node_id=target_id,
+                    doc_id="rust-stage1-chroma-doc",
+                    label="Rust metadata target node",
+                )
+            )
+            rust_meta_writer.write.add_edge(
+                build_relationship_edge(
+                    edge_id=edge_id,
+                    src=source_id,
+                    tgt=target_id,
+                    doc_id="rust-stage1-chroma-doc",
+                    label="Rust metadata relationship",
+                )
+            )
+            assert (
+                rust_meta_writer.meta_sqlite.sqlite_implementation == "rust"
+            )
+            pending = rust_meta_writer.meta_sqlite.list_index_jobs(namespace=namespace)
+            assert {job.entity_id for job in pending if job.status == "PENDING"} >= {
+                source_id,
+                target_id,
+                edge_id,
+            }
+        finally:
+            rust_meta_writer.close()
+
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+        python_worker_engine = GraphKnowledgeEngine(
+            persist_directory=str(data_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda texts: [[0.6, 0.8] for _ in texts],
+        )
+        try:
+            worker = python_worker_engine.indexing.make_index_job_worker(
+                max_jobs_per_tick=20
+            )
+            metrics = worker.tick()
+            assert metrics.done >= 3, metrics
+            client = chromadb.HttpClient(host="127.0.0.1", port=chroma_port)
+            for collection_name, expected_ids in (
+                ("nodes", {source_id, target_id}),
+                ("edges", {edge_id}),
+            ):
+                projected = client.get_collection(collection_name).get(
+                    ids=sorted(expected_ids), include=["embeddings", "metadatas"]
+                )
+                assert set(projected["ids"]) == expected_ids
+                for metadata, embedding in zip(
+                    projected["metadatas"], projected["embeddings"], strict=True
+                ):
+                    assert metadata["_kogwistar_stage2_ready"] is True
+                    assert metadata["namespace"] == namespace
+                    assert embedding == pytest.approx([0.6, 0.8])
+            for entity_kind, entity_ids in (
+                ("node", (source_id, target_id)),
+                ("edge", (edge_id,)),
+            ):
+                for entity_id in entity_ids:
+                    jobs = python_worker_engine.meta_sqlite.list_index_jobs(
+                        namespace=namespace,
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                    )
+                    assert jobs and jobs[0].status == "DONE"
+        finally:
+            python_worker_engine.close()
+    finally:
+        chroma_process.terminate()
+        chroma_process.wait(timeout=10)

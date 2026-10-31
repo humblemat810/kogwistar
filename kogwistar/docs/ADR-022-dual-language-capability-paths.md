@@ -135,17 +135,47 @@ Never infer baseline membership from an ID suffix or a recent evidence note.
 
 ### Execution guidance for future turns
 
+Before editing, check the active goal, branch, worktree, current checklist, and
+relevant code. Preserve unrelated changes. Select one existing open gate and
+state the exact behavior that will be complete at the end of the slice. Use
+existing contracts and tests first; avoid new abstractions, side quests, and
+checklist IDs unless an actual gap requires a separately approved scope
+decision.
+
+Use a top-down Rust-first sequence for the dual-language objective:
+
+1. Establish a coherent Rust-native end-to-end vertical path through public
+   ingress, authorization, runtime/operation handling, authoritative graph
+   persistence, and the selected backend. Do not wait for every fine-grained
+   Python behavior to be ported before connecting the native path.
+2. Keep the Python path supported and explicitly select which implementation
+   owns each transaction. A Rust-native path must not silently call Python or
+   hand off an open transaction; a mixed path is allowed only at an explicit
+   serialized or unit-of-work seam.
+3. During initial end-to-end bring-up, behavioral differences from Python may
+   be documented and measured rather than blocking the Rust path, provided
+   they do not weaken authorization, scope, provenance, durability, or the
+   selected backend's transaction/consistency contract. Never describe such a
+   path as behaviorally equivalent until the differences are closed or
+   explicitly accepted as versioned contract differences.
+4. Once the Rust path is connected, narrow each observed difference into the
+   existing capability gates and add shared fixtures or differential tests.
+   Refine semantics incrementally, preserving backward compatibility and
+   testing Python-only, Rust-only, and supported mixed configurations.
+5. Measure the complete request path, not only isolated Rust functions. Keep
+   the seam-free Rust path as the maximum-performance case; optional Python
+   components remain interchangeable at declared seams and are not removed.
+
 The active goal may be paused. A documentation or review request does not
-resume it or authorize unrelated implementation. Before editing, check the
-goal, branch, worktree, current checklist, and relevant code. Preserve unrelated
-changes. Select one existing open gate and state the exact behavior that will
-be complete at the end of the slice. Use existing contracts and tests first;
-avoid new abstractions, side quests, and checklist IDs unless an actual gap
-requires a separately approved scope decision.
+resume it or authorize unrelated implementation; user direction to continue
+resumes the existing goal. Report behavioral gaps honestly during bring-up.
 
 `DL-10` is closed for the bounded PostgreSQL inline native graph-effect path;
-continue with the already-open `DL-07I` gaps rather than adding more DL-10
-cases or reimplementing owner binding.
+do not add more DL-10 cases or reimplement owner binding. Continue the current
+top-down sequence by selecting the existing open gate that most directly
+connects or validates the Rust-native end-to-end path. Use `DL-07I` only for
+its remaining backend/recovery work; do not make Chroma interop evidence a
+substitute for implementing missing native ingress/runtime capabilities.
 `NativeOperationRegistry::register_graph` lets a registered Rust operation
 return a validated graph mutation batch without changing the public
 `NativeOperationOutput` shape. The authenticated PostgreSQL HTTP result path
