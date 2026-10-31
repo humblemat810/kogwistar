@@ -215,23 +215,16 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
     )["documents"] == [expected_documents[edge.id] for edge in edges]
 
 
-def test_graph_kind_is_opaque_to_shared_python_rust_node_edge_storage(
+def test_graph_space_scope_preserves_shared_python_rust_node_edge_storage(
     sa_engine, pg_dsn: str | None, pg_schema: str | None
 ) -> None:
-    """Graph kinds scope the shared entity contract; they do not select a new one."""
+    """Graph-space values scope records without changing the entity contract."""
     dsn, schema = _require_pg(pg_dsn, pg_schema)
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
     EnginePostgresMetaStore(engine=sa_engine, schema=schema).ensure_initialized()
 
-    graph_spaces = (
-        "knowledge",
-        "conversation",
-        "workflow",
-        "wisdom",
-        "acl_extension",
-        "custom",
-    )
+    graph_spaces = ("facts", "custom:legal", "urn:tenant:graph:6")
     for index, graph_space in enumerate(graph_spaces):
         scope_metadata = {
             "namespace": "alpha",
