@@ -215,6 +215,112 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
     )["documents"] == [expected_documents[edge.id] for edge in edges]
 
 
+def test_graph_kind_is_opaque_to_shared_python_rust_node_edge_storage(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    """Graph kinds scope the shared entity contract; they do not select a new one."""
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    EnginePostgresMetaStore(engine=sa_engine, schema=schema).ensure_initialized()
+
+    graph_spaces = (
+        "knowledge",
+        "conversation",
+        "workflow",
+        "wisdom",
+        "acl_extension",
+        "custom",
+    )
+    for index, graph_space in enumerate(graph_spaces):
+        scope_metadata = {
+            "namespace": "alpha",
+            "workspace_id": "ws",
+            "graph_space": graph_space,
+        }
+        python_node_id = f"python-{graph_space}-node-{index}"
+        python_edge_id = f"python-{graph_space}-edge-{index}"
+        backend.node_upsert(
+            ids=[python_node_id],
+            documents=[python_node_id],
+            metadatas=[scope_metadata],
+            embeddings=[[1.0, 0.0, 0.0]],
+        )
+        backend.edge_upsert(
+            ids=[python_edge_id],
+            documents=[python_edge_id],
+            metadatas=[
+                {
+                    **scope_metadata,
+                    "relation": "connects",
+                    "source_ids": [python_node_id],
+                    "target_ids": [python_node_id],
+                }
+            ],
+            embeddings=[[1.0, 0.0, 0.0]],
+        )
+
+        for entity_kind, entity_id, table in (
+            ("node", python_node_id, "gke_nodes"),
+            ("edge", python_edge_id, "gke_edges"),
+        ):
+            rust_rows = _rust(
+                dsn,
+                schema,
+                {
+                    "kind": "graph_projection_records",
+                    "namespace": "alpha",
+                    "workspace_id": "ws",
+                    "graph_space": graph_space,
+                    "table": table,
+                    "metadata": {},
+                    "limit": 10,
+                },
+            )
+            assert entity_id in {row["id"] for row in rust_rows}
+
+            rust_id = f"rust-{graph_space}-{entity_kind}-{index}"
+            mutation = _mutation(
+                event_id=f"event-{rust_id}",
+                op="ADD",
+                graph_space=graph_space,
+                id=rust_id,
+                document=rust_id,
+                metadata={
+                    "namespace": "alpha",
+                    "workspace_id": "ws",
+                    "graph_space": graph_space,
+                    **(
+                        {
+                            "relation": "connects",
+                            "source_ids": [python_node_id],
+                            "target_ids": [python_node_id],
+                            "source_edge_ids": [],
+                            "target_edge_ids": [],
+                        }
+                        if entity_kind == "edge"
+                        else {}
+                    ),
+                },
+                embedding=[1.0, 0.0, 0.0],
+            )
+            mutation.update(
+                entity_kind=entity_kind,
+                table=table,
+                payload={"id": rust_id},
+            )
+            _rust(dsn, schema, mutation)
+
+            read = (
+                backend.node_get
+                if entity_kind == "node"
+                else backend.edge_get
+            )
+            python_rows = read(ids=[rust_id], include=["metadatas"])
+            assert python_rows["ids"] == [rust_id]
+            assert python_rows["metadatas"][0]["graph_space"] == graph_space
+
+
 @pytest.mark.parametrize("level", [1 << 200, -(1 << 200)])
 def test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python(
     sa_engine, pg_dsn: str | None, pg_schema: str | None, level: int
