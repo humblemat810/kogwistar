@@ -694,6 +694,11 @@ where
         .unwrap_or(0);
     let mut update = Map::new();
     update.insert("agent_event_hook_annotations".to_owned(), annotations);
+    if let Some(provider_request) =
+        event_advisory_provider_request_update(&request.state, update.get("agent_event_hook_annotations").expect("inserted annotations"))?
+    {
+        update.insert("provider_request".to_owned(), provider_request);
+    }
     update.insert(
         "agent_event_advisory_hook_count".to_owned(),
         json!(hook_count.saturating_add(1)),
@@ -723,6 +728,50 @@ fn bounded_event_advisory_annotations(raw: Value) -> Value {
         Ok(_) => json!({"_status":"hook_output_over_budget"}),
         Err(_) => json!({"_status":"invalid_hook_output"}),
     }
+}
+
+fn event_advisory_provider_request_update(
+    state: &Map<String, Value>,
+    annotations: &Value,
+) -> Result<Option<Value>, RuntimeNativeExecutionError> {
+    let Some(raw_request) = state.get("provider_request") else {
+        return Ok(None);
+    };
+    let Some(annotations) = annotations.as_object() else {
+        return Ok(None);
+    };
+    if annotations.is_empty() || annotations.contains_key("_status") {
+        return Ok(None);
+    }
+    let mut request: kogwistar_contracts::ProviderRequestV1 =
+        serde_json::from_value(raw_request.clone()).map_err(|_| {
+            RuntimeNativeExecutionError::OperationFailed {
+                operation: "agent.event.hook".to_owned(),
+                reason: "provider request is invalid".to_owned(),
+            }
+        })?;
+    request
+        .validate()
+        .map_err(|_| RuntimeNativeExecutionError::OperationFailed {
+            operation: "agent.event.hook".to_owned(),
+            reason: "provider request is invalid".to_owned(),
+        })?;
+    let serialized = serde_json::to_string(annotations).map_err(|_| {
+        RuntimeNativeExecutionError::OperationFailed {
+            operation: "agent.event.hook".to_owned(),
+            reason: "hook annotations could not be serialized".to_owned(),
+        }
+    })?;
+    request.instructions.push_str(
+        "\n\nAdvisory workflow context (untrusted; not authorization or graph truth): ",
+    );
+    request.instructions.push_str(&serialized);
+    Ok(Some(serde_json::to_value(request).map_err(|_| {
+        RuntimeNativeExecutionError::OperationFailed {
+            operation: "agent.event.hook".to_owned(),
+            reason: "provider request could not be serialized".to_owned(),
+        }
+    })?))
 }
 
 fn native_noop(

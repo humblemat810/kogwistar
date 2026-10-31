@@ -832,6 +832,19 @@
                 ),
                 ("agent_event_advisory_hook_count".to_owned(), json!(0)),
                 ("agent_event_advisory_response_hook_count".to_owned(), json!(0)),
+                (
+                    "provider_request".to_owned(),
+                    json!({
+                        "contract_version": "v1",
+                        "model": "configured-model",
+                        "instructions": "Base system instructions.",
+                        "input": "user question",
+                        "response_schema": null,
+                        "tools": [],
+                        "previous_response_id": null,
+                        "max_output_tokens": null
+                    }),
+                ),
             ]),
             runtime_routes: Vec::new(),
             ephemeral_context: Map::new(),
@@ -857,6 +870,19 @@
         assert_eq!(first_state["agent_event_advisory_hook_count"], 1);
         assert_eq!(first_state["agent_event_advisory_response_hook_count"], 1);
         assert_eq!(first_state["agent_event_handling_step_seq"], 9);
+        assert_eq!(
+            first_state["provider_request"]["model"],
+            "configured-model"
+        );
+        assert_eq!(first_state["provider_request"]["input"], "user question");
+        assert!(first_state["provider_request"]["instructions"]
+            .as_str()
+            .unwrap()
+            .starts_with("Base system instructions."));
+        assert!(first_state["provider_request"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Advisory workflow context (untrusted; not authorization or graph truth): {\"hint\":\"consider the completed text field\"}"));
         assert_eq!(
             updates(&second)["agent_event_hook_annotations"],
             first_state["agent_event_hook_annotations"]
