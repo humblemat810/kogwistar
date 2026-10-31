@@ -730,6 +730,54 @@ fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
     }
 
     #[test]
+    fn native_effect_operation_carries_typed_provider_event_acknowledgement() {
+        let mut registry = NativeOperationRegistry::default();
+        registry
+            .register_with_effects("agent/event-handle", "v1", |_| {
+                Ok(NativeOperationEffectOutput {
+                    output: NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"handled": true})),
+                    },
+                    provider_event_acknowledgements: vec![ProviderEventAcknowledgementV1 {
+                        message_id: "msg:event-1".to_owned(),
+                        claimed_by: "event-worker#attempt-1".to_owned(),
+                        event_id: "event-1".to_owned(),
+                    }],
+                })
+            })
+            .unwrap();
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent/event-handle".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "handle-event".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+
+        assert_eq!(effect.result, Some(json!({"handled": true})));
+        assert_eq!(
+            effect.provider_event_acknowledgements,
+            vec![ProviderEventAcknowledgementV1 {
+                message_id: "msg:event-1".to_owned(),
+                claimed_by: "event-worker#attempt-1".to_owned(),
+                event_id: "event-1".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
     fn native_registry_rejects_unregistered_version_before_handler_from_shared_fixture() {
         use std::sync::{
             atomic::{AtomicUsize, Ordering},

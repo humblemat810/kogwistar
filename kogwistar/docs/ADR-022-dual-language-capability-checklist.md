@@ -264,6 +264,11 @@ including injected rollback. This is the atomic acknowledgement primitive,
 not a Rust event-agent loop: Rust-side event claiming/routing, handling-step
 causal graph links, hooks, and workflow-design publication/consumption remain
 open under DL-16BQ.
+Rust-native operations can now request this effect through the additive
+`NativeOperationRegistry::register_with_effects` result type; the existing
+public `NativeOperationOutput` shape remains unchanged. Evidence:
+`native_effect_operation_carries_typed_provider_event_acknowledgement` and
+`native_effect_acknowledgement_reaches_authoritative_worker_result` pass.
 
 ## Completion rule
 

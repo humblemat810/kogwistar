@@ -241,6 +241,14 @@ pub struct NativeOperationOutput {
     pub result: Option<Value>,
 }
 
+/// Versioned native-operation result that can request durable host effects.
+/// The host remains responsible for authorization and transactional commit.
+#[derive(Clone, Debug)]
+pub struct NativeOperationEffectOutput {
+    pub output: NativeOperationOutput,
+    pub provider_event_acknowledgements: Vec<ProviderEventAcknowledgementV1>,
+}
+
 /// Native state result plus typed dynamic successors. The runtime validates
 /// every target and join mask against the frozen workflow routes before recording it.
 #[derive(Clone, Debug)]
@@ -250,6 +258,10 @@ pub struct NativeRoutedOperationOutput {
 }
 
 type NativeOperationHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<NativeOperationOutput, RuntimeNativeExecutionError>
+    + Send
+    + Sync;
+
+type NativeOperationEffectHandler = dyn Fn(&RuntimeNativeStepRequest) -> Result<NativeOperationEffectOutput, RuntimeNativeExecutionError>
     + Send
     + Sync;
 
@@ -283,6 +295,7 @@ type NativeGraphV2OperationHandler = dyn Fn(
 #[derive(Clone)]
 enum RegisteredNativeOperation {
     State(Arc<NativeOperationHandler>),
+    StateWithEffects(Arc<NativeOperationEffectHandler>),
     RoutedState(Arc<NativeRoutedOperationHandler>),
     Graph(Arc<NativeGraphOperationHandler>),
     GraphV2(Arc<NativeGraphV2OperationHandler>),
@@ -349,6 +362,30 @@ impl NativeOperationRegistry {
             operation.into(),
             version.into(),
             RegisteredNativeOperation::State(Arc::new(handler)),
+        )
+    }
+
+    /// Register a trusted state operation that returns typed durable effects.
+    /// Effects are requests only; the API validates and commits them together
+    /// with the runtime transition.
+    pub fn register_with_effects<F>(
+        &mut self,
+        operation: impl Into<String>,
+        version: impl Into<String>,
+        handler: F,
+    ) -> Result<(), NativeOperationRegistrationError>
+    where
+        F: Fn(
+                &RuntimeNativeStepRequest,
+            ) -> Result<NativeOperationEffectOutput, RuntimeNativeExecutionError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_handler(
+            operation.into(),
+            version.into(),
+            RegisteredNativeOperation::StateWithEffects(Arc::new(handler)),
         )
     }
 
@@ -571,11 +608,29 @@ pub fn execute_native_step_with_registry(
             RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
         });
     };
-    let (output, graph_mutation_batch, graph_mutation_batch_v2, worker_selected) = match handler {
-        RegisteredNativeOperation::State(handler) => (handler(request)?, None, None, Vec::new()),
+    let (
+        output,
+        graph_mutation_batch,
+        graph_mutation_batch_v2,
+        worker_selected,
+        provider_event_acknowledgements,
+    ) = match handler {
+        RegisteredNativeOperation::State(handler) => {
+            (handler(request)?, None, None, Vec::new(), Vec::new())
+        }
+        RegisteredNativeOperation::StateWithEffects(handler) => {
+            let effect = handler(request)?;
+            (
+                effect.output,
+                None,
+                None,
+                Vec::new(),
+                effect.provider_event_acknowledgements,
+            )
+        }
         RegisteredNativeOperation::RoutedState(handler) => {
             let routed = handler(request)?;
-            (routed.output, None, None, routed.successors)
+            (routed.output, None, None, routed.successors, Vec::new())
         }
         RegisteredNativeOperation::Graph(handler) => {
             let (output, batch) = handler(request)?;
@@ -585,7 +640,7 @@ pub fn execute_native_step_with_registry(
                     operation: request.operation.clone(),
                     reason: format!("invalid graph mutation batch: {error}"),
                 })?;
-            (output, Some(batch), None, Vec::new())
+            (output, Some(batch), None, Vec::new(), Vec::new())
         }
         RegisteredNativeOperation::GraphV2(handler) => {
             let (output, batch) = handler(request)?;
@@ -597,7 +652,7 @@ pub fn execute_native_step_with_registry(
                         reason: format!("invalid ACL-aware graph mutation batch: {error}"),
                     })?;
             }
-            (output, None, batch, Vec::new())
+            (output, None, batch, Vec::new(), Vec::new())
         }
     };
     validate_native_output_state(request, &output)?;
@@ -649,7 +704,7 @@ pub fn execute_native_step_with_registry(
         graph_mutation_batch,
         graph_mutation_batch_v2,
         provider_event_publications: Vec::new(),
-        provider_event_acknowledgements: Vec::new(),
+        provider_event_acknowledgements,
     })
 }
 

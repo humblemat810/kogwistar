@@ -1040,6 +1040,68 @@ mod provider_event_trace_tests {
         assert_eq!(provider_trace["step_seq"], 3);
         assert_eq!(provider_trace["provider_event"]["kind"], "response_completed");
     }
+
+    #[test]
+    fn native_effect_acknowledgement_reaches_authoritative_worker_result() {
+        let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
+        registry
+            .register_with_effects("agent/event-handle", "v1", |_| {
+                Ok(kogwistar_runtime::NativeOperationEffectOutput {
+                    output: kogwistar_runtime::NativeOperationOutput {
+                        state_update: Vec::new(),
+                        result: Some(json!({"handled": true})),
+                    },
+                    provider_event_acknowledgements: vec![
+                        kogwistar_runtime::ProviderEventAcknowledgementV1 {
+                            message_id: "msg:event-1".to_owned(),
+                            claimed_by: "event-worker#attempt-1".to_owned(),
+                            event_id: "event-1".to_owned(),
+                        },
+                    ],
+                })
+            })
+            .unwrap();
+        let request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent/event-handle".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-event-ack".to_owned(),
+            workflow_id: "workflow-event-ack".to_owned(),
+            node_id: "handle-event".to_owned(),
+            conversation_id: "conversation-event-ack".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 4,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        let result = native_result_from_request(
+            RecordedWorkerHandoff {
+                message_id: "worker-lane".to_owned(),
+                claimed_by: "rust-native-worker#attempt-1".to_owned(),
+                run_id: "run-event-ack".to_owned(),
+                step_id: "handle-event".to_owned(),
+                correlation_id: "run-event-ack".to_owned(),
+            },
+            request,
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result
+                .effect
+                .unwrap()
+                .provider_event_acknowledgements,
+            vec![kogwistar_runtime::ProviderEventAcknowledgementV1 {
+                message_id: "msg:event-1".to_owned(),
+                claimed_by: "event-worker#attempt-1".to_owned(),
+                event_id: "event-1".to_owned(),
+            }]
+        );
+    }
 }
 
 fn failed_native_result(

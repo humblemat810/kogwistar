@@ -182,6 +182,11 @@ return a validated graph mutation batch without changing the public
 checks request capability/scope and durable run owner, then commits graph
 events, projections, index intent, runtime result, and acknowledgement
 together.
+New native durable effects must use an explicit typed registration/result
+contract and flow through this authoritative commit path; do not add fields to
+the established `NativeOperationOutput` merely to transport one effect. This
+preserves existing Rust source callers while making host authorization and
+transaction ownership unavoidable.
 
 The current inline-worker implementation records a versioned
 `runtime_owner_binding` in the server-generated `run.created` event for
