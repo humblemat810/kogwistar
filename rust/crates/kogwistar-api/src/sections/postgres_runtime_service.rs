@@ -4123,7 +4123,7 @@ impl PostgresRunApplicationService {
                                     ),
                                 );
                             }
-                            let mut causal_mutations = provider_event_handling_graph_mutations(
+                            let mut causal_mutations = provider_event_ack_graph_mutations(
                                 &acknowledgement.event_id,
                                 &runtime_run_id,
                                 &lane.conversation_id,

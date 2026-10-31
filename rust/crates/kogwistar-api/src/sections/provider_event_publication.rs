@@ -214,7 +214,7 @@ fn provider_event_node_mutation(
     }
 }
 
-fn provider_event_handling_graph_mutations(
+fn provider_event_ack_graph_mutations(
     event_id: &str,
     run_id: &str,
     conversation_id: &str,
@@ -225,10 +225,9 @@ fn provider_event_handling_graph_mutations(
     scope: &GraphScope,
 ) -> Vec<GraphMutation> {
     let step_node_id = format!("wf_step|{run_id}|{step_seq}");
-    let step_summary = format!("step={step_seq}, op={workflow_node_id}, status=ok");
     let step_metadata = json!({
         "entity_type": "workflow_step_exec",
-        "doc_id": step_node_id.clone(),
+        "doc_id": step_node_id,
         "run_id": run_id,
         "conversation_id": conversation_id,
         "workflow_id": workflow_id,
@@ -248,25 +247,31 @@ fn provider_event_handling_graph_mutations(
         scope,
         step_node_id.clone(),
         format!("WF step {step_seq}: {workflow_node_id}"),
-        step_summary,
+        format!("step={step_seq}, op={workflow_node_id}, status=ok"),
         step_metadata.as_object().cloned().unwrap_or_default(),
         None,
     )];
 
     let message_id = format!("msg:{event_id}");
+    let relation = "acknowledged_by_step";
     let edge_id = stable_id(
-        "provider_event_handled_by",
-        &[event_id.to_owned(), step_node_id.clone()],
+        "lane_message_step_link",
+        &[message_id.clone(), relation.to_owned(), step_node_id.clone()],
     )
     .to_string();
     let metadata = json!({
-        "entity_type": "provider_event_causal_edge",
-        "relation_kind": "handled_by",
-        "event_id": event_id,
+        "entity_type": "conversation_edge",
+        "relation": relation,
+        "conversation_id": conversation_id,
         "run_id": run_id,
+        "event_id": event_id,
+        "step_seq": step_seq,
         "workflow_id": workflow_id,
         "workflow_node_id": workflow_node_id,
-        "step_seq": step_seq,
+        "source_id": [message_id],
+        "target_id": [step_node_id],
+        "char_distance_from_last_summary": 0,
+        "turn_distance_from_last_summary": 0,
         "effect_id": effect_id,
         "namespace": scope.namespace,
         "workspace_id": scope.workspace_id,
@@ -275,11 +280,11 @@ fn provider_event_handling_graph_mutations(
     });
     let payload = json!({
         "id": edge_id,
-        "label": "provider_event_handled_by",
+        "label": relation,
         "type": "relationship",
-        "summary": "Provider event was handled by a workflow execution step",
-        "doc_id": format!("run:{run_id}"),
-        "relation": "handled_by",
+        "summary": relation,
+        "doc_id": edge_id,
+        "relation": relation,
         "source_ids": [message_id],
         "target_ids": [step_node_id],
         "source_edge_ids": [],

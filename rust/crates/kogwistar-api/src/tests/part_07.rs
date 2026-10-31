@@ -1240,13 +1240,13 @@ fn provider_event_publication_requires_matching_private_graph_event_and_conversa
 }
 
 #[test]
-fn provider_event_handling_graph_mutations_link_event_to_execution_step() {
+fn provider_event_ack_graph_mutations_link_event_to_ack_step() {
     let scope = GraphScope {
         namespace: "tenant-a".to_owned(),
         workspace_id: Some("workspace-a".to_owned()),
         graph_space: Some("conversation".to_owned()),
     };
-    let mutations = provider_event_handling_graph_mutations(
+    let mutations = provider_event_ack_graph_mutations(
         "event-a",
         "run-a",
         "conversation-a",
@@ -1272,14 +1272,14 @@ fn provider_event_handling_graph_mutations_link_event_to_execution_step() {
 
     let edge = &mutations[1];
     assert_eq!(edge.entity_kind, "edge");
-    assert_eq!(edge.payload["relation"], "handled_by");
+    assert_eq!(edge.payload["relation"], "acknowledged_by_step");
     assert_eq!(edge.payload["source_ids"], json!(["msg:event-a"]));
     assert_eq!(edge.payload["target_ids"], json!(["wf_step|run-a|7"]));
     assert_eq!(edge.record.metadata["event_id"], "event-a");
     assert_eq!(edge.record.metadata["step_seq"], 7);
     assert_eq!(edge.scope, scope);
 
-    let replay = provider_event_handling_graph_mutations(
+    let replay = provider_event_ack_graph_mutations(
         "event-a",
         "run-a",
         "conversation-a",
