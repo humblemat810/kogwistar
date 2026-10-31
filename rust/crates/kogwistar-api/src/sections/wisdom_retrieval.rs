@@ -1,24 +1,19 @@
 const WISDOM_SEMANTIC_SEED_EXPAND_ROUTE: &str = "/internal/wisdom/semantic-seed-expand";
+const GRAPH_SEMANTIC_SEED_EXPAND_ROUTE: &str = "/internal/graph/semantic-seed-expand";
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WisdomSemanticSeedExpandRequest {
+struct SemanticSeedExpandRequest {
     text: String,
-    #[serde(default = "default_wisdom_semantic_top_k")]
-    top_k: usize,
-    #[serde(default = "default_wisdom_semantic_hops")]
-    hops: usize,
+    #[serde(default)]
+    top_k: Option<usize>,
+    #[serde(default)]
+    hops: Option<usize>,
+    #[serde(default)]
+    doc_ids: Option<String>,
 }
 
-fn default_wisdom_semantic_top_k() -> usize {
-    10
-}
-
-fn default_wisdom_semantic_hops() -> usize {
-    2
-}
-
-fn wisdom_document_json(record: &GraphRecord) -> Option<String> {
+fn graph_record_document_json(record: &GraphRecord) -> Option<String> {
     let mut document: Value = serde_json::from_str(record.document.as_deref()?).ok()?;
     let object = document.as_object_mut()?;
     object.insert("metadata".to_owned(), json!(record.metadata));
@@ -31,19 +26,42 @@ impl PostgresRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
-            || !principal_strings(&request.principal, "ns")
+        self.semantic_seed_expand_effect(&self.wisdom_store, request, Some("wisdom"), 10, 2)
+            .await
+    }
+
+    async fn graph_semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        self.semantic_seed_expand_effect(&self.store, request, None, 5, 1)
+            .await
+    }
+
+    async fn semantic_seed_expand_effect(
+        &self,
+        store: &PostgresStore,
+        request: &ApiEffectRequest,
+        required_namespace: Option<&str>,
+        default_top_k: usize,
+        default_hops: usize,
+    ) -> ApiEffectResponse {
+        let has_namespace = required_namespace.is_none_or(|required| {
+            principal_strings(&request.principal, "ns")
                 .iter()
-                .any(|namespace| namespace == "wisdom" || namespace == "*")
+                .any(|namespace| namespace == required || namespace == "*")
+        });
+        if !matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+            || !has_namespace
             || !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"])
         {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Wisdom semantic retrieval requires an authorized wisdom read_graph scope",
+                "Semantic graph retrieval requires an authorized read_graph scope",
             );
         }
-        let input: WisdomSemanticSeedExpandRequest = match serde_json::from_slice(&request.body) {
+        let input: SemanticSeedExpandRequest = match serde_json::from_slice(&request.body) {
             Ok(input) => input,
             Err(error) => {
                 return effect_error(
@@ -53,10 +71,12 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        let top_k = input.top_k.unwrap_or(default_top_k);
+        let hops = input.hops.unwrap_or(default_hops);
         if input.text.trim().is_empty()
             || input.text.chars().count() > 16_384
-            || !(1..=1000).contains(&input.top_k)
-            || input.hops > 32
+            || !(1..=1000).contains(&top_k)
+            || hops > 32
         {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -133,30 +153,41 @@ impl PostgresRunApplicationService {
             }
         };
         let scope_value = security_scope_value(&request.principal);
+        let optional_scope_component = |key: &str| {
+            scope_value[key]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        };
         let scope = GraphScope {
             namespace: scope_value["storage_namespace"]
                 .as_str()
                 .unwrap_or("default")
                 .to_owned(),
-            workspace_id: scope_value["workspace"].as_str().map(str::to_owned),
-            graph_space: scope_value["graph_space"].as_str().map(str::to_owned),
+            workspace_id: optional_scope_component("workspace"),
+            graph_space: optional_scope_component("graph_space"),
         };
-        if scope.namespace != "wisdom" {
+        if required_namespace.is_some_and(|required| scope.namespace != required) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_SCOPE_FORBIDDEN",
-                "Wisdom semantic retrieval is restricted to the wisdom namespace",
+                "Semantic retrieval is restricted to the required namespace",
             );
         }
-        let matches = match self
-            .wisdom_store
+        let metadata = input
+            .doc_ids
+            .as_deref()
+            .filter(|doc_id| !doc_id.trim().is_empty())
+            .map(|doc_id| BTreeMap::from([("doc_id".to_owned(), json!(doc_id))]))
+            .unwrap_or_default();
+        let matches = match store
             .graph_projection_vector_query_batch(vec![GraphProjectionVectorQuery {
                 scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
                 query: VectorQuery {
                     embedding: query_embedding,
-                    limit: input.top_k,
-                    metadata: MetadataFilter::default(),
+                    limit: top_k,
+                    metadata: MetadataFilter { equals: metadata },
                     metric,
                 },
                 embedding_dim: profile.dimension,
@@ -176,9 +207,9 @@ impl PostgresRunApplicationService {
             .iter()
             .map(|matched| matched.record.id.clone())
             .collect::<Vec<_>>();
-        let candidate_acl = match self
-            .wisdom_store
-            .graph_acl_records_for_entities(&scope, "wisdom", &candidate_ids)
+        let truth_graph = required_namespace.unwrap_or("knowledge");
+        let candidate_acl = match store
+            .graph_acl_records_for_entities(&scope, truth_graph, &candidate_ids)
             .await
         {
             Ok(records) => records,
@@ -191,7 +222,7 @@ impl PostgresRunApplicationService {
             }
         };
         let mut candidate_acl_index = GraphAclIndex::default();
-        candidate_acl_index.extend_from_records(&candidate_acl, "wisdom");
+        candidate_acl_index.extend_from_records(&candidate_acl, truth_graph);
         let acl_principal = graph_acl_principal_from_claims(
             &request.principal,
             scope_value["security_scope"].as_str(),
@@ -211,11 +242,10 @@ impl PostgresRunApplicationService {
             .collect::<Vec<_>>();
         let seed_documents = visible_seeds
             .iter()
-            .filter_map(wisdom_document_json)
+            .filter_map(graph_record_document_json)
             .collect::<Vec<_>>();
 
-        let snapshot = match self
-            .wisdom_store
+        let snapshot = match store
             .graph_projection_snapshot(vec![
                 GraphProjectionRead {
                     scope: scope.clone(),
@@ -257,9 +287,8 @@ impl PostgresRunApplicationService {
             .chain(&edges)
             .map(|record| record.id.clone())
             .collect::<Vec<_>>();
-        let acl_records = match self
-            .wisdom_store
-            .graph_acl_records_for_entities(&scope, "wisdom", &all_ids)
+        let acl_records = match store
+            .graph_acl_records_for_entities(&scope, truth_graph, &all_ids)
             .await
         {
             Ok(records) => records,
@@ -272,7 +301,7 @@ impl PostgresRunApplicationService {
             }
         };
         let mut acl_index = GraphAclIndex::default();
-        acl_index.extend_from_records(&acl_records, "wisdom");
+        acl_index.extend_from_records(&acl_records, truth_graph);
         let (nodes, edges) = graph_records_visible_by_acl_with_index(
             &nodes,
             &edges,
@@ -282,8 +311,8 @@ impl PostgresRunApplicationService {
         let layers = graph_k_hop_from_records(
             &GraphKHopQuery {
                 start_ids: visible_seed_ids,
-                k: input.hops,
-                doc_id: None,
+                k: hops,
+                doc_id: input.doc_ids,
             },
             &nodes,
             &edges,
@@ -294,13 +323,13 @@ impl PostgresRunApplicationService {
                 .nodes
                 .iter()
                 .filter_map(|id| nodes.iter().find(|record| &record.id == id))
-                .filter_map(wisdom_document_json)
+                .filter_map(graph_record_document_json)
                 .collect::<BTreeSet<_>>();
             let edge_documents = layer
                 .edges
                 .iter()
                 .filter_map(|id| edges.iter().find(|record| &record.id == id))
-                .filter_map(wisdom_document_json)
+                .filter_map(graph_record_document_json)
                 .collect::<BTreeSet<_>>();
             json!({
                 "nodes": node_documents.into_iter().collect::<Vec<_>>(),

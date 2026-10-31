@@ -657,6 +657,79 @@
             .unwrap();
         assert!(primary_embedding_binding.is_some());
         assert!(wisdom_embedding_binding.is_some());
+
+        let mut graph_batch: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        )))
+        .unwrap();
+        let graph_node_id = "regular-semantic-node";
+        let graph_node = json!({
+            "id": graph_node_id,
+            "label": "Rust semantic retrieval fixture",
+            "type": "concept",
+            "summary": "A normal graph node used to verify semantic MCP retrieval.",
+            "metadata": {"namespace": "knowledge", "workspace_id": null, "graph_space": null}
+        });
+        graph_batch["mutations"][0]["scope"] = json!({
+            "namespace": "knowledge", "workspace_id": null, "graph_space": null
+        });
+        graph_batch["mutations"][0]["event_id"] = json!("regular-semantic-event");
+        graph_batch["mutations"][0]["payload"] = graph_node.clone();
+        graph_batch["mutations"][0]["record"]["id"] = json!(graph_node_id);
+        graph_batch["mutations"][0]["record"]["document"] =
+            json!(serde_json::to_string(&graph_node).unwrap());
+        graph_batch["mutations"][0]["record"]["embedding"] = json!([0.0, 0.0, 1.0]);
+        graph_batch["mutations"][0]["embedding_dim"] = json!(3);
+        let mut acl_mutation = graph_batch["mutations"][0].clone();
+        let acl_metadata = json!({
+            "entity_type": "acl_record",
+            "acl_truth_graph": "knowledge",
+            "acl_target_entity_id": graph_node_id,
+            "acl_target_grain": "node",
+            "acl_version": 1,
+            "acl_mode": "private",
+            "owner_id": "alice",
+            "tombstoned": false
+        });
+        let acl_id = "regular-semantic-node-acl";
+        acl_mutation["event_id"] = json!("regular-semantic-acl-event");
+        acl_mutation["payload"] = json!({"id": acl_id, "metadata": acl_metadata});
+        acl_mutation["record"] = json!({
+            "id": acl_id,
+            "document": serde_json::to_string(&json!({"id": acl_id})).unwrap(),
+            "metadata": acl_metadata,
+            "embedding": null
+        });
+        acl_mutation["embedding_dim"] = json!(0);
+        graph_batch["mutations"]
+            .as_array_mut()
+            .unwrap()
+            .push(acl_mutation);
+        let graph_write = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_MUTATIONS_ROUTE.to_owned(),
+            body: serde_json::to_vec(&graph_batch).unwrap(),
+            principal: json!({
+                "sub": "alice", "user_id": "alice", "role": "rw",
+                "ns": ["knowledge"], "storage_ns": "knowledge",
+                "capabilities": ["write_graph"]
+            }),
+        }).await;
+        assert_eq!(graph_write.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&graph_write.body));
+        let inserted_graph_node = service.store.graph_projection_records(GraphProjectionRead {
+            scope: GraphScope {
+                namespace: "knowledge".to_owned(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![graph_node_id.to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
+        }).await.unwrap();
+        assert_eq!(inserted_graph_node.len(), 1, "graph mutation did not create projection");
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/python-graph-model-payloads-v1.json"
@@ -687,8 +760,10 @@
             *calls.lock().unwrap(),
             vec![
                 vec![
-                    "Python node: A complete Pydantic node payload crosses the Rust persistence seam.".to_owned(),
-                    "supports: The typed edge preserves both endpoint and source-span data.".to_owned(),
+                    "Python node: A complete Pydantic node payload crosses the Rust persistence seam."
+                        .to_owned(),
+                    "supports: The typed edge preserves both endpoint and source-span data."
+                        .to_owned(),
                 ],
             ]
         );
@@ -723,6 +798,7 @@
             Arc::new(service.clone()),
         );
         let semantic_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -753,6 +829,41 @@
         assert_eq!(edge_docs.len(), 1);
         let edge_doc: Value = serde_json::from_str(edge_docs[0].as_str().unwrap()).unwrap();
         assert_eq!(edge_doc["id"], "wisdom-private-edge");
+
+        let graph_semantic_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", encode(
+                        &Header::new(Algorithm::HS256),
+                        &json!({
+                            "sub": "alice", "user_id": "alice", "role": "ro", "roles": ["reader"],
+                            "ns": ["knowledge"], "storage_ns": "knowledge",
+                            "capabilities": ["read_graph"], "exp": 4102444800_u64
+                        }),
+                        &EncodingKey::from_secret(secret.as_bytes()),
+                    ).unwrap()))
+                    .body(Body::from(serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                        "params": {
+                            "name": "kg_semantic_seed_then_expand_text",
+                            "arguments": {"text": "find the fixture concept by meaning"}
+                        }
+                    })).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(graph_semantic_response.status(), StatusCode::OK);
+        let graph_semantic_body = to_bytes(graph_semantic_response.into_body(), 65_536).await.unwrap();
+        let graph_semantic: Value = serde_json::from_slice(&graph_semantic_body).unwrap();
+        assert!(graph_semantic.get("error").is_none(), "{graph_semantic}");
+        let graph_semantic = &graph_semantic["result"];
+        let graph_seed = graph_semantic["seeds"].as_array().unwrap();
+        assert_eq!(graph_seed.len(), 1, "regular semantic result: {graph_semantic}");
+        assert_eq!(serde_json::from_str::<Value>(graph_seed[0].as_str().unwrap()).unwrap()["id"], graph_node_id);
 
         let wisdom_nodes = service.wisdom_store.graph_projection_records(GraphProjectionRead {
             scope: GraphScope { namespace: "wisdom".to_owned(), workspace_id: None, graph_space: None },
@@ -846,6 +957,11 @@
             "wisdom.semantic_seed_then_expand",
             &reader,
         ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "kg_semantic_seed_then_expand_text",
+            &json!({"role": "ro", "ns": ["docs"], "capabilities": ["read_graph"]}),
+        ));
         let profile = kogwistar_engine::embedding::EmbeddingProfile {
             provider: "test".to_owned(),
             model: "wisdom-discovery-v1".to_owned(),
@@ -895,6 +1011,25 @@
             "root",
             "wisdom.semantic_seed_then_expand",
             &reader,
+        ));
+        let graph_reader = json!({
+            "role": "ro", "ns": ["docs"], "storage_ns": "docs",
+            "capabilities": ["read_graph"]
+        });
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            "kg_semantic_seed_then_expand_text",
+            &graph_reader,
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "kg_semantic_seed_then_expand_text",
+            &json!({"role": "ro", "ns": ["docs"], "capabilities": []}),
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "conversation",
+            "kg_semantic_seed_then_expand_text",
+            &graph_reader,
         ));
         assert!(!service.supports_mcp_tool_for_principal(
             "root",

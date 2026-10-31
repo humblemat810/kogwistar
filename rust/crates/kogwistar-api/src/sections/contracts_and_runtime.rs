@@ -194,6 +194,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
             "kg_find_edges"
                 | "kg_k_hop"
                 | "kg_neighbors"
+                | "kg_semantic_seed_then_expand_text"
                 | "kg_shortest_path"
                 | "wisdom.kg_upsert_graph"
                 | "wisdom.semantic_seed_then_expand"

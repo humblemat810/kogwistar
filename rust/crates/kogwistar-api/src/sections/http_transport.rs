@@ -351,6 +351,14 @@ async fn mcp_handler(
                     .expect("MCP wisdom semantic arguments serialize"),
                 principal: principal.clone(),
             }),
+            "kg_semantic_seed_then_expand_text" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: GRAPH_SEMANTIC_SEED_EXPAND_ROUTE.to_owned(),
+                body: serde_json::to_vec(&arguments)
+                    .expect("MCP graph semantic arguments serialize"),
+                principal: principal.clone(),
+            }),
             "workflow.run_status" | "conversation.run_status" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,

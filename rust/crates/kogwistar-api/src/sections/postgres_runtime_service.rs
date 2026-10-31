@@ -4713,6 +4713,11 @@ impl PostgresRunApplicationService {
         {
             return self.wisdom_semantic_seed_expand_effect(&request).await;
         }
+        if request.method == "POST"
+            && request.path_and_query == GRAPH_SEMANTIC_SEED_EXPAND_ROUTE
+        {
+            return self.graph_semantic_seed_expand_effect(&request).await;
+        }
         if let Some(response) = visualization_shell_effect(&request) {
             return response;
         }
