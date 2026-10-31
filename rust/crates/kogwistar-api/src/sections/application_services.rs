@@ -753,10 +753,17 @@ impl ApplicationService for PostgresRunApplicationService {
         rust_mcp_tool_supported(surface, name)
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
             && (name != "wisdom.kg_upsert_graph"
-                || self
-                    .wisdom_store
-                    .graph_authority_capability()
-                    .supports_atomic_index_jobs())
+                || (self.embedding_provider.is_some()
+                    && self
+                        .wisdom_store
+                        .graph_authority_capability()
+                        .supports_atomic_index_jobs()))
+            && (name != "wisdom.semantic_seed_then_expand"
+                || (self.embedding_provider.is_some()
+                    && self
+                        .wisdom_store
+                        .graph_authority_capability()
+                        .supports_single_mutation()))
             && (name != "workflow.tool_audit"
                 || self.graph_authority_capability().supports_single_mutation())
     }
@@ -767,6 +774,22 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "wisdom.semantic_seed_then_expand" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "wisdom" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name != "wisdom.kg_upsert_graph" {
             return self.supports_mcp_tool(surface, name);
         }

@@ -692,6 +692,67 @@
                 ],
             ]
         );
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
+        let secret = "wisdom-semantic-mcp-test-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice", "user_id": "alice", "role": "ro", "roles": ["reader"],
+                "ns": ["wisdom"], "storage_ns": "wisdom",
+                "capabilities": ["read_graph"], "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let semantic_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                        "params": {
+                            "name": "wisdom.semantic_seed_then_expand",
+                            "arguments": {"text": "find the node by meaning", "top_k": 5, "hops": 1}
+                        }
+                    })).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(semantic_response.status(), StatusCode::OK);
+        let semantic_body = to_bytes(semantic_response.into_body(), 65_536).await.unwrap();
+        let semantic: Value = serde_json::from_slice(&semantic_body).unwrap();
+        assert!(semantic.get("error").is_none(), "{semantic}");
+        let semantic = &semantic["result"];
+        assert_eq!(semantic["seeds"].as_array().unwrap().len(), 1);
+        let seed: Value = serde_json::from_str(semantic["seeds"][0].as_str().unwrap()).unwrap();
+        assert_eq!(seed["id"], "wisdom-private-node");
+        assert_eq!(semantic["layers"].as_array().unwrap().len(), 1);
+        let edge_docs = semantic["layers"][0]["edges"].as_array().unwrap();
+        assert_eq!(edge_docs.len(), 1);
+        let edge_doc: Value = serde_json::from_str(edge_docs[0].as_str().unwrap()).unwrap();
+        assert_eq!(edge_doc["id"], "wisdom-private-edge");
 
         let wisdom_nodes = service.wisdom_store.graph_projection_records(GraphProjectionRead {
             scope: GraphScope { namespace: "wisdom".to_owned(), workspace_id: None, graph_space: None },
@@ -772,6 +833,40 @@
             "wisdom_tool_discovery",
         )
         .unwrap();
+        let reader = json!({
+            "role": "ro", "ns": ["wisdom"], "capabilities": ["read_graph"]
+        });
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.kg_upsert_graph",
+            &json!({"role": "rw", "ns": ["wisdom"], "capabilities": ["write_graph"]}),
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.semantic_seed_then_expand",
+            &reader,
+        ));
+        let profile = kogwistar_engine::embedding::EmbeddingProfile {
+            provider: "test".to_owned(),
+            model: "wisdom-discovery-v1".to_owned(),
+            dimension: 3,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        };
+        let service = service.with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+            profile,
+            vector: vec![0.0, 0.0, 1.0],
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail: None,
+        }));
         for principal in [
             json!({"role": "rw", "ns": ["wisdom"], "capabilities": ["read_graph"]}),
             json!({"role": "ro", "ns": ["wisdom"], "capabilities": ["write_graph"]}),
@@ -790,6 +885,21 @@
             "root",
             "wisdom.kg_upsert_graph",
             &authorized,
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.semantic_seed_then_expand",
+            &authorized,
+        ));
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.semantic_seed_then_expand",
+            &reader,
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "wisdom.semantic_seed_then_expand",
+            &json!({"role": "ro", "ns": ["other"], "capabilities": ["read_graph"]}),
         ));
         assert!(!service.supports_mcp_tool_for_principal(
             "conversation",

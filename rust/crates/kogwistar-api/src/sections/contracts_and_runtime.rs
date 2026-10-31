@@ -196,6 +196,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "kg_neighbors"
                 | "kg_shortest_path"
                 | "wisdom.kg_upsert_graph"
+                | "wisdom.semantic_seed_then_expand"
         ),
         _ => false,
     }
