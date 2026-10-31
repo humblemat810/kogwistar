@@ -19,6 +19,7 @@ mod graph_read;
 mod graph_slice;
 mod native_seam;
 mod projection_checkpoint;
+mod provider_event;
 mod source_map;
 mod tool_audit;
 pub use conversation::{
@@ -72,6 +73,10 @@ pub use native_seam::{
 };
 pub use projection_checkpoint::{
     PROJECTION_CHECKPOINT_WIRE_VERSION, ProjectionCheckpointV1, ProjectionCheckpointValidationError,
+};
+pub use provider_event::{
+    PROVIDER_EVENT_CONTRACT_VERSION, ProviderEventContractError, ProviderEventV1,
+    provider_event_from_str,
 };
 pub use source_map::{
     SOURCE_MAP_WIRE_VERSION, SourceMapChunkV1, SourceMapV1, SourceMapValidationError,

@@ -1,0 +1,17 @@
+{
+  "events": [
+    {"contract_version":"v1","provider_event_id":null,"provider_sequence":1,"response_id":"resp-1","kind":"response_started"},
+    {"contract_version":"v1","provider_event_id":"evt-2","provider_sequence":2,"response_id":"resp-1","kind":"text_delta","delta":"Hello "},
+    {"contract_version":"v1","provider_event_id":"evt-3","provider_sequence":3,"response_id":"resp-1","kind":"field_completed","field_name":"answer","value":{"text":"hello","n":2}},
+    {"contract_version":"v1","provider_event_id":"evt-4","provider_sequence":4,"response_id":"resp-1","kind":"reasoning_summary","text":"Searching authorized context."},
+    {"contract_version":"v1","provider_event_id":"evt-5","provider_sequence":5,"response_id":"resp-1","kind":"tool_call_completed","call_id":"call-1","name":"graph.read","arguments":{"node_id":"n1","limit":3}},
+    {"contract_version":"v1","provider_event_id":"evt-6","provider_sequence":6,"response_id":"resp-1","kind":"response_completed","text":"Hello world","structured_output":{"answer":"Hello world"},"has_tool_calls":false,"input_tokens":12,"output_tokens":5},
+    {"contract_version":"v1","provider_event_id":"evt-7","provider_sequence":7,"response_id":"resp-1","kind":"response_failed","error_code":"temporarily_unavailable","message":"retry later","retryable":true},
+    {"contract_version":"v1","provider_event_id":null,"provider_sequence":8,"response_id":"resp-1","kind":"tool_call_completed","call_id":" ","name":" ","arguments":{}}
+  ],
+  "invalid_events": [
+    {"contract_version":"v1","provider_event_id":null,"provider_sequence":null,"response_id":null,"kind":"tool_call_completed","call_id":"","name":"graph.read","arguments":{}},
+    {"contract_version":"v2","provider_event_id":null,"provider_sequence":null,"response_id":null,"kind":"response_started"},
+    {"contract_version":"v1","provider_event_id":null,"provider_sequence":null,"response_id":null,"kind":"response_started","unexpected":true}
+  ]
+}
