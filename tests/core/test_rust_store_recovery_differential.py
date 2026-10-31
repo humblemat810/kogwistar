@@ -42,6 +42,20 @@ def _event(*, entity_id: str, revision: int) -> str:
             "document": f"node {entity_id} revision {revision}",
             "metadata": {"revision": revision, "source": "python"},
             "groundings": [],
+            "source_map": {
+                "chunk-0": {
+                    "doc_id": "source-doc",
+                    "start_char": 0,
+                    "end_char": 5,
+                    "text": "alpha",
+                },
+                "chunk-1": {
+                    "doc_id": "source-doc",
+                    "start_char": 5,
+                    "end_char": 10,
+                    "text": " beta",
+                },
+            },
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -92,6 +106,20 @@ def _assert_projection_shape(payload: dict[str, Any]) -> None:
     active = entities['["alien_kind","n2"]']
     assert active["deleted"] is False
     assert active["entity"]["id"] == "n2"
+    assert active["entity"]["source_map"] == {
+        "chunk-0": {
+            "doc_id": "source-doc",
+            "start_char": 0,
+            "end_char": 5,
+            "text": "alpha",
+        },
+        "chunk-1": {
+            "doc_id": "source-doc",
+            "start_char": 5,
+            "end_char": 10,
+            "text": " beta",
+        },
+    }
 
 
 def test_rust_meta_facades_implement_checkpointed_projection_store_protocol(
