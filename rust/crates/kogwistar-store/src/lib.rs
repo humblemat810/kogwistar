@@ -5292,6 +5292,36 @@ mod tests {
     }
 
     #[test]
+    fn graph_role_metadata_does_not_select_or_specialize_storage_contract() {
+        for graph_role in [
+            "knowledge",
+            "conversation",
+            "workflow",
+            "wisdom",
+            "custom-role",
+        ] {
+            for (entity_kind, fixture_index) in [("node", 0), ("edge", 1)] {
+                let mut mutation = typed_mutation(entity_kind, fixture_payload(fixture_index));
+                mutation.payload["metadata"]["engine_type"] = Value::String(graph_role.into());
+                mutation
+                    .record
+                    .metadata
+                    .insert("engine_type".to_owned(), Value::String(graph_role.into()));
+
+                assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
+                assert!(
+                    validate_graph_mutation_batch(&GraphMutationBatch {
+                        mutations: vec![mutation],
+                        index_jobs: Vec::new(),
+                    })
+                    .is_ok(),
+                    "graph role {graph_role:?} must use the shared {entity_kind} contract"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn graph_mutation_batch_rejects_index_retry_counts_outside_portable_range() {
         let mutation = typed_mutation("node", fixture_payload(0));
         for max_retries in [-1, i32::MAX as i64 + 1] {
