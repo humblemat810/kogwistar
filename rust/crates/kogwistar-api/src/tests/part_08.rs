@@ -341,7 +341,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 .body(Body::from(
                     json!({
                         "entity_kind": "node",
-                        "query_embeddings": [[1.0, 0.0]],
+                        "query_embeddings": [[1.0, 0.0], [0.0, 1.0]],
                         "metric": "cosine",
                         "truth_graph": "knowledge",
                         "n_results": 2,
@@ -357,8 +357,9 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(vector_query.status(), StatusCode::OK);
     let vector_query: Value =
         serde_json::from_slice(&to_bytes(vector_query.into_body(), 65_536).await.unwrap()).unwrap();
-    assert_eq!(vector_query["ids"], json!([["n1", "n2"]]));
+    assert_eq!(vector_query["ids"], json!([["n1", "n2"], ["n2", "n1"]]));
     assert_eq!(vector_query["distances"][0].as_array().unwrap().len(), 2);
+    assert_eq!(vector_query["distances"][1].as_array().unwrap().len(), 2);
     assert!(vector_query.get("documents").is_none());
 }
 

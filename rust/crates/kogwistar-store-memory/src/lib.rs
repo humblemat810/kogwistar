@@ -1110,6 +1110,51 @@ impl InMemoryStore {
         Ok((rows_for_table("gke_nodes"), rows_for_table("gke_edges")))
     }
 
+    /// Read graph rows and their vector candidates from one projection revision.
+    /// ACL filtering can then use the returned rows without racing a concurrent
+    /// atomic graph mutation between topology and vector-index reads.
+    pub fn graph_node_edge_vector_snapshot(
+        &self,
+        scope: &GraphScope,
+        limit: usize,
+        table: &str,
+        queries: &[VectorQuery],
+    ) -> StoreResult<(Vec<GraphRecord>, Vec<GraphRecord>, Vec<Vec<VectorMatch>>)> {
+        if !matches!(table, "gke_nodes" | "gke_edges") {
+            return Err(StoreError::Backend {
+                backend: "memory-graph-snapshot".to_owned(),
+                message: "vector snapshot table must be gke_nodes or gke_edges".to_owned(),
+            });
+        }
+        namespace(&scope.namespace)?;
+        for query in queries {
+            finite(&query.embedding)?;
+        }
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.get(scope);
+        let rows_for_table = |table: &str| {
+            projection
+                .map(|projection| {
+                    projection
+                        .record_order
+                        .iter()
+                        .filter(|(record_table, _)| record_table == table)
+                        .filter_map(|key| projection.records.get(key))
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let nodes = rows_for_table("gke_nodes");
+        let edges = rows_for_table("gke_edges");
+        let matches = queries
+            .iter()
+            .map(|query| graph_projection_vector_matches(projection, table, query))
+            .collect::<StoreResult<Vec<_>>>()?;
+        Ok((nodes, edges, matches))
+    }
+
     fn graph_projection_rows(&self, read: &GraphProjectionRead) -> StoreResult<Vec<GraphRecord>> {
         namespace(&read.scope.namespace)?;
         let state = self.state.read().expect("in-memory store lock poisoned");
@@ -1374,6 +1419,44 @@ fn cosine_memory_distance(query: &[f32], candidate: Option<&[f32]>) -> f64 {
     } else {
         1.0 - dot / (query_norm.sqrt() * candidate_norm.sqrt())
     }
+}
+
+fn graph_projection_vector_matches(
+    projection: Option<&GraphProjectionState>,
+    table: &str,
+    query: &VectorQuery,
+) -> StoreResult<Vec<VectorMatch>> {
+    let records = projection
+        .into_iter()
+        .flat_map(|projection| {
+            projection
+                .record_order
+                .iter()
+                .filter(|(record_table, _)| record_table == table)
+                .filter_map(|key| projection.records.get(key))
+        })
+        .filter(|record| query.metadata.matches(&record.metadata))
+        .filter(|record| record.embedding.is_some());
+    let mut results = match query.metric {
+        DistanceMetric::Cosine => records
+            .map(|record| VectorMatch {
+                record: record.clone(),
+                distance: cosine_memory_distance(&query.embedding, record.embedding.as_deref()),
+            })
+            .collect(),
+        DistanceMetric::L2 | DistanceMetric::InnerProduct => records
+            .map(|record| {
+                let vector = record.embedding.as_deref().expect("filtered embedding");
+                distance(query.metric, &query.embedding, vector).map(|distance| VectorMatch {
+                    record: record.clone(),
+                    distance,
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?,
+    };
+    results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+    results.truncate(query.limit);
+    Ok(results)
 }
 
 impl GraphReadStore for InMemoryStore {
@@ -1720,51 +1803,7 @@ impl GraphMutationStore for InMemoryStore {
         finite(&query.query.embedding)?;
         let state = self.state.read().expect("in-memory store lock poisoned");
         let projection = state.graph_projections.get(&query.scope);
-        let mut results = match query.query.metric {
-            DistanceMetric::Cosine => projection
-                .into_iter()
-                .flat_map(|projection| {
-                    projection
-                        .record_order
-                        .iter()
-                        .filter(|(table, _)| table == &query.table)
-                        .filter_map(|key| projection.records.get(key))
-                })
-                .filter(|record| query.query.metadata.matches(&record.metadata))
-                .filter(|record| record.embedding.is_some())
-                .map(|record| VectorMatch {
-                    record: record.clone(),
-                    distance: cosine_memory_distance(
-                        &query.query.embedding,
-                        record.embedding.as_deref(),
-                    ),
-                })
-                .collect(),
-            DistanceMetric::L2 | DistanceMetric::InnerProduct => projection
-                .into_iter()
-                .flat_map(|projection| {
-                    projection
-                        .record_order
-                        .iter()
-                        .filter(|(table, _)| table == &query.table)
-                        .filter_map(|key| projection.records.get(key))
-                })
-                .filter(|record| query.query.metadata.matches(&record.metadata))
-                .filter_map(|record| {
-                    record.embedding.as_deref().map(|vector| {
-                        distance(query.query.metric, &query.query.embedding, vector).map(
-                            |distance| VectorMatch {
-                                record: record.clone(),
-                                distance,
-                            },
-                        )
-                    })
-                })
-                .collect::<StoreResult<Vec<_>>>()?,
-        };
-        results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
-        results.truncate(query.query.limit);
-        Ok(results)
+        graph_projection_vector_matches(projection, &query.table, &query.query)
     }
 }
 
@@ -2273,6 +2312,95 @@ mod tests {
             let node_generation = nodes[0].metadata["generation"].as_i64().unwrap();
             let edge_generation = edges[0].metadata["generation"].as_i64().unwrap();
             assert_eq!(node_generation, edge_generation);
+        }
+        writer.join().expect("writer thread completes");
+    }
+
+    #[test]
+    fn graph_vector_snapshot_never_mixes_atomic_graph_revisions() {
+        fn graph_batch(scope: &GraphScope, generation: i64) -> GraphMutationBatch {
+            let vectors = if generation % 2 == 0 {
+                [("north", [1.0, 0.0]), ("east", [0.0, 1.0])]
+            } else {
+                [("north", [0.0, 1.0]), ("east", [1.0, 0.0])]
+            };
+            let mutations = vectors
+                .into_iter()
+                .map(|(id, embedding)| GraphMutation {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("{id}-{generation}"),
+                    op: if generation == 0 { "ADD" } else { "REPLACE" }.to_owned(),
+                    payload: json!({"id": id, "generation": generation}),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(generation.to_string()),
+                        metadata: json!({"generation": generation})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        embedding: Some(embedding.to_vec()),
+                    },
+                    embedding_dim: 2,
+                })
+                .collect();
+            GraphMutationBatch {
+                mutations,
+                index_jobs: Vec::new(),
+            }
+        }
+
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-vector-snapshot".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        block_on(store.apply_graph_mutations_with_index_jobs_atomic(graph_batch(&scope, 0)))
+            .expect("initial graph batch is valid");
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let writer_store = store.clone();
+        let writer_scope = scope.clone();
+        let writer_barrier = barrier.clone();
+        let writer =
+            std::thread::spawn(move || {
+                writer_barrier.wait();
+                for generation in 1..=500 {
+                    block_on(writer_store.apply_graph_mutations_with_index_jobs_atomic(
+                        graph_batch(&writer_scope, generation),
+                    ))
+                    .expect("replacement graph batch is atomic");
+                }
+            });
+        barrier.wait();
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 10,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        for _ in 0..1_000 {
+            let (nodes, edges, matches) = store
+                .graph_node_edge_vector_snapshot(&scope, 10, "gke_nodes", &[query.clone()])
+                .expect("consistent graph and vector snapshot succeeds");
+            assert!(edges.is_empty());
+            let generation = nodes[0].metadata["generation"].as_i64().unwrap();
+            assert!(
+                nodes
+                    .iter()
+                    .all(|node| node.metadata["generation"].as_i64() == Some(generation))
+            );
+            let best = matches[0].first().expect("vector candidate exists");
+            assert_eq!(
+                best.record.metadata["generation"].as_i64(),
+                Some(generation)
+            );
+            assert_eq!(
+                best.record.id,
+                if generation % 2 == 0 { "north" } else { "east" }
+            );
         }
         writer.join().expect("writer thread completes");
     }

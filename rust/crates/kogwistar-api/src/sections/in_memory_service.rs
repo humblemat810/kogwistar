@@ -229,16 +229,36 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (nodes, edges) = match self.graph_snapshot(scope.clone()).await {
+        let queries = input
+            .query_embeddings
+            .iter()
+            .map(|embedding| VectorQuery {
+                embedding: embedding.clone(),
+                limit: 10_000,
+                metadata: input.where_filter.clone(),
+                metric: input.metric,
+            })
+            .collect::<Vec<_>>();
+        let (nodes, edges, vector_matches) = match self
+            .store
+            .graph_node_edge_vector_snapshot(&scope, 10_001, table, &queries)
+        {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error,
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_VECTOR_QUERY_ERROR",
+                    error.to_string(),
                 );
             }
         };
+        if nodes.len() > 10_000 || edges.len() > 10_000 {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                "in-memory graph snapshot exceeds the 10000-record bound",
+            );
+        }
         let (visible_nodes, visible_edges) =
             graph_records_visible_by_acl(&nodes, &edges, &input.truth_graph, &acl_principal);
         let visible_ids = if input.entity_kind == "node" {
@@ -257,31 +277,7 @@ impl InMemoryGraphApplicationService {
         let mut metadatas = Vec::with_capacity(input.query_embeddings.len());
         let mut embeddings = Vec::with_capacity(input.query_embeddings.len());
         let mut distances = Vec::with_capacity(input.query_embeddings.len());
-        for embedding in &input.query_embeddings {
-            let matches = match self
-                .store
-                .graph_projection_vector_query(GraphProjectionVectorQuery {
-                    scope: scope.clone(),
-                    table: table.to_owned(),
-                    query: VectorQuery {
-                        embedding: embedding.clone(),
-                        limit: 10_000,
-                        metadata: input.where_filter.clone(),
-                        metric: input.metric,
-                    },
-                    embedding_dim: embedding.len(),
-                })
-                .await
-            {
-                Ok(matches) => matches,
-                Err(error) => {
-                    return effect_error(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "KOGWISTAR_VECTOR_QUERY_ERROR",
-                        error.to_string(),
-                    );
-                }
-            };
+        for matches in vector_matches {
             let matches = matches
                 .into_iter()
                 .filter(|matched| visible_ids.contains(matched.record.id.as_str()))
