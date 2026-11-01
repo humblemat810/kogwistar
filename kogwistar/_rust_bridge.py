@@ -6,7 +6,7 @@ import os
 import sys
 import threading
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from importlib import import_module
@@ -674,15 +674,18 @@ def _load_extension() -> RustExtensionLike:
 
 
 def _select(
-    *, operation: str, python_value: _T, rust_value: _T, mode: str
+    *, operation: str, python_value: _T | Callable[[], _T], rust_value: _T, mode: str
 ) -> _T:
     if mode == "shadow":
-        if rust_value != python_value:
+        python_result = cast(
+            _T, python_value() if callable(python_value) else python_value
+        )
+        if rust_value != python_result:
             raise RustParityError(
                 f"Rust parity mismatch for {operation}: "
-                f"python={python_value!r}, rust={rust_value!r}"
+                f"python={python_result!r}, rust={rust_value!r}"
             )
-        return python_value
+        return python_result
     return rust_value
 
 
@@ -767,11 +770,14 @@ def metadata_filter_json_contract_compatible(value: object) -> bool:
 
 
 def contract_stable_id(
-    *, kind: str, parts: tuple[JsonValue, ...], python_value: uuid.UUID
+    *,
+    kind: str,
+    parts: tuple[JsonValue, ...],
+    python_value: uuid.UUID | Callable[[], uuid.UUID],
 ) -> uuid.UUID:
     mode = contract_implementation_mode()
     if mode == "python":
-        return python_value
+        return python_value() if callable(python_value) else python_value
     extension = _load_extension()
     payload_json = _rust_json_payload(
         [kind, *parts], ensure_ascii=False, separators=(",", ":")
