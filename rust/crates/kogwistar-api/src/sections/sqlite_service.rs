@@ -1399,6 +1399,12 @@ impl SqliteRunApplicationService {
         record_metadata.insert("summary".to_owned(), json!("Start of conversation"));
         record_metadata.insert("properties".to_owned(), json!("{\"status\":\"active\"}"));
         record_metadata.insert("mentions".to_owned(), json!(mentions.to_string()));
+        if let Some(graph_space) = &scope.graph_space {
+            record_metadata.insert("graph_space".to_owned(), json!(graph_space));
+        }
+        if let Some(workspace_id) = &scope.workspace_id {
+            record_metadata.insert("workspace_id".to_owned(), json!(workspace_id));
+        }
         let event_id = kogwistar_contracts::stable_id(
             "conversation.create.event",
             &[conversation_id.clone(), start_id.clone()],
@@ -1507,6 +1513,514 @@ impl SqliteRunApplicationService {
                 error.to_string(),
             ),
         }
+    }
+
+    async fn sqlite_chroma_send_message_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "send_message",
+            true,
+            &["send_message"],
+            "conversation",
+        ) {
+            return syscall_forbidden("send_message");
+        }
+        let conversation_id = input
+            .args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(conversation_id) = conversation_id else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let text = input
+            .args
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(text) = text else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "text must be non-empty",
+            );
+        };
+        let workflow_id = input
+            .args
+            .get("workflow_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("agentic_answering.v2");
+        let requested_user_id = match input.args.get("user_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) if value.trim().is_empty() => None,
+            Some(Value::String(value)) => Some(value.trim()),
+            Some(_) => {
+                return effect_error(
+                    StatusCode::BAD_REQUEST,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "user_id must be a string when provided",
+                );
+            }
+        };
+        let (scope, acl_principal) =
+            conversation_graph_scope_and_acl_principal(&request.principal);
+        if scope.namespace != "conversation" {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "conversation message admission requires conversation storage scope",
+            );
+        }
+        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        // chroma_graph_snapshot already applies ACL filtering against the full
+        // snapshot, including ACL records. Filtering it again would lose that
+        // index because ACL helper nodes are intentionally omitted from results.
+        let conversation_nodes = nodes
+            .into_iter()
+            .filter(|record| {
+                conversation_record_string(record, "conversation_id").as_deref()
+                    == Some(conversation_id)
+                    && !matches!(
+                        conversation_record_string(record, "lifecycle_status").as_deref(),
+                        Some("tombstoned" | "deleted")
+                    )
+            })
+            .collect::<Vec<_>>();
+        let starts = conversation_nodes
+            .iter()
+            .filter(|record| {
+                conversation_record_string(record, "entity_type").as_deref()
+                    == Some("conversation_start")
+            })
+            .collect::<Vec<_>>();
+        let Some(start) = starts.first() else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {conversation_id}"),
+            );
+        };
+        if starts.len() != 1 {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_INVALID",
+                "conversation must have exactly one visible conversation_start node",
+            );
+        }
+        let Some(owner_id) = conversation_record_string(start, "user_id")
+            .filter(|value| !value.trim().is_empty())
+        else {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_INVALID",
+                "conversation owner is missing",
+            );
+        };
+        let actor_id = authenticated_run_owner_id(&request.principal);
+        if requested_user_id.or(actor_id) != Some(owner_id.as_str()) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "user_id must match the owner of the target conversation",
+            );
+        }
+        let Some(auth_store) = self.owner_auth_store.as_ref() else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_OWNER_REVALIDATION_UNAVAILABLE",
+                "conversation owner revalidation is not configured",
+            );
+        };
+        let owner_user = match auth_store.auth_user(&owner_id).await {
+            Ok(Some(user)) if user.is_active => user,
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "conversation owner is missing or inactive",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_OWNER_REVALIDATION_UNAVAILABLE",
+                    error,
+                );
+            }
+        };
+        let mut owner_principal = runtime_principal_from_auth_user(&owner_user);
+        if !principal_strings(&owner_principal, "ns")
+            .iter()
+            .any(|namespace| namespace == &scope.namespace || namespace == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "conversation owner is not authorized for the conversation namespace",
+            );
+        }
+        owner_principal["ns"] = json!([scope.namespace]);
+        owner_principal["storage_ns"] = json!(scope.namespace);
+        if let Some(graph_space) = &scope.graph_space {
+            owner_principal["graph_space"] = json!(graph_space);
+        }
+        let Some(owner_binding) = runtime_owner_binding_v1(&owner_principal, &self.capabilities)
+        else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "conversation owner has no authenticated run identity",
+            );
+        };
+        owner_principal = match revalidated_runtime_owner_principal(
+            &owner_binding,
+            &owner_user,
+            &self.capabilities,
+            "write_graph",
+        ) {
+            Ok(principal) => principal,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    error,
+                );
+            }
+        };
+        let Some(provider) = self.embedding_provider.as_ref() else {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "conversation message admission requires a configured embedding provider",
+            );
+        };
+        let profile = provider.profile();
+        if let Err(error) = profile.validate() {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                error.to_string(),
+            );
+        }
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let mut tail = conversation_nodes
+            .iter()
+            .filter(|record| {
+                matches!(
+                    conversation_record_string(record, "entity_type").as_deref(),
+                    Some("conversation_start" | "conversation_turn" | "conversation_summary" | "assistant_turn")
+                ) && conversation_record_value(record, "in_conversation_chain")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        tail.sort_by_key(|record| {
+            (
+                conversation_record_i64(record, "turn_index").unwrap_or(-1),
+                record.id.clone(),
+            )
+        });
+        let previous = tail.last();
+        let turn_index = previous
+            .and_then(|record| conversation_record_i64(record, "turn_index"))
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let step_seq = previous
+            .and_then(|record| conversation_record_i64(record, "run_step_seq"))
+            .unwrap_or(0)
+            + 1;
+        let node_metadata = json!({
+            "entity_type": "conversation_turn",
+            "turn_index": turn_index,
+            "level_from_root": 0,
+            "in_conversation_chain": true,
+            "in_ui_chain": true,
+            "run_id": conversation_id,
+            "run_step_seq": step_seq,
+            "attempt_seq": 0,
+            "lifecycle_status": "active",
+            "redirect_to_id": null,
+            "role": "user",
+            "conversation_id": conversation_id,
+            "user_id": owner_id,
+        });
+        let node_mentions = json!([{"spans": [conversation_span(conversation_id, &turn_id, text)], "multimodal_spans": []}]);
+        let node_payload = json!({
+            "id": turn_id,
+            "label": format!("Turn {turn_index} (user)"),
+            "type": "entity",
+            "summary": text,
+            "domain_id": null,
+            "canonical_entity_id": null,
+            "properties": {},
+            "mentions": node_mentions,
+            "doc_id": turn_id,
+            "metadata": node_metadata,
+            "level_from_root": 0,
+            "role": "user",
+            "turn_index": turn_index,
+            "conversation_id": conversation_id,
+            "user_id": owner_id,
+        });
+        let node_envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::ConversationNode,
+            node_payload.clone(),
+        );
+        if let Err(error) = node_envelope.validate_family_v1() {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_CONVERSATION_MODEL_INVALID",
+                error.to_string(),
+            );
+        }
+        let mut node_document_payload = node_payload.clone();
+        node_document_payload
+            .as_object_mut()
+            .expect("conversation turn payload is an object")
+            .remove("metadata");
+        let node_document = serde_json::to_string(&node_document_payload)
+            .expect("conversation turn document serializes");
+        let mut node_projection = node_metadata.as_object().unwrap().clone();
+        node_projection.extend([
+            ("doc_id".to_owned(), json!(turn_id)),
+            ("label".to_owned(), json!(format!("Turn {turn_index} (user)"))),
+            ("type".to_owned(), json!("entity")),
+            ("summary".to_owned(), json!(text)),
+            ("properties".to_owned(), json!("{}")),
+            ("mentions".to_owned(), json!(node_mentions.to_string())),
+        ]);
+        if let Some(graph_space) = &scope.graph_space {
+            node_projection.insert("graph_space".to_owned(), json!(graph_space));
+        }
+        if let Some(workspace_id) = &scope.workspace_id {
+            node_projection.insert("workspace_id".to_owned(), json!(workspace_id));
+        }
+        let mut mutations = vec![(
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: uuid::Uuid::new_v4().to_string(),
+                op: "ADD".to_owned(),
+                payload: node_payload,
+                record: GraphRecord {
+                    id: turn_id.clone(),
+                    document: Some(node_document),
+                    metadata: node_projection,
+                    embedding: None,
+                },
+                embedding_dim: profile.dimension,
+            },
+            node_envelope,
+        )];
+        let mut index_jobs = conversation_index_job_kinds("node")
+            .expect("node conversation indexing contract exists")
+            .iter()
+            .map(|kind| conversation_index_job(&scope.namespace, "node", &turn_id, kind))
+            .collect::<Vec<_>>();
+        let mut edge_payload_and_document = None;
+        if let Some(previous) = previous {
+            let previous_id = previous.id.clone();
+            let (char_distance, turn_distance, tail_turn_index) =
+                conversation_next_turn_distances(previous, text, turn_index);
+            let edge_id = kogwistar_contracts::stable_id(
+                "conversation.edge",
+                &[
+                    owner_id.clone(),
+                    conversation_id.to_owned(),
+                    "next_turn".to_owned(),
+                    (turn_index + 1).to_string(),
+                    format!("['{previous_id}']"),
+                    format!("['{turn_id}']"),
+                    "[]".to_owned(),
+                    "[]".to_owned(),
+                    "conversation_edge".to_owned(),
+                ],
+            )
+            .to_string();
+            let edge_payload = json!({
+                "id": edge_id,
+                "source_ids": [previous_id],
+                "target_ids": [turn_id],
+                "source_edge_ids": [],
+                "target_edge_ids": [],
+                "relation": "next_turn",
+                "label": "next_turn",
+                "type": "relationship",
+                "summary": "Sequential flow",
+                "doc_id": format!("conv:{conversation_id}"),
+                "mentions": node_mentions,
+                "domain_id": null,
+                "canonical_entity_id": null,
+                "properties": {"entity_type": "conversation_edge"},
+                "metadata": {
+                    "relation": "next_turn",
+                    "target_id": turn_id,
+                    "char_distance_from_last_summary": char_distance,
+                    "turn_distance_from_last_summary": turn_distance,
+                    "tail_turn_index": tail_turn_index,
+                    "causal_type": "chain",
+                    "run_id": conversation_id,
+                    "run_step_seq": step_seq,
+                    "attempt_seq": 0,
+                    "lifecycle_status": "active",
+                    "redirect_to_id": null,
+                },
+            });
+            let edge_envelope = kogwistar_contracts::GraphModelEnvelope::new(
+                kogwistar_contracts::GraphModelClass::ConversationEdge,
+                edge_payload.clone(),
+            );
+            if let Err(error) = edge_envelope.validate_family_v1() {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_CONVERSATION_MODEL_INVALID",
+                    error.to_string(),
+                );
+            }
+            let edge_document = serde_json::to_string(&edge_payload)
+                .expect("conversation edge document serializes");
+            edge_payload_and_document = Some((edge_payload, edge_document, edge_envelope));
+        }
+        let embedding_texts = edge_payload_and_document
+            .as_ref()
+            .map(|(_, document, _)| vec![format!("user: {text}"), document.clone()])
+            .unwrap_or_else(|| vec![format!("user: {text}")]);
+        let embeddings = match provider.embed(&embedding_texts).await {
+            Ok(vectors)
+                if vectors.len() == embedding_texts.len()
+                    && vectors.iter().all(|vector| {
+                        vector.len() == profile.dimension && vector.iter().all(|v| v.is_finite())
+                    }) =>
+            {
+                vectors
+            }
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider returned an invalid conversation vector",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    error.to_string(),
+                );
+            }
+        };
+        mutations[0].0.record.embedding = Some(
+            embeddings[0]
+                .iter()
+                .map(|value| *value as f32)
+                .collect(),
+        );
+        if let Some((edge_payload, edge_document, edge_envelope)) = edge_payload_and_document {
+            let edge_id = edge_payload["id"].as_str().unwrap().to_owned();
+            let mut metadata = edge_payload["metadata"].as_object().unwrap().clone();
+            metadata.extend([
+                ("doc_id".to_owned(), edge_payload["doc_id"].clone()),
+                ("relation".to_owned(), json!("next_turn")),
+                ("source_ids".to_owned(), json!(edge_payload["source_ids"].to_string())),
+                ("target_ids".to_owned(), json!(edge_payload["target_ids"].to_string())),
+                ("source_edge_ids".to_owned(), json!("[]")),
+                ("target_edge_ids".to_owned(), json!("[]")),
+                ("type".to_owned(), json!("relationship")),
+                ("summary".to_owned(), json!("Sequential flow")),
+                ("properties".to_owned(), json!(edge_payload["properties"].to_string())),
+                ("mentions".to_owned(), json!(edge_payload["mentions"].to_string())),
+                ("node_endpoint_count".to_owned(), json!(2)),
+                ("edge_endpoint_count".to_owned(), json!(0)),
+                ("total_endpoint_count".to_owned(), json!(2)),
+            ]);
+            if let Some(graph_space) = &scope.graph_space {
+                metadata.insert("graph_space".to_owned(), json!(graph_space));
+            }
+            if let Some(workspace_id) = &scope.workspace_id {
+                metadata.insert("workspace_id".to_owned(), json!(workspace_id));
+            }
+            mutations.push((
+                GraphMutation {
+                    scope: scope.clone(),
+                    table: "gke_edges".to_owned(),
+                    entity_kind: "edge".to_owned(),
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    op: "ADD".to_owned(),
+                    payload: edge_payload,
+                    record: GraphRecord {
+                        id: edge_id.clone(),
+                        document: Some(edge_document),
+                        metadata,
+                        embedding: Some(
+                            embeddings[1]
+                                .iter()
+                                .map(|value| *value as f32)
+                                .collect(),
+                        ),
+                    },
+                    embedding_dim: profile.dimension,
+                },
+                edge_envelope,
+            ));
+            for kind in conversation_index_job_kinds("edge")
+                .expect("edge conversation indexing contract exists")
+            {
+                index_jobs.push(conversation_index_job(&scope.namespace, "edge", &edge_id, kind));
+            }
+        }
+        let prepared = PreparedConversationAdmission {
+            conversation_id: conversation_id.to_owned(),
+            owner_id: owner_id.clone(),
+            expected_tail_id: previous.map(|record| record.id.clone()),
+            scope: scope.clone(),
+            acl_principal,
+            mutations,
+            index_jobs,
+            actor_user_id: actor_id.unwrap_or(&owner_id).to_owned(),
+        };
+        let initial_state = serde_json::Map::from_iter([
+            ("conversation_id".to_owned(), json!(conversation_id)),
+            ("user_text".to_owned(), json!(text)),
+            ("turn_node_id".to_owned(), json!(turn_id)),
+            ("user_id".to_owned(), json!(owner_id)),
+            ("max_retrieval_level".to_owned(), json!(4)),
+        ]);
+        let nested = ApiEffectRequest {
+            contract_version: request.contract_version,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "turn_node_id": turn_id,
+                "user_id": owner_id,
+                "initial_state": initial_state,
+            }))
+            .expect("conversation message workflow request serializes"),
+            principal: owner_principal,
+        };
+        let response = self.submit_run_with_conversation_admission(&nested, Some(prepared));
+        syscall_result(&input.version, "send_message", response)
     }
 
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
@@ -3836,6 +4350,14 @@ impl SqliteRunApplicationService {
     }
 
     fn submit_run(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        self.submit_run_with_conversation_admission(request, None)
+    }
+
+    fn submit_run_with_conversation_admission(
+        &self,
+        request: &ApiEffectRequest,
+        conversation_admission: Option<PreparedConversationAdmission>,
+    ) -> ApiEffectResponse {
         let input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
             Ok(value) => value,
             Err(error) => {
@@ -4122,6 +4644,9 @@ impl SqliteRunApplicationService {
             return effect_error(StatusCode::UNPROCESSABLE_ENTITY, code, message);
         }
         let max_queue = self.max_queue;
+        let admission_actor_user_id = conversation_admission
+            .as_ref()
+            .map(|admission| admission.actor_user_id.clone());
         let outcome = self.store.immediate_transaction(|uow| {
             let active_count = ["pending", "claimed"]
                 .into_iter()
@@ -4139,7 +4664,72 @@ impl SqliteRunApplicationService {
                 .into_iter()
                 .sum::<usize>();
             if active_count >= max_queue {
-                return Ok(false);
+                return Ok(RuntimeAdmissionOutcome::QueueFull);
+            }
+            if let Some(admission) = conversation_admission.as_ref() {
+                let current_events = uow.latest_entity_events_by_metadata(
+                    &admission.scope.namespace,
+                    "node",
+                    "conversation_id",
+                    &admission.conversation_id,
+                )?;
+                let current_nodes = current_events
+                    .iter()
+                    .filter(|event| !event.op.eq_ignore_ascii_case("DELETE"))
+                    .map(conversation_record_from_raw_event)
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .filter(|record| {
+                        !matches!(
+                            conversation_record_string(record, "lifecycle_status").as_deref(),
+                            Some("tombstoned" | "deleted")
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let current_ids = current_nodes
+                    .iter()
+                    .map(|record| record.id.clone())
+                    .collect::<Vec<_>>();
+                let current_acl = uow.graph_acl_records_for_entities(
+                    &admission.scope,
+                    "conversation",
+                    &current_ids,
+                )?;
+                let mut acl_inputs = current_nodes;
+                acl_inputs.extend(current_acl);
+                let (visible_nodes, _) = graph_records_visible_by_acl(
+                    &acl_inputs,
+                    &[],
+                    "conversation",
+                    &admission.acl_principal,
+                );
+                let owner_matches = visible_nodes.iter().any(|record| {
+                    conversation_record_string(record, "entity_type").as_deref()
+                        == Some("conversation_start")
+                        && conversation_record_string(record, "user_id").as_deref()
+                            == Some(admission.owner_id.as_str())
+                });
+                let mut current_tail = visible_nodes
+                    .iter()
+                    .filter(|record| {
+                        matches!(
+                            conversation_record_string(record, "entity_type").as_deref(),
+                            Some("conversation_start" | "conversation_turn" | "conversation_summary" | "assistant_turn")
+                        ) && conversation_record_value(record, "in_conversation_chain")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true)
+                    })
+                    .collect::<Vec<_>>();
+                current_tail.sort_by_key(|record| {
+                    (
+                        conversation_record_i64(record, "turn_index").unwrap_or(-1),
+                        record.id.clone(),
+                    )
+                });
+                let actual_tail_id = current_tail.last().map(|record| record.id.as_str());
+                if !owner_matches || actual_tail_id != admission.expected_tail_id.as_deref() {
+                    return Ok(RuntimeAdmissionOutcome::ConversationChanged);
+                }
             }
             uow.create_server_run(ServerRunCreate {
                 run_id: run_id.clone(),
@@ -4149,10 +4739,52 @@ impl SqliteRunApplicationService {
                 user_turn_node_id: turn_node_id.clone(),
                 status: "queued".to_owned(),
             })?;
+            if let Some(admission) = conversation_admission.as_ref() {
+                let graph_mutations = admission
+                    .mutations
+                    .iter()
+                    .map(|(mutation, _)| mutation.clone())
+                    .collect::<Vec<_>>();
+                let acl_targets = acl_targets_for_graph_mutations(&graph_mutations).0;
+                let target_ids = acl_target_entity_ids(&acl_targets);
+                let existing_acl =
+                    uow.graph_acl_records_for_entities(&admission.scope, "conversation", &target_ids)?;
+                let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+                    &admission.scope,
+                    &graph_mutations,
+                    acl_targets,
+                    existing_acl,
+                    "conversation",
+                    &admission.owner_id.to_ascii_lowercase(),
+                    admission.acl_principal.security_scope.as_deref(),
+                    &run_id,
+                )
+                .map_err(SqliteStoreError::TransactionAborted)?;
+                for (mutation, envelope) in &admission.mutations {
+                    validate_typed_graph_mutation(mutation, envelope)?;
+                }
+                let mut mutations = graph_mutations;
+                mutations.extend(acl_mutations);
+                let mut index_jobs = admission.index_jobs.clone();
+                index_jobs.extend(acl_jobs);
+                uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                    mutations,
+                    index_jobs,
+                })?;
+            }
             let created_event = uow.append_server_run_event(
                 &run_id,
                 "run.created",
-                serde_json::to_string(&event_payload)?,
+                {
+                    let mut payload = event_payload.clone();
+                    if let Some(actor_user_id) = admission_actor_user_id.as_deref() {
+                        payload["admission_actor"] = json!({
+                            "user_id": actor_user_id,
+                            "operation": "send_message",
+                        });
+                    }
+                    serde_json::to_string(&payload)?
+                },
             )?;
             let mut persisted_worker_payload = worker_payload.clone();
             persisted_worker_payload["expected_event_seq"] = json!(created_event.seq);
@@ -4178,10 +4810,10 @@ impl SqliteRunApplicationService {
                 payload_json: Some(serde_json::to_string(&persisted_worker_payload)?),
                 error_json: None,
             })?;
-            Ok(true)
+            Ok(RuntimeAdmissionOutcome::Queued)
         });
         match outcome {
-            Ok(false) => {
+            Ok(RuntimeAdmissionOutcome::QueueFull) => {
                 return json_effect(
                     StatusCode::TOO_MANY_REQUESTS,
                     json!({
@@ -4191,6 +4823,13 @@ impl SqliteRunApplicationService {
                     }),
                 );
             }
+            Ok(RuntimeAdmissionOutcome::ConversationChanged) => {
+                return effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_CONVERSATION_CHANGED",
+                    "conversation owner or tail changed while the turn was being admitted",
+                );
+            }
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -4198,7 +4837,7 @@ impl SqliteRunApplicationService {
                     error.to_string(),
                 );
             }
-            Ok(true) => {}
+            Ok(RuntimeAdmissionOutcome::Queued) => {}
         }
         json_effect(
             StatusCode::ACCEPTED,
@@ -5313,6 +5952,33 @@ fn sqlite_native_answer_view_from_visible_records(
         "context_nodes": context_nodes,
         "context_edges": context_edges
     }))
+}
+
+fn conversation_record_from_raw_event(
+    event: &SqliteRawEntityEvent,
+) -> Result<GraphRecord, SqliteStoreError> {
+    let payload = serde_json::from_str::<Value>(&event.payload_json).map_err(|error| {
+        SqliteStoreError::TransactionAborted(format!(
+            "conversation event {:?} has invalid canonical JSON: {error}",
+            event.event_id
+        ))
+    })?;
+    let metadata = payload
+        .get("metadata")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(format!(
+                "conversation event {:?} has no metadata object",
+                event.event_id
+            ))
+        })?;
+    Ok(GraphRecord {
+        id: event.entity_id.clone(),
+        document: None,
+        metadata,
+        embedding: None,
+    })
 }
 
 fn sqlite_native_candidate_values(

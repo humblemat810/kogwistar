@@ -1079,7 +1079,10 @@ impl ApplicationService for SqliteRunApplicationService {
         }
         name != "workflow.tool_audit"
             && (name != "conversation.create" || self.chroma_graph.is_some())
-            && name != "conversation.ask"
+            && (name != "conversation.ask"
+                || (self.chroma_graph.is_some()
+                    && self.embedding_provider.is_some()
+                    && self.owner_auth_store.is_some()))
             && (name != "conversation.get_transcript" || self.chroma_graph.is_some())
             && rust_mcp_tool_supported(surface, name)
     }
@@ -1267,6 +1270,19 @@ impl ApplicationService for SqliteRunApplicationService {
                 };
                 return self
                     .sqlite_chroma_create_conversation_effect(&request, &input)
+                    .await;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/send_message")
+                && self.chroma_graph.is_some()
+            {
+                let input = match syscall_input(&request, "send_message") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                return self
+                    .sqlite_chroma_send_message_effect(&request, &input)
                     .await;
             }
             if request.method == "POST"

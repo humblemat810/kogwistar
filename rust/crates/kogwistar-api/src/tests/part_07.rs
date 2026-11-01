@@ -2590,7 +2590,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 }
 
 #[tokio::test]
-    async fn sqlite_chroma_conversation_create_uses_canonical_graph_and_private_acl() {
+async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2639,7 +2639,9 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
                 let response = if request_line.contains("/collections HTTP") {
                     json!({"id":"collection-id", "metadata":{"hnsw:space":"cosine"}})
                 } else {
-                    projection_requests.push(request_line);
+                    if request_line.contains("/upsert") || request_line.contains("/delete") {
+                        projection_requests.push(request_line);
+                    }
                     json!({})
                 };
                 let response = response.to_string();
@@ -2666,16 +2668,74 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
             "kogwistar-sqlite-conversation-create-{}.sqlite",
             uuid::Uuid::new_v4().simple()
         ));
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-conversation-owner-auth-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let auth = SqliteAuthStore::open(&auth_path).unwrap();
+        auth.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "conversation-owner".to_owned(),
+            email: "conversation-owner@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "conversation-owner".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "conversation".to_owned(),
+        })
+        .await
+        .unwrap();
+        drop(auth);
+        let owner_auth = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+            ..AuthConfig::default()
+        };
+        struct TestEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile,
+        }
+        impl kogwistar_engine::embedding::EmbeddingProvider for TestEmbeddingProvider {
+            fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+                &self.profile
+            }
+
+            fn embed<'a>(
+                &'a self,
+                texts: &'a [String],
+            ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+                Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6, 0.8]).collect()) })
+            }
+        }
+        let embedding_provider = Arc::new(TestEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "conversation-test".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+        });
         let service = SqliteRunApplicationService::open(&path)
             .unwrap()
-            .with_chroma_graph(graph);
+            .with_chroma_graph(graph)
+            .with_embedding_provider(embedding_provider)
+            .with_owner_auth_config(&owner_auth)
+            .await
+            .unwrap();
         assert!(service.supports_http_operation("POST", "/api/conversations"));
+        assert!(service.supports_mcp_tool("conversation", "conversation.ask"));
 
         let principal = json!({
             "sub":"conversation-owner", "user_id":"conversation-owner", "role":"rw",
             "ns":["conversation"], "storage_ns":"conversation",
             "workspace":"workspace-a", "graph_space":"conversation",
-            "capabilities":["spawn_process"]
+            "capabilities":["spawn_process", "send_message", "write_graph"]
         });
         let request = || ApiEffectRequest {
             contract_version: 1,
@@ -2708,6 +2768,75 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
                                 == "conversation-create-contract"
                     })
         }));
+
+        let (snapshot_nodes, _) = service
+            .chroma_graph_snapshot(&request(), "conversation")
+            .await
+            .unwrap();
+        assert!(
+            snapshot_nodes
+                .iter()
+                .any(|record| record.id == "conversation-create-start"),
+            "newly created conversation start must be visible in the scoped canonical snapshot; stage1={:?}",
+            service.store.list_stage1_node_projections("conversation").unwrap()
+        );
+        let visible_start = snapshot_nodes
+            .iter()
+            .find(|record| record.id == "conversation-create-start")
+            .unwrap();
+        assert_eq!(
+            visible_start.metadata.get("conversation_id"),
+            Some(&json!("conversation-create-contract")),
+            "snapshot metadata={:?}, document={:?}",
+            visible_start.metadata,
+            visible_start.document
+        );
+
+        let send_message = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"send_message",
+                    "args":{
+                        "conversation_id":"conversation-create-contract",
+                        "text":"A durable user turn",
+                        "workflow_id":"conversation-turn-contract-workflow"
+                    }
+                }))
+                .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(
+            send_message.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&send_message.body)
+        );
+        let send_result: Value = serde_json::from_slice(&send_message.body).unwrap();
+        assert_eq!(send_result["op"], "send_message");
+        assert_eq!(send_result["result"]["status"], "queued");
+        let run_id = send_result["result"]["run_id"].as_str().unwrap();
+        assert!(service.store.get_server_run(run_id).unwrap().is_some());
+        let events = service.store.replay_raw_events("conversation", 0, 50).unwrap();
+        assert!(events.iter().any(|event| {
+            event.entity_kind == "node"
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload["metadata"]["entity_type"] == "conversation_turn"
+                            && payload["summary"] == "A durable user turn"
+                    })
+        }));
+        assert!(events.iter().any(|event| {
+            event.entity_kind == "edge"
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| payload["relation"] == "next_turn")
+        }));
         assert!(events.iter().any(|event| {
             serde_json::from_str::<Value>(&event.payload_json)
                 .ok()
@@ -2729,9 +2858,10 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
             StatusCode::FORBIDDEN.as_u16()
         );
         let _ = stop_tx.send(());
-        assert_eq!(fake_chroma.await.unwrap(), Vec::<String>::new());
+        assert!(fake_chroma.await.unwrap().is_empty());
         drop(service);
         remove_test_sqlite(&path);
+        remove_test_sqlite(&auth_path);
 
         let metadata_path = std::env::temp_dir().join(format!(
             "kogwistar-sqlite-metadata-conversation-create-{}.sqlite",

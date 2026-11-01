@@ -234,8 +234,22 @@ Evidence: Rust API test
 `sqlite_chroma_conversation_create_uses_canonical_graph_and_private_acl` and
 SQLite store test
 `latest_entity_events_by_metadata_uses_current_canonical_revisions`. This
-closes conversation creation only; turn submission, full run progression,
-broader MCP parity, and cross-backend parity remain open.
+closes conversation creation only; full run progression, broader MCP parity,
+and cross-backend parity remain open.
+
+Configured SQLite+Chroma now also admits a user turn through the existing
+`send_message` syscall: it resolves the conversation from the scoped,
+ACL-filtered canonical snapshot, revalidates the active owner and current
+`write_graph` authority, prepares the typed turn/edge and index intents, then
+commits those graph effects with the queued run and lane message in the
+canonical SQLite unit of work. Chroma remains an eventual projection. The
+regression `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic`
+verifies create-then-send visibility, queued run and lane admission, canonical
+turn/edge/ACL events, duplicate-create rejection, wrong-owner rejection, and no
+synchronous Chroma mutation; the full `kogwistar-api` library suite passed
+(**222 passed, 22 ignored**) and `kogwistar-store-sqlite` passed (**50 passed,
+1 ignored**). This closes the bounded user-turn admission step only; it does
+not verify Python worker completion or a full SQLite+Chroma answer run.
 
 DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
