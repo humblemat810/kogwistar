@@ -1,14 +1,70 @@
 from __future__ import annotations
 
+import ast
 import json
+import re
 from pathlib import Path
 
 from kogwistar.acl.graph import ACLGraph
 
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_rust_acl_parity_annotation_resolves_to_python_contract() -> None:
+    rust_path = ROOT / "rust/crates/kogwistar-store/src/lib.rs"
+    rust_source = rust_path.read_text(encoding="utf-8")
+    annotations = re.findall(r"// PYTHON_PARITY_V1: ([^\r\n]+)", rust_source)
+    matching = [
+        annotation
+        for annotation in annotations
+        if "rust=graph_records_visible_by_acl"
+        in [part.strip() for part in annotation.split(";")]
+    ]
+    assert len(matching) == 1
+    fields = dict(
+        part.strip().split("=", maxsplit=1)
+        for part in matching[0].split(";")
+    )
+    assert set(fields) == {
+        "rust",
+        "python",
+        "fixture",
+        "rust_test",
+        "python_test_file",
+        "python_test",
+    }
+
+    rust_symbol = fields["rust"]
+    assert re.search(rf"\bpub fn {re.escape(rust_symbol)}\s*\(", rust_source)
+    assert re.search(rf"\bfn {re.escape(fields['rust_test'])}\s*\(", rust_source)
+
+    python_path_text, python_target = fields["python"].split("#")
+    python_class, python_method = python_target.split(".")
+    python_path = ROOT / python_path_text
+    python_tree = ast.parse(python_path.read_text(encoding="utf-8"))
+    assert any(
+        isinstance(class_node, ast.ClassDef)
+        and class_node.name == python_class
+        and any(
+            isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and member.name == python_method
+            for member in class_node.body
+        )
+        for class_node in python_tree.body
+    )
+
+    fixture_path = ROOT / fields["fixture"]
+    assert json.loads(fixture_path.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert fields["fixture"] in rust_source
+    python_test_path = ROOT / fields["python_test_file"]
+    python_test_source = python_test_path.read_text(encoding="utf-8")
+    assert fields["fixture"] in python_test_source
+    assert re.search(rf"\bdef {re.escape(fields['python_test'])}\s*\(", python_test_source)
+
 
 def test_python_acl_visibility_matches_shared_golden_contract() -> None:
     fixture = json.loads(
-        (Path(__file__).resolve().parents[2] / "contracts/golden/graph-acl-v1.json")
+        (ROOT / "contracts/golden/graph-acl-v1.json")
         .read_text(encoding="utf-8")
     )
     assert fixture["schema_version"] == 1
