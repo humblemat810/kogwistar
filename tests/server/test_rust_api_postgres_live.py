@@ -2000,6 +2000,87 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert rust_create.json()["conversation_id"] == rust_conversation_id
         rust_start_node_id = rust_create.json()["start_node_id"]
 
+        workflow_id = "debug.rag.v1"
+        workflow_contract = json.loads(
+            (ROOT / "contracts/golden/answer-workflow-runtime-contract-v1.json")
+            .read_text(encoding="utf-8")
+        )
+        workflow_spec = workflow_contract["workflows"][workflow_id]
+        workflow_claims = {
+            "sub": "conversation-owner",
+            "role": "rw",
+            "roles": ["reader"],
+            "ns": "workflow",
+            "storage_ns": "workflow",
+            "capabilities": ["workflow.design.write", "workflow.design.inspect"],
+            "exp": 4_102_444_800,
+        }
+        for operation in workflow_spec["required_ops"]:
+            design_response = httpx.post(
+                f"{base}/api/workflow/design/{workflow_id}/nodes",
+                headers={
+                    "Authorization": f"Bearer {_hs256_token(secret, workflow_claims)}"
+                },
+                json={
+                    "designer_id": "conversation-owner",
+                    "node_id": f"node-{operation}",
+                    "label": operation,
+                    "op": operation,
+                    "start": operation == "start",
+                    "terminal": operation == "end",
+                    "metadata": {
+                        "wf_version": workflow_spec["python_op_version"],
+                        "wf_executor_target": "python-worker",
+                    },
+                },
+                timeout=10,
+            )
+            assert design_response.status_code == 200, design_response.text
+        for index, route in enumerate(workflow_spec["required_routes"]):
+            design_response = httpx.post(
+                f"{base}/api/workflow/design/{workflow_id}/edges",
+                headers={
+                    "Authorization": f"Bearer {_hs256_token(secret, workflow_claims)}"
+                },
+                json={
+                    "designer_id": "conversation-owner",
+                    "edge_id": f"edge-{index}",
+                    "src": f"node-{route['from']}",
+                    "dst": f"node-{route['to']}",
+                    "predicate": route["predicate"],
+                    "priority": route["priority"],
+                    "is_default": route["default"],
+                    "multiplicity": route["multiplicity"],
+                },
+                timeout=10,
+            )
+            assert design_response.status_code == 200, design_response.text
+
+        turn_claims = {
+            **conversation_claims,
+            "ns": ["conversation", "workflow"],
+            "capabilities": [
+                "spawn_process",
+                "send_message",
+                "write_graph",
+                "read_graph",
+                "workflow.run.write",
+            ],
+        }
+        rust_turn = httpx.post(
+            f"{base}/api/conversations/{rust_conversation_id}/turns:answer",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+            },
+            json={"text": "Rust persisted question", "workflow_id": workflow_id},
+            timeout=10,
+        )
+        assert rust_turn.status_code == 202, rust_turn.text
+        rust_turn_payload = rust_turn.json()
+        assert rust_turn_payload["workflow_id"] == workflow_id
+        assert rust_turn_payload["status"] == "queued"
+        rust_user_turn_id = rust_turn_payload["user_turn_node_id"]
+
         conversation_read_token = claims_ctx.set(conversation_owner)
         try:
             python_rust_nodes = conversation_engine.read.get_nodes(
@@ -2007,9 +2088,31 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             )
         finally:
             claims_ctx.reset(conversation_read_token)
-        assert [node.id for node in python_rust_nodes] == [rust_start_node_id]
-        assert python_rust_nodes[0].metadata["entity_type"] == "conversation_start"
-        assert python_rust_nodes[0].user_id == "conversation-owner"
+        assert any(node.id == rust_start_node_id for node in python_rust_nodes)
+        python_rust_transcript = [
+            {
+                "node_id": node.id,
+                "turn_index": node.turn_index,
+                "role": node.role,
+                "content": node.summary,
+                "entity_type": node.metadata["entity_type"],
+            }
+            for node in sorted(
+                python_rust_nodes,
+                key=lambda node: (node.turn_index, node.id),
+            )
+            if node.metadata.get("entity_type")
+            in {"conversation_turn", "assistant_turn"}
+        ]
+        assert python_rust_transcript == [
+            {
+                "node_id": rust_user_turn_id,
+                "turn_index": 0,
+                "role": "user",
+                "content": "Rust persisted question",
+                "entity_type": "conversation_turn",
+            }
+        ]
     finally:
         process.terminate()
         try:
