@@ -2249,6 +2249,69 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert rust_syscall_turn["run_id"]
         assert rust_syscall_turn["turn_node_id"]
         rust_syscall_turn_id = rust_syscall_turn["turn_node_id"]
+        with RustRuntimeWorker.from_step_resolver(
+            base_url=base,
+            worker_id="python-mcp-answer-worker",
+            journal_path=tmp_path / "rust-admitted-mcp-answer-worker.sqlite",
+            step_resolver=default_resolver,
+            dependency_provider=lambda _work: {
+                "agent": SimpleNamespace(config=SimpleNamespace(max_used=3))
+            },
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+            },
+        ) as mcp_answer_worker:
+            processed_mcp_ops: list[str] = []
+            worker_deadline = time.monotonic() + 30
+            while time.monotonic() < worker_deadline:
+                owner_context = claims_ctx.set(conversation_owner)
+                try:
+                    claimed = mcp_answer_worker.claim(
+                        run_id=rust_syscall_turn["run_id"], limit=1
+                    )
+                    if claimed:
+                        processed_mcp_ops.append(claimed[0]["payload"]["op"])
+                        result = mcp_answer_worker.process(claimed[0])
+                        assert result["event_seq"] > 0
+                finally:
+                    claims_ctx.reset(owner_context)
+                mcp_run = httpx.get(
+                    f"{base}/api/workflow/runs/{rust_syscall_turn['run_id']}",
+                    headers={
+                        "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+                    },
+                    timeout=10,
+                )
+                assert mcp_run.status_code == 200, mcp_run.text
+                mcp_status = mcp_run.json()["status"]
+                if mcp_status == "succeeded":
+                    break
+                assert mcp_status not in {"failed", "cancelled"}, (
+                    mcp_run.json().get("error")
+                )
+                if not claimed:
+                    time.sleep(0.05)
+            else:
+                pytest.fail("Rust/Python MCP answer workflow did not finish in 30 seconds")
+            assert processed_mcp_ops == [
+                "start",
+                "aa_debug_select_top_candidates",
+                "end",
+            ]
+        mcp_answer_checkpoints = httpx.get(
+            f"{base}/api/workflow/runs/{rust_syscall_turn['run_id']}/checkpoints",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+            },
+            timeout=10,
+        )
+        assert mcp_answer_checkpoints.status_code == 200, mcp_answer_checkpoints.text
+        mcp_answer_state = mcp_answer_checkpoints.json()["checkpoints"][-1]["state"]
+        assert mcp_answer_state["answer"]["mode"] == "debug_rag"
+        assert mcp_answer_state["agentic_answering_result"]["assistant_text"]
+        mcp_assistant_turn_id = mcp_answer_state["agentic_answering_result"][
+            "assistant_turn_node_id"
+        ]
 
         conversation_read_token = claims_ctx.set(conversation_owner)
         try:
@@ -2276,7 +2339,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             if node.metadata.get("entity_type")
             in {"conversation_turn", "assistant_turn"}
         ]
-        assert python_rust_transcript == [
+        expected_python_rust_transcript = [
             {
                 "node_id": rust_user_turn_id,
                 "turn_index": 0,
@@ -2300,7 +2363,26 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "content": "Rust persisted syscall question",
                 "entity_type": "conversation_turn",
             },
+            {
+                "node_id": mcp_assistant_turn_id,
+                "turn_index": 3,
+                "role": "assistant",
+                "content": mcp_answer_state["agentic_answering_result"][
+                    "assistant_text"
+                ],
+                "entity_type": "assistant_turn",
+            },
         ]
+        assert python_rust_transcript == expected_python_rust_transcript, (
+            "conversation transcript mismatch after completing REST and MCP-admitted "
+            "runs: "
+            f"actual={python_rust_transcript!r}; "
+            f"expected={expected_python_rust_transcript!r}; "
+            f"mcp_initial_turn_index={mcp_answer_state.get('turn_index')!r}; "
+            f"mcp_run_node_id={mcp_answer_state.get('run_node_id')!r}; "
+            f"rest_assistant_id={rust_assistant_turn_id!r}; "
+            f"mcp_assistant_id={mcp_assistant_turn_id!r}"
+        )
     finally:
         process.terminate()
         try:

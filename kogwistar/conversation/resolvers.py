@@ -551,9 +551,13 @@ def _start(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         _append_op_log(state, "start")
         state["started"] = True
+        turn_index = state.get("turn_index")
+        if type(turn_index) is not int:
+            turn_index = 0
+            state["turn_index"] = turn_index
     result = RunSuccess(
         conversation_node_id=None,
-        state_update=[("u", {"started": True}), ("u", {"turn_index": 0})],
+        state_update=[("u", {"started": True}), ("u", {"turn_index": turn_index})],
     )
     return result
 

@@ -511,6 +511,16 @@ def _run_op(op: str, state: dict[str, Any], *, idempotency_key: str | None = Non
     return res
 
 
+def test_start_preserves_admitted_turn_index_and_defaults_when_missing() -> None:
+    state = {"turn_index": 2}
+    _run_op("start", state)
+    assert state["turn_index"] == 2
+
+    fresh_state: dict[str, Any] = {}
+    _run_op("start", fresh_state)
+    assert fresh_state["turn_index"] == 0
+
+
 def test_aa_prepare_sets_run_identity():
     agent = _StubAgent()
     ce = _StubConversationEngine(last_user_text="Q")
