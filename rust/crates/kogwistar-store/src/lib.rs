@@ -5292,8 +5292,10 @@ mod tests {
     }
 
     #[test]
-    fn graph_role_metadata_does_not_select_or_specialize_storage_contract() {
-        for graph_role in [
+    fn opaque_payload_metadata_does_not_select_storage_scope() {
+        // Python's kg_graph_type is engine configuration, not an entity field.
+        // A similarly named payload value must remain opaque to the store.
+        for metadata_value in [
             "knowledge",
             "conversation",
             "workflow",
@@ -5302,11 +5304,11 @@ mod tests {
         ] {
             for (entity_kind, fixture_index) in [("node", 0), ("edge", 1)] {
                 let mut mutation = typed_mutation(entity_kind, fixture_payload(fixture_index));
-                mutation.payload["metadata"]["engine_type"] = Value::String(graph_role.into());
-                mutation
-                    .record
-                    .metadata
-                    .insert("engine_type".to_owned(), Value::String(graph_role.into()));
+                mutation.payload["metadata"]["engine_type"] = Value::String(metadata_value.into());
+                mutation.record.metadata.insert(
+                    "engine_type".to_owned(),
+                    Value::String(metadata_value.into()),
+                );
 
                 assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
                 assert!(
@@ -5315,7 +5317,7 @@ mod tests {
                         index_jobs: Vec::new(),
                     })
                     .is_ok(),
-                    "graph role {graph_role:?} must use the shared {entity_kind} contract"
+                    "opaque metadata {metadata_value:?} must not specialize {entity_kind} storage"
                 );
             }
         }
