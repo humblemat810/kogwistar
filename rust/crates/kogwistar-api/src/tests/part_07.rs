@@ -2213,11 +2213,15 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (stop_chroma, mut stop_chroma_rx) = tokio::sync::oneshot::channel();
     let fake_chroma = tokio::spawn(async move {
         let mut projected = Vec::new();
         let mut fail_first_upsert = true;
-        for _ in 0..9 {
-            let (mut stream, _) = listener.accept().await.unwrap();
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_chroma_rx => break,
+                connection = listener.accept() => connection.unwrap(),
+            };
             let mut bytes = Vec::new();
             let mut chunk = [0_u8; 2048];
             let (header_end, content_length) = loop {
@@ -2259,7 +2263,10 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
                 )
             } else {
                 projected.push((request_line, request));
-                if fail_first_upsert && projected.last().unwrap().0.contains("/upsert") {
+                if fail_first_upsert
+                    && projected.last().unwrap().0.contains("/upsert")
+                    && projected.last().unwrap().1["ids"][0] == "node-1"
+                {
                     fail_first_upsert = false;
                     (
                         "500 Internal Server Error",
@@ -2481,6 +2488,55 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
         .with_chroma_graph(graph)
+        .with_embedding_provider(provider.clone());
+    let trigger_connection = rusqlite::Connection::open(&sqlite_path).unwrap();
+    trigger_connection
+        .execute_batch(
+            "CREATE TRIGGER reject_node_projection_ack
+             BEFORE UPDATE OF status ON index_jobs
+             WHEN NEW.entity_id = 'node-1' AND NEW.status = 'DONE'
+             BEGIN SELECT RAISE(ABORT, 'injected projection acknowledgement failure'); END;",
+        )
+        .unwrap();
+    let ack_failure = service
+        .run_embedding_projection_jobs_once(10, 1, Some("docs"))
+        .await
+        .unwrap_err();
+    assert!(ack_failure.contains("injected projection acknowledgement failure"));
+    let after_ack_failure = service
+        .store
+        .list_index_jobs(Some("docs"), None, None, None, None, 10)
+        .unwrap();
+    let node_job = after_ack_failure
+        .iter()
+        .find(|job| job.entity_id == "node-1")
+        .unwrap();
+    assert_eq!(node_job.status, "DOING");
+    assert!(node_job.accepted_result_json.is_some());
+    assert_eq!(
+        after_ack_failure
+            .iter()
+            .find(|job| job.entity_id == "edge-1")
+            .unwrap()
+            .status,
+        "DONE"
+    );
+
+    drop(service);
+    trigger_connection
+        .execute_batch("DROP TRIGGER reject_node_projection_ack")
+        .unwrap();
+    drop(trigger_connection);
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("nodes"),
+        chroma_config("edges"),
+    )
+    .await
+    .unwrap();
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph)
         .with_embedding_provider(provider);
     let final_projection = service
         .run_embedding_projection_jobs_once(10, 30, Some("docs"))
@@ -2497,8 +2553,9 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(projection_jobs.len(), 2);
     assert!(projection_jobs.iter().all(|job| job.status == "DONE"));
     assert_eq!(embedding_calls.lock().unwrap().len(), 1);
+    let _ = stop_chroma.send(());
     let chroma_upserts = fake_chroma.await.unwrap();
-    assert_eq!(chroma_upserts.len(), 3);
+    assert_eq!(chroma_upserts.len(), 4);
     let node_attempts = chroma_upserts
         .iter()
         .filter(|(_, body)| body["ids"][0] == "node-1")
@@ -2507,16 +2564,10 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .iter()
         .filter(|(_, body)| body["ids"][0] == "edge-1")
         .collect::<Vec<_>>();
-    assert!((1..=2).contains(&node_attempts.len()));
-    assert!((1..=2).contains(&edge_attempts.len()));
-    assert_eq!(node_attempts.len() + edge_attempts.len(), 3);
-    let retried_attempts = if node_attempts.len() == 2 {
-        &node_attempts
-    } else {
-        &edge_attempts
-    };
-    assert_eq!(retried_attempts.len(), 2);
-    assert_eq!(retried_attempts[0].1, retried_attempts[1].1);
+    assert_eq!(node_attempts.len(), 3);
+    assert_eq!(edge_attempts.len(), 1);
+    assert_eq!(node_attempts[0].1, node_attempts[1].1);
+    assert_eq!(node_attempts[1].1, node_attempts[2].1);
     let node_upsert = chroma_upserts
         .iter()
         .find(|(_, body)| body["ids"][0] == "node-1")
