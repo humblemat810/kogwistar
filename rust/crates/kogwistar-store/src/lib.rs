@@ -1562,6 +1562,18 @@ pub fn validate_graph_mutation(mutation: &GraphMutation) -> StoreResult<()> {
             message: "graph mutation payload must be a JSON object".to_owned(),
         });
     }
+    mutation
+        .scope
+        .validate_metadata_scope(&mutation.record.metadata)?;
+    if let Some(metadata) = mutation.payload.get("metadata") {
+        let metadata =
+            metadata
+                .as_object()
+                .ok_or_else(|| StoreError::InvalidEntityEventPayload {
+                    message: "graph mutation payload metadata must be an object".to_owned(),
+                })?;
+        mutation.scope.validate_metadata_scope(metadata)?;
+    }
     if matches!(mutation.entity_kind.as_str(), "node" | "edge")
         && mutation.payload.get("id").and_then(Value::as_str) != Some(mutation.record.id.as_str())
     {
@@ -5439,6 +5451,22 @@ mod tests {
             validate_graph_mutation(&mutation),
             Err(StoreError::InvalidEntityEventPayload { .. })
         ));
+    }
+
+    #[test]
+    fn direct_graph_mutation_validation_rejects_unrequested_scope_dimensions() {
+        let mut mutation = typed_mutation("node", fixture_payload(0));
+        mutation.scope.workspace_id = None;
+        mutation.scope.graph_space = None;
+        mutation.record.metadata.insert(
+            "workspace_id".to_owned(),
+            Value::String("foreign".to_owned()),
+        );
+        assert!(validate_graph_mutation(&mutation).is_err());
+
+        mutation.record.metadata.remove("workspace_id");
+        mutation.payload["metadata"]["graph_space"] = Value::String("foreign".to_owned());
+        assert!(validate_graph_mutation(&mutation).is_err());
     }
 
     #[test]
