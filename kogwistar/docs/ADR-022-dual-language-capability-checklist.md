@@ -25,7 +25,7 @@ DL-16BQ incremental evidence: SQLite+Chroma `invoke_tool` now supports Python's 
 | ID | Status | Gate / evidence |
 | --- | --- | --- |
 | DL-01 | PASS | Record the dual-language support decision, native-path definition, and invariants in `ADR-022-dual-language-capability-paths.md`. |
-| DL-02 | IN PROGRESS | Initial inventory is recorded in `contracts/dual-language-capabilities-v1.json`: all nine ADR-015 authority capabilities, the exact 6 pending Rust REST routes, four remaining pending syscall operations, and the currently evidenced Rust-to-Python worker seam. Cargo generates Rust's pending route/syscall constants directly from `contracts/rust-port-v1.json`, validating contract version/status, operation shape, supported method/path syntax, and duplicates. Crosswalk tests compare its inventory to that manifest rather than scraping a second Rust-owned list. Evidence: `tests/core/test_rust_port_contract_manifest.py::test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory`, `test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps`, Rust cutover inventory tests, PostgreSQL workflow-lineage/run-evidence HTTP integration tests, and the live PostgreSQL document-tree upsert path. This is not yet the full per-operation graph/storage/runtime/conversation/agent/REST/MCP/CLI inventory. |
+| DL-02 | IN PROGRESS | Initial inventory is recorded in `contracts/dual-language-capabilities-v1.json`: all nine ADR-015 authority capabilities, the exact 6 pending Rust REST routes, four remaining pending syscall operations, and the currently evidenced Rust-to-Python worker seam. Cargo generates Rust's pending route/syscall constants directly from `contracts/rust-port-v1.json`, validating contract version/status, operation shape, supported method/path syntax, and duplicates. Crosswalk tests compare its inventory to that manifest rather than scraping a second Rust-owned list. The generated public-surface inventory now also reflects two workflow MCP operations (`workflow.run_evidence`, `workflow.run_lineage`) as `allowlisted-subject-to-runtime-gates`; this is inventory classification, not proof of runtime enablement or full operation parity. Evidence: `tests/core/test_rust_port_contract_manifest.py::test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory`, `test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps`, Rust cutover inventory tests, PostgreSQL workflow-lineage/run-evidence HTTP integration tests, and the live PostgreSQL document-tree upsert path. This is not yet the full per-operation graph/storage/runtime/conversation/agent/REST/MCP/CLI inventory. |
 | DL-03 | IN PROGRESS | Added the versioned `contracts/dual-language-capabilities-v1.json` crosswalk. It references rather than changes frozen ADR-015 readiness, labels all full native paths `not-verified`, and records environment attestation as missing. The drift test checks capability identity/readiness and exact Rust route/syscall gaps. PostgreSQL workflow lineage and run evidence now have HTTP and ACL-filtering evidence; `contracts/golden/run-evidence-v1.json` is asserted by the Rust live route test and by the Python service plus FastAPI `TestClient` route test in `test_run_evidence_contract.py`. The legacy `POST /api/document.upsert_tree` endpoint maps into the existing PostgreSQL transaction-owning `/api/graph/upsert` path, preserving the legacy default insertion method and response envelope; a live HTTP integration test verifies its write and response. SQLite does not advertise the graph-authoritative mutation. Remaining: extend evidence to each public operation and required conformance suite; do not use the crosswalk as cutover authorization. |
 | DL-04 | PASS (dual-language release policy) | ADR-015's historical Phase 6, rollback, and Python-removal passages now explicitly defer to ADR-022. The Rust promotion gate checks the versioned support matrix and blocks a missing/disabled Python lane, missing/duplicate capability, or removed dual-language/deprecation policy, even with otherwise passing Rust evidence. The frozen server-deferral counts match the current Rust inventory. Evidence: `tests/core/test_rust_port_release_gate.py::test_gate_rejects_python_retirement_despite_full_rust_evidence`, `::test_gate_passes_only_with_all_layers_perf_authority_and_production_canary`, `tests/core/test_rust_port_contract_manifest.py::test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory`; both focused test files passed (79 tests, CPython 3.13). Actual Python/Rust operational parity remains separate gates. |
 
@@ -261,8 +261,9 @@ rejection without graph writes, and no synchronous Chroma mutation; the full
 passed (**3 passed**), confirming the corresponding capability, owner, and
 actor/owner separation semantics. The deterministic Rust-native `debug.rag.v1`
 workflow now runs from admitted user turn through terminal success on configured
-SQLite+Chroma; Python-worker completion and provider-backed workflow parity
-remain separate requirements.
+SQLite+Chroma. Python-worker answer completion is now verified with a
+deterministic answer-provider test double; real external-provider behavior and
+broader provider parity remain separate requirements.
 
 DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
@@ -366,8 +367,9 @@ regression verifies canonical SQLite event persistence. The live
 integration passed against disposable local pgvector with the selector omitted;
 the provider fixture confirmed the selection snapshot was durable before the
 answer request. The selection snapshot, selector-sequence, and SQLite+Chroma
-persistence tests passed. This does not prove Python-worker completion or
-cross-backend parity. Candidate retrieval
+persistence tests passed. The Python-worker answer completion test below adds
+evidence for that execution mode; broader cross-backend parity remains open.
+Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
 ACL records before projecting candidates. The generic Chroma and in-memory
@@ -375,10 +377,17 @@ contract tests cover backend query filtering, top-N order, and the read-only
 shadow wrapper; `sqlite_native_candidates_exclude_acl_private_and_tombstoned_records`
 covers candidate projection's ACL and lifecycle filtering. The configured
 provider-backed Rust-native workflow and default-selector snapshot persistence
-are verified on SQLite+Chroma; Python-worker completion, live PostgreSQL
-verification of the selection snapshot, broader cross-backend parity, and
-support-matrix parity remain open. The deterministic debug workflow is also
-verified end to end.
+are verified on SQLite+Chroma. Python answer generation and persistence
+resolvers also complete through the Python worker on the Rust runtime authority:
+`tests/runtime/test_rust_runtime_authority.py::test_python_agentic_answer_workflow_commits_graph_effects_through_rust_storage[sqlite-chroma]`
+passed on Windows CPython 3.13 against fake Chroma and fake Ollama embedding
+endpoints. It verifies terminal run success, durable assistant/context/edge
+events, completed embedding work, Chroma projection, and canonical-store
+reopen/readback. The answer-provider method itself is a deterministic test
+double, so this is Python-worker execution evidence, not live external-provider
+verification. Live PostgreSQL selection-snapshot verification, broader
+cross-backend parity, and support-matrix parity remain open. The deterministic
+debug workflow is also verified end to end.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies
@@ -416,11 +425,11 @@ opaque reference. `_rt_join` remains checkpointable for resume. Evidence:
 `test_step_resolver_adapter_excludes_noncheckpointed_runtime_bucket`, and
 `test_serializer_raises_on_runtime_plumbing_key`; the runtime, authority, and
 worker regression modules passed (**125 passed, 7 skipped**), Ruff and
-`git diff --check` passed. Still open: full provider-backed
-SQLite+Chroma answer completion through the Python worker, broader
+`git diff --check` passed. Still open: live external-provider behavior on the
+Python-worker path, provider failure/retry parity, broader
 backend-interchangeability parity, support-matrix checks, and the remaining
-syscall parity named in DL-16BQ. This closes the snapshot producer-to-host
-replay path only; DL-16BQ remains IN PROGRESS and no whole-stack parity is
+syscall parity named in DL-16BQ. Deterministic Python-worker answer completion
+is verified, but DL-16BQ remains IN PROGRESS and no whole-stack parity is
 claimed.
 
 Framework invariant evidence for DL-16BQ: Rust ACL visibility is derived from

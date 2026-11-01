@@ -12,7 +12,7 @@
     "http_operations": 84,
     "mcp_operations": 62,
     "pending_http_operations": 6,
-    "allowlisted_mcp_operations": 52,
+    "allowlisted_mcp_operations": 54,
     "pending_syscalls": 4
   },
   "http_operations": [
@@ -772,13 +772,13 @@
       "surface": "workflow",
       "name": "workflow.run_evidence",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "workflow",
       "name": "workflow.run_lineage",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "workflow",
