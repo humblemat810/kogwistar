@@ -2478,6 +2478,164 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_public_graph_upsert_survives_restart_and_projects_to_chroma() {
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let namespace = format!("rust-public-upsert-{suffix}");
+        let node_collection = format!("kgw-pub-n-{suffix}");
+        let edge_collection = format!("kgw-pub-e-{suffix}");
+        let path = std::env::temp_dir().join(format!("kogwistar-public-chroma-{suffix}.sqlite3"));
+        let graph_config = SqliteChromaGraphConfig {
+            endpoint: endpoint.clone(),
+            metric: DistanceMetric::Cosine,
+            node_collection: node_collection.clone(),
+            edge_collection: edge_collection.clone(),
+        };
+        let provider = Arc::new(FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail: None,
+        });
+        let request: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/graph-extraction-v1.json"
+        ))
+        .unwrap();
+        let service = open_sqlite_application_service(&path, Some(graph_config.clone()))
+            .await
+            .unwrap()
+            .with_embedding_provider(provider.clone());
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+                body: serde_json::to_vec(&request).unwrap(),
+                principal: json!({
+                    "sub": "live-owner", "user_id": "live-owner", "role": "rw",
+                    "ns": [namespace], "storage_ns": namespace,
+                    "capabilities": ["write_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        let node_ids = result["node_ids"].as_array().unwrap();
+        let edge_ids = result["edge_ids"].as_array().unwrap();
+        assert_eq!(node_ids.len(), 2);
+        assert_eq!(edge_ids.len(), 1);
+        let pending = service
+            .store
+            .list_index_jobs(Some(&namespace), Some("PENDING"), None, None, None, 200)
+            .unwrap();
+        assert!(
+            pending.iter().any(|job| job.entity_id == node_ids[0]),
+            "first node intent missing: result={result}, pending={pending:?}"
+        );
+        assert!(
+            pending.iter().any(|job| job.entity_id == node_ids[1]),
+            "second node intent missing: result={result}, pending={pending:?}"
+        );
+        assert!(
+            pending
+                .iter()
+                .any(|job| job.entity_id == edge_ids[0] && job.index_kind == "node_embedding"),
+            "edge embedding intent missing: result={result}, pending={pending:?}"
+        );
+        let embedding_intent_count = pending
+            .iter()
+            .filter(|job| job.index_kind == "node_embedding")
+            .count();
+        drop(service);
+
+        let service = open_sqlite_application_service(&path, Some(graph_config.clone()))
+            .await
+            .unwrap()
+            .with_embedding_provider(provider);
+        let summary = service
+            .run_embedding_projection_jobs_once(200, 30, Some(&namespace))
+            .await
+            .unwrap();
+        assert_eq!(
+            summary.claimed, embedding_intent_count,
+            "all durable embedding intents are processed"
+        );
+        assert!(
+            summary.projected >= 3,
+            "all extracted Node/Edge records reach Chroma: {summary:?}"
+        );
+
+        let chroma_config = |collection: String| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            metric: DistanceMetric::Cosine,
+            collection,
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            chroma_config(node_collection),
+            chroma_config(edge_collection),
+        )
+        .await
+        .unwrap();
+        for id in node_ids {
+            let stored = graph
+                .graph_record_of_kind(
+                    &namespace,
+                    kogwistar_store::GraphEntityKind::Node,
+                    id.as_str().unwrap(),
+                )
+                .await
+                .unwrap()
+                .expect("canonical node intent is projected to Chroma");
+            assert!(
+                stored
+                    .document
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("summary")
+            );
+            assert_eq!(stored.embedding.as_deref(), Some([0.6_f32, 0.8_f32].as_slice()));
+            assert_eq!(stored.metadata["_kogwistar_stage2_ready"], true);
+        }
+        let edge = graph
+            .graph_record_of_kind(
+                &namespace,
+                kogwistar_store::GraphEntityKind::Edge,
+                edge_ids[0].as_str().unwrap(),
+            )
+            .await
+            .unwrap()
+            .expect("canonical edge intent is projected to Chroma");
+        assert_eq!(edge.embedding.as_deref(), Some([0.6_f32, 0.8_f32].as_slice()));
+        assert_eq!(edge.metadata["_kogwistar_stage2_ready"], true);
+
+        drop(graph);
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn sqlite_chroma_snapshot_merges_only_current_scoped_stage1_records() {
         use kogwistar_store::MetadataFilter;

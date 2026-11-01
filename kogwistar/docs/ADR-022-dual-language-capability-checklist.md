@@ -282,9 +282,13 @@ standalone SQLite does not advertise this route. The shared golden-fixture test
 `sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract` verifies
 the write, source-document persistence, queued index jobs, and rejection of an
 altered excerpt without partial graph events. The full Rust API library suite
-passed (**227 passed, 22 ignored**). This extends evidence within DL-16BQ but
-does not close it: cross-backend parity, live Chroma projection, broader
-security matrices, and whole-stack parity remain open. The
+passed (**227 passed, 23 ignored**). The opt-in live test
+`sqlite_chroma_public_graph_upsert_survives_restart_and_projects_to_chroma`
+also passed against disposable Chroma 1.5.9: it starts with the generic public
+upsert, restarts the service, drains SQLite's durable embedding intents, and
+verifies both nodes and the edge in Chroma. This extends evidence within DL-16BQ but
+does not close it: cross-backend parity, provider failure/retry and stale
+revision races, broader security matrices, and whole-stack parity remain open. The
 `link_assistant_turn` worker-effect path now derives
 both endpoint IDs from workflow state instead of reading deferred turns from
 the process-local graph; `test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks`
