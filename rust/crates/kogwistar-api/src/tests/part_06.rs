@@ -4023,6 +4023,37 @@
             runtime_routes: Vec::new(),
             ephemeral_context: serde_json::Map::new(),
         };
+        let snapshot_id = kogwistar_contracts::stable_id(
+            "conversation.context_snapshot",
+            &[
+                "native-answer-conversation".to_owned(),
+                "native-answer-run".to_owned(),
+                "aa_generate_answer_with_citations".to_owned(),
+                "3".to_owned(),
+                "0".to_owned(),
+            ],
+        )
+        .to_string();
+        let mut unsupported_version = request.clone();
+        unsupported_version.op_version = "v2".to_owned();
+        let rejected = service
+            .execute_sqlite_native_answer_generation(
+                RecordedWorkerHandoff {
+                    message_id: "lane-invalid-native-answer".to_owned(),
+                    claimed_by: "rust-native-worker".to_owned(),
+                    run_id: "native-answer-run".to_owned(),
+                    step_id: "answer-node".to_owned(),
+                    correlation_id: "token-invalid".to_owned(),
+                },
+                unsupported_version,
+            )
+            .await;
+        assert!(rejected.is_err());
+        assert!(service
+            .store
+            .latest_entity_events("conversation", "node", &[snapshot_id.clone()])
+            .unwrap()
+            .is_empty(), "unsupported operation version must fail before snapshot persistence");
         let result = service.execute_sqlite_native_answer_generation(
             RecordedWorkerHandoff {
                 message_id:"lane-native-answer".to_owned(),
