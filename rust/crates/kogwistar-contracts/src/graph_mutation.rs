@@ -274,17 +274,21 @@ mod tests {
             "/../../../contracts/golden/graph-mutation-batch-v1.json"
         ));
         for role in ["knowledge", "conversation", "wisdom", "acl"] {
-            let mut value: Value = serde_json::from_str(fixture).unwrap();
-            value["mutations"][0]["record"]["metadata"]["engine_type"] =
-                Value::String(role.to_owned());
-            let batch: GraphMutationBatchV1 = serde_json::from_value(value).unwrap();
-            let mutation = &batch.mutations[0];
+            for (entity_kind, table) in [("node", "gke_nodes"), ("edge", "gke_edges")] {
+                let mut value: Value = serde_json::from_str(fixture).unwrap();
+                let mutation = &mut value["mutations"][0];
+                mutation["entity_kind"] = Value::String(entity_kind.to_owned());
+                mutation["table"] = Value::String(table.to_owned());
+                mutation["record"]["metadata"]["engine_type"] = Value::String(role.to_owned());
+                let batch: GraphMutationBatchV1 = serde_json::from_value(value).unwrap();
+                let mutation = &batch.mutations[0];
 
-            assert_eq!(mutation.entity_kind, "node");
-            assert_eq!(mutation.table, "gke_nodes");
-            assert_eq!(mutation.scope.namespace, "tenant-a");
-            assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
-            assert_eq!(mutation.record.metadata["engine_type"], role);
+                assert_eq!(mutation.entity_kind, entity_kind);
+                assert_eq!(mutation.table, table);
+                assert_eq!(mutation.scope.namespace, "tenant-a");
+                assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
+                assert_eq!(mutation.record.metadata["engine_type"], role);
+            }
         }
     }
 

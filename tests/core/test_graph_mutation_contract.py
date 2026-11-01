@@ -80,18 +80,23 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
 
 
 @pytest.mark.parametrize("graph_role", ["knowledge", "conversation", "wisdom", "acl"])
+@pytest.mark.parametrize(
+    ("entity_kind", "table"), [("node", "gke_nodes"), ("edge", "gke_edges")]
+)
 def test_graph_role_is_metadata_not_a_graph_entity_or_storage_scope(
-    graph_role: str,
+    graph_role: str, entity_kind: str, table: str
 ) -> None:
     payload = _fixture()
     mutation = payload["mutations"][0]
+    mutation["entity_kind"] = entity_kind
+    mutation["table"] = table
     mutation["record"]["metadata"]["engine_type"] = graph_role
 
     batch = validate_graph_mutation_batch(payload)
     parsed = batch.mutations[0]
 
-    assert parsed.entity_kind == "node"
-    assert parsed.table == "gke_nodes"
+    assert parsed.entity_kind == entity_kind
+    assert parsed.table == table
     assert parsed.scope.namespace == "tenant-a"
     assert parsed.scope.graph_space == "facts"
     assert parsed.record.metadata["engine_type"] == graph_role
