@@ -3068,11 +3068,14 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 
 #[tokio::test]
 async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
     use kogwistar_store::{
         GraphMutation, GraphMutationBatch, GraphRecord, GraphScope, NamedProjectionWrite,
         WorkflowDesignSnapshotWrite,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -3489,6 +3492,35 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         "workspace":"workspace-a", "graph_space":"conversation",
         "capabilities":["spawn_process", "send_message", "write_graph", "read_graph", "workflow.run.write"]
     });
+    let http_secret = "sqlite-chroma-public-ingress-test-secret";
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &json!({
+            "sub":"conversation-owner", "user_id":"conversation-owner",
+            "actor_id":"conversation-owner", "role":"rw", "roles":["rw"],
+            "ns":"conversation", "storage_ns":"conversation",
+            "workspace":"workspace-a", "graph_space":"conversation",
+            "capabilities":["spawn_process", "send_message", "write_graph", "read_graph", "workflow.run.write"],
+            "exp":4102444800_u64
+        }),
+        &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(http_secret.to_owned()),
+                auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
     let request = || ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
@@ -3501,9 +3533,30 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         .unwrap(),
         principal: principal.clone(),
     };
-    let response = service.execute(request()).await;
-    assert_eq!(response.status, StatusCode::OK.as_u16());
-    let body: Value = serde_json::from_slice(&response.body).unwrap();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/conversations")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "user_id":"conversation-owner",
+                        "conversation_id":"conversation-create-contract",
+                        "start_node_id":"conversation-create-start"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let response_status = response.status();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(response_status, StatusCode::OK, "{body}");
     assert_eq!(body["conversation_id"], "conversation-create-contract");
     assert_eq!(body["start_node_id"], "conversation-create-start");
     assert_eq!(body["turn_count"], 0);
@@ -3551,34 +3604,40 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         visible_start.document
     );
 
-    let send_message = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/syscall/v1/send_message".to_owned(),
-            body: serde_json::to_vec(&json!({
-                "version":"v1",
-                "op":"send_message",
-                "args":{
-                    "conversation_id":"conversation-create-contract",
-                    "text":"Where is workflow runtime state persisted?",
-                    "workflow_id":workflow_id
-                }
-            }))
-            .unwrap(),
-            principal: principal.clone(),
-        })
+    let send_message = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0",
+                        "id":"sqlite-chroma-conversation-ask",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"conversation.ask",
+                            "arguments":{
+                                "conversation_id":"conversation-create-contract",
+                                "text":"Where is workflow runtime state persisted?",
+                                "workflow_id":workflow_id
+                            }
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
         .await;
-    assert_eq!(
-        send_message.status,
-        StatusCode::OK.as_u16(),
-        "{}",
-        String::from_utf8_lossy(&send_message.body)
-    );
-    let send_result: Value = serde_json::from_slice(&send_message.body).unwrap();
-    assert_eq!(send_result["op"], "send_message");
-    assert_eq!(send_result["result"]["status"], "queued");
-    let run_id = send_result["result"]["run_id"].as_str().unwrap();
+    let send_message = send_message.unwrap();
+    assert_eq!(send_message.status(), StatusCode::OK);
+    let send_response: Value =
+        serde_json::from_slice(&to_bytes(send_message.into_body(), 65_536).await.unwrap()).unwrap();
+    let send_result = &send_response["result"];
+    assert_eq!(send_result["workflow_id"], workflow_id);
+    assert_eq!(send_result["status"], "queued");
+    let run_id = send_result["run_id"].as_str().unwrap();
     assert!(service.store.get_server_run(run_id).unwrap().is_some());
     let events = service
         .store
