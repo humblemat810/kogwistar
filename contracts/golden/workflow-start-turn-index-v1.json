@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "operation": "start/v1",
+  "cases": [
+    {
+      "name": "missing-index-defaults-to-zero",
+      "initial_state": {},
+      "expected": {"started": true, "turn_index": 0}
+    },
+    {
+      "name": "admitted-index-is-preserved",
+      "initial_state": {"turn_index": 2},
+      "expected": {"started": true, "turn_index": 2}
+    },
+    {
+      "name": "invalid-string-index-defaults-to-zero",
+      "initial_state": {"turn_index": "2"},
+      "expected": {"started": true, "turn_index": 0}
+    },
+    {
+      "name": "boolean-index-defaults-to-zero",
+      "initial_state": {"turn_index": true},
+      "expected": {"started": true, "turn_index": 0}
+    }
+  ]
+}

@@ -14,6 +14,8 @@ pub(crate) fn register(
 fn execute_start(
     request: &RuntimeNativeStepRequest,
 ) -> Result<NativeOperationOutput, kogwistar_runtime::RuntimeNativeExecutionError> {
+    // Python projection: kogwistar/conversation/resolvers.py::_start; both are
+    // constrained by contracts/golden/workflow-start-turn-index-v1.json.
     let turn_index = request
         .state
         .get("turn_index")
@@ -91,28 +93,44 @@ mod tests {
 
     #[test]
     fn lifecycle_handlers_match_python_state_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-start-turn-index-v1.json"
+        )))
+        .expect("valid shared workflow start fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(fixture["operation"], "start/v1");
+
         let mut registry = NativeOperationRegistry::default();
         register(&mut registry).unwrap();
 
-        let start =
-            kogwistar_runtime::execute_native_step_with_registry(&request("start"), &registry)
-                .unwrap();
-        let started = start.result.unwrap()["final_state"].clone();
-        assert_eq!(started["started"], true);
-        assert_eq!(started["turn_index"], 0);
-        assert_eq!(started["op_log"], json!(["prior", "start"]));
+        for case in fixture["cases"].as_array().expect("start cases") {
+            let mut start_request = request("start");
+            start_request.state = case["initial_state"]
+                .as_object()
+                .expect("initial state object")
+                .clone();
+            let started =
+                kogwistar_runtime::execute_native_step_with_registry(&start_request, &registry)
+                    .unwrap()
+                    .result
+                    .unwrap()["final_state"]
+                    .clone();
+            assert_eq!(started["started"], case["expected"]["started"]);
+            assert_eq!(started["turn_index"], case["expected"]["turn_index"]);
+        }
 
-        let mut admitted_turn = request("start");
-        admitted_turn
+        let mut start_with_history = request("start");
+        start_with_history
             .state
-            .insert("turn_index".to_owned(), json!(8));
+            .insert("op_log".to_owned(), json!(["prior"]));
         let started =
-            kogwistar_runtime::execute_native_step_with_registry(&admitted_turn, &registry)
+            kogwistar_runtime::execute_native_step_with_registry(&start_with_history, &registry)
                 .unwrap()
                 .result
                 .unwrap()["final_state"]
                 .clone();
-        assert_eq!(started["turn_index"], 8);
+        assert_eq!(started["op_log"], json!(["prior", "start"]));
 
         let end = kogwistar_runtime::execute_native_step_with_registry(&request("end"), &registry)
             .unwrap();

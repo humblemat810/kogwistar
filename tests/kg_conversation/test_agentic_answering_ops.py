@@ -512,13 +512,22 @@ def _run_op(op: str, state: dict[str, Any], *, idempotency_key: str | None = Non
 
 
 def test_start_preserves_admitted_turn_index_and_defaults_when_missing() -> None:
-    state = {"turn_index": 2}
-    _run_op("start", state)
-    assert state["turn_index"] == 2
-
-    fresh_state: dict[str, Any] = {}
-    _run_op("start", fresh_state)
-    assert fresh_state["turn_index"] == 0
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-start-turn-index-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+    assert fixture["operation"] == "start/v1"
+    for case in fixture["cases"]:
+        state = dict(case["initial_state"])
+        _run_op("start", state)
+        assert {
+            "started": state["started"],
+            "turn_index": state["turn_index"],
+        } == case["expected"], case["name"]
 
 
 def test_aa_prepare_sets_run_identity():
