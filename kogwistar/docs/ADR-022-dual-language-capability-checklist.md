@@ -463,3 +463,14 @@ gates pass. A native
 end-to-end performance claim additionally requires DL-12 or DL-13 as applicable
 and DL-19/20 for the stated workload. Open items remain open even if a narrow
 benchmark or one deployment's canary passes.
+
+The mixed Python-worker/Rust-authority answer integration now has a focused
+backend comparison under this existing DL-16BQ gate. Its `sqlite-chroma` case
+verifies canonical SQLite event and durable index-job writes followed by the
+eventual Chroma embedding projection; its `pg` case verifies the equivalent
+Python-prepared graph effect through the Rust PostgreSQL authority, with the
+supplied vector stored in PostgreSQL and no Chroma projection. Evidence:
+`tests/runtime/test_rust_runtime_authority.py::test_python_agentic_answer_workflow_commits_graph_effects_through_rust_storage`
+passed for both variants (**2 passed**) against fake Chroma/Ollama and the
+disposable local pgvector service. This confirms these two tested compositions,
+not universal backend interchangeability or full Python/Rust behavioral parity.

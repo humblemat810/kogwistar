@@ -1866,8 +1866,9 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
 
 @pytest.mark.integration
-def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlite_chroma(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("backend", ["sqlite-chroma", "pg"])
+def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
 ) -> None:
     """Run Python answer resolvers through Rust scheduling and canonical storage."""
     if not RUST_SERVER.exists():
@@ -1884,11 +1885,42 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
     import kogwistar.conversation.resolvers as resolver_module
     import sqlite3
 
+    pg_dsn = next(
+        (
+            os.getenv(name)
+            for name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL")
+            if os.getenv(name)
+        ),
+        None,
+    )
+    if backend == "pg" and not pg_dsn:
+        pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
+    pg_schema = f"python_answer_{os.urandom(8).hex()}" if backend == "pg" else None
     database_path = tmp_path / "python-answer-rust-authority.sqlite3"
     graph_namespace = f"python-answer-{os.urandom(8).hex()}"
-    chroma_server, chroma_endpoint, chroma_requests, chroma_payloads = (
-        _start_fake_chroma_collections()
-    )
+    chroma_server = None
+    chroma_endpoint = None
+    chroma_requests: list[str] = []
+    chroma_payloads: list[dict[str, Any]] = []
+    if backend == "sqlite-chroma":
+        chroma_server, chroma_endpoint, chroma_requests, chroma_payloads = (
+            _start_fake_chroma_collections()
+        )
+    else:
+        import sqlalchemy as sa
+
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+        assert pg_dsn is not None and pg_schema is not None
+        graph_engine = sa.create_engine(pg_dsn, future=True)
+        try:
+            PgVectorBackend(
+                engine=graph_engine,
+                embedding_dim=3,
+                schema=pg_schema,
+            ).ensure_schema()
+        finally:
+            graph_engine.dispose()
     embedding_server, embedding_endpoint, embedding_requests = (
         _start_fake_ollama_embeddings()
     )
@@ -1902,17 +1934,13 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
         env.pop(name, None)
     env.update(
         {
-            "KOGWISTAR_BACKEND": "sqlite",
-            "KOGWISTAR_META_SQLITE_PATH": str(database_path),
+            "KOGWISTAR_BACKEND": "sqlite" if backend == "sqlite-chroma" else "pg",
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
             "AUTH_MODE": "jwt",
             "JWT_SECRET": jwt_secret,
             "JWT_ALG": "HS256",
-            "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
-            "KOGWISTAR_CHROMA_NODE_COLLECTION": "python-answer-nodes",
-            "KOGWISTAR_CHROMA_EDGE_COLLECTION": "python-answer-edges",
             "KOGWISTAR_GRAPH_ROLE": "conversation",
             "KOGWISTAR_EMBEDDING_WORKER_INLINE": "true",
             "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
@@ -1921,6 +1949,20 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
             "KOGWISTAR_EMBEDDING_ENDPOINT": embedding_endpoint,
         }
     )
+    if backend == "sqlite-chroma":
+        env["KOGWISTAR_META_SQLITE_PATH"] = str(database_path)
+        assert chroma_endpoint is not None
+        env.update(
+            {
+                "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
+                "KOGWISTAR_CHROMA_NODE_COLLECTION": "python-answer-nodes",
+                "KOGWISTAR_CHROMA_EDGE_COLLECTION": "python-answer-edges",
+            }
+        )
+    else:
+        assert pg_dsn is not None and pg_schema is not None
+        env["KOGWISTAR_PG_DSN"] = pg_dsn
+        env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
     token = _test_hs256_token(
         jwt_secret,
         {
@@ -2160,51 +2202,89 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
         assert final_state["answer"]["text"].startswith("The Rust runtime commits")
         assistant_id = final_state["agentic_answering_result"]["assistant_turn_node_id"]
 
-        # Let Rust's configured background worker consume the durable embedding
-        # intent. The canonical event remains in SQLite; Chroma only receives a
-        # projection after the event and index job have already committed.
-        deadline = time.monotonic() + 15
-        assistant_embedding_done = False
-        while time.monotonic() < deadline:
+        # SQLite+Chroma writes the canonical event/job first, then projects a
+        # freshly computed vector. PostgreSQL stores the vector already supplied
+        # by the Python graph effect in the same native graph mutation.
+        if backend == "sqlite-chroma":
+            deadline = time.monotonic() + 15
+            assistant_embedding_done = False
+            while time.monotonic() < deadline:
+                with sqlite3.connect(
+                    f"file:{database_path.as_posix()}?mode=ro", uri=True
+                ) as connection:
+                    status_row = connection.execute(
+                        "SELECT status FROM index_jobs "
+                        "WHERE namespace = ? AND entity_id = ? AND index_kind = 'node_embedding'",
+                        (graph_namespace, assistant_id),
+                    ).fetchone()
+                if status_row is not None and status_row[0] == "DONE":
+                    assistant_embedding_done = True
+                    break
+                time.sleep(0.1)
+            assert assistant_embedding_done, "Rust embedding worker did not project the assistant node"
+            assert embedding_requests
+        else:
+            import sqlalchemy as sa
+
+            assert pg_dsn is not None and pg_schema is not None
+            with sa.create_engine(pg_dsn, future=True).connect() as connection:
+                vector_row = connection.execute(
+                    sa.text(
+                        f'SELECT embedding::text, metadata FROM "{pg_schema}".gke_nodes '
+                        "WHERE id = :entity_id"
+                    ),
+                    {"entity_id": assistant_id},
+                ).first()
+            assert vector_row is not None
+            assert vector_row[0] == "[1,0,0]"
+            assert vector_row[1]["namespace"] == graph_namespace
+            assert not embedding_requests, "PostgreSQL should persist the Python-supplied vector directly"
+        if backend == "sqlite-chroma":
+            assistant_upserts = [
+                payload
+                for path, payload in zip(chroma_requests, chroma_payloads, strict=True)
+                if "/upsert" in path and assistant_id in payload.get("ids", [])
+            ]
+            assert len(assistant_upserts) == 1
+            assert assistant_upserts[0]["embeddings"] == [[0.6, 0.8, 0.0]]
+            assert assistant_upserts[0]["metadatas"][0]["namespace"] == graph_namespace
+
+        # Reopen the canonical store after Rust has committed the worker effects.
+        process.terminate()
+        process.wait(timeout=10)
+        if backend == "sqlite-chroma":
             with sqlite3.connect(
                 f"file:{database_path.as_posix()}?mode=ro", uri=True
             ) as connection:
-                status_row = connection.execute(
-                    "SELECT status FROM index_jobs "
-                    "WHERE namespace = ? AND entity_id = ? AND index_kind = 'node_embedding'",
-                    (graph_namespace, assistant_id),
-                ).fetchone()
-            if status_row is not None and status_row[0] == "DONE":
-                assistant_embedding_done = True
-                break
-            time.sleep(0.1)
-        assert assistant_embedding_done, "Rust embedding worker did not project the assistant node"
-        assert embedding_requests
-        assistant_upserts = [
-            payload
-            for path, payload in zip(chroma_requests, chroma_payloads, strict=True)
-            if "/upsert" in path and assistant_id in payload.get("ids", [])
-        ]
-        assert len(assistant_upserts) == 1
-        assert assistant_upserts[0]["embeddings"] == [[0.6, 0.8, 0.0]]
-        assert assistant_upserts[0]["metadatas"][0]["namespace"] == graph_namespace
+                rows = connection.execute(
+                    "SELECT entity_kind, entity_id, payload_json FROM entity_events "
+                    "WHERE namespace = ?",
+                    (graph_namespace,),
+                ).fetchall()
+                jobs = connection.execute(
+                    "SELECT entity_id, index_kind, status FROM index_jobs "
+                    "WHERE namespace = ?",
+                    (graph_namespace,),
+                ).fetchall()
+        else:
+            import sqlalchemy as sa
 
-        # Reopen canonical SQLite after the server has committed the worker effects.
-        process.terminate()
-        process.wait(timeout=10)
-        with sqlite3.connect(
-            f"file:{database_path.as_posix()}?mode=ro", uri=True
-        ) as connection:
-            rows = connection.execute(
-                "SELECT entity_kind, entity_id, payload_json FROM entity_events "
-                "WHERE namespace = ?",
-                (graph_namespace,),
-            ).fetchall()
-            jobs = connection.execute(
-                "SELECT entity_id, index_kind, status FROM index_jobs "
-                "WHERE namespace = ?",
-                (graph_namespace,),
-            ).fetchall()
+            assert pg_dsn is not None and pg_schema is not None
+            with sa.create_engine(pg_dsn, future=True).connect() as connection:
+                rows = connection.execute(
+                    sa.text(
+                        f'SELECT entity_kind, entity_id, payload_json FROM "{pg_schema}".entity_events '
+                        "WHERE namespace = :namespace"
+                    ),
+                    {"namespace": graph_namespace},
+                ).all()
+                jobs = connection.execute(
+                    sa.text(
+                        f'SELECT entity_id, index_kind, status FROM "{pg_schema}".index_jobs '
+                        "WHERE namespace = :namespace"
+                    ),
+                    {"namespace": graph_namespace},
+                ).all()
         assert any(
             kind == "node"
             and entity_id == assistant_id
@@ -2224,12 +2304,17 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
             for entity_id, index_kind, status in jobs
             if entity_id == assistant_id
         }
-        assert assistant_jobs == {
+        expected_assistant_jobs = {
             ("node_docs", "PENDING"),
             ("node_refs", "PENDING"),
-            ("node_embedding", "DONE"),
         }
-        assert sum("/collections" in path and "/upsert" not in path for path in chroma_requests) == 2
+        if backend == "sqlite-chroma":
+            expected_assistant_jobs.add(("node_embedding", "DONE"))
+        assert assistant_jobs == expected_assistant_jobs
+        if backend == "pg":
+            assert not embedding_requests
+        if backend == "sqlite-chroma":
+            assert sum("/collections" in path and "/upsert" not in path for path in chroma_requests) == 2
     finally:
         if process.poll() is None:
             process.terminate()
@@ -2238,10 +2323,21 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
-        chroma_server.shutdown()
-        chroma_server.server_close()
+        if chroma_server is not None:
+            chroma_server.shutdown()
+            chroma_server.server_close()
         embedding_server.shutdown()
         embedding_server.server_close()
+        if backend == "pg" and pg_dsn is not None and pg_schema is not None:
+            import sqlalchemy as sa
+
+            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            try:
+                with cleanup_engine.begin() as connection:
+                    connection.execute(sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}" CASCADE'))
+                    connection.execute(sa.text(f'DROP SCHEMA IF EXISTS "{pg_schema}_wisdom" CASCADE'))
+            finally:
+                cleanup_engine.dispose()
 
 
 @pytest.mark.integration
