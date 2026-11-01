@@ -368,9 +368,14 @@ confirms no Python-worker handoff, and checks semantic event traces and empty
 seam crossings on a Rust-native workflow. Standalone SQLite remains
 graph-authority-disabled; invalid plans and unsupported executors remain
 rejected. Still open: SQLite+Chroma answer completion through the Python
-worker, broader backend-interchangeability parity, support-matrix checks, and
-the remaining syscall parity named in DL-16BQ. These bounded paths do not
-prove whole-stack parity; DL-16BQ remains IN PROGRESS.
+worker end to end, broader backend-interchangeability parity, support-matrix
+checks, and the remaining syscall parity named in DL-16BQ. Python-worker answer
+snapshots now use a pure preparation API and are returned as atomic graph
+effects instead of writing through the worker's local Python backend; ordinary
+Python execution retains its existing persistence path. The focused resolver
+and preparation tests passed (**20 passed**), including a regression that
+fails if Rust-worker mode calls the Python snapshot writer. These bounded paths
+do not prove whole-stack parity; DL-16BQ remains IN PROGRESS.
 
 Framework invariant evidence for DL-16BQ: Rust ACL visibility is derived from
 the complete canonical ACL set before helper records are removed. The additive

@@ -666,9 +666,12 @@ def test_aa_project_pointers_batches_pointer_and_usage_edge_once_for_rust_worker
         for update in result.state_update or []
         if update[0] == "u" and "prev_turn_meta_summary" in update[1]
     ]
-    assert summary_updates[-1]["prev_turn_meta_summary"][
-        "prev_node_distance_from_last_summary"
-    ] == 1
+    assert (
+        summary_updates[-1]["prev_turn_meta_summary"][
+            "prev_node_distance_from_last_summary"
+        ]
+        == 1
+    )
     ce.pre_add_edge_hooks = [lambda _edge: False]
     unsupported = _run_op(
         "aa_project_pointers", state, idempotency_key="stable-worker-message-id"
@@ -801,10 +804,7 @@ def test_aa_get_view_and_question_populates_question_and_system_prompt():
     _run_op("aa_prepare", state)
     res = _run_op("aa_get_view_and_question", state)
     assert isinstance(res, RunSuccess)
-    assert (
-        state["system_prompt"]
-        == fixture["expected"]["system_prompt"]
-    )
+    assert state["system_prompt"] == fixture["expected"]["system_prompt"]
     assert state["question"] == fixture["expected"]["question"]
 
 
@@ -830,8 +830,61 @@ def test_aa_select_used_evidence_writes_used_node_ids_subset():
     assert state.get("used_node_ids") == ["n1", "n2"]
 
 
+def test_aa_select_used_evidence_returns_snapshot_effect_for_rust_worker(monkeypatch):
+    import kogwistar.conversation.resolvers as resolvers
+
+    agent = _StubAgent()
+    agent.config.evidence_selector = "llm"
+    agent._persist_context_snapshot = lambda **_kwargs: pytest.fail(
+        "Rust worker must not persist snapshots through Python"
+    )
+    agent.select_used_evidence_cached = lambda **_kwargs: SimpleNamespace(
+        model_dump=lambda: {"used_node_ids": ["n1"], "used_edge_ids": []}
+    )
+    ce = _StubConversationEngine(last_user_text="Q")
+    hook_calls = []
+    ce.pre_add_node_hooks.append(
+        lambda node: (hook_calls.append("node"), node.metadata.update({"prepared": True}))
+    )
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state["run_id"] = "run-1"
+    state["question"] = "Q"
+    state["candidates"] = [{"id": "n1"}]
+    state["_rt"] = {"view": SimpleNamespace(items=(), messages=(), token_budget=10)}
+    state["_deps"]["_rust_worker_effects"] = True
+
+    class _SnapshotService:
+        conversation_engine = ce
+
+        def prepare_context_snapshot(self, **kwargs):
+            assert kwargs["stage"] == "select_used_evidence"
+            return "snapshot-1", SimpleNamespace(metadata={}), []
+
+    sentinel_batch = {"contract_version": 1, "atomic": True, "mutations": []}
+    monkeypatch.setattr(resolvers, "_chat_service", lambda _deps: _SnapshotService())
+    monkeypatch.setattr(
+        resolvers,
+        "_worker_graph_mutation_batch_for_entities",
+        lambda _ctx, _engine, entities: (
+            sentinel_batch
+            if len(entities) == 1 and entities[0][0].metadata["prepared"] is True
+            else pytest.fail("snapshot must pass through normal node preparation hooks")
+        ),
+    )
+
+    res = _run_op("aa_select_used_evidence", state, idempotency_key="msg-1")
+
+    assert isinstance(res, RunSuccess)
+    assert res.graph_mutation_batch == sentinel_batch
+    assert state["used_node_ids"] == ["n1"]
+    assert hook_calls == ["node"]
+
+
 def test_bm25_selector_matches_shared_rust_contract_fixture():
-    from kogwistar.conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent
+    from kogwistar.conversation.agentic_answering import (
+        AgentConfig,
+        AgenticAnsweringAgent,
+    )
 
     fixture_path = (
         Path(__file__).resolve().parents[2]
@@ -852,7 +905,10 @@ def test_bm25_selector_matches_shared_rust_contract_fixture():
 
 
 def test_legacy_default_selector_wrapper_matches_shared_bm25_contract():
-    from kogwistar.conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent
+    from kogwistar.conversation.agentic_answering import (
+        AgentConfig,
+        AgenticAnsweringAgent,
+    )
 
     fixture_path = (
         Path(__file__).resolve().parents[2]
@@ -919,26 +975,34 @@ def test_citation_repair_retries_invalid_span_and_restores_valid_node_alias():
             {
                 "text": "Answer",
                 "reasoning": "",
-                "claims": [{
-                    "claim": "Fact",
-                    "citations": [{
-                        "source_node_id": "N1",
-                        "mention_index": 3,
-                        "span_index": 0,
-                    }],
-                }],
+                "claims": [
+                    {
+                        "claim": "Fact",
+                        "citations": [
+                            {
+                                "source_node_id": "N1",
+                                "mention_index": 3,
+                                "span_index": 0,
+                            }
+                        ],
+                    }
+                ],
             },
             {
                 "text": "Answer",
                 "reasoning": "",
-                "claims": [{
-                    "claim": "Fact",
-                    "citations": [{
-                        "source_node_id": "N1",
-                        "mention_index": 0,
-                        "span_index": 0,
-                    }],
-                }],
+                "claims": [
+                    {
+                        "claim": "Fact",
+                        "citations": [
+                            {
+                                "source_node_id": "N1",
+                                "mention_index": 0,
+                                "span_index": 0,
+                            }
+                        ],
+                    }
+                ],
             },
         ]
     )
@@ -955,10 +1019,12 @@ def test_citation_repair_retries_invalid_span_and_restores_valid_node_alias():
     agent.max_retry = 2
     agent.llm_tasks = SimpleNamespace(repair_citations=repair_citations)
     evidence_pack = {
-        "nodes": [{
-            "node_id": "node-1",
-            "mentions": [{"spans": [{"excerpt": "grounded excerpt"}]}],
-        }],
+        "nodes": [
+            {
+                "node_id": "node-1",
+                "mentions": [{"spans": [{"excerpt": "grounded excerpt"}]}],
+            }
+        ],
         "edges": [],
     }
 
@@ -971,24 +1037,30 @@ def test_citation_repair_retries_invalid_span_and_restores_valid_node_alias():
         answer={
             "text": "Answer",
             "reasoning": "",
-            "claims": [{
-                "claim": "Fact",
-                "citations": [{
-                    "source_node_id": "node-1",
-                    "mention_index": 7,
-                    "span_index": 0,
-                }],
-            }],
+            "claims": [
+                {
+                    "claim": "Fact",
+                    "citations": [
+                        {
+                            "source_node_id": "node-1",
+                            "mention_index": 7,
+                            "span_index": 0,
+                        }
+                    ],
+                }
+            ],
         },
         answer_in_model=AnswerWithCitations,
     )
 
     assert calls == 2
-    assert result["claims"][0]["citations"] == [{
-        "source_node_id": "node-1",
-        "mention_index": 0,
-        "span_index": 0,
-    }]
+    assert result["claims"][0]["citations"] == [
+        {
+            "source_node_id": "node-1",
+            "mention_index": 0,
+            "span_index": 0,
+        }
+    ]
 
 
 def test_aa_evaluate_answer_writes_evaluation():
@@ -1046,7 +1118,9 @@ def test_answer_evaluation_matches_shared_rust_contract_fixture():
         base_candidates = int(state.get("max_candidates") or 20)
         base_depth = str(state.get("materialize_depth") or "shallow")
         insufficient = evaluation.needs_more_info and not evaluation.is_sufficient
-        assert case["expected"]["run_step_seq"] == int(state.get("run_step_seq") or 0) + 1
+        assert (
+            case["expected"]["run_step_seq"] == int(state.get("run_step_seq") or 0) + 1
+        )
         assert case["expected"]["max_candidates"] == (
             min(base_candidates * 2, 200) if insufficient else base_candidates
         )

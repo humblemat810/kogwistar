@@ -369,6 +369,43 @@ def test_persist_context_snapshot_allows_empty_used_node_ids(
     assert "used_node_ids" not in meta
 
 
+def test_prepare_context_snapshot_builds_graph_effects_without_writing() -> None:
+    service = ConversationService.__new__(ConversationService)
+    service.conversation_engine = object()
+    view = PromptContext(
+        conversation_id="c-prepared-snapshot",
+        purpose="answer",
+        token_budget=32,
+        tokens_used=2,
+        items=(
+            ContextItem(
+                kind="tail_turn",
+                role="user",
+                text="Question",
+                source="conversation",
+                node_id="turn-1",
+                token_cost=2,
+            ),
+        ),
+        messages=(ContextMessage(role="user", content="Question", source="conversation"),),
+    )
+
+    snapshot_id, node, edges = service.prepare_context_snapshot(
+        conversation_id="c-prepared-snapshot",
+        run_id="run-1",
+        run_step_seq=2,
+        stage="generate_answer",
+        view=view,
+    )
+
+    assert node.safe_get_id() == snapshot_id
+    assert node.metadata["entity_type"] == "context_snapshot"
+    assert len(edges) == 1
+    assert edges[0].source_ids == [snapshot_id]
+    assert edges[0].target_ids == ["turn-1"]
+    assert edges[0].relation == "depends_on"
+
+
 def test_latest_context_snapshot_uses_run_step_and_attempt_order(tmp_path) -> None:
     fixture_path = (
         Path(__file__).resolve().parents[2]

@@ -201,7 +201,9 @@ def _worker_graph_mutation_batch_for_entity(
     )
     projection_method = getattr(write, projection_method_name, None)
     if write is None or not callable(projection_method):
-        raise RuntimeError("Rust worker graph effects require the graph write projection")
+        raise RuntimeError(
+            "Rust worker graph effects require the graph write projection"
+        )
     projection = projection_method(entity)
     if not isinstance(projection, (tuple, list)) or len(projection) != 2:
         raise RuntimeError("Rust worker graph effects require a document/metadata pair")
@@ -209,7 +211,9 @@ def _worker_graph_mutation_batch_for_entity(
     if not isinstance(document, str):
         raise RuntimeError("Rust worker graph effects require a string document")
     if not isinstance(raw_metadata, Mapping):
-        raise RuntimeError("Rust worker graph effects require mapping projection metadata")
+        raise RuntimeError(
+            "Rust worker graph effects require mapping projection metadata"
+        )
     metadata = dict(raw_metadata)
     metadata["_class_name"] = type(entity).__name__
 
@@ -228,7 +232,9 @@ def _worker_graph_mutation_batch_for_entity(
         if not callable(embedder):
             embedder = getattr(engine, "_iterative_defensive_emb", None)
         if not callable(embedder):
-            raise RuntimeError("Rust worker graph effects require an embedding provider")
+            raise RuntimeError(
+                "Rust worker graph effects require an embedding provider"
+            )
         normalized_embedding = normalize_embedding_vector(
             embedder(str(document)), allow_none=False
         )
@@ -253,7 +259,9 @@ def _worker_graph_mutation_batch_for_entity(
     entity_id = entity.safe_get_id()
     event_id = str(stable_id("runtime.worker.graph_event", idempotency_key, entity_id))
     indexing = getattr(engine, "indexing", None)
-    source_payload_builder = getattr(indexing, "canonical_source_payload_for_projection", None)
+    source_payload_builder = getattr(
+        indexing, "canonical_source_payload_for_projection", None
+    )
     if not callable(source_payload_builder):
         raise RuntimeError("Rust worker graph effects require canonical index payloads")
     source_payload_json = source_payload_builder(
@@ -263,7 +271,9 @@ def _worker_graph_mutation_batch_for_entity(
         metadata=metadata,
     )
     if not isinstance(source_payload_json, str):
-        raise RuntimeError("Rust worker graph effects require a serialized source payload")
+        raise RuntimeError(
+            "Rust worker graph effects require a serialized source payload"
+        )
     index_jobs = [
         IndexJobIntentPayload(
             job_id=str(
@@ -307,7 +317,7 @@ def _worker_graph_mutation_batch_for_entity(
                         "id": entity_id,
                         "document": str(document),
                         "metadata": metadata,
-                    "embedding": [float(value) for value in embedding],
+                        "embedding": [float(value) for value in embedding],
                     },
                     "embedding_dim": embedding_dim,
                     "model_envelope": envelope,
@@ -361,6 +371,32 @@ def _worker_graph_mutation_batch_for_entities(
     return cast(dict[str, JsonValue], batch.model_dump(mode="json"))
 
 
+def _persist_or_prepare_worker_context_snapshot(
+    ctx: StepContext,
+    *,
+    agent: AgenticAnsweringAgent,
+    service: ConversationService,
+    snapshot_kwargs: dict[str, Any],
+) -> tuple[str, dict[str, JsonValue] | None]:
+    """Keep Python writes local; return snapshot effects for Rust-owned workers."""
+    if _deps(ctx).get("_rust_worker_effects") is not True:
+        return agent._persist_context_snapshot(**snapshot_kwargs), None
+
+    snapshot_id, node, edges = service.prepare_context_snapshot(**snapshot_kwargs)
+    engine = service.conversation_engine
+    for hook in getattr(engine, "pre_add_node_hooks", ()) or ():
+        hook(node)
+    entities: list[tuple[Node | Edge, Literal["node", "edge"]]] = [(node, "node")]
+    edge_hooks = tuple(getattr(engine, "pre_add_edge_hooks", ()) or ())
+    for edge in edges:
+        if any(hook(edge) for hook in edge_hooks):
+            continue
+        entities.append((edge, "edge"))
+    return snapshot_id, _worker_graph_mutation_batch_for_entities(
+        ctx, engine, entities
+    )
+
+
 def _memory_pin_worker_entities(
     engine: object,
     graph_entities: Sequence[ConversationNode | ConversationEdge],
@@ -373,8 +409,10 @@ def _memory_pin_worker_entities(
 
     acl = getattr(engine, "acl", None)
     acl_graph = getattr(engine, "acl_graph", None)
-    if acl is None or acl_graph is None or not callable(
-        getattr(acl_graph, "invalidate", None)
+    if (
+        acl is None
+        or acl_graph is None
+        or not callable(getattr(acl_graph, "invalidate", None))
     ):
         raise RuntimeError("Rust memory pin requires the conversation ACL subsystem")
 
@@ -402,7 +440,9 @@ def _memory_pin_worker_entities(
             if not isinstance(shared_with, list) or not all(
                 isinstance(value, str) for value in shared_with
             ):
-                raise RuntimeError("Rust memory pin requires a list of shared principals")
+                raise RuntimeError(
+                    "Rust memory pin requires a list of shared principals"
+                )
             records = (
                 ACLRecord(
                     target=ACLTarget(
@@ -427,18 +467,24 @@ def _memory_pin_worker_entities(
             acl_node = acl._build_acl_record_node(record)
             normalized_record = acl._record_from_acl_node(acl_node)
             if normalized_record is None:
-                raise RuntimeError("Rust memory pin produced an invalid ACL record node")
+                raise RuntimeError(
+                    "Rust memory pin produced an invalid ACL record node"
+                )
             previous = acl._latest_persisted_acl_record(
                 grain=record.target.grain,
                 truth_graph=record.target.truth_graph,
                 entity_id=record.target.entity_id,
                 target_item_id=record.target.target_item_id,
             )
-            if previous is not None and replace(
-                normalized_record,
-                version=previous.version,
-                supersedes_version=previous.supersedes_version,
-            ) == previous:
+            if (
+                previous is not None
+                and replace(
+                    normalized_record,
+                    version=previous.version,
+                    supersedes_version=previous.supersedes_version,
+                )
+                == previous
+            ):
                 acl_graph.invalidate(
                     truth_graph=record.target.truth_graph,
                     grain=record.target.grain,
@@ -454,7 +500,9 @@ def _memory_pin_worker_entities(
             if previous is not None:
                 effects.append(
                     (
-                        acl._build_acl_supersedes_edge(current=record, previous=previous),
+                        acl._build_acl_supersedes_edge(
+                            current=record, previous=previous
+                        ),
                         "edge",
                     )
                 )
@@ -552,6 +600,7 @@ def _get_prev_turn_meta_summary_from_state_or_deps(
             return cast(MetaFromLastSummary, mts)
         d = {}
     values = dict(d)
+
     def _int_value(value: object) -> int:
         return value if type(value) is int else 0
 
@@ -946,9 +995,7 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     if rust_worker_effects:
         aa_res = sv.get("agentic_answering_result") or {}
         prepared_response_id = (
-            aa_res.get("assistant_turn_node_id")
-            if isinstance(aa_res, dict)
-            else None
+            aa_res.get("assistant_turn_node_id") if isinstance(aa_res, dict) else None
         )
         if prepared_response_id and str(prepared_response_id) != str(response_node_id):
             raise RuntimeError(
@@ -1150,23 +1197,24 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             turn_index=state_view["turn_index"],
             tool_name="memory_retrieve",
             args=[],  # {"n_results": getattr(mem_retriever, "n_results", 12)},
-            kwargs=cast(dict[str, JsonValue], dict(
-                user_id=state_view["user_id"],
-                current_conversation_id=state_view["conversation_id"],
-                query_embedding=state_view["embedding"],
-                user_text=state_view["user_text"],
-                context_text="",
-                n_results=12,
-            )),
+            kwargs=cast(
+                dict[str, JsonValue],
+                dict(
+                    user_id=state_view["user_id"],
+                    current_conversation_id=state_view["conversation_id"],
+                    query_embedding=state_view["embedding"],
+                    user_text=state_view["user_text"],
+                    context_text="",
+                    n_results=12,
+                ),
+            ),
             handler=mem_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
     memj = to_jsonable(mem)
-    state_update: list[StateUpdate] = cast(
-        list[StateUpdate], [("u", {"memory": memj})]
-    )
+    state_update: list[StateUpdate] = cast(list[StateUpdate], [("u", {"memory": memj})])
     result = RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
     return result
 
@@ -1261,9 +1309,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     worker_effect_batch: dict[str, JsonValue] | None = None
     updated_summary: MetaFromLastSummary | None = None
     selected_memory = mem_rehydrated.selected if mem_rehydrated else None
-    memory_context_text = (
-        mem_rehydrated.memory_context_text if mem_rehydrated else None
-    )
+    memory_context_text = mem_rehydrated.memory_context_text if mem_rehydrated else None
     if isinstance(selected_memory, RetrievalResult) and isinstance(
         memory_context_text, str
     ):
@@ -1477,8 +1523,12 @@ def _answer(ctx: StepContext) -> StepRunResult:
     worker_effect_batch: dict[str, JsonValue] | None = None
 
     # 1) Choose the answering capability explicitly.
-    agent: AgenticAnsweringAgent | None = None if force_answer_only else deps.get("agent")
-    agent_answer = getattr(agent, "answer_workflow_v2", None) if agent is not None else None
+    agent: AgenticAnsweringAgent | None = (
+        None if force_answer_only else deps.get("agent")
+    )
+    agent_answer = (
+        getattr(agent, "answer_workflow_v2", None) if agent is not None else None
+    )
 
     if callable(agent_answer):
         workflow_engine = deps.get("agentic_workflow_engine") or deps.get(
@@ -1511,8 +1561,9 @@ def _answer(ctx: StepContext) -> StepRunResult:
                 "deps must provide either callable agent.answer_workflow_v2 or callable answer_only"
             )
         res_raw = answer_only(
-            conversation_id=state["conversation_id"], prev_turn_meta_summary=mts,
-            cache_dir=cache_dir
+            conversation_id=state["conversation_id"],
+            prev_turn_meta_summary=mts,
+            cache_dir=cache_dir,
         )
         try:
             from .models import ConversationAIResponse
@@ -1538,9 +1589,9 @@ def _answer(ctx: StepContext) -> StepRunResult:
                     or ""
                 )
             else:
-                response_node_id = getattr(res_raw, "response_node_id", None) or getattr(
-                    res_raw, "assistant_turn_node_id", None
-                )
+                response_node_id = getattr(
+                    res_raw, "response_node_id", None
+                ) or getattr(res_raw, "assistant_turn_node_id", None)
                 llm_decision_need_summary = bool(
                     getattr(res_raw, "llm_decision_need_summary", False)
                 )
@@ -1796,12 +1847,14 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     if not callable(summarize_batch):
         raise RuntimeError("deps['summarize_batch'] must be callable")
     cache_dir = ctx.cache_dir
-    added_id = str(summarize_batch(
-        state["conversation_id"],
-        int(state["turn_index"]) + 1,
-        prev_turn_meta_summary=prev_turn_meta_summary,
-        cache_dir=cache_dir
-    ))
+    added_id = str(
+        summarize_batch(
+            state["conversation_id"],
+            int(state["turn_index"]) + 1,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            cache_dir=cache_dir,
+        )
+    )
 
     # Legacy resets after summarization.
     try:
@@ -2009,44 +2062,50 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
             question=question, candidates=candidates
         )
         selection_dict = selection.model_dump()
+        snapshot_batch = None
     else:
         prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-        agent._persist_context_snapshot(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            run_step_seq=run_step_seq,
-            attempt_seq=attempt_seq,
-            stage="select_used_evidence",
-            view=view,
-            model_name=str(
-                getattr(
-                    getattr(deps.get("llm_tasks"), "provider_hints", None),
-                    "filter_candidates_provider",
-                    "",
-                )
-                or ""
+        _, snapshot_batch = _persist_or_prepare_worker_context_snapshot(
+            ctx,
+            agent=agent,
+            service=svc,
+            snapshot_kwargs=dict(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="select_used_evidence",
+                view=view,
+                model_name=str(
+                    getattr(
+                        getattr(deps.get("llm_tasks"), "provider_hints", None),
+                        "filter_candidates_provider",
+                        "",
+                    )
+                    or ""
+                ),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(
+                    getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0
+                ),
+                extra_hash_payload={
+                    "question": question,
+                    "candidate_ids": [
+                        c.get("id")
+                        for c in (candidates or [])
+                        if isinstance(c, dict) and c.get("id")
+                    ],
+                },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                    "candidate_ids": [
+                        c.get("id")
+                        for c in (candidates or [])
+                        if isinstance(c, dict) and c.get("id")
+                    ],
+                },
             ),
-            budget_tokens=int(getattr(view, "token_budget", 0) or 0),
-            tail_turn_index=int(
-                getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0
-            ),
-            extra_hash_payload={
-                "question": question,
-                "candidate_ids": [
-                    c.get("id")
-                    for c in (candidates or [])
-                    if isinstance(c, dict) and c.get("id")
-                ],
-            },
-            llm_input_payload={
-                "system_prompt": system_prompt,
-                "question": question,
-                "candidate_ids": [
-                    c.get("id")
-                    for c in (candidates or [])
-                    if isinstance(c, dict) and c.get("id")
-                ],
-            },
         )
         run_step_seq += 1
         selection = agent.select_used_evidence_cached(
@@ -2071,7 +2130,13 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
         ),
         ("a", {"op_log": f"aa_select_used_evidence:{len(used_node_ids)}"}),
     ]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    result: dict[str, object] = {
+        "conversation_node_id": None,
+        "state_update": state_update,
+    }
+    if snapshot_batch is not None:
+        result["graph_mutation_batch"] = snapshot_batch
+    return RunSuccess.model_validate(result)
 
 
 @default_resolver.register("aa_materialize_evidence_pack")
@@ -2173,33 +2238,40 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     )
 
     prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
-    agent._persist_context_snapshot(
-        conversation_id=conversation_id,
-        run_id=run_id,
-        run_step_seq=run_step_seq,
-        attempt_seq=attempt_seq,
-        stage="generate_answer_with_citations",
-        view=view,
-        model_name=str(
-            getattr(
-                getattr(deps.get("llm_tasks"), "provider_hints", None),
-                "answer_with_citations_provider",
-                "",
-            )
-            or ""
+    _, snapshot_batch = _persist_or_prepare_worker_context_snapshot(
+        ctx,
+        agent=agent,
+        service=svc,
+        snapshot_kwargs=dict(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=run_step_seq,
+            attempt_seq=attempt_seq,
+            stage="generate_answer_with_citations",
+            view=view,
+            model_name=str(
+                getattr(
+                    getattr(deps.get("llm_tasks"), "provider_hints", None),
+                    "answer_with_citations_provider",
+                    "",
+                )
+                or ""
+            ),
+            budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+            tail_turn_index=int(
+                getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0
+            ),
+            extra_hash_payload={
+                "question": question,
+                "used_node_ids": used_node_ids,
+                "evidence_pack_hash": snapshot_hash(evidence_pack),
+            },
+            llm_input_payload={
+                "system_prompt": system_prompt,
+                "question": question,
+            },
+            evidence_pack_digest=evidence_digest,
         ),
-        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
-        tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
-        extra_hash_payload={
-            "question": question,
-            "used_node_ids": used_node_ids,
-            "evidence_pack_hash": snapshot_hash(evidence_pack),
-        },
-        llm_input_payload={
-            "system_prompt": system_prompt,
-            "question": question,
-        },
-        evidence_pack_digest=evidence_digest,
     )
     run_step_seq += 1
 
@@ -2218,7 +2290,13 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
         ("u", {"answer": ans, "run_step_seq": run_step_seq}),
         ("a", {"op_log": "aa_generate_answer_with_citations"}),
     ]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    result: dict[str, object] = {
+        "conversation_node_id": None,
+        "state_update": state_update,
+    }
+    if snapshot_batch is not None:
+        result["graph_mutation_batch"] = snapshot_batch
+    return RunSuccess.model_validate(result)
 
 
 @default_resolver.register("aa_validate_or_repair_citations")
@@ -2269,34 +2347,43 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     )
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-    agent._persist_context_snapshot(
-        conversation_id=conversation_id,
-        run_id=run_id,
-        run_step_seq=run_step_seq,
-        attempt_seq=attempt_seq,
-        stage="validate_or_repair_citations",
-        view=view,
-        model_name=str(
-            getattr(
-                getattr(deps.get("llm_tasks"), "provider_hints", None),
-                "repair_citations_provider",
-                "",
-            )
-            or ""
+    _, snapshot_batch = _persist_or_prepare_worker_context_snapshot(
+        ctx,
+        agent=agent,
+        service=svc,
+        snapshot_kwargs=dict(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=run_step_seq,
+            attempt_seq=attempt_seq,
+            stage="validate_or_repair_citations",
+            view=view,
+            model_name=str(
+                getattr(
+                    getattr(deps.get("llm_tasks"), "provider_hints", None),
+                    "repair_citations_provider",
+                    "",
+                )
+                or ""
+            ),
+            budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+            tail_turn_index=int(
+                getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0
+            ),
+            extra_hash_payload={
+                "question": question,
+                "used_node_ids": used_node_ids,
+                "answer_hash": snapshot_hash(answer),
+            },
+            llm_input_payload={
+                "system_prompt": system_prompt,
+                "question": question,
+                "answer_text": (
+                    answer.get("text") if isinstance(answer, dict) else None
+                ),
+            },
+            evidence_pack_digest=evidence_digest,
         ),
-        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
-        tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
-        extra_hash_payload={
-            "question": question,
-            "used_node_ids": used_node_ids,
-            "answer_hash": snapshot_hash(answer),
-        },
-        llm_input_payload={
-            "system_prompt": system_prompt,
-            "question": question,
-            "answer_text": (answer.get("text") if isinstance(answer, dict) else None),
-        },
-        evidence_pack_digest=evidence_digest,
     )
     run_step_seq += 1
 
@@ -2315,7 +2402,13 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
         ("u", {"answer": repaired, "run_step_seq": run_step_seq}),
         ("a", {"op_log": "aa_validate_or_repair_citations"}),
     ]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    result: dict[str, object] = {
+        "conversation_node_id": None,
+        "state_update": state_update,
+    }
+    if snapshot_batch is not None:
+        result["graph_mutation_batch"] = snapshot_batch
+    return RunSuccess.model_validate(result)
 
 
 @default_resolver.register("aa_evaluate_answer")
@@ -2351,34 +2444,41 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
         _set_runtime_state(ctx, "view", view)
 
     prev_turn_meta_summary = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
-    agent._persist_context_snapshot(
-        conversation_id=conversation_id,
-        run_id=run_id,
-        run_step_seq=run_step_seq,
-        attempt_seq=attempt_seq,
-        stage="evaluate_answer",
-        view=view,
-        model_name=str(
-            getattr(
-                getattr(deps.get("llm_tasks"), "provider_hints", None),
-                "answer_with_citations_provider",
-                "",
-            )
-            or ""
+    _, snapshot_batch = _persist_or_prepare_worker_context_snapshot(
+        ctx,
+        agent=agent,
+        service=svc,
+        snapshot_kwargs=dict(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=run_step_seq,
+            attempt_seq=attempt_seq,
+            stage="evaluate_answer",
+            view=view,
+            model_name=str(
+                getattr(
+                    getattr(deps.get("llm_tasks"), "provider_hints", None),
+                    "answer_with_citations_provider",
+                    "",
+                )
+                or ""
+            ),
+            budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+            tail_turn_index=int(
+                getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0
+            ),
+            extra_hash_payload={
+                "question": question,
+                "used_node_ids": used_node_ids,
+                "answer_text": (answer.get("text") if isinstance(answer, dict) else ""),
+            },
+            llm_input_payload={
+                "system_prompt": system_prompt,
+                "question": question,
+                "answer_text": (answer.get("text") if isinstance(answer, dict) else ""),
+            },
+            evidence_pack_digest=evidence_digest,
         ),
-        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
-        tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
-        extra_hash_payload={
-            "question": question,
-            "used_node_ids": used_node_ids,
-            "answer_text": (answer.get("text") if isinstance(answer, dict) else ""),
-        },
-        llm_input_payload={
-            "system_prompt": system_prompt,
-            "question": question,
-            "answer_text": (answer.get("text") if isinstance(answer, dict) else ""),
-        },
-        evidence_pack_digest=evidence_digest,
     )
     run_step_seq += 1
 
@@ -2417,7 +2517,13 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
         ),
         ("a", {"op_log": "aa_evaluate_answer"}),
     ]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    result: dict[str, object] = {
+        "conversation_node_id": None,
+        "state_update": state_update,
+    }
+    if snapshot_batch is not None:
+        result["graph_mutation_batch"] = snapshot_batch
+    return RunSuccess.model_validate(result)
 
 
 @default_resolver.register("aa_project_pointers")
@@ -2488,19 +2594,19 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
             "u",
             {
                 "projected_pointer_ids": projected,
-                "prev_turn_meta_summary": _meta_summary_payload(
-                    prev_turn_meta_summary
-                ),
+                "prev_turn_meta_summary": _meta_summary_payload(prev_turn_meta_summary),
             },
         ),
         ("a", {"op_log": f"aa_project_pointers:{len(projected)}"}),
     ]
     result_values: dict[str, object] = {"state_update": state_update}
     if worker_entities:
-        result_values["graph_mutation_batch"] = _worker_graph_mutation_batch_for_entities(
-            ctx,
-            deps["conversation_engine"],
-            worker_entities,
+        result_values["graph_mutation_batch"] = (
+            _worker_graph_mutation_batch_for_entities(
+                ctx,
+                deps["conversation_engine"],
+                worker_entities,
+            )
         )
     result_values["conversation_node_id"] = None
     return RunSuccess.model_validate(result_values)
@@ -2721,9 +2827,11 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
         "state_update": state_update,
     }
     if worker_entities:
-        result_values["graph_mutation_batch"] = _worker_graph_mutation_batch_for_entities(
-            ctx,
-            _deps(ctx)["conversation_engine"],
-            worker_entities,
+        result_values["graph_mutation_batch"] = (
+            _worker_graph_mutation_batch_for_entities(
+                ctx,
+                _deps(ctx)["conversation_engine"],
+                worker_entities,
+            )
         )
     return RunSuccess.model_validate(result_values)
