@@ -1399,7 +1399,22 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 "run_id": "mixed-live-run",
                 "workflow_id": "mixed-live-workflow",
                 "conversation_id": "mixed-live-conversation",
-                "initial_state": {"counter": 4},
+                "initial_state": {
+                    "counter": 4,
+                    **(
+                        {
+                            "run_id": "mixed-live-run",
+                            "conversation_id": "mixed-live-conversation",
+                            "run_step_seq": 1,
+                            "attempt_seq": 0,
+                            "question": "snapshot smoke question",
+                            "system_prompt": "snapshot smoke system",
+                            "candidates": [],
+                        }
+                        if backend == "sqlite-chroma"
+                        else {}
+                    ),
+                },
                 "runtime_kind": "sync",
                 "start_node_id": "python-before",
                 "node_ops": {
@@ -1442,16 +1457,12 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         if graph_enabled:
             assert worker_token is not None
             assert graph_namespace is not None and graph_entity_id is not None
-            worker_probe.extend(
-                [
-                    "--graph-namespace",
-                    graph_namespace,
-                    "--graph-entity-id",
-                    graph_entity_id,
-                    "--auth-token",
-                    worker_token,
-                ]
-            )
+            worker_probe.extend(["--graph-namespace", graph_namespace])
+            if backend == "sqlite-chroma":
+                worker_probe.append("--snapshot-effect")
+            else:
+                worker_probe.extend(["--graph-entity-id", graph_entity_id])
+            worker_probe.extend(["--auth-token", worker_token])
             worker_env["JWT_SECRET"] = env["JWT_SECRET"]
             worker_env["JWT_ALG"] = "HS256"
         prepare = subprocess.run(
@@ -1500,7 +1511,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 ) as connection:
                     graph_events = connection.execute(
                         """
-                        SELECT namespace, entity_kind, entity_id, op
+                        SELECT namespace, entity_kind, entity_id, op, payload_json
                         FROM entity_events WHERE namespace = ?
                         """,
                         (graph_namespace,),
@@ -1513,25 +1524,47 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                         (graph_namespace,),
                     ).fetchall()
             assert len(graph_events) == 1
+            snapshot_effect = backend == "sqlite-chroma"
             if backend == "pg":
                 assert graph_events[0][1:4] == ("node", graph_entity_id, "ADD")
             else:
-                assert graph_events[0] == (
+                assert graph_events[0][0:4] == (
                     graph_namespace,
                     "node",
-                    graph_entity_id,
+                    graph_events[0][2] if snapshot_effect else graph_entity_id,
                     "ADD",
                 )
+                if snapshot_effect:
+                    from kogwistar.id_provider import stable_id
+
+                    snapshot_id = str(
+                        stable_id(
+                            "conversation.context_snapshot",
+                            "mixed-live-conversation",
+                            "mixed-live-run",
+                            "select_used_evidence",
+                            "1",
+                            "0",
+                        )
+                    )
+                    assert graph_events[0][2] == snapshot_id
+                    snapshot_payload = json.loads(graph_events[0][4])
+                    assert snapshot_payload["metadata"]["entity_type"] == "context_snapshot"
             if backend == "pg":
                 assert len(graph_jobs) == 1
                 assert graph_jobs[0].entity_id == graph_entity_id
             else:
-                assert {
-                    (job[0], job[1], job[2], job[3]) for job in graph_jobs
-                } == {
-                    (graph_namespace, graph_entity_id, "node_embedding", "PENDING"),
-                    (graph_namespace, graph_entity_id, "node_docs", "PENDING"),
-                }
+                if snapshot_effect:
+                    assert {job[2] for job in graph_jobs} >= {"node_docs", "node_refs"}
+                    assert all(job[0] == graph_namespace for job in graph_jobs)
+                    assert all(job[1] == graph_events[0][2] for job in graph_jobs)
+                else:
+                    assert {
+                        (job[0], job[1], job[2], job[3]) for job in graph_jobs
+                    } == {
+                        (graph_namespace, graph_entity_id, "node_embedding", "PENDING"),
+                        (graph_namespace, graph_entity_id, "node_docs", "PENDING"),
+                    }
             if backend == "pg":
                 assert graph_sqlalchemy_engine is not None
                 from kogwistar.engine_core.postgres_backend import PgVectorBackend

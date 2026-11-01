@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 
@@ -54,13 +55,101 @@ def main() -> None:
     parser.add_argument("--graph-namespace")
     parser.add_argument("--graph-entity-id")
     parser.add_argument("--auth-token")
+    parser.add_argument("--snapshot-effect", action="store_true")
     parser.add_argument("--mode", choices=("prepare", "replay"), required=True)
     args = parser.parse_args()
 
     graph_values = (args.graph_namespace, args.graph_entity_id)
-    if any(value is not None for value in graph_values):
-        if not all(graph_values) or not args.auth_token:
-            raise SystemExit("graph replay probe requires its scope and auth token")
+    if args.snapshot_effect and not args.graph_namespace:
+        raise SystemExit("snapshot effect mode requires its graph namespace")
+    if (
+        not args.snapshot_effect
+        and any(value is not None for value in graph_values)
+        and not all(graph_values)
+    ):
+        raise SystemExit("graph replay probe requires both namespace and entity ID")
+    if (args.graph_namespace is not None or args.snapshot_effect) and not args.auth_token:
+        raise SystemExit("graph replay probe requires its auth token")
+    if args.snapshot_effect and args.graph_entity_id is not None:
+        raise SystemExit("snapshot effect mode derives its own graph entity ID")
+
+    dependencies = None
+    if args.snapshot_effect:
+        from kogwistar.conversation.conversation_context import (
+            ContextItem,
+            ContextMessage,
+            PromptContext,
+        )
+        from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.conversation.service import ConversationService
+
+        class _SnapshotEngine:
+            def __init__(self, namespace: str) -> None:
+                self.namespace = namespace
+                self.persistence_mode = "single_stage"
+                self._phase1_enable_index_jobs = True
+                self._disable_event_log = False
+                self.backend = SimpleNamespace(embedding_dim=3)
+                self.embed = SimpleNamespace(
+                    iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0]
+                )
+                self.indexing = SimpleNamespace(
+                    canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+                )
+                self.write = SimpleNamespace(
+                    node_doc_and_meta=lambda node: (
+                        node.model_dump_json(
+                            field_mode="backend", exclude=["embedding"]
+                        ),
+                        {**node.metadata, "namespace": namespace},
+                    ),
+                    edge_doc_and_meta=lambda edge: (
+                        edge.model_dump_json(
+                            field_mode="backend", exclude=["embedding"]
+                        ),
+                        {**edge.metadata, "namespace": namespace},
+                    ),
+                    add_node=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        AssertionError("worker snapshot must not write through Python")
+                    ),
+                    add_edge=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        AssertionError("worker snapshot must not write through Python")
+                    ),
+                )
+                self.pre_add_node_hooks = []
+                self.pre_add_edge_hooks = []
+
+        engine = _SnapshotEngine(args.graph_namespace or "conversation")
+        service = ConversationService.__new__(ConversationService)
+        service.conversation_engine = engine
+
+        class _Agent:
+            config = SimpleNamespace(evidence_selector="llm", max_used=3)
+            cache_dir = None
+
+            @staticmethod
+            def _persist_context_snapshot(**_kwargs):
+                raise AssertionError("worker snapshot must not persist in Python")
+
+            @staticmethod
+            def select_used_evidence_cached(**_kwargs):
+                return SimpleNamespace(
+                    model_dump=lambda: {
+                        "used_node_ids": [],
+                        "used_edge_ids": [],
+                        "reasoning": "deterministic worker smoke",
+                    }
+                )
+
+        dependencies = {
+            "agent": _Agent(),
+            "conversation_engine": engine,
+            "conversation_service": service,
+            "llm_tasks": SimpleNamespace(provider_hints=SimpleNamespace()),
+        }
+        import kogwistar.conversation.resolvers as resolver_module
+
+        resolver_module._chat_service = lambda deps: deps["conversation_service"]
 
     resolver = MappingStepResolver()
 
@@ -68,6 +157,35 @@ def main() -> None:
     def before(ctx):
         with Path(args.marker).open("a", encoding="utf-8") as marker:
             marker.write("callback\n")
+        if args.snapshot_effect:
+            with ctx.state_write as state:
+                state["_rt"] = {
+                    "view": PromptContext(
+                        conversation_id=str(state["conversation_id"]),
+                        purpose="answer",
+                        token_budget=16,
+                        tokens_used=1,
+                        items=(
+                            ContextItem(
+                                kind="system_prompt",
+                                role="system",
+                                text="snapshot smoke context",
+                                source="system",
+                                token_cost=1,
+                            ),
+                        ),
+                        messages=(
+                            ContextMessage(
+                                role="system",
+                                content="snapshot smoke context",
+                                source="system",
+                            ),
+                        ),
+                    )
+                }
+            result = default_resolver.resolve("aa_select_used_evidence")(ctx)
+            result.state_update.append(("u", {"python_before_seen": True}))
+            return result
         if args.graph_namespace is not None:
             assert args.graph_namespace is not None
             assert args.graph_entity_id is not None
@@ -142,6 +260,7 @@ def main() -> None:
         worker_id=args.worker_id,
         journal_path=args.journal,
         step_resolver=resolver,
+        dependency_provider=(lambda _work: dependencies) if dependencies else None,
         headers=worker_headers,
         client=client,
     ) as worker:

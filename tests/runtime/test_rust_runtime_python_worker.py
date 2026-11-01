@@ -981,6 +981,25 @@ def test_step_resolver_adapter_rejects_state_semantic_drift(mutate, message: str
         )
 
 
+def test_step_resolver_adapter_excludes_noncheckpointed_runtime_bucket() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        with ctx.state_write as state:
+            state["_rt"] = {"view": object(), "evidence_pack": {"nodes": []}}
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"answer_ready": True})],
+        )
+
+    effect = RustStepResolverAdapter(resolver)(_adapter_work())
+
+    assert effect["state_update"] == [["u", {"answer_ready": True}]]
+    assert effect["result"]["final_state"]["answer_ready"] is True
+    assert "_rt" not in effect["result"]["final_state"]
+
+
 @pytest.mark.parametrize("key", ["_deps", "dream_deps", "_rt_join"])
 def test_step_resolver_adapter_rejects_result_runtime_plumbing(key: str) -> None:
     resolver = MappingStepResolver()

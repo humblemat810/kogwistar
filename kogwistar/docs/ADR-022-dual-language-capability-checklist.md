@@ -367,19 +367,24 @@ before provider invocation, checks citations and persisted assistant turn,
 confirms no Python-worker handoff, and checks semantic event traces and empty
 seam crossings on a Rust-native workflow. Standalone SQLite remains
 graph-authority-disabled; invalid plans and unsupported executors remain
-rejected. Still open: SQLite+Chroma answer completion through the Python
-worker end to end, broader backend-interchangeability parity, support-matrix
-checks, and the remaining syscall parity named in DL-16BQ. Python-worker answer
-snapshots now use a pure preparation API and are returned as atomic graph
-effects instead of writing through the worker's local Python backend; ordinary
-Python execution retains its existing persistence path. The focused resolver
-and preparation tests passed (**20 passed**), including a regression that
-fails if Rust-worker mode calls the Python snapshot writer. These bounded paths
-do not prove whole-stack parity; DL-16BQ remains IN PROGRESS. The Rust-side
-`sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect` test also
-passes and verifies atomic canonical-event commit plus eventual index jobs for
-a Python-worker result. The producer and host tests are complementary contract
-evidence, not a single live Python-answer-to-Rust-host end-to-end run.
+rejected. The SQLite+Chroma mixed-worker integration now executes the actual
+Python `aa_select_used_evidence` resolver, prepares its context snapshot using
+the conversation service, loses the first result delivery, and replays it via
+a second worker. Rust commits one canonical context-snapshot event and its
+index intents; the same run then completes a Rust-native step. Evidence:
+`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]`
+passed. This exposed and fixed a runtime boundary bug: the Python worker's
+non-checkpointed `_rt` cache could hold a `PromptContext` object and was being
+serialized as durable workflow state. `_durable_state` now excludes the
+runtime-only `_rt` bucket, covered by
+`test_step_resolver_adapter_excludes_noncheckpointed_runtime_bucket`. Python
+answer resolver/preparation tests passed (**20 passed**); ordinary Python
+snapshot persistence remains covered. Still open: full provider-backed
+SQLite+Chroma answer completion through the Python worker, broader
+backend-interchangeability parity, support-matrix checks, and the remaining
+syscall parity named in DL-16BQ. This closes the snapshot producer-to-host
+replay path only; DL-16BQ remains IN PROGRESS and no whole-stack parity is
+claimed.
 
 Framework invariant evidence for DL-16BQ: Rust ACL visibility is derived from
 the complete canonical ACL set before helper records are removed. The additive

@@ -224,7 +224,7 @@ def _durable_state(value: Mapping[str, object], *, field: str) -> JsonObject:
     durable = {
         key: item
         for key, item in value.items()
-        if key not in {"_deps", "dream_deps"}
+        if key not in {"_deps", "_rt", "dream_deps"}
     }
     copied = _json_copy(durable, field=field)
     if not isinstance(copied, dict):
