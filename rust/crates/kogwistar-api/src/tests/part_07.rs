@@ -2599,6 +2599,66 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let chat_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let chat_endpoint = format!("http://{}/v1/chat/completions", chat_listener.local_addr().unwrap());
+        let chat_server = tokio::spawn(async move {
+            let (mut stream, _) = chat_listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let (header_end, content_length) = loop {
+                let mut chunk = [0_u8; 2048];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    }).unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        break (end, length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            ).unwrap();
+            assert_eq!(request["stream"], true);
+            assert_eq!(request["response_format"]["type"], "json_schema");
+            let prompt = request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|message| message["content"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let visible_alias = prompt
+                .lines()
+                .find_map(|line| line.strip_prefix("NODE "))
+                .and_then(|line| line.split_once(" |"))
+                .map(|(alias, _)| alias.to_owned())
+                .expect("provider prompt contains an aliased retrieved evidence node");
+            let content = json!({
+                "text":"The runtime persists workflow state in the graph.",
+                "reasoning":"The retrieved source supports this statement.",
+                "claims":[{
+                    "claim":"Workflow state is persisted in the graph.",
+                    "citations":[{"source_node_id":visible_alias,"mention_index":0,"span_index":0}]
+                }]
+            }).to_string();
+            let frames = [
+                format!("data: {}\r\n\r\n", json!({"id":"sqlite-chroma-answer","choices":[{"delta":{"content":content},"finish_reason":null}]})),
+                format!("data: {}\r\n\r\n", json!({"id":"sqlite-chroma-answer","choices":[{"delta":{},"finish_reason":"stop"}]})),
+                "data: [DONE]\r\n\r\n".to_owned(),
+            ].concat();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                frames.len(), frames
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
         let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
         let fake_chroma = tokio::spawn(async move {
             let mut projection_requests = Vec::new();
@@ -2651,6 +2711,8 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                             "workspace_id":"workspace-a",
                             "graph_space":"conversation",
                             "entity_type":"node",
+                            "label":"Workflow runtime state",
+                            "summary":"The runtime persists workflow state in the graph.",
                             "level_from_root":0,
                             "lifecycle_status":"active",
                             "_kogwistar_stage2_ready":true,
@@ -2690,6 +2752,8 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                             "workspace_id":"workspace-a",
                             "graph_space":"conversation",
                             "entity_type":"node",
+                            "label":"Workflow runtime state",
+                            "summary":"The runtime persists workflow state in the graph.",
                             "level_from_root":0,
                             "lifecycle_status":"active",
                             "_kogwistar_stage2_ready":true,
@@ -2784,6 +2848,15 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .unwrap()
             .with_chroma_graph(graph)
             .with_embedding_provider(embedding_provider)
+            .with_chat_completion_provider(
+                crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+                    chat_endpoint,
+                    "sqlite-chroma-fixture-model",
+                    None,
+                )
+                .unwrap()
+                .with_streaming(true),
+            )
             .with_owner_auth_config(&owner_auth)
             .await
             .unwrap();
@@ -2934,7 +3007,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             "sub":"conversation-owner", "user_id":"conversation-owner", "role":"rw",
             "ns":["conversation"], "storage_ns":"conversation",
             "workspace":"workspace-a", "graph_space":"conversation",
-            "capabilities":["spawn_process", "send_message", "write_graph"]
+            "capabilities":["spawn_process", "send_message", "write_graph", "read_graph", "workflow.run.write"]
         });
         let request = || ApiEffectRequest {
             contract_version: 1,
@@ -3003,7 +3076,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                     "op":"send_message",
                     "args":{
                         "conversation_id":"conversation-create-contract",
-                        "text":"A durable user turn",
+                        "text":"Where is workflow runtime state persisted?",
                         "workflow_id":workflow_id
                     }
                 }))
@@ -3029,7 +3102,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                     .ok()
                     .is_some_and(|payload| {
                         payload["metadata"]["entity_type"] == "conversation_turn"
-                            && payload["summary"] == "A durable user turn"
+                            && payload["summary"] == "Where is workflow runtime state persisted?"
                     })
         }));
         assert!(events.iter().any(|event| {
@@ -3119,6 +3192,125 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             service.execute(wrong_owner).await.status,
             StatusCode::FORBIDDEN.as_u16()
         );
+
+        let agentic_workflow_id = "agentic_answering.v2";
+        let agentic_workflow = &workflow_contract["workflows"][agentic_workflow_id];
+        let agentic_nodes = agentic_workflow["required_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| {
+                let op = value.as_str().unwrap();
+                json!({"id":op,"label":op,"metadata":{
+                    "entity_type":"workflow_node","workflow_id":agentic_workflow_id,
+                    "wf_op":op,"wf_version":"v1","wf_executor_target":"rust-native",
+                    "wf_start":op=="start"
+                }})
+            })
+            .collect::<Vec<_>>();
+        let agentic_edges = agentic_workflow["required_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, route)| {
+                json!({"id":format!("agentic-route-{index}"),"source_ids":[route["from"]],
+                    "target_ids":[route["to"]],"metadata":{
+                        "entity_type":"workflow_edge","workflow_id":agentic_workflow_id,
+                        "wf_predicate":route["predicate"],"wf_priority":route["priority"],
+                        "wf_is_default":route["default"],"wf_multiplicity":route["multiplicity"]
+                    }})
+            })
+            .collect::<Vec<_>>();
+        service.store.replace_named_projection(
+            "workflow_design",
+            agentic_workflow_id,
+            NamedProjectionWrite {
+                payload: serde_json::Map::from_iter([
+                    ("current_version".to_owned(), json!(1)),
+                    ("snapshot_schema_version".to_owned(), json!(1)),
+                ]),
+                last_authoritative_seq: 1,
+                last_materialized_seq: 1,
+                projection_schema_version: 1,
+                materialization_status: "ready".to_owned(),
+            },
+        ).unwrap();
+        service.store.put_workflow_design_snapshot(
+            agentic_workflow_id,
+            WorkflowDesignSnapshotWrite {
+                version: 1,
+                seq: 1,
+                schema_version: 1,
+                payload_json: serde_json::to_string(&json!({"nodes":agentic_nodes,"edges":agentic_edges})).unwrap(),
+            },
+        ).unwrap();
+        let agentic_turn_id = runtime.state["turn_node_id"].as_str().unwrap();
+        let agentic_submit = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"sqlite-chroma-agentic-provider-run",
+                "workflow_id":agentic_workflow_id,
+                "conversation_id":"conversation-create-contract",
+                "turn_node_id":agentic_turn_id,
+                "user_id":"conversation-owner",
+                "initial_state":{
+                    "conversation_id":"conversation-create-contract",
+                    "turn_node_id":agentic_turn_id,
+                    "user_id":"conversation-owner",
+                    "turn_index":0,
+                    "evidence_selector":"bm25",
+                    "max_candidates":10,
+                    "max_used":4,
+                    "max_retrieval_level":3,
+                    "max_iter":1
+                }
+            })).unwrap(),
+            principal: principal.clone(),
+        }).await;
+        assert_eq!(agentic_submit.status, StatusCode::ACCEPTED.as_u16(), "{}", String::from_utf8_lossy(&agentic_submit.body));
+        let agentic_run_id = "sqlite-chroma-agentic-provider-run";
+        for _ in 0..48 {
+            let status = service.store.get_server_run(&agentic_run_id).unwrap().unwrap();
+            if matches!(status.status.as_str(), "succeeded" | "failed" | "cancelled") {
+                break;
+            }
+            assert!(service.execute_inline_native_work_once().await.unwrap(),
+                "native scheduler stopped before the provider-backed run became terminal: {status:#?}");
+        }
+        let agentic_run = service.store.get_server_run(&agentic_run_id).unwrap().unwrap();
+        assert_eq!(agentic_run.status, "succeeded", "provider-backed SQLite+Chroma run should complete natively");
+        let agentic_state = service.store.read_recorded_runtime_state(
+            agentic_run_id,
+            agentic_workflow_id,
+            "conversation-create-contract",
+        ).unwrap().unwrap();
+        assert_eq!(agentic_state.state["used_node_ids"], json!(["knowledge-node"]));
+        assert_eq!(agentic_state.state["answer"]["claims"][0]["citations"][0]["source_node_id"], "knowledge-node");
+        assert_eq!(agentic_state.state["done"], true);
+        let agentic_assistant_id = agentic_state.state["agentic_answering_result"]["assistant_turn_node_id"]
+            .as_str()
+            .expect("provider-backed run records its assistant turn")
+            .to_owned();
+        assert!(service.store.latest_entity_events(
+            "conversation",
+            "node",
+            &[agentic_assistant_id.clone()],
+        ).unwrap().contains_key(&agentic_assistant_id));
+        let agentic_turn_id = agentic_state.state["turn_node_id"].as_str().unwrap();
+        assert!(service.store.replay_raw_events("conversation", 0, 200).unwrap().iter().any(|event| {
+            event.entity_kind == "edge"
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload["relation"] == "next_turn"
+                            && payload["source_ids"] == json!([agentic_turn_id])
+                            && payload["target_ids"] == json!([agentic_assistant_id])
+                    })
+        }));
+        chat_server.await.unwrap();
         let _ = stop_tx.send(());
         assert!(fake_chroma.await.unwrap().is_empty());
         drop(service);

@@ -321,17 +321,22 @@ projection authorizes it, and the run persists its evidence pointer, assistant
 turn, and canonical `next_turn` edge as SQLite events. The regression
 `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic`
 asserts the selected node ID, answer context, durable pointer event, and
-assistant turn; the full `kogwistar-api` library suite passed (**222 passed,
-22 ignored**). This does not prove provider-backed
-`agentic_answering.v2` or Python-worker completion. Candidate retrieval
+assistant turn. The same integration now also completes provider-backed
+`agentic_answering.v2` with explicit BM25 selection, a scoped current Chroma
+candidate, host-side ACL revalidation before evidence materialization, a
+streamed structured response whose evidence alias is restored to its canonical
+node ID, and durable completion. The full `kogwistar-api` library suite passed
+(**222 passed, 22 ignored**). This does not prove Python-worker completion or
+cross-backend parity. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
 ACL records before projecting candidates. The generic Chroma and in-memory
 contract tests cover backend query filtering, top-N order, and the read-only
 shadow wrapper; `sqlite_native_candidates_exclude_acl_private_and_tombstoned_records`
-covers candidate projection's ACL and lifecycle filtering. Provider-backed and
-cross-runtime completion remain open; the deterministic debug workflow is
-verified end to end.
+covers candidate projection's ACL and lifecycle filtering. The configured
+provider-backed Rust-native workflow is verified on SQLite+Chroma; Python-worker
+completion and cross-runtime parity remain open. The deterministic debug
+workflow is also verified end to end.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies
@@ -347,7 +352,7 @@ before provider invocation, checks citations and persisted assistant turn,
 confirms no Python-worker handoff, and checks semantic event traces and empty
 seam crossings on a Rust-native workflow. Standalone SQLite remains
 graph-authority-disabled; invalid plans and unsupported executors remain
-rejected. Still open: a complete SQLite+Chroma answer run through the Python
+rejected. Still open: SQLite+Chroma answer completion through the Python
 worker, broader backend-interchangeability parity, support-matrix checks, and
 the remaining syscall parity named in DL-16BQ. These bounded paths do not
 prove whole-stack parity; DL-16BQ remains IN PROGRESS.

@@ -2987,6 +2987,100 @@ impl SqliteRunApplicationService {
         ))
     }
 
+    async fn native_evidence_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let run = self
+            .store
+            .get_server_run(&request.run_id)
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        if caller.is_some_and(|caller| authenticated_run_owner_id(caller) != Some(owner_id)) {
+            return Err(NativeEvidenceContextError::CallerNotRunOwner);
+        }
+        let mut principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?;
+        principal["actor_id"] = json!(owner_id);
+
+        let read_ids = |field: &str| -> Result<Vec<String>, NativeEvidenceContextError> {
+            let Some(value) = request.state.get(field) else {
+                return Ok(Vec::new());
+            };
+            let values = value
+                .as_array()
+                .filter(|values| values.len() <= 100)
+                .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+            let ids = values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .map(str::to_owned)
+                        .ok_or(NativeEvidenceContextError::GraphReadRejected)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if ids.iter().collect::<BTreeSet<_>>().len() != ids.len() {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            }
+            Ok(ids)
+        };
+        let node_ids = read_ids("used_node_ids")?;
+        let edge_ids = read_ids("used_edge_ids")?;
+        if node_ids.len().saturating_add(edge_ids.len()) > 100 {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+
+        let graph_request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: String::new(),
+            body: Vec::new(),
+            principal,
+        };
+        let snapshot = self
+            .chroma_graph_snapshot(&graph_request, "knowledge")
+            .await
+            .map_err(|response| {
+                if response.status >= StatusCode::INTERNAL_SERVER_ERROR.as_u16() {
+                    NativeEvidenceContextError::GraphReadUnavailable
+                } else {
+                    NativeEvidenceContextError::GraphReadRejected
+                }
+            })?;
+        let selected_nodes = snapshot
+            .nodes()
+            .iter()
+            .filter(|record| node_ids.contains(&record.id))
+            .collect::<Vec<_>>();
+        let selected_edges = snapshot
+            .edges()
+            .iter()
+            .filter(|record| edge_ids.contains(&record.id))
+            .collect::<Vec<_>>();
+        if selected_nodes.len() != node_ids.len() || selected_edges.len() != edge_ids.len() {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let project = |records: Vec<&GraphRecord>| {
+            records
+                .into_iter()
+                .map(|record| {
+                    json!({"id":record.id,"document":record.document,"metadata":record.metadata})
+                })
+                .collect::<Vec<_>>()
+        };
+        Ok(json!({"nodes":project(selected_nodes),"edges":project(selected_edges)}))
+    }
+
     async fn native_pointer_context(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
@@ -6211,6 +6305,55 @@ impl SqliteRunApplicationService {
                         StatusCode::SERVICE_UNAVAILABLE,
                         "KOGWISTAR_CANDIDATE_RETRIEVAL_UNAVAILABLE",
                         "native candidate retrieval is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        } else if native_request.operation == "aa_materialize_evidence_pack" {
+            match self
+                .native_evidence_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(records) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_evidence_records".to_owned(), records);
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native evidence reads require the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => {
+                    return self.apply_runtime_result_input(
+                        failed_native_result(
+                            input.handoff,
+                            &native_request,
+                            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                            "native evidence materialization requires the run owner's current read_graph capability and admitted scope",
+                        ),
+                        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                        None,
+                    );
+                }
+                Err(NativeEvidenceContextError::GraphReadRejected) => {
+                    return self.apply_runtime_result_input(
+                        failed_native_result(
+                            input.handoff,
+                            &native_request,
+                            "KOGWISTAR_EVIDENCE_READ_FAILED",
+                            "native evidence materialization could not read the selected knowledge records",
+                        ),
+                        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                        None,
+                    );
+                }
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_EVIDENCE_READ_UNAVAILABLE",
+                        "native evidence storage is temporarily unavailable; the work remains unacknowledged",
                     );
                 }
             }
