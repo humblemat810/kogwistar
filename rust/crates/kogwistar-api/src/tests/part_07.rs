@@ -3329,10 +3329,10 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     let service = SqliteRunApplicationService::open(&path)
         .unwrap()
         .with_chroma_graph(graph)
-        .with_embedding_provider(embedding_provider)
+        .with_embedding_provider(embedding_provider.clone())
         .with_chat_completion_provider(
             crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
-                chat_endpoint,
+                chat_endpoint.clone(),
                 "sqlite-chroma-fixture-model",
                 None,
             )
@@ -3604,6 +3604,58 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .ok()
             .is_some_and(|payload| payload["metadata"]["entity_type"] == "acl_record")
     }));
+
+    let pending_messages = service
+        .store
+        .list_projected_lane_messages(kogwistar_store::LaneMessageFilter {
+            correlation_id: Some(run_id.to_owned()),
+            limit: 10,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        pending_messages.iter().any(
+            |message| message.msg_type == "workflow.run.execute" && message.status == "pending"
+        )
+    );
+    drop(service);
+
+    let recovered_graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        config("conversation-nodes"),
+        config("conversation-edges"),
+    )
+    .await
+    .unwrap();
+    let service = SqliteRunApplicationService::open(&path)
+        .unwrap()
+        .with_chroma_graph(recovered_graph)
+        .with_embedding_provider(embedding_provider)
+        .with_chat_completion_provider(
+            crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+                chat_endpoint,
+                "sqlite-chroma-fixture-model",
+                None,
+            )
+            .unwrap()
+            .with_streaming(true),
+        )
+        .with_owner_auth_config(&owner_auth)
+        .await
+        .unwrap();
+    assert!(
+        service
+            .store
+            .replay_raw_events("conversation", 0, 50)
+            .unwrap()
+            .iter()
+            .any(|event| event.entity_kind == "node"
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| payload["metadata"]["entity_type"]
+                        == "conversation_turn"
+                        && payload["metadata"]["conversation_id"]
+                            == "conversation-create-contract"))
+    );
 
     for _ in 0..32 {
         let status = service
