@@ -104,6 +104,7 @@ fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
         .execute_batch(
             "CREATE TRIGGER reject_canonical_projection_job
              BEFORE INSERT ON index_jobs
+             WHEN NEW.entity_id = 'node-2'
              BEGIN
                  SELECT RAISE(ABORT, 'injected projection-job failure');
              END;",
@@ -113,10 +114,10 @@ fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
 
     let store = SqliteStore::open(&path).unwrap();
     let result = store.apply_canonical_graph_mutation_batch(GraphMutationBatch {
-        mutations: vec![mutation(
-            "event-before-failed-job",
-            "node-before-failed-job",
-        )],
+        mutations: vec![
+            mutation("event-node-1", "node-1"),
+            mutation("event-node-2", "node-2"),
+        ],
         index_jobs: Vec::new(),
     });
 
@@ -126,7 +127,7 @@ fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
             .replay_raw_events("conversation", 0, 10)
             .unwrap()
             .is_empty(),
-        "canonical event must roll back with its failed projection intent"
+        "all canonical events must roll back when a later projection intent fails"
     );
     assert!(
         store
