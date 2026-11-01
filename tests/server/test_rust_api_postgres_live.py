@@ -1106,6 +1106,99 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "capabilities": ["read_graph"],
             "exp": 4_102_444_800,
         }
+        rust_pure_seed_id = f"{id_prefix}-rust-pure-wisdom-seed"
+        rust_pure_related_id = f"{id_prefix}-rust-pure-wisdom-related"
+        rust_private_node_id = f"{id_prefix}-rust-private-wisdom-node"
+        rust_pure_edge_id = f"{id_prefix}-rust-pure-wisdom-edge"
+        rust_wisdom_write = rust_mcp_tool(
+            "wisdom.kg_upsert_graph",
+            {
+                "inp": {
+                    "nodes": [
+                        {
+                            "id": rust_pure_seed_id,
+                            "label": "Rust persisted pure Wisdom seed",
+                            "type": "entity",
+                            "summary": "Public pure node written by the Rust Wisdom API.",
+                            "metadata": {"visibility": "public"},
+                        },
+                        {
+                            "id": rust_pure_related_id,
+                            "label": "Rust persisted pure Wisdom related node",
+                            "type": "entity",
+                            "summary": "Public pure node connected by a Rust-written edge.",
+                            "metadata": {"visibility": "public"},
+                        },
+                        {
+                            "id": rust_private_node_id,
+                            "label": "Rust persisted private Wisdom node",
+                            "type": "entity",
+                            "summary": "Private node written by the Rust Wisdom API.",
+                            "metadata": {"visibility": "private"},
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "id": rust_pure_edge_id,
+                            "label": "Rust pure Wisdom relation",
+                            "type": "relationship",
+                            "summary": "Connects the two Rust-written pure graph nodes.",
+                            "relation": "related_to",
+                            "source_ids": [rust_pure_seed_id],
+                            "target_ids": [rust_pure_related_id],
+                            "source_edge_ids": [],
+                            "target_edge_ids": [],
+                            "metadata": {"visibility": "public"},
+                        }
+                    ],
+                }
+            },
+            {
+                "sub": "rust-wisdom-owner",
+                "user_id": "rust-wisdom-owner",
+                "role": "rw",
+                "roles": ["reader", "rw"],
+                "ns": ["wisdom"],
+                "storage_ns": "wisdom",
+                "capabilities": ["write_graph"],
+                "exp": 4_102_444_800,
+            },
+        )
+        assert rust_wisdom_write.get("node_ids") == [
+            rust_pure_seed_id,
+            rust_pure_related_id,
+            rust_private_node_id,
+        ]
+        assert rust_wisdom_write.get("edge_ids") == [rust_pure_edge_id]
+
+        rust_pure_read_token = claims_ctx.set(wisdom_reader_claims)
+        try:
+            rust_written_node = wisdom_engine.read.get_nodes(ids=[rust_pure_seed_id])
+            rust_written_edge = wisdom_engine.read.get_edges(ids=[rust_pure_edge_id])
+            hidden_rust_node = wisdom_engine.read.get_nodes(ids=[rust_private_node_id])
+        finally:
+            claims_ctx.reset(rust_pure_read_token)
+        assert len(rust_written_node) == 1
+        assert len(rust_written_edge) == 1
+        assert isinstance(rust_written_node[0], PureChromaNode)
+        assert isinstance(rust_written_edge[0], PureChromaEdge)
+        assert rust_written_edge[0].source_ids == [rust_pure_seed_id]
+        assert rust_written_edge[0].target_ids == [rust_pure_related_id]
+        assert hidden_rust_node == [], "Python public reader must honor Rust ACL graph"
+        rust_owner_token = claims_ctx.set(
+            {
+                **wisdom_reader_claims,
+                "sub": "rust-wisdom-owner",
+                "agent_id": "rust-wisdom-owner",
+            }
+        )
+        try:
+            owner_rust_node = wisdom_engine.read.get_nodes(ids=[rust_private_node_id])
+        finally:
+            claims_ctx.reset(rust_owner_token)
+        assert len(owner_rust_node) == 1
+        assert isinstance(owner_rust_node[0], PureChromaNode)
+
         wisdom_query = "deterministic semantic parity query"
         wisdom_read_token = claims_ctx.set(wisdom_reader_claims)
         try:

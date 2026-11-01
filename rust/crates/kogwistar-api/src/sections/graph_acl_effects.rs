@@ -109,10 +109,20 @@ fn derive_default_acl_graph_effects_from_records(
         {
             continue;
         }
+        let (mode, shared_principals, shared_groups) = acl_defaults_from_mutation(mutation);
         for (grain, entity_id, target_item_id) in targets.iter().filter(|(_, id, _)| id == &mutation.record.id) {
             let key = (grain.clone(), entity_id.clone(), target_item_id.clone());
             let previous = latest.get(&key);
-            if previous.is_some_and(|record| default_acl_matches(record, owner_id, security_scope)) {
+            if previous.is_some_and(|record| {
+                default_acl_matches(
+                    record,
+                    owner_id,
+                    security_scope,
+                    &mode,
+                    &shared_principals,
+                    &shared_groups,
+                )
+            }) {
                 continue;
             }
             let version = previous
@@ -130,6 +140,9 @@ fn derive_default_acl_graph_effects_from_records(
                 version,
                 owner_id,
                 security_scope,
+                &mode,
+                &shared_principals,
+                &shared_groups,
                 effect_id,
             );
             derived_jobs.extend(acl_index_jobs(scope, &acl_node, effect_id));
@@ -189,11 +202,67 @@ fn latest_acl_records(records: Vec<GraphRecord>) -> BTreeMap<AclTargetKey, Graph
     latest
 }
 
-fn default_acl_matches(record: &GraphRecord, owner_id: &str, security_scope: Option<&str>) -> bool {
-    record.metadata.get("acl_mode").and_then(Value::as_str) == Some("private")
+// Python parity: mirrors ACLManager._metadata_acl_defaults for mode and share aliases.
+fn acl_defaults_from_mutation(mutation: &GraphMutation) -> (String, Vec<String>, Vec<String>) {
+    let metadata = &mutation.record.metadata;
+    let requested_mode = metadata
+        .get("visibility")
+        .or_else(|| metadata.get("acl_mode"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let mode = match requested_mode.as_str() {
+        "private" | "shared" | "scope" | "group" | "public" => requested_mode,
+        _ => "private".to_owned(),
+    };
+    let aliases = |primary: &str, fallback: &str| {
+        metadata
+            .get(primary)
+            .or_else(|| metadata.get(fallback))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    (
+        mode,
+        aliases("shared_with_agents", "shared_with"),
+        aliases("shared_with_groups", "shared_groups"),
+    )
+}
+
+fn default_acl_matches(
+    record: &GraphRecord,
+    owner_id: &str,
+    security_scope: Option<&str>,
+    mode: &str,
+    shared_principals: &[String],
+    shared_groups: &[String],
+) -> bool {
+    let expected_principals = shared_principals
+        .iter()
+        .cloned()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    let expected_groups = shared_groups
+        .iter()
+        .cloned()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    record.metadata.get("acl_mode").and_then(Value::as_str) == Some(mode)
         && record.metadata.get("owner_id").and_then(Value::as_str) == Some(owner_id)
         && record.metadata.get("created_by").and_then(Value::as_str) == Some(owner_id)
         && record.metadata.get("security_scope").and_then(Value::as_str) == security_scope
+        && record.metadata.get("shared_with_principals").and_then(Value::as_array)
+            == Some(&expected_principals)
+        && record.metadata.get("shared_with_groups").and_then(Value::as_array)
+            == Some(&expected_groups)
         && record.metadata.get("tombstoned").and_then(Value::as_bool) != Some(true)
 }
 
@@ -208,6 +277,9 @@ fn acl_record_mutation(
     version: u64,
     owner_id: &str,
     security_scope: Option<&str>,
+    mode: &str,
+    shared_principals: &[String],
+    shared_groups: &[String],
     effect_id: &str,
 ) -> GraphMutation {
     let node_id = stable_id(
@@ -222,7 +294,7 @@ fn acl_record_mutation(
     )
     .to_string();
     let label = format!("acl:{truth_graph}:{entity_id}:{grain}");
-    let summary = format!("private acl for {entity_id} {grain}");
+    let summary = format!("{mode} acl for {entity_id} {grain}");
     let metadata = json!({
         "entity_type": "acl_record",
         "acl_truth_graph": truth_graph,
@@ -230,7 +302,7 @@ fn acl_record_mutation(
         "acl_target_grain": grain,
         "acl_target_item_id": target_item_id,
         "acl_version": version,
-        "acl_mode": "private",
+        "acl_mode": mode,
         "created_by": owner_id,
         "owner_id": owner_id,
         "security_scope": security_scope,
@@ -241,8 +313,8 @@ fn acl_record_mutation(
         "graph_space": scope.graph_space,
     });
     let properties = json!({
-        "shared_with_principals": [],
-        "shared_with_groups": [],
+        "shared_with_principals": shared_principals,
+        "shared_with_groups": shared_groups,
         "source_ids": [],
         "derivation_type": null,
         "derivation_audit": "{}",
@@ -415,6 +487,9 @@ mod graph_acl_effects_unit_tests {
             1,
             "owner-a",
             Some("tenant-a"),
+            "private",
+            &[],
+            &[],
             "effect-1",
         );
         assert_eq!(mutation.entity_kind, "node");
@@ -473,11 +548,14 @@ mod graph_acl_effects_unit_tests {
             2,
             "owner-a",
             None,
+            "private",
+            &[],
+            &[],
             "effect-current",
         )
         .record;
-        assert!(default_acl_matches(&current, "owner-a", None));
-        assert!(!default_acl_matches(&current, "other-owner", None));
+        assert!(default_acl_matches(&current, "owner-a", None, "private", &[], &[]));
+        assert!(!default_acl_matches(&current, "other-owner", None, "private", &[], &[]));
 
         let older = GraphRecord {
             id: "older-acl".to_owned(),
@@ -553,5 +631,62 @@ mod graph_acl_effects_unit_tests {
         )
         .unwrap();
         assert!(unchanged.is_empty());
+    }
+
+    #[test]
+    fn acl_derivation_preserves_supported_visibility_and_sharing_metadata() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let mut mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "event-node-public".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"node-public","label":"item","metadata":{}}),
+            record: GraphRecord {
+                id: "node-public".to_owned(),
+                document: Some("item".to_owned()),
+                metadata: Map::from_iter([
+                    ("visibility".to_owned(), json!("public")),
+                    ("shared_with_agents".to_owned(), json!(["Alice", "Bob"])),
+                    ("shared_with_groups".to_owned(), json!(["Team-A"])),
+                ]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let (mode, principals, groups) = acl_defaults_from_mutation(&mutation);
+        assert_eq!(mode, "public");
+        assert_eq!(principals, ["alice", "bob"]);
+        assert_eq!(groups, ["team-a"]);
+        let (targets, _) = acl_targets_for_graph_mutations(std::slice::from_ref(&mutation));
+        let (derived, _) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            std::slice::from_ref(&mutation),
+            targets,
+            Vec::new(),
+            "knowledge",
+            "owner-a",
+            None,
+            "effect-public",
+        )
+        .unwrap();
+        assert_eq!(derived[0].record.metadata["acl_mode"], "public");
+        assert_eq!(
+            derived[0].record.metadata["shared_with_principals"],
+            json!(["alice", "bob"])
+        );
+        assert_eq!(
+            derived[0].record.metadata["shared_with_groups"],
+            json!(["team-a"])
+        );
+
+        mutation.record.metadata.insert("visibility".to_owned(), json!("invalid"));
+        let (mode, _, _) = acl_defaults_from_mutation(&mutation);
+        assert_eq!(mode, "private", "unknown ACL modes must fail closed");
     }
 }
