@@ -454,6 +454,17 @@ jobs:
           -k sqlite
           -q
 
+      - name: Verify SQLite facade transaction authority
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+        run: >-
+          python -m pytest
+          tests/core/test_implementation_selection_context.py
+          tests/core/test_rust_meta_sqlite_authority.py
+          -m "ci and core"
+          -q -p no:cacheprovider
+
   rust-python-postgres-payload-parity:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
     name: Rust/Python PostgreSQL graph payload parity
