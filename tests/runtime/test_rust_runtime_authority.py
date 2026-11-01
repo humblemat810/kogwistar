@@ -1884,6 +1884,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         ContextMessage,
         PromptContext,
     )
+    from kogwistar.conversation.models import ConversationNode
     from kogwistar.conversation.resolvers import default_resolver
     from kogwistar.conversation.service import ConversationService
     import kogwistar.conversation.resolvers as resolver_module
@@ -2390,6 +2391,17 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             and "The Rust runtime commits" in payload
             for kind, entity_id, payload in rows
         )
+        assistant_payloads = [
+            payload
+            for kind, entity_id, payload in rows
+            if kind == "node" and entity_id == assistant_id
+        ]
+        assert len(assistant_payloads) == 1
+        python_assistant = ConversationNode.model_validate_json(assistant_payloads[0])
+        assert python_assistant.id == assistant_id
+        assert python_assistant.summary.startswith("The Rust runtime commits")
+        assert python_assistant.role == "assistant"
+        assert python_assistant.metadata["entity_type"] == "assistant_turn"
         assert any("context_snapshot" in payload for _, _, payload in rows)
         assert any(
             kind == "edge"

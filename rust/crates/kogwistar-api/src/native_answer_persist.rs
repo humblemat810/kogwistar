@@ -240,6 +240,8 @@ fn execute_persist_response(
         "turn_index": node_turn_index,
         "conversation_id": conversation_id
     });
+    // Python projection: kogwistar.conversation.models.ConversationNode.
+    // Keep this persisted shape consumable by Python's typed graph reader.
     let node_payload = json!({
         "id": response_node_id,
         "label": "Assistant turn",
