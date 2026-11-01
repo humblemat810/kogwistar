@@ -170,6 +170,7 @@ impl ProviderEventV1 {
     }
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-contracts/src/provider_event.rs#provider_event_from_str; python=kogwistar/agent/streaming.py#ProviderEvent; fixture=contracts/golden/provider-events-v1.json; rust_test=rust/crates/kogwistar-contracts/src/provider_event.rs#provider_events_match_shared_python_golden_fixture; python_test=tests/agent/test_provider_event_cross_language_contract.py#test_python_provider_events_match_shared_rust_golden_fixture
 pub fn provider_event_from_str(
     payload: &str,
 ) -> Result<ProviderEventV1, ProviderEventContractError> {

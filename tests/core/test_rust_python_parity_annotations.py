@@ -31,8 +31,22 @@ def _python_symbol_exists(source: str, symbol: str) -> bool:
     parts = symbol.split(".")
     if len(parts) == 1:
         return any(
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == parts[0]
+            (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == parts[0]
+            )
+            or (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == parts[0]
+            )
+            or (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == parts[0]
+                    for target in node.targets
+                )
+            )
             for node in tree.body
         )
     if len(parts) == 2:
@@ -52,6 +66,16 @@ def _python_symbol_exists(source: str, symbol: str) -> bool:
 
 def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> bool:
     tree = ast.parse(source)
+    fixture_variables = {
+        target.id
+        for node in tree.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and fixture_name in (ast.get_source_segment(source, node.value) or "")
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Name)
+    }
     function = next(
         (
             node
@@ -73,7 +97,13 @@ def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -
         for call in calls
         if isinstance(call.func, ast.Attribute)
         and call.func.attr == "read_text"
-        and fixture_name in (ast.get_source_segment(source, call) or "")
+        and (
+            fixture_name in (ast.get_source_segment(source, call) or "")
+            or (
+                isinstance(call.func.value, ast.Name)
+                and call.func.value.id in fixture_variables
+            )
+        )
     }
     return any(
         isinstance(call.func, ast.Attribute)
@@ -128,6 +158,21 @@ def _rust_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> 
     return False
 
 
+def _fixture_versions(value: object) -> list[object]:
+    if isinstance(value, dict):
+        versions = [
+            item
+            for key, item in value.items()
+            if key in {"schema_version", "contract_version"}
+        ]
+        for item in value.values():
+            versions.extend(_fixture_versions(item))
+        return versions
+    if isinstance(value, list):
+        return [version for item in value for version in _fixture_versions(item)]
+    return []
+
+
 def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts() -> None:
     annotations: list[tuple[Path, dict[str, str]]] = []
     for rust_file in sorted(RUST_ROOT.rglob("*.rs")):
@@ -169,7 +214,12 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
 
         fixture_path = ROOT / fields["fixture"]
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        assert fixture["schema_version"] == 1
+        versions = _fixture_versions(fixture)
+        if "schema_version" in fixture:
+            assert fixture["schema_version"] == 1
+        else:
+            assert fixture_path.stem.endswith("-v1")
+            assert "v1" in versions
         assert _rust_test_consumes_fixture(
             rust_test_source, rust_test_symbol, fixture_path.name
         ), rust_test_path
@@ -179,6 +229,12 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
 
 
 def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
+    python_type_alias = textwrap.dedent("""
+    from typing import TypeAlias
+    ProviderEvent: TypeAlias = Started | Completed
+    """)
+    assert _python_symbol_exists(python_type_alias, "ProviderEvent")
+
     rust_body = textwrap.dedent("""
     #[test]
     fn parity_test() {
