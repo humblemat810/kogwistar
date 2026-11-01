@@ -1,4 +1,48 @@
 #[test]
+fn failed_inline_graph_effect_clears_provider_event_side_effects() {
+    let mut effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+        "contract_version": 1,
+        "effect_id": "effect-1",
+        "status": "success",
+        "provider_event_acknowledgements": [{
+            "message_id": "message-1",
+            "claimed_by": "worker-1",
+            "event_id": "event-1"
+        }],
+        "provider_event_publications": [{
+            "namespace": "conversation",
+            "conversation_id": "conversation-1",
+            "event": {
+                "event_id": "event-2",
+                "trace": {
+                    "run_id": "run-1",
+                    "turn_id": "turn-1",
+                    "workflow_node_id": "node-1",
+                    "step_id": "step-1",
+                    "provider_id": "provider-1"
+                },
+                "event": {"kind": "response_started"}
+            }
+        }]
+    }))
+    .expect("valid worker effect");
+
+    fail_inline_graph_effect(
+        &mut effect,
+        "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED",
+        "owner authorization failed",
+    );
+
+    assert_eq!(
+        effect.status,
+        kogwistar_runtime::RuntimeWorkerEffectStatus::Failed
+    );
+    assert!(effect.provider_event_acknowledgements.is_empty());
+    assert!(effect.provider_event_publications.is_empty());
+    assert_eq!(effect.errors, ["owner authorization failed"]);
+}
+
+#[test]
 fn recorded_step_snapshots_matches_python_fixture() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-step-trace-context-v1.json"

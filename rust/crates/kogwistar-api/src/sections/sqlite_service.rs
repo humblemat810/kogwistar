@@ -58,29 +58,6 @@ fn runtime_max_queue() -> usize {
         .unwrap_or(128)
 }
 
-fn fail_sqlite_inline_graph_effect(
-    effect: &mut kogwistar_runtime::RecordedWorkerSuccessEffect,
-    code: &str,
-    message: &str,
-) {
-    effect.graph_mutation_batch = None;
-    effect.graph_mutation_batch_v2 = None;
-    effect.provider_event_acknowledgements.clear();
-    effect.provider_event_publications.clear();
-    effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
-    effect.state_update.clear();
-    effect.update = None;
-    effect.state_schema.clear();
-    effect.successors.clear();
-    effect.route_next.clear();
-    effect.result = Some(serde_json::json!({"code": code}));
-    effect.errors = vec![message.to_owned()];
-    effect.wait_reason = None;
-    effect.resume_payload = None;
-    effect.usage = None;
-    effect.trace_events.clear();
-}
-
 fn sqlite_canonical_entity_revision(
     store: &SqliteStore,
     namespace: &str,
@@ -6852,7 +6829,7 @@ impl SqliteRunApplicationService {
                         .effect
                         .as_mut()
                         .expect("graph authority was requested for an effect");
-                    fail_sqlite_inline_graph_effect(
+                    fail_inline_graph_effect(
                         effect,
                         "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED",
                         "inline graph effects failed current owner authorization",

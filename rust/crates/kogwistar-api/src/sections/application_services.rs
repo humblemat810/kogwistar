@@ -5,6 +5,8 @@ fn fail_inline_graph_effect(
 ) {
     effect.graph_mutation_batch = None;
     effect.graph_mutation_batch_v2 = None;
+    effect.provider_event_acknowledgements.clear();
+    effect.provider_event_publications.clear();
     effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
     effect.state_update.clear();
     effect.update = None;
