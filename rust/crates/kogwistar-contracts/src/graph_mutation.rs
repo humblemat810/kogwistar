@@ -273,7 +273,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-mutation-batch-v1.json"
         ));
-        for role in ["knowledge", "conversation", "wisdom", "acl"] {
+        for role in ["knowledge", "conversation", "wisdom", "acl", "custom-role"] {
             for (entity_kind, table) in [("node", "gke_nodes"), ("edge", "gke_edges")] {
                 let mut value: Value = serde_json::from_str(fixture).unwrap();
                 let mutation = &mut value["mutations"][0];

@@ -79,7 +79,9 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     assert batch.index_jobs == []
 
 
-@pytest.mark.parametrize("graph_role", ["knowledge", "conversation", "wisdom", "acl"])
+@pytest.mark.parametrize(
+    "graph_role", ["knowledge", "conversation", "wisdom", "acl", "custom-role"]
+)
 @pytest.mark.parametrize(
     ("entity_kind", "table"), [("node", "gke_nodes"), ("edge", "gke_edges")]
 )
