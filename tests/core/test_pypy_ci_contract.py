@@ -275,3 +275,17 @@ def test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
     assert "uses: actions/setup-python@v7" in workflow
     assert "Install PyPy 3.11 Python-authority dependencies" in workflow
     assert "Run PyPy 3.11 CI tests" in workflow
+
+
+def test_rust_ci_requires_both_pypy_mixed_worker_backends_without_skips() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Set up PyPy 3.11 for mixed-worker interoperability" in workflow
+    assert "Verify PyPy worker with Rust-native server execution" in workflow
+    assert "tests/runtime/test_rust_runtime_authority.py" in workflow
+    assert (
+        '-k "python_worker_and_rust_native_step_interoperate_over_real_server '
+        'and sqlite"'
+    ) in workflow
+    assert 'report="$RUNNER_TEMP/pypy-rust-worker-interop.xml"' in workflow
+    assert "if tests != 2 or skipped:" in workflow
