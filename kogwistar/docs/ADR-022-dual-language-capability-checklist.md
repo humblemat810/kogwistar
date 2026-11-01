@@ -501,9 +501,13 @@ persists the supplied vector, and PostgreSQL Rust-native uses the configured
 Rust embedding provider. PostgreSQL server startup now loads owner-auth
 configuration for externally claimed native execution, and native graph effects
 are revalidated against the run owner's current write authority before commit.
-The Rust API library suite passed (**235 passed, 23 ignored**). This verifies
-these tested compositions and authority checks, not universal backend
-interchangeability or full Python/Rust behavioral parity; DL-16BQ remains open.
+The Rust API library suite passed (**235 passed, 23 ignored**), and the explicit
+live `postgres_inline_native_graph_effect_revalidates_current_owner` test passed
+against disposable pgvector (**1 passed**), including revoked permission,
+missing/tampered owner binding, cross-scope rejection, rollback, and reclaimable
+retry. This verifies these tested compositions and authority checks, not
+universal backend interchangeability or full Python/Rust behavioral parity;
+DL-16BQ remains open.
 
 The live PostgreSQL projection integration
 `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
