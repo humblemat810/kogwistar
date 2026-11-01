@@ -2080,6 +2080,23 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert rust_turn_payload["workflow_id"] == workflow_id
         assert rust_turn_payload["status"] == "queued"
         rust_user_turn_id = rust_turn_payload["user_turn_node_id"]
+        rust_syscall_turn = rust_syscall(
+            "send_message",
+            {
+                "conversation_id": rust_conversation_id,
+                "text": "Rust persisted syscall question",
+                "workflow_id": workflow_id,
+            },
+            {
+                **turn_claims,
+                "ns": "conversation",
+                "capabilities": ["send_message"],
+            },
+        )
+        assert rust_syscall_turn["status"] == "ok"
+        assert rust_syscall_turn["op"] == "send_message"
+        assert rust_syscall_turn["result"]["status"] == "queued"
+        rust_syscall_turn_id = rust_syscall_turn["result"]["turn_node_id"]
 
         conversation_read_token = claims_ctx.set(conversation_owner)
         try:
@@ -2111,7 +2128,14 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "role": "user",
                 "content": "Rust persisted question",
                 "entity_type": "conversation_turn",
-            }
+            },
+            {
+                "node_id": rust_syscall_turn_id,
+                "turn_index": 1,
+                "role": "user",
+                "content": "Rust persisted syscall question",
+                "entity_type": "conversation_turn",
+            },
         ]
     finally:
         process.terminate()

@@ -501,8 +501,10 @@ not universal backend interchangeability or full Python/Rust behavioral parity.
 The live PostgreSQL projection integration
 `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
 also verifies the reverse conversation path: after Rust REST creates a
-conversation and admits a user turn using the shared `debug.rag.v1` workflow,
-Python reads the same canonical `ConversationNode` and exact transcript entry
-from PostgreSQL. The test passed (**1 passed**, disposable PostgreSQL and live
-Rust HTTP service). This covers creation and turn admission visibility, not
+conversation and admits one user turn through `turns:answer` and a second
+through the authenticated `send_message` syscall using the shared
+`debug.rag.v1` workflow, Python reads both canonical `ConversationNode` records
+with matching IDs, order, roles, and text from PostgreSQL. The test passed
+(**1 passed**, disposable PostgreSQL and live Rust HTTP service). This covers
+creation and turn-admission visibility through these ingress paths, not
 execution of the queued answer workflow or whole-stack parity.
