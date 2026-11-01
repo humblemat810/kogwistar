@@ -12,6 +12,9 @@ class EdgeEndpointLike(Protocol):
     """Structural edge surface required by endpoint projection adapters."""
 
     @property
+    def id(self) -> str | None: ...
+
+    @property
     def source_ids(self) -> Sequence[str] | None: ...
 
     @property
@@ -32,12 +35,15 @@ class EdgeEndpointLike(Protocol):
     @property
     def metadata(self) -> Mapping[str, JsonValue] | None: ...
 
-    def safe_get_id(self) -> str: ...
-
-
 def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[JsonObject]:
     """Return deterministic, non-semantic endpoint rows for an edge."""
-    edge_id = str(edge.safe_get_id())
+    edge_id = edge.id
+    if not edge_id:
+        legacy_get_id = getattr(edge, "safe_get_id", None)
+        if callable(legacy_get_id):
+            edge_id = legacy_get_id()
+    if not isinstance(edge_id, str) or not edge_id:
+        raise ValueError("edge endpoint projection requires a non-empty edge id")
     rows: list[JsonObject] = []
     for role, endpoint_ids, endpoint_type in (
         ("src", edge.source_ids or [], "node"),

@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from kogwistar.engine_core.embedding_profile import EmbeddingProfile
+from kogwistar.engine_core.edge_endpoint_rows import edge_endpoint_rows
 from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
 
 pytestmark = [pytest.mark.ci]
@@ -1245,6 +1246,24 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert isinstance(rust_written_edge[0], PureChromaEdge)
         assert rust_written_edge[0].source_ids == [rust_pure_seed_id]
         assert rust_written_edge[0].target_ids == [rust_pure_related_id]
+        expected_endpoint_rows = edge_endpoint_rows(rust_written_edge[0])
+        endpoint_projection = wisdom_backend.edge_endpoints_get(
+            where={"edge_id": rust_pure_edge_id}, include=["metadatas"]
+        )
+        expected_endpoint_keys = set().union(
+            *(row.keys() for row in expected_endpoint_rows)
+        )
+        actual_endpoint_rows = [
+            {
+                key: metadata[key]
+                for key in expected_endpoint_keys
+                if key in metadata
+            }
+            for metadata in endpoint_projection["metadatas"]
+        ]
+        assert sorted(actual_endpoint_rows, key=lambda row: row["id"]) == sorted(
+            expected_endpoint_rows, key=lambda row: row["id"]
+        )
         assert hidden_rust_node == [], "Python public reader must honor Rust ACL graph"
         assert len(shared_rust_node) == 1
         assert isinstance(shared_rust_node[0], PureChromaNode)
