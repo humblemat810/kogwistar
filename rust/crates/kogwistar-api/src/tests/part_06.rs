@@ -3129,8 +3129,8 @@
             .apply_graph_mutation(GraphMutation {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
-                    workspace_id: None,
-                    graph_space: None,
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("conversation".to_owned()),
                 },
                 table: "gke_nodes".to_owned(),
                 entity_kind: "node".to_owned(),
@@ -3168,8 +3168,8 @@
             .apply_graph_mutation(GraphMutation {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
-                    workspace_id: None,
-                    graph_space: None,
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("conversation".to_owned()),
                 },
                 table: "gke_nodes".to_owned(),
                 entity_kind: "node".to_owned(),
@@ -3236,6 +3236,9 @@
                     "role": "rw",
                     "ns": "conversation",
                     "storage_ns": "alpha",
+                    "workspace": "workspace-a",
+                    "graph_space": "conversation",
+                    "security_scope": "team-alpha",
                     "capabilities": ["send_message"]
                 }),
             }
@@ -3253,8 +3256,8 @@
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
-                    workspace_id: None,
-                    graph_space: None,
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("conversation".to_owned()),
                 },
                 table: "gke_nodes".to_owned(),
                 ids: None,
@@ -3334,6 +3337,9 @@
                 "roles":["rw"],
                 "ns":"conversation",
                 "storage_ns":"alpha",
+                "workspace":"workspace-a",
+                "graph_space":"conversation",
+                "security_scope":"team-alpha",
                 "capabilities":["send_message"],
                 "exp":now_seconds + 300
             }),
@@ -3378,8 +3384,8 @@
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
-                    workspace_id: None,
-                    graph_space: None,
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("conversation".to_owned()),
                 },
                 table: "gke_nodes".to_owned(),
                 ids: None,
@@ -3401,8 +3407,8 @@
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
-                        workspace_id: None,
-                        graph_space: None,
+                        workspace_id: Some("workspace-a".to_owned()),
+                        graph_space: Some("conversation".to_owned()),
                     },
                     table: "gke_edges".to_owned(),
                     ids: None,
@@ -3437,6 +3443,18 @@
         assert_eq!(
             queued_payload["initial_state"]["_rt_graph_scope"]["storage_namespace"],
             "alpha"
+        );
+        assert_eq!(
+            queued_payload["initial_state"]["_rt_graph_scope"]["workspace"],
+            "workspace-a"
+        );
+        assert_eq!(
+            queued_payload["initial_state"]["_rt_graph_scope"]["graph_space"],
+            "conversation"
+        );
+        assert_eq!(
+            queued_payload["initial_state"]["_rt_graph_scope"]["security_scope"],
+            "team-alpha"
         );
         assert_eq!(
             service
