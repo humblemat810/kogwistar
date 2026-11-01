@@ -586,8 +586,8 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         mentions=run_base.mentions,
         metadata={
             "entity_type": "acl_record",
-            "acl_truth_graph": "truth",
-            "acl_target_entity_id": "target",
+            "acl_truth_graph": engine.kg_graph_type,
+            "acl_target_entity_id": target.id,
             "acl_target_grain": "node",
             "acl_version": 1,
             "acl_mode": "private",
@@ -603,8 +603,8 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         mentions=run_base.mentions,
         metadata={
             "entity_type": "acl_record",
-            "acl_truth_graph": "truth",
-            "acl_target_entity_id": "target",
+            "acl_truth_graph": engine.kg_graph_type,
+            "acl_target_entity_id": target.id,
             "acl_target_grain": "node",
             "acl_version": 2,
             "acl_mode": "shared",
@@ -626,8 +626,8 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         mentions=run_base.mentions,
         metadata={
             "entity_type": "acl_supersedes",
-            "acl_truth_graph": "truth",
-            "acl_target_entity_id": "target",
+            "acl_truth_graph": engine.kg_graph_type,
+            "acl_target_entity_id": target.id,
             "acl_target_grain": "node",
         },
     )
@@ -696,13 +696,13 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert python_acl_edge[0].source_ids == [acl_current.id]
     assert python_acl_edge[0].target_ids == [acl_previous.id]
     authorized = engine.decide_acl(
-        truth_graph="truth",
-        entity_id="target",
+        truth_graph=engine.kg_graph_type,
+        entity_id=target.id,
         principal_id="user:reader",
     )
     denied = engine.decide_acl(
-        truth_graph="truth",
-        entity_id="target",
+        truth_graph=engine.kg_graph_type,
+        entity_id=target.id,
         principal_id="user:outsider",
     )
     assert authorized.visible is True
@@ -710,6 +710,15 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert authorized.reason == "principal_share"
     assert denied.visible is False
     assert denied.reason == "not_shared"
+    assert engine.acl.get_node_acl_checked(
+        target.id,
+        principal_id="user:reader",
+    ).id == target.id
+    with pytest.raises(PermissionError, match="ACL denied node"):
+        engine.acl.get_node_acl_checked(
+            target.id,
+            principal_id="user:outsider",
+        )
 
 
 @pytest.mark.asyncio
