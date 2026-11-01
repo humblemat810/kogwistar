@@ -6854,8 +6854,17 @@ fn store_memory_read_json(py: Python<'_>, payload_json: &str) -> PyResult<String
         .map_err(|(code, message)| store_error(py, code, message))
 }
 
+/// Keep the callback invariant at the native ABI, not only in Python facades.
+/// Callers can import the extension directly and bypass `_rust_bridge` guards.
+fn assert_transaction_entry_allowed_from_callback(py: Python<'_>) -> PyResult<()> {
+    py.import("kogwistar.implementation_selection")?
+        .call_method0("assert_transaction_entry_allowed")?;
+    Ok(())
+}
+
 #[pyfunction]
 fn store_sqlite_json(py: Python<'_>, payload_json: &str) -> PyResult<String> {
+    assert_transaction_entry_allowed_from_callback(py)?;
     let mut request: Value = serde_json::from_str(payload_json)
         .map_err(|error| store_error(py, STORE_INVALID_JSON, format!("invalid JSON: {error}")))?;
     let database = request
@@ -6914,6 +6923,7 @@ fn store_sqlite_json(py: Python<'_>, payload_json: &str) -> PyResult<String> {
 
 #[pyfunction]
 fn store_postgres_json(py: Python<'_>, payload_json: &str) -> PyResult<String> {
+    assert_transaction_entry_allowed_from_callback(py)?;
     let payload_json = payload_json.to_owned();
     py.detach(move || postgres_store_json_impl(&payload_json))
         .map_err(|(code, message)| store_error(py, code, message))

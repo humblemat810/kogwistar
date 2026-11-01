@@ -979,6 +979,21 @@ def test_native_store_bridges_cannot_be_called_from_worker_callback(
     assert native_calls == []
 
 
+@pytest.mark.requires_rust
+def test_native_extension_store_entrypoints_reject_worker_callback() -> None:
+    from kogwistar import _rust
+
+    entrypoints = (
+        _rust.store_sqlite_json,
+        _rust.store_postgres_json,
+    )
+    expected = "transaction authority cannot be opened from a worker callback"
+    for entrypoint in entrypoints:
+        with callback_execution_scope():
+            with pytest.raises(RuntimeError, match=expected):
+                entrypoint("{}")
+
+
 def test_postgres_sql_write_primitives_cannot_be_called_from_worker_callback() -> None:
     backend = object.__new__(PgVectorBackend)
     writes = (
