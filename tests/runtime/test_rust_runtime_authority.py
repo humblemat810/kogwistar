@@ -3605,7 +3605,7 @@ def test_resume_rejects_current_graph_drift_before_state_change(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("backend", ["sqlite", "pg"])
+@pytest.mark.parametrize("backend", ["sqlite", "sqlite-chroma", "pg"])
 @pytest.mark.parametrize("execution_mode", ["external-worker", "inline-server"])
 def test_rust_native_workflow_runs_through_real_server_without_python_worker(
     tmp_path: Path,
@@ -3638,6 +3638,13 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
     )
     run_id = f"native-http-{suffix}"
     pg_schema = f"kw_native_http_{suffix}" if backend == "pg" else None
+    chroma_server = None
+    chroma_requests: list[str] = []
+    chroma_endpoint = None
+    if backend == "sqlite-chroma":
+        chroma_server, chroma_endpoint, chroma_requests, _ = (
+            _start_fake_chroma_collections()
+        )
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
@@ -3660,6 +3667,11 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
     else:
         env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "native-http.sqlite3")
+        if backend == "sqlite-chroma":
+            assert chroma_endpoint is not None
+            env["KOGWISTAR_CHROMA_ENDPOINT"] = chroma_endpoint
+            env["KOGWISTAR_CHROMA_NODE_COLLECTION"] = "native-runtime-nodes"
+            env["KOGWISTAR_CHROMA_EDGE_COLLECTION"] = "native-runtime-edges"
 
     process = subprocess.Popen(
         [str(RUST_SERVER)],
@@ -3867,6 +3879,8 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             assert trace["seam_crossings"] == []
             assert trace["run_id"] == run_id
             assert trace["attempt"] == 1
+        if backend == "sqlite-chroma":
+            assert any("/collections" in path for path in chroma_requests)
     finally:
         process.terminate()
         try:
@@ -3888,3 +3902,6 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
                     )
             finally:
                 cleanup_engine.dispose()
+        if chroma_server is not None:
+            chroma_server.shutdown()
+            chroma_server.server_close()
