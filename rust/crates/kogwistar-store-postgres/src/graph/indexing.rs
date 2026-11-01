@@ -95,7 +95,7 @@ pub(crate) fn graph_edge_endpoint_ids(
     }
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/graph/indexing.rs#graph_edge_endpoint_rows; python=kogwistar/engine_core/edge_endpoint_rows.py#edge_endpoint_rows; fixture=contracts/golden/edge-endpoint-rows-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#graph_edge_endpoint_rows_match_shared_python_fixture; python_test=tests/core/test_edge_endpoint_rows.py#test_endpoint_rows_match_shared_rust_fixture
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/graph/indexing.rs#graph_edge_endpoint_rows; python=kogwistar/engine_core/edge_endpoint_rows.py#edge_endpoint_rows; fixture=contracts/golden/edge-endpoint-rows-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_edge_mutation_persists_shared_endpoint_projection_when_dsn_available; python_test=tests/core/test_edge_endpoint_rows.py#test_endpoint_rows_match_shared_rust_fixture
 pub(crate) fn graph_edge_endpoint_rows(
     edge_id: &str,
     payload: &Value,

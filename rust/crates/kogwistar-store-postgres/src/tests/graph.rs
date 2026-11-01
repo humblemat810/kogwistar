@@ -90,6 +90,110 @@ fn graph_edge_endpoint_rows_match_shared_python_fixture() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_edge_mutation_persists_shared_endpoint_projection_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/edge-endpoint-rows-v1.json"
+    ))?;
+    let schema = test_schema("edge_endpoint_rows");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let edge = &fixture["edge"];
+    let edge_id = edge["id"].as_str().unwrap();
+    let namespace = format!("edge-endpoint-rows-{}", std::process::id());
+    let scope = GraphScope {
+        namespace: namespace.clone(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let metadata: Map<String, Value> = serde_json::from_value(edge["metadata"].clone())?;
+    store
+        .apply_graph_mutation(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: format!("edge-endpoint-rows-{}", std::process::id()),
+            op: "ADD".to_owned(),
+            payload: edge.clone(),
+            record: GraphRecord {
+                id: edge_id.to_owned(),
+                document: Some(edge.to_string()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    let client = store.client().await?;
+    let persisted = client
+        .query(
+            &format!(
+                "SELECT id, document, metadata::TEXT FROM {} \
+                 WHERE metadata ->> 'edge_id' = $1 ORDER BY id",
+                tables.edge_endpoints
+            ),
+            &[&edge_id],
+        )
+        .await
+        .map_err(backend)?;
+    let actual: Vec<Value> = persisted
+        .iter()
+        .map(|row| {
+            let document: String = row.get("document");
+            serde_json::from_str(&document)
+        })
+        .collect::<Result<_, _>>()?;
+    let mut expected: Vec<Value> = serde_json::from_value(fixture["expected_rows"].clone())?;
+    expected.sort_by_key(|row| row["id"].as_str().unwrap_or_default().to_owned());
+    assert_eq!(actual, expected);
+    for (row, projected) in persisted.iter().zip(&actual) {
+        let row_id: String = row.get("id");
+        assert_eq!(row_id, projected["id"]);
+        let metadata_json: String = row.get("metadata");
+        let metadata: Value = serde_json::from_str(&metadata_json)?;
+        assert_eq!(metadata["namespace"], namespace);
+        assert_eq!(metadata["causal_type"], "dependency");
+    }
+    drop(client);
+    drop(store);
+
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let reopened_client = reopened.client().await?;
+    let reopened_rows = reopened_client
+        .query(
+            &format!(
+                "SELECT id, document FROM {} WHERE metadata ->> 'edge_id' = $1 ORDER BY id",
+                tables.edge_endpoints
+            ),
+            &[&edge_id],
+        )
+        .await
+        .map_err(backend)?;
+    let reopened_actual: Vec<Value> = reopened_rows
+        .iter()
+        .map(|row| {
+            let document: String = row.get("document");
+            serde_json::from_str(&document)
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(reopened_actual, expected);
+    reopened_client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn concurrent_graph_schema_bootstrap_serializes_vector_extension_creation()
 -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
