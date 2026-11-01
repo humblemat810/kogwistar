@@ -2288,6 +2288,70 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             )
         assert status.status_code == 200, status.text
         assert status.json()["status"] == "succeeded", status.text
+        run_events_response = httpx.post(
+            f"{base_url}/mcp/workflow",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": "python-answer-run-events",
+                "method": "tools/call",
+                "params": {
+                    "name": "workflow.run_events",
+                    "arguments": {
+                        "run_id": "python-answer-run",
+                        "after_seq": 0,
+                        "limit": 100,
+                    },
+                },
+            },
+            timeout=10,
+        )
+        assert run_events_response.status_code == 200, run_events_response.text
+        run_events = run_events_response.json()["result"]["events"]
+        python_worker_traces = [
+            event["payload"]["trace"]
+            for event in run_events
+            if event["event_type"] == "workflow.trace.v1"
+            and event.get("payload", {}).get("trace", {}).get("event")
+            in {
+                "runtime.python_worker.result_prepared",
+                "runtime.python_worker.result_submitted",
+            }
+        ]
+        assert python_worker_traces
+        for worker_trace in python_worker_traces:
+            assert worker_trace["run_id"] == "python-answer-run"
+            assert worker_trace["worker_id"] == "python-answer-worker"
+            assert worker_trace["message_id"]
+            assert worker_trace["step_id"]
+            assert worker_trace["correlation_id"] == "python-answer-run"
+        assert {
+            trace["event"] for trace in python_worker_traces
+        } == {
+            "runtime.python_worker.result_prepared",
+            "runtime.python_worker.result_submitted",
+        }
+        worker_trace_bindings = {
+            event_name: {
+                (
+                    trace["message_id"],
+                    trace["run_id"],
+                    trace["step_id"],
+                    trace["correlation_id"],
+                )
+                for trace in python_worker_traces
+                if trace["event"] == event_name
+            }
+            for event_name in (
+                "runtime.python_worker.result_prepared",
+                "runtime.python_worker.result_submitted",
+            )
+        }
+        assert worker_trace_bindings["runtime.python_worker.result_prepared"]
+        assert (
+            worker_trace_bindings["runtime.python_worker.result_prepared"]
+            == worker_trace_bindings["runtime.python_worker.result_submitted"]
+        )
         checkpoints = httpx.get(
             f"{base_url}/api/workflow/runs/python-answer-run/checkpoints",
             headers=headers,
