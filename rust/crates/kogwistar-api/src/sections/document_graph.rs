@@ -1150,6 +1150,54 @@ mod graph_upsert_tests {
     }
 
     #[test]
+    fn graph_role_changes_metadata_without_changing_generic_storage_contract() {
+        let input = extraction_fixture();
+        let source = input.content.as_deref().expect("fixture source text");
+        for role in [
+            "knowledge",
+            "conversation",
+            "workflow",
+            "wisdom",
+            "acl",
+            "custom:research",
+        ] {
+            let (batch, _, _) = graph_upsert_mutation_batch(
+                &input,
+                source,
+                &principal_scope(),
+                &GraphUpsertExternalEndpoints::default(),
+                role,
+            )
+            .expect("each graph role uses the generic graph-upsert contract");
+            assert_eq!(batch.mutations.len(), 3);
+            for mutation in &batch.mutations {
+                let expected_table = match mutation.entity_kind.as_str() {
+                    "node" => "gke_nodes",
+                    "edge" => "gke_edges",
+                    other => panic!("unexpected entity kind {other:?}"),
+                };
+                assert_eq!(mutation.table, expected_table);
+                assert_eq!(mutation.scope.namespace, "tenant-a");
+                assert_eq!(mutation.scope.workspace_id.as_deref(), Some("workspace-a"));
+                assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
+                assert_eq!(mutation.payload["metadata"]["engine_type"], role);
+                assert_eq!(
+                    mutation
+                        .record
+                        .metadata
+                        .get("_class_name")
+                        .and_then(Value::as_str),
+                    Some(if mutation.entity_kind == "node" {
+                        "Node"
+                    } else {
+                        "Edge"
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
     fn graph_upsert_can_validate_against_host_loaded_existing_document_text() {
         let mut input = extraction_fixture();
         let source = input.content.take().expect("fixture source text");
