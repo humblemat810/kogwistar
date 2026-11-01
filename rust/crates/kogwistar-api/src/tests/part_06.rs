@@ -3431,6 +3431,13 @@
             .unwrap();
         assert_eq!(lanes.len(), 1);
         assert_eq!(lanes[0].status, "pending");
+        let queued_payload: Value =
+            serde_json::from_str(lanes[0].payload_json.as_deref().unwrap()).unwrap();
+        assert_eq!(queued_payload["initial_state"]["turn_index"], 0);
+        assert_eq!(
+            queued_payload["initial_state"]["_rt_graph_scope"]["storage_namespace"],
+            "alpha"
+        );
         assert_eq!(
             service
                 .store
