@@ -366,6 +366,62 @@ impl GraphAclIndex {
     }
 }
 
+/// ACL-filtered graph records paired with the complete authorization context
+/// that produced them. Use `filter_records` for later bounded projections so
+/// ACL helper records removed from the visible records are not needed again.
+#[derive(Clone, Debug)]
+pub struct GraphAclProjection {
+    nodes: Vec<GraphRecord>,
+    edges: Vec<GraphRecord>,
+    index: GraphAclIndex,
+    principal: GraphAclPrincipal,
+}
+
+impl GraphAclProjection {
+    /// Build an authorized projection from a complete graph snapshot.
+    pub fn from_complete_snapshot(
+        nodes: &[GraphRecord],
+        edges: &[GraphRecord],
+        truth_graph: &str,
+        principal: &GraphAclPrincipal,
+    ) -> Self {
+        let mut index = GraphAclIndex::default();
+        index.extend_from_records(nodes, truth_graph);
+        Self::from_indexed_records(nodes, edges, index, principal)
+    }
+
+    /// Build an authorized projection using ACL rules collected from the
+    /// complete relevant set, including records on other pages.
+    pub fn from_indexed_records(
+        nodes: &[GraphRecord],
+        edges: &[GraphRecord],
+        index: GraphAclIndex,
+        principal: &GraphAclPrincipal,
+    ) -> Self {
+        let (nodes, edges) =
+            graph_records_visible_by_acl_with_index(nodes, edges, &index, principal);
+        Self {
+            nodes,
+            edges,
+            index,
+            principal: principal.clone(),
+        }
+    }
+
+    /// Re-filter a record subset without losing the original ACL context.
+    pub fn filter_records(&self, nodes: &[GraphRecord], edges: &[GraphRecord]) -> Self {
+        Self::from_indexed_records(nodes, edges, self.index.clone(), &self.principal)
+    }
+
+    pub fn nodes(&self) -> &[GraphRecord] {
+        &self.nodes
+    }
+
+    pub fn edges(&self) -> &[GraphRecord] {
+        &self.edges
+    }
+}
+
 fn record_json(record: &GraphRecord) -> Option<Value> {
     record
         .document
@@ -3892,29 +3948,31 @@ mod tests {
             ..Default::default()
         };
 
-        let mut acl_index = GraphAclIndex::default();
-        acl_index.extend_from_records(&complete_snapshot, "knowledge");
-        let (visible_nodes, visible_edges) =
-            graph_records_visible_by_acl_with_index(&complete_snapshot, &[], &acl_index, &alice);
+        let projection = GraphAclProjection::from_complete_snapshot(
+            &complete_snapshot,
+            &[],
+            "knowledge",
+            &alice,
+        );
         assert_eq!(
-            visible_nodes
+            projection
+                .nodes()
                 .iter()
                 .map(|record| record.id.as_str())
                 .collect::<Vec<_>>(),
             ["n1"]
         );
-        assert!(visible_edges.is_empty());
+        assert!(projection.edges().is_empty());
 
         // The filtered view deliberately lacks the ACL helper node. A later
-        // projection must therefore reuse the index from the full snapshot.
-        let (reprojected_nodes, _) =
-            graph_records_visible_by_acl_with_index(&visible_nodes, &[], &acl_index, &alice);
-        assert_eq!(reprojected_nodes, visible_nodes);
+        // projection reuses the full snapshot's index through the wrapper.
+        let reprojected = projection.filter_records(projection.nodes(), &[]);
+        assert_eq!(reprojected.nodes(), projection.nodes());
 
         // Rebuilding from the filtered view has no ACL rule and correctly
         // fails closed; services must not mistake that for the canonical ACL.
         let (incorrectly_rebuilt_nodes, _) =
-            graph_records_visible_by_acl(&visible_nodes, &[], "knowledge", &alice);
+            graph_records_visible_by_acl(projection.nodes(), &[], "knowledge", &alice);
         assert!(incorrectly_rebuilt_nodes.is_empty());
     }
 

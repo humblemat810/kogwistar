@@ -1584,15 +1584,15 @@ impl SqliteRunApplicationService {
                 "conversation message admission requires conversation storage scope",
             );
         }
-        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
         };
-        // chroma_graph_snapshot already applies ACL filtering against the full
-        // snapshot, including ACL records. Filtering it again would lose that
-        // index because ACL helper nodes are intentionally omitted from results.
-        let conversation_nodes = nodes
-            .into_iter()
+        // Keep the typed projection alive while selecting this conversation;
+        // it carries the ACL index derived from the complete snapshot.
+        let conversation_nodes = graph_snapshot
+            .nodes()
+            .iter()
             .filter(|record| {
                 conversation_record_string(record, "conversation_id").as_deref()
                     == Some(conversation_id)
@@ -2662,7 +2662,7 @@ impl SqliteRunApplicationService {
         &self,
         request: &ApiEffectRequest,
         truth_graph: &str,
-    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), ApiEffectResponse> {
+    ) -> Result<GraphAclProjection, ApiEffectResponse> {
         let scope_value = security_scope_value(&request.principal);
         let namespace = scope_value["storage_namespace"]
             .as_str()
@@ -2742,8 +2742,12 @@ impl SqliteRunApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, truth_graph, &principal);
-        Ok((nodes, edges))
+        Ok(GraphAclProjection::from_complete_snapshot(
+            &nodes,
+            &edges,
+            truth_graph,
+            &principal,
+        ))
     }
 
     async fn native_answer_view_context(
@@ -2794,7 +2798,7 @@ impl SqliteRunApplicationService {
             body: Vec::new(),
             principal,
         };
-        let (nodes, edges) = self
+        let graph_snapshot = self
             .chroma_graph_snapshot(&graph_request, "conversation")
             .await
             .map_err(|response| {
@@ -2805,8 +2809,8 @@ impl SqliteRunApplicationService {
                 }
             })?;
         sqlite_native_answer_view_from_visible_records(
-            &nodes,
-            &edges,
+            graph_snapshot.nodes(),
+            graph_snapshot.edges(),
             &request.conversation_id,
             turn_id,
         )
@@ -3515,10 +3519,11 @@ impl SqliteRunApplicationService {
                 "conversation_id is required",
             );
         };
-        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
         let transcript =
             match conversation_transcript_from_visible_records(&nodes, conversation_id, 10_000) {
                 Ok(transcript) => transcript,
@@ -3587,10 +3592,11 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
         let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
             &nodes,
             conversation_id,
@@ -3647,10 +3653,11 @@ impl SqliteRunApplicationService {
                 "Conversation transcript reads require read_graph capability",
             );
         }
-        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
         let transcript =
             match conversation_transcript_from_visible_records(&nodes, &conversation_id, 10_000) {
                 Ok(transcript) => transcript,
@@ -3710,10 +3717,11 @@ impl SqliteRunApplicationService {
                 "Conversation route was not found",
             );
         };
-        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
         let summary = match conversation_summary_from_visible_records(&nodes, &conversation_id) {
             Ok(summary) => summary,
             Err(error) => {
@@ -3772,10 +3780,11 @@ impl SqliteRunApplicationService {
                 "User Identity required",
             );
         };
-        let (nodes, _) = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
         let candidates = compact_conversation_list_candidates(&nodes);
         let mut conversations = ConversationListAccumulator::new(user_id);
         conversations.extend_visible_records(&candidates);
@@ -3812,13 +3821,15 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let (nodes, edges) = match self
+        let graph_snapshot = match self
             .chroma_graph_snapshot(request, input.truth_graph.trim())
             .await
         {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
+        let edges = graph_snapshot.edges();
         let neighbors =
             graph_neighbors_from_records(input.rid.trim(), &nodes, &edges, input.doc_id.as_deref());
         json_effect(
@@ -3851,10 +3862,12 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
+        let edges = graph_snapshot.edges();
         let query = GraphFindEdgesQuery {
             relation: input.relation,
             src_label_contains: input.src_label_contains,
@@ -3898,10 +3911,12 @@ impl SqliteRunApplicationService {
                 "src_id and dst_id are required and max_depth must be <= 128",
             );
         }
-        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
+        let edges = graph_snapshot.edges();
         let query = GraphShortestPathQuery {
             src_id: input.src_id,
             dst_id: input.dst_id,
@@ -3948,10 +3963,12 @@ impl SqliteRunApplicationService {
                 "k must be <= 32",
             );
         }
-        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
+        let edges = graph_snapshot.edges();
         let query = GraphKHopQuery {
             start_ids: input.start_ids,
             k: input.k,
@@ -3994,10 +4011,12 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let (nodes, edges) = match self.chroma_graph_snapshot(request, "knowledge").await {
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
             Ok(records) => records,
             Err(response) => return response,
         };
+        let nodes = graph_snapshot.nodes();
+        let edges = graph_snapshot.edges();
         let result = if cytoscape {
             graph_viz_cytoscape_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
         } else {

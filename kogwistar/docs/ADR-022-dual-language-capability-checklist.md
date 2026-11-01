@@ -343,14 +343,18 @@ the remaining syscall parity named in DL-16BQ. These bounded paths do not
 prove whole-stack parity; DL-16BQ remains IN PROGRESS.
 
 Framework invariant evidence for DL-16BQ: Rust ACL visibility is derived from
-the complete canonical ACL set before helper records are removed. Any later
-projection must reuse that `GraphAclIndex`, not rebuild it from the filtered
-records. `kogwistar-store::tests::acl_projection_reuses_index_after_helper_records_are_removed`
-proves stable authorized visibility with index reuse and fail-closed behavior
-when the index is incorrectly reconstructed from the filtered view. The store
-library suite passed (**42 passed**), and the SQLite+Chroma create-and-send
-admission regression passed (**1 passed**). This adds evidence to the existing
-DL-16BQ gate; it does not add a checklist item or change the denominator.
+the complete canonical ACL set before helper records are removed. The additive
+`GraphAclProjection` carries the existing ACL index and principal alongside
+visible records, and its `filter_records` operation reuses that context;
+SQLite+Chroma's private snapshot path now returns this typed projection rather
+than bare vectors. Legacy ACL filtering functions remain available. The store
+test `acl_projection_reuses_index_after_helper_records_are_removed` proves
+stable authorized visibility through the typed projection and fail-closed
+behavior when ACL context is incorrectly rebuilt from filtered records. The
+store library suite passed (**42 passed**), the full API library suite passed
+(**222 passed, 22 ignored**), and the SQLite+Chroma create-and-send admission
+regression passed (**1 passed**). This adds evidence to the existing DL-16BQ
+gate; it does not add a checklist item or change the denominator.
 
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix

@@ -2769,18 +2769,20 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                     })
         }));
 
-        let (snapshot_nodes, _) = service
+        let snapshot = service
             .chroma_graph_snapshot(&request(), "conversation")
             .await
             .unwrap();
         assert!(
-            snapshot_nodes
+            snapshot
+                .nodes()
                 .iter()
                 .any(|record| record.id == "conversation-create-start"),
             "newly created conversation start must be visible in the scoped canonical snapshot; stage1={:?}",
             service.store.list_stage1_node_projections("conversation").unwrap()
         );
-        let visible_start = snapshot_nodes
+        let visible_start = snapshot
+            .nodes()
             .iter()
             .find(|record| record.id == "conversation-create-start")
             .unwrap();
