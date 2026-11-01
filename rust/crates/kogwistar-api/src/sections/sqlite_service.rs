@@ -58,6 +58,29 @@ fn runtime_max_queue() -> usize {
         .unwrap_or(128)
 }
 
+fn fail_sqlite_inline_graph_effect(
+    effect: &mut kogwistar_runtime::RecordedWorkerSuccessEffect,
+    code: &str,
+    message: &str,
+) {
+    effect.graph_mutation_batch = None;
+    effect.graph_mutation_batch_v2 = None;
+    effect.provider_event_acknowledgements.clear();
+    effect.provider_event_publications.clear();
+    effect.status = kogwistar_runtime::RuntimeWorkerEffectStatus::Failed;
+    effect.state_update.clear();
+    effect.update = None;
+    effect.state_schema.clear();
+    effect.successors.clear();
+    effect.route_next.clear();
+    effect.result = Some(serde_json::json!({"code": code}));
+    effect.errors = vec![message.to_owned()];
+    effect.wait_reason = None;
+    effect.resume_payload = None;
+    effect.usage = None;
+    effect.trace_events.clear();
+}
+
 fn sqlite_canonical_entity_revision(
     store: &SqliteStore,
     namespace: &str,
@@ -6741,7 +6764,8 @@ impl SqliteRunApplicationService {
                 None,
             );
         }
-        self.execute_native_request(input.handoff, native_request)
+        self.execute_native_request_async(input.handoff, native_request)
+            .await
     }
 
     fn execute_native_request(
@@ -6771,6 +6795,62 @@ impl SqliteRunApplicationService {
             result,
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
             None,
+        )
+    }
+
+    async fn execute_native_request_async(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        native_request: kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> ApiEffectResponse {
+        let mut result = match kogwistar_runtime::execute_native_step_with_registry(
+            &native_request,
+            &self.native_operations,
+        ) {
+            Ok(effect) => RuntimeWorkerResultRequest {
+                handoff,
+                transition: None,
+                effect: Some(effect),
+            },
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                    error.to_string(),
+                );
+            }
+        };
+        let needs_graph_authority = result.effect.as_ref().is_some_and(|effect| {
+            effect.graph_mutation_batch.is_some()
+                || effect.graph_mutation_batch_v2.is_some()
+                || !effect.provider_event_acknowledgements.is_empty()
+        });
+        let principal = if needs_graph_authority {
+            match self
+                .resolve_inline_native_owner_principal(&result.handoff.run_id, "write_graph")
+                .await
+            {
+                Ok(principal) => Some(principal),
+                Err(_) => {
+                    let effect = result
+                        .effect
+                        .as_mut()
+                        .expect("graph authority was requested for an effect");
+                    fail_sqlite_inline_graph_effect(
+                        effect,
+                        "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED",
+                        "inline graph effects failed current owner authorization",
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        self.apply_runtime_result_input(
+            result,
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+            principal.as_ref(),
         )
     }
 }

@@ -1,5 +1,5 @@
 use super::*;
-use kogwistar_store::{GraphMutation, GraphMutationBatch, GraphRecord, GraphScope};
+use kogwistar_store::{GraphMutation, GraphMutationBatch, GraphRecord, GraphScope, NewIndexJob};
 
 fn mutation(event_id: &str, id: &str) -> GraphMutation {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -38,7 +38,16 @@ fn canonical_graph_batch_commits_events_and_projection_jobs_together() {
     let applied = store
         .apply_canonical_graph_mutation_batch(GraphMutationBatch {
             mutations: vec![mutation("event-1", "node-1"), mutation("event-2", "node-2")],
-            index_jobs: Vec::new(),
+            index_jobs: vec![NewIndexJob {
+                job_id: "duplicate-node-embedding".to_owned(),
+                namespace: "conversation".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "node-1".to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
         })
         .unwrap();
     assert_eq!(applied.len(), 2);

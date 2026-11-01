@@ -14,6 +14,11 @@ impl SqliteUnitOfWork<'_> {
             ));
         };
         let scope = first.scope.clone();
+        let canonical_embedding_entities = batch
+            .mutations
+            .iter()
+            .map(|mutation| (mutation.entity_kind.clone(), mutation.record.id.clone()))
+            .collect::<BTreeSet<_>>();
         let mut mutations = batch.mutations;
         for mutation in &mut mutations {
             validate_graph_mutation(mutation)?;
@@ -179,6 +184,14 @@ impl SqliteUnitOfWork<'_> {
             });
         }
         for job in batch.index_jobs {
+            // Canonical mutations already enqueue a revision-fenced embedding
+            // job. A duplicate without that revision payload must not replace it.
+            if job.index_kind == "node_embedding"
+                && canonical_embedding_entities
+                    .contains(&(job.entity_kind.clone(), job.entity_id.clone()))
+            {
+                continue;
+            }
             self.enqueue_index_job(job)?;
         }
         Ok(applied)

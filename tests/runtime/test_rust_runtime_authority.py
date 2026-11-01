@@ -1867,10 +1867,14 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("backend", ["sqlite-chroma", "pg"])
+@pytest.mark.parametrize("persistence_target", ["python-worker", "rust-native"])
 def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_storage(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    persistence_target: str,
 ) -> None:
-    """Run Python answer resolvers through Rust scheduling and canonical storage."""
+    """Compare Python-worker and Rust-native persistence of Python answers."""
     if not RUST_SERVER.exists():
         pytest.skip("build kogwistar-server before live authority test")
 
@@ -1897,6 +1901,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         pytest.skip("set GKE_PG_DSN, PG_DSN, or DATABASE_URL for live PostgreSQL test")
     pg_schema = f"python_answer_{os.urandom(8).hex()}" if backend == "pg" else None
     database_path = tmp_path / "python-answer-rust-authority.sqlite3"
+    auth_database_path = tmp_path / "python-answer-auth.sqlite3"
     graph_namespace = f"python-answer-{os.urandom(8).hex()}"
     chroma_server = None
     chroma_endpoint = None
@@ -1963,13 +1968,41 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
         env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
+    env["AUTH_DB_URL"] = f"sqlite:///{auth_database_path.as_posix()}"
+    with sqlite3.connect(auth_database_path) as auth_db:
+        auth_db.execute(
+            """CREATE TABLE users (
+                user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                display_name VARCHAR(255),
+                is_active BOOLEAN NOT NULL,
+                global_role VARCHAR(32),
+                global_ns VARCHAR(255),
+                created_at DATETIME NOT NULL,
+                last_login_at DATETIME
+            )"""
+        )
+        auth_db.execute(
+            """INSERT INTO users (
+                user_id, email, display_name, is_active, global_role,
+                global_ns, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (
+                "python-answer-owner",
+                "python-answer-owner@example.test",
+                "Python answer owner",
+                True,
+                "rw",
+                graph_namespace,
+            ),
+        )
     token = _test_hs256_token(
         jwt_secret,
         {
             "sub": "python-answer-owner",
             "role": "rw",
             "roles": ["reader", "rw"],
-            "ns": ["workflow"],
+            "ns": ["workflow", "conversation", graph_namespace],
             "storage_ns": graph_namespace,
             "capabilities": ["read_graph", "write_graph"],
             "exp": int(time.time()) + 3600,
@@ -2135,6 +2168,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                     "run_id": "python-answer-run",
                     "run_node_id": "python-answer-run-node",
                     "conversation_id": "python-answer-conversation",
+                    "turn_index": 0,
                     "question": "How does the workflow cross the boundary?",
                     "system_prompt": "Answer using the provided evidence.",
                     "used_node_ids": ["evidence-node"],
@@ -2151,8 +2185,17 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                 "start_node_id": "answer-generate",
                 "node_ops": {
                     "answer-generate": "python.answer.generate",
-                    "answer-persist": "python.answer.persist",
+                    "answer-persist": (
+                        "python.answer.persist"
+                        if persistence_target == "python-worker"
+                        else "aa_persist_response"
+                    ),
                 },
+                "node_executor_targets": (
+                    {"answer-persist": "rust-native"}
+                    if persistence_target == "rust-native"
+                    else {}
+                ),
                 "runtime_routes": [
                     {
                         "source_node_id": "answer-generate",
@@ -2185,11 +2228,57 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                     break
                 result = worker.process(claimed[0])
                 assert result["event_seq"] > 0
+        if persistence_target == "rust-native":
+            native_claim = httpx.post(
+                f"{base_url}/internal/runtime/claim",
+                headers=headers,
+                json={
+                    "claimed_by": "rust-native-worker",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["rust-native-worker"],
+                    "run_id": "python-answer-run",
+                },
+                timeout=10,
+            )
+            assert native_claim.status_code == 200, native_claim.text
+            native_work = native_claim.json()["work"]
+            assert len(native_work) == 1
+            native_item = native_work[0]
+            assert native_item["payload"]["executor_target"] == "rust-native"
+            assert native_item["payload"]["op"] == "aa_persist_response"
+            native_result = httpx.post(
+                f"{base_url}/internal/runtime/native/execute",
+                headers=headers,
+                json={
+                    "handoff": {
+                        key: native_item[key]
+                        for key in (
+                            "message_id",
+                            "claimed_by",
+                            "run_id",
+                            "step_id",
+                            "correlation_id",
+                        )
+                    },
+                    "payload": native_item["payload"],
+                },
+                timeout=10,
+            )
+            assert native_result.status_code == 200, native_result.text
         status = httpx.get(
             f"{base_url}/api/workflow/runs/python-answer-run",
             headers=headers,
             timeout=10,
         )
+        run_deadline = time.monotonic() + 10
+        while status.json()["status"] == "running" and time.monotonic() < run_deadline:
+            time.sleep(0.05)
+            status = httpx.get(
+                f"{base_url}/api/workflow/runs/python-answer-run",
+                headers=headers,
+                timeout=10,
+            )
         assert status.status_code == 200, status.text
         assert status.json()["status"] == "succeeded", status.text
         checkpoints = httpx.get(
