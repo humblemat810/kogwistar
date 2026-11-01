@@ -541,10 +541,13 @@ fn graph_entity_usage_acl_visible(
     true
 }
 
-/// Filter graph projections using the same fail-closed ACL rules as Python.
+/// Filter a complete graph snapshot using the same fail-closed ACL rules as Python.
 ///
 /// ACL records are persisted as graph nodes. Missing records deny access, and
-/// ACL helper nodes never enter the returned graph projection.
+/// ACL helper nodes never enter the returned graph projection. Because the
+/// result omits those helper nodes, callers must not rebuild an ACL index from
+/// the result; retain the index and use
+/// [`graph_records_visible_by_acl_with_index`] for later pages or projections.
 pub fn graph_records_visible_by_acl(
     nodes: &[GraphRecord],
     edges: &[GraphRecord],
@@ -556,8 +559,10 @@ pub fn graph_records_visible_by_acl(
     graph_records_visible_by_acl_with_index(nodes, edges, &index, principal)
 }
 
-/// Filter a page using ACL rules indexed from the complete relevant ACL set.
-/// ACL helper records are never returned as graph entities.
+/// Filter a page using an index built from the complete relevant ACL set.
+/// ACL helper records are never returned as graph entities. Reuse this index
+/// when filtering subsequent pages or projections; never derive it from a
+/// previously filtered result.
 pub fn graph_records_visible_by_acl_with_index(
     nodes: &[GraphRecord],
     edges: &[GraphRecord],
@@ -3857,6 +3862,60 @@ mod tests {
             graph_records_visible_by_acl(&nodes, &edges, "knowledge", &bob);
         assert!(bob_nodes.is_empty());
         assert!(bob_edges.is_empty());
+    }
+
+    #[test]
+    fn acl_projection_reuses_index_after_helper_records_are_removed() {
+        let mut acl = GraphRecord::new("acl-n1");
+        acl.metadata.extend(
+            serde_json::json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_entity_id": "n1",
+                "acl_target_grain": "node",
+                "acl_version": 1,
+                "acl_mode": "shared"
+            })
+            .as_object()
+            .expect("ACL metadata is an object")
+            .clone(),
+        );
+        acl.document = Some(
+            serde_json::json!({
+                "properties": {"shared_with_principals": ["alice"]}
+            })
+            .to_string(),
+        );
+        let complete_snapshot = vec![acl, GraphRecord::new("n1"), GraphRecord::new("n2")];
+        let alice = GraphAclPrincipal {
+            principal_id: "alice".to_owned(),
+            ..Default::default()
+        };
+
+        let mut acl_index = GraphAclIndex::default();
+        acl_index.extend_from_records(&complete_snapshot, "knowledge");
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl_with_index(&complete_snapshot, &[], &acl_index, &alice);
+        assert_eq!(
+            visible_nodes
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["n1"]
+        );
+        assert!(visible_edges.is_empty());
+
+        // The filtered view deliberately lacks the ACL helper node. A later
+        // projection must therefore reuse the index from the full snapshot.
+        let (reprojected_nodes, _) =
+            graph_records_visible_by_acl_with_index(&visible_nodes, &[], &acl_index, &alice);
+        assert_eq!(reprojected_nodes, visible_nodes);
+
+        // Rebuilding from the filtered view has no ACL rule and correctly
+        // fails closed; services must not mistake that for the canonical ACL.
+        let (incorrectly_rebuilt_nodes, _) =
+            graph_records_visible_by_acl(&visible_nodes, &[], "knowledge", &alice);
+        assert!(incorrectly_rebuilt_nodes.is_empty());
     }
 
     #[test]
