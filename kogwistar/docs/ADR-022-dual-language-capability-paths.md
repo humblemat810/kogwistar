@@ -63,11 +63,20 @@ Deployments may choose physical isolation as configuration, but that must not
 be hard-coded as a different graph abstraction or confused with graph role.
 
 This invariant follows the Python implementation: `GraphKnowledgeEngine`
-accepts the common `StorageBackend` contract and a `kg_graph_type`; typed
-conversation/workflow model defaults extend the common `Node`/`Edge` families;
-wisdom falls back to those base models. Rust implementations must keep graph
-role (`truth_graph`), entity kind (`node`/`edge`), storage scope (namespace,
-workspace, `graph_space`), and backend capability as independent dimensions.
+accepts the common `StorageBackend` contract and a `kg_graph_type`. Conversation
+and workflow select typed `Node`/`Edge` subclasses where their models require
+additional fields. Wisdom accepts a `PureGraph` containing `PureChromaNode` and
+`PureChromaEdge`, which share the graph-entity base but intentionally do not
+require reference-session provenance; persistence still goes through the same
+engine and configured backend contract. ACL records are typed `ACLNode` and
+`ACLEdge` entities over the common graph models, while `ACLGraph` is a derived
+policy view rather than another graph engine.
+
+Rust implementations must keep graph role (`truth_graph`), entity kind
+(`node`/`edge`), entity model, storage scope (namespace, workspace,
+`graph_space`), and backend capability as independent dimensions. A role may
+select a model default or authorization policy, but must not silently select a
+different graph API or imply a backend capability.
 A domain-specific endpoint may adapt its request into the common graph
 mutation contract, but must not create a role-specific graph model or imply
 that one backend's transaction guarantees apply to another.
