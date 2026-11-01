@@ -905,7 +905,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
             f"{base_url}/api/workflow/runs/run-sync-resume-live", timeout=10
         )
         assert status.status_code == 200
-        assert status.json()["status"] == "succeeded"
+        assert status.json()["status"] == "succeeded", status.text
     finally:
         process.terminate()
         try:
@@ -1656,7 +1656,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             timeout=10,
         )
         assert status.status_code == 200, status.text
-        assert status.json()["status"] == "succeeded"
+        assert status.json()["status"] == "succeeded", status.text
         checkpoints = httpx.get(
             f"{base_url}/api/workflow/runs/mixed-live-run/checkpoints",
             headers=headers,
@@ -1826,8 +1826,345 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         if chroma_server is not None:
             chroma_server.shutdown()
             chroma_server.server_close()
-        if graph_sqlalchemy_engine is not None:
-            graph_sqlalchemy_engine.dispose()
+
+
+@pytest.mark.integration
+def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlite_chroma(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run Python answer resolvers through Rust scheduling and canonical storage."""
+    if not RUST_SERVER.exists():
+        pytest.skip("build kogwistar-server before live authority test")
+
+    from kogwistar.conversation.agentic_answering import AgenticAnsweringAgent
+    from kogwistar.conversation.conversation_context import (
+        ContextItem,
+        ContextMessage,
+        PromptContext,
+    )
+    from kogwistar.conversation.resolvers import default_resolver
+    from kogwistar.conversation.service import ConversationService
+    import kogwistar.conversation.resolvers as resolver_module
+
+    database_path = tmp_path / "python-answer-rust-authority.sqlite3"
+    graph_namespace = f"python-answer-{os.urandom(8).hex()}"
+    chroma_server, chroma_endpoint, chroma_requests = _start_fake_chroma_collections()
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = int(sock.getsockname()[1])
+
+    jwt_secret = f"test-{os.urandom(24).hex()}"
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "sqlite",
+            "KOGWISTAR_META_SQLITE_PATH": str(database_path),
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+            "AUTH_MODE": "jwt",
+            "JWT_SECRET": jwt_secret,
+            "JWT_ALG": "HS256",
+            "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
+            "KOGWISTAR_CHROMA_NODE_COLLECTION": "python-answer-nodes",
+            "KOGWISTAR_CHROMA_EDGE_COLLECTION": "python-answer-edges",
+        }
+    )
+    token = _test_hs256_token(
+        jwt_secret,
+        {
+            "sub": "python-answer-owner",
+            "role": "rw",
+            "roles": ["reader", "rw"],
+            "ns": ["workflow"],
+            "storage_ns": graph_namespace,
+            "capabilities": ["read_graph", "write_graph"],
+            "exp": int(time.time()) + 3600,
+        },
+    )
+    process = subprocess.Popen(
+        [str(RUST_SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stderr = process.stderr.read() if process.stderr is not None else ""
+                raise AssertionError(f"Rust server exited before ready: {stderr}")
+            try:
+                if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust SQLite+Chroma server did not become ready")
+
+        class _ConversationGraph:
+            namespace = graph_namespace
+            persistence_mode = "single_stage"
+            _phase1_enable_index_jobs = True
+            _disable_event_log = False
+            backend = SimpleNamespace(
+                embedding_dim=3,
+                edge_get=lambda **_kwargs: {"ids": [], "metadatas": []},
+            )
+            pre_add_node_hooks: list[Any] = []
+            pre_add_edge_hooks: list[Any] = []
+
+            @staticmethod
+            def iterative_defensive_emb(_text: str) -> list[float]:
+                return [1.0, 0.0, 0.0]
+
+            @staticmethod
+            def _node_projection(node: Any) -> tuple[str, dict[str, Any]]:
+                return (
+                    node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+                    {**node.metadata, "namespace": graph_namespace},
+                )
+
+            @staticmethod
+            def _edge_projection(edge: Any) -> tuple[str, dict[str, Any]]:
+                return (
+                    edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+                    {**edge.metadata, "namespace": graph_namespace},
+                )
+
+        graph = _ConversationGraph()
+        graph.embed = SimpleNamespace(iterative_defensive_emb=graph.iterative_defensive_emb)
+        graph.write = SimpleNamespace(
+            node_doc_and_meta=graph._node_projection,
+            edge_doc_and_meta=graph._edge_projection,
+            add_node=lambda *_args, **_kwargs: pytest.fail(
+                "Rust-owned workflow must not write graph nodes through Python"
+            ),
+            add_edge=lambda *_args, **_kwargs: pytest.fail(
+                "Rust-owned workflow must not write graph edges through Python"
+            ),
+        )
+        graph.indexing = SimpleNamespace(
+            canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+        )
+        service = ConversationService.__new__(ConversationService)
+        service.conversation_engine = graph
+        monkeypatch.setattr(resolver_module, "_chat_service", lambda _deps: service)
+
+        class _AnswerAgent:
+            cache_dir = str(tmp_path / "answer-cache")
+            config = SimpleNamespace()
+            conversation_engine = graph
+
+            @staticmethod
+            def _generate_answer_with_citations(agent: Any, **kwargs: Any) -> dict[str, Any]:
+                assert agent.conversation_engine is graph
+                assert kwargs["question"] == "How does the workflow cross the boundary?"
+                assert kwargs["evidence_pack"] == {
+                    "nodes": [{"node_id": "evidence-node"}],
+                    "edges": [],
+                }
+                return {
+                    "text": "The Rust runtime commits the Python worker's graph effects.",
+                    "reasoning": "",
+                    "claims": [],
+                }
+
+            def rehydrate_evidence_pack_from_digest(self, **_kwargs: Any) -> dict[str, Any]:
+                return {
+                    "evidence_pack": {
+                        "nodes": [{"node_id": "evidence-node"}],
+                        "edges": [],
+                    }
+                }
+
+            def _prepare_assistant_turn(self, **kwargs: Any) -> Any:
+                return AgenticAnsweringAgent._prepare_assistant_turn(self, **kwargs)
+
+            def _prepare_run_to_response_edge(self, **kwargs: Any) -> Any:
+                return AgenticAnsweringAgent._prepare_run_to_response_edge(
+                    self, **kwargs
+                )
+
+        agent = _AnswerAgent()
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("python.answer.generate")
+        def generate(ctx: Any) -> Any:
+            with ctx.state_write as state:
+                state["_rt"] = {
+                    "view": PromptContext(
+                        conversation_id="python-answer-conversation",
+                        purpose="answer",
+                        token_budget=64,
+                        tokens_used=3,
+                        items=(
+                            ContextItem(
+                                kind="tail_turn",
+                                role="user",
+                                text="How does the workflow cross the boundary?",
+                                source="conversation",
+                                node_id="user-turn",
+                                token_cost=3,
+                            ),
+                        ),
+                        messages=(
+                            ContextMessage(
+                                role="user",
+                                content="How does the workflow cross the boundary?",
+                                source="conversation",
+                            ),
+                        ),
+                    ),
+                    "evidence_pack": {
+                        "nodes": [{"node_id": "evidence-node"}],
+                        "edges": [],
+                    },
+                }
+            return default_resolver.resolve("aa_generate_answer_with_citations")(ctx)
+
+        @resolver.register("python.answer.persist")
+        def persist(ctx: Any) -> Any:
+            return default_resolver.resolve("aa_persist_response")(ctx)
+
+        headers = {"authorization": f"Bearer {token}"}
+        submitted = httpx.post(
+            f"{base_url}/api/workflow/runs",
+            headers=headers,
+            json={
+                "run_id": "python-answer-run",
+                "workflow_id": "python-answer-workflow",
+                "conversation_id": "python-answer-conversation",
+                "initial_state": {
+                    "run_id": "python-answer-run",
+                    "run_node_id": "python-answer-run-node",
+                    "conversation_id": "python-answer-conversation",
+                    "question": "How does the workflow cross the boundary?",
+                    "system_prompt": "Answer using the provided evidence.",
+                    "used_node_ids": ["evidence-node"],
+                    "evidence_pack_digest": {"evidence_pack_hash": "evidence-1"},
+                    "run_step_seq": 1,
+                    "attempt_seq": 0,
+                    "prev_turn_meta_summary": {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                        "tail_turn_index": 0,
+                    },
+                },
+                "runtime_kind": "sync",
+                "start_node_id": "answer-generate",
+                "node_ops": {
+                    "answer-generate": "python.answer.generate",
+                    "answer-persist": "python.answer.persist",
+                },
+                "runtime_routes": [
+                    {
+                        "source_node_id": "answer-generate",
+                        "target_node_id": "answer-persist",
+                        "join_mask": 0,
+                    }
+                ],
+            },
+            timeout=10,
+        )
+        assert submitted.status_code == 202, submitted.text
+
+        worker = RustRuntimeWorker.from_step_resolver(
+            base_url=base_url,
+            worker_id="python-answer-worker",
+            journal_path=tmp_path / "python-answer-worker.sqlite",
+            step_resolver=resolver,
+            dependency_provider=lambda _work: {
+                "agent": agent,
+                "conversation_engine": graph,
+                "conversation_service": service,
+                "_chat_service": lambda _deps: service,
+            },
+            headers=headers,
+        )
+        with worker:
+            for _ in range(3):
+                claimed = worker.claim(run_id="python-answer-run", limit=1)
+                if not claimed:
+                    break
+                result = worker.process(claimed[0])
+                assert result["event_seq"] > 0
+        status = httpx.get(
+            f"{base_url}/api/workflow/runs/python-answer-run",
+            headers=headers,
+            timeout=10,
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "succeeded", status.text
+        checkpoints = httpx.get(
+            f"{base_url}/api/workflow/runs/python-answer-run/checkpoints",
+            headers=headers,
+            timeout=10,
+        )
+        assert checkpoints.status_code == 200, checkpoints.text
+        final_state = checkpoints.json()["checkpoints"][-1]["state"]
+        assert final_state["answer"]["text"].startswith("The Rust runtime commits")
+        assistant_id = final_state["agentic_answering_result"]["assistant_turn_node_id"]
+
+        # Reopen canonical SQLite after the server has committed the worker effects.
+        process.terminate()
+        process.wait(timeout=10)
+        import sqlite3
+
+        with sqlite3.connect(
+            f"file:{database_path.as_posix()}?mode=ro", uri=True
+        ) as connection:
+            rows = connection.execute(
+                "SELECT entity_kind, entity_id, payload_json FROM entity_events "
+                "WHERE namespace = ?",
+                (graph_namespace,),
+            ).fetchall()
+            jobs = connection.execute(
+                "SELECT entity_id, index_kind, status FROM index_jobs "
+                "WHERE namespace = ?",
+                (graph_namespace,),
+            ).fetchall()
+        assert any(
+            kind == "node"
+            and entity_id == assistant_id
+            and "assistant_turn" in payload
+            and "The Rust runtime commits" in payload
+            for kind, entity_id, payload in rows
+        )
+        assert any("context_snapshot" in payload for _, _, payload in rows)
+        assert any(
+            kind == "edge"
+            and '"relation":"generated"' in payload
+            and assistant_id in payload
+            for kind, _, payload in rows
+        )
+        assistant_jobs = {
+            (index_kind, status)
+            for entity_id, index_kind, status in jobs
+            if entity_id == assistant_id
+        }
+        assert assistant_jobs == {
+            ("node_docs", "PENDING"),
+            ("node_refs", "PENDING"),
+            ("node_embedding", "PENDING"),
+        }
+        assert len(chroma_requests) == 2
+        assert all("/collections" in path for path in chroma_requests)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+        chroma_server.shutdown()
+        chroma_server.server_close()
 
 
 @pytest.mark.integration
