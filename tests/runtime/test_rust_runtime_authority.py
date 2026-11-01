@@ -84,17 +84,54 @@ def _test_hs256_token(secret: str, claims: dict[str, object]) -> str:
     return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
-def _start_fake_chroma_collections() -> tuple[ThreadingHTTPServer, str, list[str]]:
+def _start_fake_chroma_collections() -> tuple[
+    ThreadingHTTPServer, str, list[str], list[dict[str, Any]]
+]:
     requests: list[str] = []
+    payloads: list[dict[str, Any]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             length = int(self.headers.get("content-length", "0"))
             payload = json.loads(self.rfile.read(length)) if length else {}
             requests.append(self.path)
+            payloads.append(payload)
             name = payload.get("name", "unexpected")
-            body = json.dumps(
+            response = (
                 {"id": f"collection-{name}", "metadata": {"hnsw:space": "cosine"}}
+                if "/collections" in self.path and "/upsert" not in self.path
+                else {}
+            )
+            body = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    return server, f"http://{host}:{port}", requests, payloads
+
+
+def _start_fake_ollama_embeddings() -> tuple[
+    ThreadingHTTPServer, str, list[dict[str, Any]]
+]:
+    requests: list[dict[str, Any]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("content-length", "0"))
+            payload = json.loads(self.rfile.read(length)) if length else {}
+            requests.append(payload)
+            inputs = payload.get("input", [])
+            body = json.dumps(
+                {"embeddings": [[0.6, 0.8, 0.0] for _ in inputs]}
             ).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
@@ -1312,7 +1349,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             schema=pg_schema,
         ).ensure_schema()
     elif backend == "sqlite-chroma":
-        chroma_server, chroma_endpoint, chroma_requests = (
+        chroma_server, chroma_endpoint, chroma_requests, _ = (
             _start_fake_chroma_collections()
         )
     with socket.socket() as sock:
@@ -1845,10 +1882,16 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
     from kogwistar.conversation.resolvers import default_resolver
     from kogwistar.conversation.service import ConversationService
     import kogwistar.conversation.resolvers as resolver_module
+    import sqlite3
 
     database_path = tmp_path / "python-answer-rust-authority.sqlite3"
     graph_namespace = f"python-answer-{os.urandom(8).hex()}"
-    chroma_server, chroma_endpoint, chroma_requests = _start_fake_chroma_collections()
+    chroma_server, chroma_endpoint, chroma_requests, chroma_payloads = (
+        _start_fake_chroma_collections()
+    )
+    embedding_server, embedding_endpoint, embedding_requests = (
+        _start_fake_ollama_embeddings()
+    )
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = int(sock.getsockname()[1])
@@ -1870,6 +1913,12 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
             "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
             "KOGWISTAR_CHROMA_NODE_COLLECTION": "python-answer-nodes",
             "KOGWISTAR_CHROMA_EDGE_COLLECTION": "python-answer-edges",
+            "KOGWISTAR_GRAPH_ROLE": "conversation",
+            "KOGWISTAR_EMBEDDING_WORKER_INLINE": "true",
+            "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
+            "KOGWISTAR_EMBEDDING_MODEL": "fixture-embedding-model",
+            "KOGWISTAR_EMBEDDING_DIMENSION": "3",
+            "KOGWISTAR_EMBEDDING_ENDPOINT": embedding_endpoint,
         }
     )
     token = _test_hs256_token(
@@ -2111,11 +2160,38 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
         assert final_state["answer"]["text"].startswith("The Rust runtime commits")
         assistant_id = final_state["agentic_answering_result"]["assistant_turn_node_id"]
 
+        # Let Rust's configured background worker consume the durable embedding
+        # intent. The canonical event remains in SQLite; Chroma only receives a
+        # projection after the event and index job have already committed.
+        deadline = time.monotonic() + 15
+        assistant_embedding_done = False
+        while time.monotonic() < deadline:
+            with sqlite3.connect(
+                f"file:{database_path.as_posix()}?mode=ro", uri=True
+            ) as connection:
+                status_row = connection.execute(
+                    "SELECT status FROM index_jobs "
+                    "WHERE namespace = ? AND entity_id = ? AND index_kind = 'node_embedding'",
+                    (graph_namespace, assistant_id),
+                ).fetchone()
+            if status_row is not None and status_row[0] == "DONE":
+                assistant_embedding_done = True
+                break
+            time.sleep(0.1)
+        assert assistant_embedding_done, "Rust embedding worker did not project the assistant node"
+        assert embedding_requests
+        assistant_upserts = [
+            payload
+            for path, payload in zip(chroma_requests, chroma_payloads, strict=True)
+            if "/upsert" in path and assistant_id in payload.get("ids", [])
+        ]
+        assert len(assistant_upserts) == 1
+        assert assistant_upserts[0]["embeddings"] == [[0.6, 0.8, 0.0]]
+        assert assistant_upserts[0]["metadatas"][0]["namespace"] == graph_namespace
+
         # Reopen canonical SQLite after the server has committed the worker effects.
         process.terminate()
         process.wait(timeout=10)
-        import sqlite3
-
         with sqlite3.connect(
             f"file:{database_path.as_posix()}?mode=ro", uri=True
         ) as connection:
@@ -2151,10 +2227,9 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
         assert assistant_jobs == {
             ("node_docs", "PENDING"),
             ("node_refs", "PENDING"),
-            ("node_embedding", "PENDING"),
+            ("node_embedding", "DONE"),
         }
-        assert len(chroma_requests) == 2
-        assert all("/collections" in path for path in chroma_requests)
+        assert sum("/collections" in path and "/upsert" not in path for path in chroma_requests) == 2
     finally:
         if process.poll() is None:
             process.terminate()
@@ -2165,6 +2240,8 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_sqlit
                 process.wait(timeout=10)
         chroma_server.shutdown()
         chroma_server.server_close()
+        embedding_server.shutdown()
+        embedding_server.server_close()
 
 
 @pytest.mark.integration
