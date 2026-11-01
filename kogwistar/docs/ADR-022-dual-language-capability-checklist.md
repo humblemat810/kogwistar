@@ -252,7 +252,14 @@ run owner for `read_graph`, obtains the ACL-filtered conversation projection,
 and rejects a missing, wrong-conversation, non-user, or tombstoned turn;
 `sqlite_native_answer_view_projects_only_the_admitted_conversation` covers
 conversation isolation and inactive-turn rejection. This is context preparation
-only, not a complete SQLite+Chroma answer execution path.
+only, not a complete SQLite+Chroma answer execution path. Candidate retrieval
+now uses an additive typed numeric-LTE vector query so `level_from_root` is
+applied before top-N, then fences stale/deleted projections and checks bounded
+ACL records before projecting candidates. The generic Chroma and in-memory
+contract tests cover backend query filtering, top-N order, and the read-only
+shadow wrapper; `sqlite_native_candidates_exclude_acl_private_and_tombstoned_records`
+covers candidate projection's ACL and lifecycle filtering. This still does not
+prove the complete answer workflow on SQLite+Chroma.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies

@@ -995,6 +995,32 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_answer_view".to_owned(), view);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
+            } else if work.payload.get("op").and_then(Value::as_str)
+                == Some("aa_retrieve_candidates")
+            {
+                let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
+                let records = self
+                    .native_candidate_context(&native_request, None)
+                    .await
+                    .map_err(|error| match error {
+                        NativeEvidenceContextError::OwnerAuthorization => {
+                            "native candidate retrieval requires the run owner's current read_graph authority"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadRejected => {
+                            "native candidate retrieval input is invalid".to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadUnavailable => {
+                            "native candidate retrieval is temporarily unavailable".to_owned()
+                        }
+                        NativeEvidenceContextError::CallerNotRunOwner => unreachable!(
+                            "inline native work has no external caller principal"
+                        ),
+                    })?;
+                native_request
+                    .ephemeral_context
+                    .insert("authorized_candidate_records".to_owned(), records);
+                native_result_from_request(handoff, native_request, &self.native_operations)?
             } else {
                 native_result_for_claimed_work(work, &self.native_operations)?
             };

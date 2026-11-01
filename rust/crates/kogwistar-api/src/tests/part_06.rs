@@ -7956,3 +7956,62 @@
         )
         .is_err());
     }
+
+    #[test]
+    fn sqlite_native_candidates_exclude_acl_private_and_tombstoned_records() {
+        let node = |id: &str, lifecycle: Option<&str>| {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("label".to_owned(), json!(id));
+            metadata.insert("summary".to_owned(), json!(format!("summary {id}")));
+            if let Some(status) = lifecycle {
+                metadata.insert("lifecycle_status".to_owned(), json!(status));
+            }
+            GraphRecord {
+                id: id.to_owned(),
+                document: Some(format!("document {id}")),
+                metadata,
+                embedding: None,
+            }
+        };
+        let acl = |id: &str, target: &str, mode: &str| {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("entity_type".to_owned(), json!("acl_record"));
+            metadata.insert("acl_truth_graph".to_owned(), json!("knowledge"));
+            metadata.insert("acl_target_grain".to_owned(), json!("node"));
+            metadata.insert("acl_target_entity_id".to_owned(), json!(target));
+            metadata.insert("acl_version".to_owned(), json!(1));
+            metadata.insert("acl_mode".to_owned(), json!(mode));
+            if mode == "private" {
+                metadata.insert("acl_owner_id".to_owned(), json!("other-user"));
+            }
+            GraphRecord {
+                id: id.to_owned(),
+                document: None,
+                metadata,
+                embedding: None,
+            }
+        };
+        let candidates = vec![
+            node("visible", None),
+            node("private", None),
+            node("deleted", Some("tombstoned")),
+        ];
+        let acl_records = vec![
+            acl("acl-visible", "visible", "public"),
+            acl("acl-private", "private", "private"),
+            acl("acl-deleted", "deleted", "public"),
+        ];
+        let principal = GraphAclPrincipal {
+            principal_id: "reader".to_owned(),
+            ..Default::default()
+        };
+        let projected = sqlite_native_candidate_values(
+            &candidates,
+            &acl_records,
+            "knowledge",
+            &principal,
+        );
+        assert_eq!(projected.as_array().unwrap().len(), 1);
+        assert_eq!(projected[0]["id"], "visible");
+        assert_eq!(projected[0]["doc"], "document visible");
+    }

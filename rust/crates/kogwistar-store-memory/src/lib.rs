@@ -15,6 +15,7 @@ use kogwistar_store::{
     WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
     validate_graph_mutation,
 };
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
@@ -1430,6 +1431,35 @@ impl GraphReadStore for InMemoryStore {
         results.truncate(query.limit);
         Ok(results)
     }
+
+    async fn vector_query_of_kind_numeric_lte(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+        field: &str,
+        maximum: f64,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        if field.trim().is_empty() || !maximum.is_finite() {
+            return Err(StoreError::Backend {
+                backend: "memory-graph-read".to_owned(),
+                message: "invalid numeric metadata bound".to_owned(),
+            });
+        }
+        let mut bounded_query = query.clone();
+        bounded_query.limit = usize::MAX;
+        let mut matches = self.vector_query_of_kind(ns, kind, &bounded_query).await?;
+        matches.retain(|matched| {
+            matched
+                .record
+                .metadata
+                .get(field)
+                .and_then(Value::as_f64)
+                .is_some_and(|value| value <= maximum)
+        });
+        matches.truncate(query.limit);
+        Ok(matches)
+    }
 }
 
 impl GraphWriteStore for InMemoryStore {
@@ -2073,6 +2103,56 @@ mod tests {
             .unwrap()
             .is_some()
         );
+    }
+
+    #[test]
+    fn numeric_lte_vector_filter_is_applied_before_top_n() {
+        let store = InMemoryStore::new();
+        for (id, level, embedding) in [
+            ("nearest-deep", 4, vec![1.0_f32, 0.0]),
+            ("next-shallow", 1, vec![0.9, 0.1]),
+            ("last-shallow", 2, vec![0.8, 0.2]),
+        ] {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("level_from_root".to_owned(), json!(level));
+            block_on(store.upsert_graph_record_of_kind(
+                "level-filter",
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: id.to_owned(),
+                    document: None,
+                    metadata,
+                    embedding: Some(embedding),
+                },
+            ))
+            .unwrap();
+        }
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 1,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        let matches = block_on(store.vector_query_of_kind_numeric_lte(
+            "level-filter",
+            GraphEntityKind::Node,
+            &query,
+            "level_from_root",
+            2.0,
+        ))
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].record.id, "next-shallow");
+        let shadow = store.shadow_inspection();
+        let shadow_matches = block_on(shadow.vector_query_of_kind_numeric_lte(
+            "level-filter",
+            GraphEntityKind::Node,
+            &query,
+            "level_from_root",
+            2.0,
+        ))
+        .unwrap();
+        assert_eq!(shadow_matches, matches);
     }
 
     #[test]

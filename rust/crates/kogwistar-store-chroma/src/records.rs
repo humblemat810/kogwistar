@@ -40,6 +40,14 @@ pub(crate) fn chroma_metadata(namespace: &str, record: &GraphRecord) -> Result<V
 }
 
 pub(crate) fn query_where(namespace: &str, filter: &kogwistar_store::MetadataFilter) -> Value {
+    query_where_with_numeric_lte(namespace, filter, None)
+}
+
+pub(crate) fn query_where_with_numeric_lte(
+    namespace: &str,
+    filter: &kogwistar_store::MetadataFilter,
+    numeric_lte: Option<(&str, f64)>,
+) -> Value {
     let mut clauses = vec![json!({
         "$or": [
             {NAMESPACE_KEY: {"$eq": namespace}},
@@ -52,6 +60,9 @@ pub(crate) fn query_where(namespace: &str, filter: &kogwistar_store::MetadataFil
             .iter()
             .map(|(key, value)| json!({key: {"$eq": chroma_filter_value(value)}})),
     );
+    if let Some((field, maximum)) = numeric_lte {
+        clauses.push(json!({field: {"$lte": maximum}}));
+    }
     if clauses.len() == 1 {
         clauses.remove(0)
     } else {
@@ -171,6 +182,20 @@ mod tests {
             "workspace-a"
         );
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
+    }
+
+    #[test]
+    fn numeric_lte_vector_filter_is_combined_with_namespace_and_exact_filters() {
+        let filter = kogwistar_store::MetadataFilter {
+            equals: [("kind".to_owned(), json!("node"))].into(),
+        };
+        let query = query_where_with_numeric_lte(
+            "workspace-a",
+            &filter,
+            Some(("level_from_root", 2.0)),
+        );
+        assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
+        assert_eq!(query["$and"][2]["level_from_root"]["$lte"], 2.0);
     }
 
     #[test]

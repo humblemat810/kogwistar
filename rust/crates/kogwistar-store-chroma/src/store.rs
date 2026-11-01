@@ -242,7 +242,7 @@ impl GraphReadStore for ChromaGraphStore {
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.legacy_http()?;
-        self.vector_query_in_collection(http, namespace, query)
+        self.vector_query_in_collection(http, namespace, query, None)
             .await
     }
 
@@ -254,7 +254,24 @@ impl GraphReadStore for ChromaGraphStore {
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.http_for_kind(kind)?;
-        self.vector_query_in_collection(http, namespace, query)
+        self.vector_query_in_collection(http, namespace, query, None)
+            .await
+    }
+
+    async fn vector_query_of_kind_numeric_lte(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+        field: &str,
+        maximum: f64,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        records::validate_namespace(namespace)?;
+        if field.trim().is_empty() || !maximum.is_finite() {
+            return Err(Self::backend_error("invalid numeric metadata bound"));
+        }
+        let http = self.http_for_kind(kind)?;
+        self.vector_query_in_collection(http, namespace, query, Some((field, maximum)))
             .await
     }
 }
@@ -373,6 +390,7 @@ impl ChromaGraphStore {
         http: &ChromaHttpStore,
         namespace: &str,
         query: &VectorQuery,
+        numeric_lte: Option<(&str, f64)>,
     ) -> StoreResult<Vec<VectorMatch>> {
         if query.metric != self.metric {
             return Err(Self::backend_error(
@@ -393,7 +411,11 @@ impl ChromaGraphStore {
                 Some(json!({
                     "query_embeddings": [query.embedding],
                     "n_results": u32::try_from(query.limit).unwrap_or(u32::MAX),
-                    "where": records::query_where(namespace, &query.metadata),
+                    "where": records::query_where_with_numeric_lte(
+                        namespace,
+                        &query.metadata,
+                        numeric_lte,
+                    ),
                     "include": ["documents", "metadatas", "embeddings", "distances"]
                 })),
             )

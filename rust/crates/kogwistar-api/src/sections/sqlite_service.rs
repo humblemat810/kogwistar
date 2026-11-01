@@ -2053,6 +2053,186 @@ impl SqliteRunApplicationService {
         )
     }
 
+    async fn native_candidate_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let run = self
+            .store
+            .get_server_run(&request.run_id)
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        if let Some(caller) = caller {
+            if authenticated_run_owner_id(caller) != Some(owner_id) {
+                return Err(NativeEvidenceContextError::CallerNotRunOwner);
+            }
+        }
+        let mut principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?;
+        principal["actor_id"] = json!(owner_id);
+
+        let question = request
+            .state
+            .get("question")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty() && value.len() <= 100_000)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let max_candidates = request
+            .state
+            .get("max_candidates")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= 200)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let max_retrieval_level = request
+            .state
+            .get("max_retrieval_level")
+            .and_then(Value::as_i64)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        if max_candidates == 0 {
+            return Ok(Value::Array(Vec::new()));
+        }
+        // Chroma numeric filters use f64; reject bounds that cannot be represented exactly.
+        if max_retrieval_level.unsigned_abs() > (1_u64 << 53) {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let provider = self
+            .embedding_provider
+            .as_ref()
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let profile = provider.profile();
+        profile
+            .validate()
+            .map_err(|_| NativeEvidenceContextError::GraphReadRejected)?;
+        if profile.dimension > 8192 {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let mut vectors = provider
+            .embed(&[question.to_owned()])
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        if vectors.len() != 1 || vectors[0].len() != profile.dimension {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let metric = match profile.similarity_metric.to_ascii_lowercase().as_str() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" => DistanceMetric::InnerProduct,
+            _ => return Err(NativeEvidenceContextError::GraphReadRejected),
+        };
+        let embedding = vectors
+            .pop()
+            .expect("the embedding count was validated")
+            .into_iter()
+            .map(|value| {
+                let value = value as f32;
+                value
+                    .is_finite()
+                    .then_some(value)
+                    .ok_or(NativeEvidenceContextError::GraphReadRejected)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let scope_value = security_scope_value(&principal);
+        let namespace = scope_value["storage_namespace"]
+            .as_str()
+            .unwrap_or("default")
+            .to_owned();
+        let mut metadata = MetadataFilter::default();
+        if let Some(workspace) = principal
+            .get("workspace_id")
+            .or_else(|| principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            metadata
+                .equals
+                .insert("workspace_id".to_owned(), json!(workspace));
+        }
+        if let Some(graph_space) = principal.get("graph_space")
+            .and_then(Value::as_str)
+        {
+            metadata
+                .equals
+                .insert("graph_space".to_owned(), json!(graph_space));
+        }
+        let graph = self
+            .chroma_graph
+            .as_ref()
+            .ok_or(NativeEvidenceContextError::GraphReadUnavailable)?;
+        let candidates = graph
+            .vector_query_of_kind_numeric_lte(
+                &namespace,
+                GraphEntityKind::Node,
+                &VectorQuery {
+                    embedding,
+                    limit: max_candidates,
+                    metadata,
+                    metric,
+                },
+                "level_from_root",
+                max_retrieval_level as f64,
+            )
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        let mut candidate_records = candidates
+            .into_iter()
+            .map(|matched| matched.record)
+            .collect::<Vec<_>>();
+        let mut no_edges = Vec::new();
+        self.filter_current_chroma_stage2(&namespace, &mut candidate_records, &mut no_edges)
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+
+        let mut acl_filter = MetadataFilter {
+            equals: BTreeMap::from([
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("acl_truth_graph".to_owned(), json!("knowledge")),
+            ]),
+        };
+        if let Some(workspace) = principal
+            .get("workspace_id")
+            .or_else(|| principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            acl_filter
+                .equals
+                .insert("workspace_id".to_owned(), json!(workspace));
+        }
+        if let Some(graph_space) = principal.get("graph_space").and_then(Value::as_str) {
+            acl_filter
+                .equals
+                .insert("graph_space".to_owned(), json!(graph_space));
+        }
+        let mut acl_records = graph
+            .graph_records_of_kind_bounded(
+                &namespace,
+                GraphEntityKind::Node,
+                &acl_filter,
+                10_000,
+            )
+            .await
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        self.filter_current_chroma_stage2(&namespace, &mut acl_records, &mut Vec::new())
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        let acl_principal = graph_acl_principal_from_claims(
+            &principal,
+            scope_value["security_scope"].as_str(),
+        );
+        Ok(sqlite_native_candidate_values(
+            &candidate_records,
+            &acl_records,
+            "knowledge",
+            &acl_principal,
+        ))
+    }
+
     async fn sqlite_chroma_receive_message_effect(
         &self,
         request: &ApiEffectRequest,
@@ -4209,6 +4389,55 @@ impl SqliteRunApplicationService {
                     );
                 }
             }
+        } else if native_request.operation == "aa_retrieve_candidates" {
+            match self
+                .native_candidate_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(records) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_candidate_records".to_owned(), records);
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native graph reads require the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => {
+                    return self.apply_runtime_result_input(
+                        failed_native_result(
+                            input.handoff,
+                            &native_request,
+                            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                            "native candidate retrieval requires the run owner's current read_graph capability and admitted scope",
+                        ),
+                        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                        None,
+                    );
+                }
+                Err(NativeEvidenceContextError::GraphReadRejected) => {
+                    return self.apply_runtime_result_input(
+                        failed_native_result(
+                            input.handoff,
+                            &native_request,
+                            "KOGWISTAR_CANDIDATE_RETRIEVAL_REJECTED",
+                            "native candidate retrieval configuration or input is invalid",
+                        ),
+                        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                        None,
+                    );
+                }
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_CANDIDATE_RETRIEVAL_UNAVAILABLE",
+                        "native candidate retrieval is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
         }
         self.execute_native_request(input.handoff, native_request)
     }
@@ -4320,6 +4549,45 @@ fn sqlite_native_answer_view_from_visible_records(
         "context_nodes": context_nodes,
         "context_edges": context_edges
     }))
+}
+
+fn sqlite_native_candidate_values(
+    candidates: &[GraphRecord],
+    acl_records: &[GraphRecord],
+    truth_graph: &str,
+    principal: &GraphAclPrincipal,
+) -> Value {
+    let mut acl_inputs = candidates
+        .iter()
+        .filter(|record| {
+            !record
+                .metadata
+                .get("lifecycle_status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    acl_inputs.extend_from_slice(acl_records);
+    let (visible_candidates, _) =
+        graph_records_visible_by_acl(&acl_inputs, &[], truth_graph, principal);
+    let mut projected = visible_candidates
+        .into_iter()
+        .map(|record| {
+            json!({
+                "id": record.id,
+                "label": record.metadata.get("label").cloned().unwrap_or(Value::Null),
+                "summary": record.metadata.get("summary").cloned().unwrap_or(Value::Null),
+                "doc": record.document.unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    projected.sort_by(|left, right| {
+        left.get("id")
+            .and_then(Value::as_str)
+            .cmp(&right.get("id").and_then(Value::as_str))
+    });
+    Value::Array(projected)
 }
 
 fn apply_sqlite_provider_event_acknowledgement(

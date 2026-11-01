@@ -2774,6 +2774,24 @@ pub trait GraphReadStore: Send + Sync {
             })
         }
     }
+    /// Run a typed vector query with an inclusive numeric metadata upper bound.
+    /// The default fails closed rather than applying the bound after top-N,
+    /// which could silently change the candidate set.
+    fn vector_query_of_kind_numeric_lte(
+        &self,
+        _namespace: &str,
+        _kind: GraphEntityKind,
+        _query: &VectorQuery,
+        _field: &str,
+        _maximum: f64,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-read".to_owned(),
+                message: "numeric-bounded vector search is not supported by this store".to_owned(),
+            })
+        }
+    }
 }
 
 pub trait GraphWriteStore: GraphReadStore {
@@ -3078,6 +3096,18 @@ impl<S: GraphReadStore + Send + Sync> GraphReadStore for ShadowInspection<S> {
     }
     async fn vector_query(&self, ns: &str, query: &VectorQuery) -> StoreResult<Vec<VectorMatch>> {
         self.inner.vector_query(ns, query).await
+    }
+    async fn vector_query_of_kind_numeric_lte(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+        field: &str,
+        maximum: f64,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        self.inner
+            .vector_query_of_kind_numeric_lte(ns, kind, query, field, maximum)
+            .await
     }
 }
 
