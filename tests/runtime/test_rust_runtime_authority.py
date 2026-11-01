@@ -2416,6 +2416,53 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         )
         assert python_generated_edge.relation == "generated"
         assert assistant_id in python_generated_edge.target_ids
+        if backend == "pg":
+            from kogwistar.engine_core.embedding_profile import EmbeddingProfile
+            from kogwistar.engine_core.engine import GraphKnowledgeEngine
+            from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+            assert pg_dsn is not None and pg_schema is not None
+            import sqlalchemy as sa
+
+            python_storage_engine = sa.create_engine(pg_dsn, future=True)
+            python_graph: GraphKnowledgeEngine | None = None
+            try:
+                python_backend = PgVectorBackend(
+                    engine=python_storage_engine,
+                    embedding_dim=3,
+                    schema=pg_schema,
+                )
+                python_graph = GraphKnowledgeEngine(
+                    backend=python_backend,
+                    namespace=graph_namespace,
+                    kg_graph_type="conversation",
+                    embedding_function=lambda texts: [
+                        [0.0, 0.0, 1.0] for _ in texts
+                    ],
+                    embedding_profile=EmbeddingProfile(
+                        provider="ollama",
+                        model="fixture-embedding-model",
+                        dimension=3,
+                        similarity_metric="cosine",
+                        embedding_kind="single_vector",
+                    ),
+                )
+                read_assistant = python_graph.read.get_nodes(
+                    ids=[assistant_id], node_type=ConversationNode
+                )
+                read_generated_edge = python_graph.read.get_edges(
+                    ids=[python_generated_edge.id], edge_type=ConversationEdge
+                )
+                assert len(read_assistant) == 1
+                assert read_assistant[0].summary == python_assistant.summary
+                assert len(read_generated_edge) == 1
+                assert read_generated_edge[0].relation == "generated"
+                assert assistant_id in read_generated_edge[0].target_ids
+            finally:
+                if python_graph is not None:
+                    python_graph.close()
+                else:
+                    python_storage_engine.dispose()
         assistant_jobs = {
             (index_kind, status)
             for entity_id, index_kind, status in jobs

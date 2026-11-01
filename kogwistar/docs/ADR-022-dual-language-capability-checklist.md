@@ -501,9 +501,13 @@ persists the supplied vector, and PostgreSQL Rust-native uses the configured
 Rust embedding provider. For every case, Python successfully hydrates the
 Rust-persisted assistant node and generated edge as typed `ConversationNode`
 and `ConversationEdge` models, preserving the generated relation and endpoint
-identity at the actual downstream model boundary. PostgreSQL server startup now loads owner-auth
-configuration for externally claimed native execution, and native graph effects
-are revalidated against the run owner's current write authority before commit.
+identity at the actual downstream model boundary. In both PostgreSQL cases,
+Python also reopens the shared projection through `GraphKnowledgeEngine.read`
+and retrieves the assistant node and generated edge, covering the production
+Python backend adapter and graph-model reconstruction path. PostgreSQL server
+startup now loads owner-auth configuration for externally claimed native
+execution, and native graph effects are revalidated against the run owner's
+current write authority before commit.
 The Rust API library suite passed (**235 passed, 23 ignored**), and the explicit
 live `postgres_inline_native_graph_effect_revalidates_current_owner` test passed
 against disposable pgvector (**1 passed**), including revoked permission,
