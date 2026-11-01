@@ -627,7 +627,8 @@ async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_availa
         .await?
         .batch_execute(&format!(
             "CREATE FUNCTION {}.reject_batch_index_job() RETURNS trigger \
-                 LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected index job failure'; \
+                 LANGUAGE plpgsql AS $$ BEGIN IF NEW.entity_id = 'batch-rollback-edge' THEN \
+                 RAISE EXCEPTION 'injected second index job failure'; END IF; RETURN NEW; \
                  END; $$; CREATE TRIGGER reject_batch_index_job BEFORE INSERT ON {} \
                  FOR EACH ROW EXECUTE FUNCTION {}.reject_batch_index_job();",
             tables.quoted_schema, tables.index_jobs, tables.quoted_schema
@@ -684,16 +685,28 @@ async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_availa
     };
     let batch = kogwistar_store::GraphMutationBatch {
         mutations: vec![mutation, edge_mutation],
-        index_jobs: vec![kogwistar_store::NewIndexJob {
-            job_id: format!("job-{entity_id}"),
-            namespace: namespace.clone(),
-            entity_kind: "node".to_owned(),
-            entity_id: entity_id.to_owned(),
-            index_kind: "node_docs".to_owned(),
-            op: "UPSERT".to_owned(),
-            payload_json: None,
-            max_retries: 3,
-        }],
+        index_jobs: vec![
+            kogwistar_store::NewIndexJob {
+                job_id: format!("job-{entity_id}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            },
+            kogwistar_store::NewIndexJob {
+                job_id: format!("job-{edge_id}"),
+                namespace: namespace.clone(),
+                entity_kind: "edge".to_owned(),
+                entity_id: edge_id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            },
+        ],
     };
 
     assert!(matches!(
@@ -750,6 +763,12 @@ async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_availa
         .try_get(0)
         .map_err(backend)?;
     assert_eq!(endpoint_row_count, 0);
+    assert!(
+        store
+            .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+            .await?
+            .is_empty()
+    );
     assert!(
         store
             .claim_index_jobs(10, 30, Some(&namespace))
