@@ -3484,6 +3484,10 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         )
         .unwrap();
     assert!(service.supports_http_operation("POST", "/api/conversations"));
+    assert!(service.supports_http_operation(
+        "POST",
+        "/api/conversations/conversation-create-contract/turns:answer"
+    ));
     assert!(service.supports_mcp_tool("conversation", "conversation.ask"));
 
     let principal = json!({
@@ -3604,26 +3608,48 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         visible_start.document
     );
 
-    let send_message = app
+    let event_count_before_empty_answer = service
+        .store
+        .replay_raw_events("conversation", 0, 50)
+        .unwrap()
+        .len();
+    let empty_answer = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/mcp/conversation")
+                .uri("/api/conversations/conversation-create-contract/turns:answer")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(r#"{"text":"  "}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        service
+            .store
+            .replay_raw_events("conversation", 0, 50)
+            .unwrap()
+            .len(),
+        event_count_before_empty_answer,
+        "invalid REST turn admission must not append canonical graph events"
+    );
+
+    let send_message = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/conversations/conversation-create-contract/turns:answer")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "jsonrpc":"2.0",
-                        "id":"sqlite-chroma-conversation-ask",
-                        "method":"tools/call",
-                        "params":{
-                            "name":"conversation.ask",
-                            "arguments":{
-                                "conversation_id":"conversation-create-contract",
-                                "text":"Where is workflow runtime state persisted?",
-                                "workflow_id":workflow_id
-                            }
-                        }
+                        "text":"Where is workflow runtime state persisted?",
+                        "user_id":"body-spoof",
+                        "workflow_id":workflow_id
                     }))
                     .unwrap(),
                 ))
@@ -3631,14 +3657,23 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         )
         .await;
     let send_message = send_message.unwrap();
-    assert_eq!(send_message.status(), StatusCode::OK);
+    assert_eq!(send_message.status(), StatusCode::ACCEPTED);
     let send_response: Value =
         serde_json::from_slice(&to_bytes(send_message.into_body(), 65_536).await.unwrap()).unwrap();
-    let send_result = &send_response["result"];
-    assert_eq!(send_result["workflow_id"], workflow_id);
-    assert_eq!(send_result["status"], "queued");
-    let run_id = send_result["run_id"].as_str().unwrap();
-    assert!(service.store.get_server_run(run_id).unwrap().is_some());
+    assert_eq!(send_response["workflow_id"], workflow_id);
+    assert_eq!(send_response["status"], "queued");
+    let run_id = send_response["run_id"].as_str().unwrap();
+    assert_eq!(
+        service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .expect("admitted answer run is durable")
+            .user_id
+            .as_deref(),
+        Some("conversation-owner"),
+        "authenticated owner takes precedence over body user_id"
+    );
     let events = service
         .store
         .replay_raw_events("conversation", 0, 50)
@@ -3789,6 +3824,64 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         }),
         "assistant turn {assistant_id} is linked to user turn {} by the canonical graph edge",
         runtime.state["turn_node_id"]
+    );
+
+    let mcp_ask = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0",
+                        "id":"sqlite-chroma-conversation-ask",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"conversation.ask",
+                            "arguments":{
+                                "conversation_id":"conversation-create-contract",
+                                "text":"Does MCP use the same durable turn path?",
+                                "workflow_id":workflow_id
+                            }
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_ask.status(), StatusCode::OK);
+    let mcp_response: Value =
+        serde_json::from_slice(&to_bytes(mcp_ask.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(mcp_response["result"]["status"], "queued");
+    let mcp_run_id = mcp_response["result"]["run_id"]
+        .as_str()
+        .expect("MCP ask returns its queued run id");
+    for _ in 0..32 {
+        let status = service
+            .store
+            .get_server_run(mcp_run_id)
+            .unwrap()
+            .expect("MCP ask run remains durable");
+        if matches!(status.status.as_str(), "succeeded" | "failed" | "cancelled") {
+            break;
+        }
+        assert!(
+            service.execute_inline_native_work_once().await.unwrap(),
+            "native scheduler stopped before MCP ask became terminal: {status:#?}"
+        );
+    }
+    assert_eq!(
+        service
+            .store
+            .get_server_run(mcp_run_id)
+            .unwrap()
+            .expect("MCP ask run remains durable")
+            .status,
+        "succeeded"
     );
 
     let duplicate = service.execute(request()).await;

@@ -20,7 +20,7 @@ Current public-surface evidence for DL-02/DL-03: `contracts/dual-language-surfac
 
 The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` route before probing, so a missing handler cannot be mistaken for an implemented route merely because a nonexistent run returned 404.
 
-DL-16BQ incremental evidence: SQLite+Chroma `invoke_tool` now supports Python's four built-ins (`list_transcript`, `latest_snapshot`, `capability_snapshot`, `resource_snapshot`) by reusing scoped handlers and enforcing snapshot capabilities; it records success and failure in the syscall audit. A shared `contracts/golden/invoke-tool-results-v1.json` now defines stable result envelopes and nested field sets. Python's `_invoke_builtin_tool` exact-result test and Rust SQLite+Chroma/PostgreSQL tests consume this fixture, catching the previously observed flattened `capability_snapshot` response. `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` also verifies authorization denial, audit entries, and fail-closed SQLite metadata-only behavior. The provider-backed SQLite+Chroma answer test enters through JWT-authenticated HTTP conversation creation and MCP `conversation.ask`, then closes and reopens the service after durable turn/run admission but before native scheduling; the recovered service completes the same run and persists assistant/evidence graph effects. Evidence: `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic` (1 passed); full Rust API library suite: **228 passed, 23 ignored**; focused Python fixture test and Ruff passed. This verifies public ingress and queued-run recovery across service reopen for this fixture, not arbitrary crash points or whole-stack parity. The overall DL-16BQ gate remains open.
+DL-16BQ incremental evidence: SQLite+Chroma `invoke_tool` now supports Python's four built-ins (`list_transcript`, `latest_snapshot`, `capability_snapshot`, `resource_snapshot`) by reusing scoped handlers and enforcing snapshot capabilities; it records success and failure in the syscall audit. A shared `contracts/golden/invoke-tool-results-v1.json` now defines stable result envelopes and nested field sets. Python's `_invoke_builtin_tool` exact-result test and Rust SQLite+Chroma/PostgreSQL tests consume this fixture, catching the previously observed flattened `capability_snapshot` response. `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` also verifies authorization denial, audit entries, and fail-closed SQLite metadata-only behavior. The provider-backed SQLite+Chroma answer test enters through JWT-authenticated HTTP conversation creation and REST `turns:answer`, then closes and reopens the service after durable turn/run admission but before native scheduling; the recovered service completes the same run and persists assistant/evidence graph effects. REST reuses the existing `send_message` transaction and matches Python's authenticated-owner precedence and queued response shape. The same test then submits and completes a second turn through authenticated MCP `conversation.ask`; whitespace-only REST input is rejected without graph effects. Evidence: `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic` (1 passed); full Rust API library suite: **228 passed, 23 ignored**; focused Python fixture test and Ruff passed. This verifies both public ingress paths and queued-run recovery across service reopen for this fixture, not arbitrary crash points or whole-stack parity. The overall DL-16BQ gate remains open.
 
 | ID | Status | Gate / evidence |
 | --- | --- | --- |
@@ -246,11 +246,13 @@ ACL-filtered canonical snapshot, revalidates the active owner and current
 commits those graph effects with the queued run and lane message in the
 canonical SQLite unit of work. Chroma remains an eventual projection. The
 regression `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic`
-verifies JWT-authenticated public HTTP conversation creation and MCP turn
-admission, create-then-send visibility, queued run and lane admission,
-canonical turn/edge/ACL events, duplicate-create rejection, wrong-owner
-rejection, and no synchronous Chroma mutation; the full `kogwistar-api`
-library suite passed
+verifies JWT-authenticated public HTTP conversation creation, REST turn
+admission, and MCP `conversation.ask` admission; create-then-send visibility,
+queued run and lane admission,
+canonical turn/edge/ACL events, duplicate-create rejection, authenticated
+owner precedence over body `user_id`, wrong-owner rejection, empty-text
+rejection without graph writes, and no synchronous Chroma mutation; the full
+`kogwistar-api` library suite passed
 (**228 passed, 23 ignored**) and `kogwistar-store-sqlite` passed (**50 passed,
 1 ignored**). Python baseline tests
 `test_submit_turn_for_answer_requires_send_message`,

@@ -1288,6 +1288,9 @@ impl ApplicationService for SqliteRunApplicationService {
         let is_composed_conversation_create = self.chroma_graph.is_some()
             && method == "POST"
             && path.split('?').next() == Some("/api/conversations");
+        let is_composed_conversation_answer = self.chroma_graph.is_some()
+            && method == "POST"
+            && conversation_answer_id(path).is_some();
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
             || is_composed_graph_mutation
@@ -1297,7 +1300,8 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
             || is_composed_conversation_list
-            || is_composed_conversation_create)
+            || is_composed_conversation_create
+            || is_composed_conversation_answer)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (path != "/api/workflow/runs/{run_id}/lineage"
@@ -1311,7 +1315,8 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
                 || is_composed_conversation_list
-                || is_composed_conversation_create)
+                || is_composed_conversation_create
+                || is_composed_conversation_answer)
     }
 
     fn execute(
@@ -1520,6 +1525,103 @@ impl ApplicationService for SqliteRunApplicationService {
                         "conversation-create syscall returned no result",
                     ),
                 };
+            }
+            if request.method == "POST"
+                && self.chroma_graph.is_some()
+                && let Some(conversation_id) = conversation_answer_id(&request.path_and_query)
+            {
+                let input: SubmitConversationAnswerHttpInput =
+                    match serde_json::from_slice(&request.body) {
+                        Ok(input) => input,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_REQUEST",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                if input.text.trim().is_empty() {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "text must contain at least one character",
+                    );
+                }
+                let effective_user_id = authenticated_run_owner_id(&request.principal)
+                    .map(str::to_owned)
+                    .or(input.user_id);
+                let mut args = serde_json::Map::from_iter([
+                    ("conversation_id".to_owned(), json!(conversation_id)),
+                    ("text".to_owned(), json!(input.text)),
+                    ("workflow_id".to_owned(), json!(input.workflow_id)),
+                ]);
+                if let Some(user_id) = effective_user_id {
+                    args.insert("user_id".to_owned(), json!(user_id));
+                }
+                let syscall_request = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                    body: serde_json::to_vec(&json!({
+                        "version":"v1",
+                        "op":"send_message",
+                        "args":args,
+                    }))
+                    .expect("typed answer-submission input serializes"),
+                    principal: request.principal,
+                };
+                let syscall_input = match syscall_input(&syscall_request, "send_message") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let syscall_response = self
+                    .sqlite_chroma_send_message_effect(&syscall_request, &syscall_input)
+                    .await;
+                if !(200..300).contains(&syscall_response.status) {
+                    return syscall_response;
+                }
+                let envelope: Value = match serde_json::from_slice(&syscall_response.body) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::BAD_GATEWAY,
+                            "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let Some(result) = envelope.get("result") else {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        "send-message syscall returned no result",
+                    );
+                };
+                let (Some(run_id), Some(turn_node_id)) = (
+                    result.get("run_id").and_then(Value::as_str),
+                    result.get("turn_node_id").and_then(Value::as_str),
+                ) else {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        "send-message syscall result omitted run_id or turn_node_id",
+                    );
+                };
+                let workflow_id = result
+                    .get("workflow_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("debug.rag.v1");
+                return json_effect(
+                    StatusCode::ACCEPTED,
+                    json!({
+                        "run_id":run_id,
+                        "conversation_id":conversation_id,
+                        "workflow_id":workflow_id,
+                        "status":"queued",
+                        "user_turn_node_id":turn_node_id,
+                    }),
+                );
             }
             self.execute_sync(request)
         })
