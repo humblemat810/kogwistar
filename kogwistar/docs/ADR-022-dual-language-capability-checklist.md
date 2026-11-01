@@ -427,11 +427,14 @@ test `acl_projection_reuses_index_after_helper_records_are_removed` proves
 stable authorized visibility through the typed projection and fail-closed
 behavior when ACL context is incorrectly rebuilt from filtered records. The
 store library suite passed (**42 passed**), and the full API library suite
-passed (**224 passed, 22 ignored**), including the SQLite+Chroma native
-end-to-end debug workflow. The focused `sqlite_chroma` API subset also passed
-(**14 passed, 1 ignored**); the ignored test requires an explicitly configured
-live Chroma service. This adds evidence to the existing DL-16BQ gate; it does
-not add a checklist item or change the denominator.
+passed (**227 passed, 23 ignored**), including the SQLite+Chroma native
+end-to-end debug workflow. The shared graph-extraction contract test now sends
+its successful SQLite+Chroma write through the authenticated public HTTP route;
+the focused test passed, and the API suite passed after that change. The ignored
+live-Chroma test requires an explicitly configured service; a separate live
+projection/reopen test passed against disposable Chroma 1.5.9. This adds
+evidence to the existing DL-16BQ gate; it does not add a checklist item or
+change the denominator.
 
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix

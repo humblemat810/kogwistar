@@ -5043,6 +5043,10 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
 
 #[tokio::test]
 async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5159,22 +5163,53 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
                 .is_empty()
         );
     }
-    let response = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
-            body: body.clone(),
-            principal: principal.clone(),
-        })
-        .await;
-    assert_eq!(
-        response.status,
-        StatusCode::OK.as_u16(),
-        "{}",
-        String::from_utf8_lossy(&response.body)
+    let secret = "sqlite-chroma-public-upsert-test-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice", "user_id": "alice", "role": "rw",
+            "roles": ["reader", "rw"], "ns": ["docs"],
+            "storage_ns": "docs", "capabilities": ["write_graph"],
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec!["reader".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
     );
-    let payload: Value = serde_json::from_slice(&response.body).unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(PUBLIC_GRAPH_UPSERT_ROUTE)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+    let response = response.unwrap();
+    let response_status = response.status();
+    let response_body = to_bytes(response.into_body(), 65_536).await.unwrap();
+    assert_eq!(
+        response_status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let payload: Value = serde_json::from_slice(&response_body).unwrap();
     assert_eq!(payload["document_id"], "doc-1");
     assert_eq!(payload["nodes_added"], 2);
     assert_eq!(payload["edges_added"], 1);
