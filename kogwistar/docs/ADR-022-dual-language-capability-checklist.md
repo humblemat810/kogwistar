@@ -248,8 +248,14 @@ verifies create-then-send visibility, queued run and lane admission, canonical
 turn/edge/ACL events, duplicate-create rejection, wrong-owner rejection, and no
 synchronous Chroma mutation; the full `kogwistar-api` library suite passed
 (**222 passed, 22 ignored**) and `kogwistar-store-sqlite` passed (**50 passed,
-1 ignored**). This closes the bounded user-turn admission step only; it does
-not verify Python worker completion or a full SQLite+Chroma answer run.
+1 ignored**). Python baseline tests
+`test_submit_turn_for_answer_requires_send_message`,
+`test_submit_turn_for_answer_rejects_user_id_not_owned_by_conversation`, and
+`test_submit_turn_for_answer_keeps_authorized_actor_distinct_from_owner` also
+passed (**3 passed**), confirming the corresponding capability, owner, and
+actor/owner separation semantics. This closes the bounded user-turn admission
+step only; it does not verify Python worker completion or a full SQLite+Chroma
+answer run.
 
 DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
