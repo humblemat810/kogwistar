@@ -2,6 +2,15 @@ use super::*;
 use kogwistar_store::{GraphMutation, GraphMutationBatch, GraphRecord, GraphScope};
 
 fn mutation(event_id: &str, id: &str) -> GraphMutation {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    let mut payload = fixture["cases"][0]["payload"].clone();
+    payload["id"] = serde_json::Value::String(id.to_owned());
+    payload["label"] = serde_json::Value::String(id.to_owned());
+    payload["metadata"]["workspace_id"] = serde_json::Value::String("workspace-a".to_owned());
+    payload["metadata"]["graph_space"] = serde_json::Value::String("conversation".to_owned());
     GraphMutation {
         scope: GraphScope {
             namespace: "conversation".to_owned(),
@@ -12,11 +21,11 @@ fn mutation(event_id: &str, id: &str) -> GraphMutation {
         entity_kind: "node".to_owned(),
         event_id: event_id.to_owned(),
         op: "ADD".to_owned(),
-        payload: serde_json::json!({"id": id, "label": id, "metadata": {"engine_type": "conversation"}}),
+        payload: payload.clone(),
         record: GraphRecord {
             id: id.to_owned(),
-            document: Some(format!("{{\"id\":\"{id}\"}}")),
-            metadata: serde_json::Map::new(),
+            document: Some(payload.to_string()),
+            metadata: payload["metadata"].as_object().unwrap().clone(),
             embedding: None,
         },
         embedding_dim: 0,
@@ -60,6 +69,19 @@ fn canonical_graph_batch_commits_events_and_projection_jobs_together() {
         .unwrap();
     assert_eq!(jobs.len(), 2);
     assert!(jobs.iter().all(|job| job.payload_json.is_some()));
+    for id in ["node-1", "node-2"] {
+        let projection = store
+            .get_stage1_node_projection("conversation", &format!("node:{id}"))
+            .unwrap()
+            .expect("canonical active graph writes are immediately visible in Stage-1");
+        assert_eq!(
+            projection.last_authoritative_seq,
+            projection.last_materialized_seq
+        );
+        assert_eq!(projection.materialization_status, "pending");
+        assert_eq!(projection.payload["id"], id);
+        assert!(projection.payload["source_fingerprint"].as_str().is_some());
+    }
 
     let retried = store
         .apply_canonical_graph_mutation_batch(GraphMutationBatch {
@@ -132,6 +154,12 @@ fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
     assert!(
         store
             .list_index_jobs(Some("conversation"), None, None, None, None, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .list_stage1_node_projections("conversation")
             .unwrap()
             .is_empty()
     );
@@ -218,10 +246,15 @@ fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     let mut edge = mutation("edge-event-1", "edge-1");
     edge.table = "gke_edges".to_owned();
     edge.entity_kind = "edge".to_owned();
-    edge.payload = serde_json::json!({
-        "id":"edge-1", "relation":"related", "source_ids":["node-1"],
-        "target_ids":["node-2"], "metadata":{"engine_type":"conversation"}
-    });
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    edge.payload = fixture["cases"][1]["payload"].clone();
+    edge.payload["id"] = serde_json::Value::String("edge-1".to_owned());
+    edge.payload["relation"] = serde_json::Value::String("related".to_owned());
+    edge.payload["metadata"]["workspace_id"] = serde_json::Value::String("workspace-a".to_owned());
+    edge.payload["metadata"]["graph_space"] = serde_json::Value::String("conversation".to_owned());
     edge.record.document = Some(edge.payload.to_string());
 
     store
@@ -236,7 +269,72 @@ fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].entity_kind, "edge");
     assert_eq!(jobs[0].index_kind, "node_embedding");
+    assert!(
+        store
+            .get_stage1_node_projection("conversation", "edge:edge-1")
+            .unwrap()
+            .is_some()
+    );
 
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn canonical_tombstone_clears_stage1_projection_in_the_event_transaction() {
+    let (store, path) = store("canonical-stage1-tombstone");
+    store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![mutation("node-add", "node-1")],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    let mut tombstone = mutation("node-delete", "node-1");
+    tombstone.op = "TOMBSTONE".to_owned();
+    store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![tombstone],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+
+    assert!(
+        store
+            .get_stage1_node_projection("conversation", "node:node-1")
+            .unwrap()
+            .is_none()
+    );
+    let events = store.replay_raw_events("conversation", 0, 10).unwrap();
+    assert_eq!(events.len(), 2);
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn ungrounded_graph_mutation_remains_canonical_but_is_not_stage1_indexed() {
+    let (store, path) = store("canonical-stage1-ungrounded");
+    let mut ungrounded = mutation("node-ungrounded", "node-1");
+    ungrounded.payload["mentions"] = serde_json::json!([]);
+    store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![ungrounded],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .get_stage1_node_projection("conversation", "node:node-1")
+            .unwrap()
+            .is_none()
+    );
     drop(store);
     let _ = fs::remove_file(path);
 }

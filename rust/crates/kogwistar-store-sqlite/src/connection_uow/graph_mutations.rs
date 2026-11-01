@@ -60,6 +60,70 @@ impl SqliteUnitOfWork<'_> {
                 },
             )?;
             let event = raw_to_entity_event(appended.event).map_err(SqliteStoreError::from)?;
+            let current = self.latest_entity_events(
+                &mutation.scope.namespace,
+                &mutation.entity_kind,
+                std::slice::from_ref(&mutation.record.id),
+            )?;
+            let current_events = current
+                .into_values()
+                .map(raw_to_entity_event)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(SqliteStoreError::from)?;
+            if let Some(revision) =
+                kogwistar_engine::canonical_revision::read_canonical_entity_revision(
+                    &current_events,
+                    &mutation.scope.namespace,
+                    &mutation.entity_kind,
+                    &mutation.record.id,
+                )?
+            {
+                let projection_key = format!("{}:{}", revision.entity_kind, revision.entity_id);
+                if revision.is_deleted() {
+                    self.clear_stage1_node_projection(&revision.namespace, &projection_key)?;
+                } else if revision
+                    .payload
+                    .get("mentions")
+                    .and_then(Value::as_array)
+                    .is_none_or(Vec::is_empty)
+                {
+                    // Stage-1 is the source-grounded graph projection, not a
+                    // fabricated fallback for ungrounded runtime artifacts.
+                    self.clear_stage1_node_projection(&revision.namespace, &projection_key)?;
+                } else {
+                    let job_payload =
+                        kogwistar_engine::canonical_revision::canonical_revision_job_payload(
+                            &revision,
+                        );
+                    let fingerprint = serde_json::from_str::<serde_json::Value>(&job_payload)
+                        .ok()
+                        .and_then(|payload| {
+                            payload
+                                .get("source_fingerprint")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .ok_or_else(|| {
+                            SqliteStoreError::TransactionAborted(
+                                "canonical Stage-1 fingerprint could not be derived".to_owned(),
+                            )
+                        })?;
+                    let projection = crate::stage1_projection_from_canonical_event(
+                        &revision.namespace,
+                        &revision.entity_kind,
+                        &revision.entity_id,
+                        revision.revision,
+                        &revision.payload,
+                        &fingerprint,
+                    )
+                    .map_err(SqliteStoreError::from)?;
+                    self.replace_stage1_node_projection(
+                        &revision.namespace,
+                        &projection_key,
+                        projection,
+                    )?;
+                }
+            }
             if !appended.inserted {
                 validate_graph_mutation_replay(&mutation, &event)?;
             } else {

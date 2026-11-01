@@ -19,19 +19,6 @@ struct SqliteChromaGraphConfig {
     edge_collection: String,
 }
 
-const STAGE1_RECOVERY_PROJECTION_SCHEMA_VERSION: i64 = 2;
-
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
-}
-
 async fn open_sqlite_application_service(
     path: impl AsRef<std::path::Path>,
     chroma: Option<SqliteChromaGraphConfig>,
@@ -220,189 +207,14 @@ impl RevisionFencedChromaProjectionStore {
         revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
         fingerprint: &str,
     ) -> Result<NamedProjectionWrite, StoreError> {
-        let model_class = match revision.entity_kind.as_str() {
-            "node" => GraphModelClass::Node,
-            "edge" => GraphModelClass::Edge,
-            _ => {
-                return Err(StoreError::Backend {
-                    backend: "sqlite-chroma-projection".to_owned(),
-                    message: "Stage-1 recovery supports only Node and Edge events".to_owned(),
-                });
-            }
-        };
-        GraphModelEnvelope::new(model_class, revision.payload.clone())
-            .decode_persistent_v1()
-            .map_err(|error| StoreError::InvalidEntityEventPayload {
-                message: format!("canonical graph model cannot be projected: {error}"),
-            })?;
-
-        let mut document_payload = revision.payload.clone();
-        let Some(entity) = document_payload.as_object_mut() else {
-            return Err(StoreError::InvalidEntityEventPayload {
-                message: "canonical graph model payload must be an object".to_owned(),
-            });
-        };
-        if entity.get("id").and_then(Value::as_str) != Some(revision.entity_id.as_str()) {
-            return Err(StoreError::InvalidEntityEventPayload {
-                message: "canonical graph model ID does not match the event identity".to_owned(),
-            });
-        }
-        entity.remove("embedding");
-        if revision.entity_kind == "node" {
-            entity.remove("metadata");
-        }
-        let document = kogwistar_contracts::canonical_json(&document_payload, false);
-
-        let source_metadata = revision.payload.get("metadata").and_then(Value::as_object);
-        let mut metadata = source_metadata.cloned().unwrap_or_default();
-        if metadata.get("namespace").is_some_and(|value| {
-            !value.is_null() && value.as_str() != Some(revision.namespace.as_str())
-        }) {
-            return Err(StoreError::InvalidEntityEventPayload {
-                message: "canonical graph metadata namespace conflicts with its event scope"
-                    .to_owned(),
-            });
-        }
-        metadata.insert(
-            "namespace".to_owned(),
-            Value::String(revision.namespace.clone()),
-        );
-        if revision.entity_kind == "node" {
-            metadata.retain(|_, value| !value.is_null());
-            for field in [
-                "doc_id",
-                "label",
-                "type",
-                "summary",
-                "domain_id",
-                "canonical_entity_id",
-            ] {
-                if let Some(value) = revision.payload.get(field).filter(|value| !value.is_null()) {
-                    metadata.insert(field.to_owned(), value.clone());
-                }
-            }
-            if let Some(value) = revision
-                .payload
-                .get("properties")
-                .filter(|value| !value.is_null())
-            {
-                metadata.insert(
-                    "properties".to_owned(),
-                    Value::String(kogwistar_contracts::canonical_json(value, false)),
-                );
-            }
-            if let Some(value) = revision
-                .payload
-                .get("mentions")
-                .filter(|value| !value.is_null())
-            {
-                metadata.insert(
-                    "mentions".to_owned(),
-                    Value::String(kogwistar_contracts::canonical_json(value, false)),
-                );
-            }
-        } else {
-            for field in [
-                "doc_id",
-                "relation",
-                "type",
-                "summary",
-                "domain_id",
-                "canonical_entity_id",
-            ] {
-                if let Some(value) = revision.payload.get(field).filter(|value| !value.is_null()) {
-                    metadata.insert(field.to_owned(), value.clone());
-                }
-            }
-            for field in [
-                "source_ids",
-                "target_ids",
-                "source_edge_ids",
-                "target_edge_ids",
-                "properties",
-            ] {
-                if let Some(value) = revision.payload.get(field).filter(|value| !value.is_null()) {
-                    metadata.insert(
-                        field.to_owned(),
-                        Value::String(kogwistar_contracts::canonical_json(value, false)),
-                    );
-                }
-            }
-            if let Some(value) = revision
-                .payload
-                .get("mentions")
-                .filter(|value| !value.is_null())
-            {
-                metadata.insert(
-                    "references".to_owned(),
-                    Value::String(kogwistar_contracts::canonical_json(value, false)),
-                );
-            }
-            for (target, sources) in [
-                ("wf_priority", ["wf_priority", "priority"]),
-                ("wf_is_default", ["wf_is_default", "is_default"]),
-                ("wf_predicate", ["wf_predicate", "predicate"]),
-                ("wf_multiplicity", ["wf_multiplicity", "multiplicity"]),
-            ] {
-                let value = sources
-                    .iter()
-                    .filter_map(|key| revision.payload["metadata"].get(*key))
-                    .find(|value| json_truthy(value));
-                if let Some(value) = value {
-                    metadata.insert(target.to_owned(), value.clone());
-                }
-            }
-            let node_endpoints = ["source_ids", "target_ids"]
-                .iter()
-                .filter_map(|key| revision.payload.get(*key).and_then(Value::as_array))
-                .map(Vec::len)
-                .sum::<usize>();
-            let edge_endpoints = ["source_edge_ids", "target_edge_ids"]
-                .iter()
-                .filter_map(|key| revision.payload.get(*key).and_then(Value::as_array))
-                .map(Vec::len)
-                .sum::<usize>();
-            metadata.insert(
-                "node_endpoint_count".to_owned(),
-                Value::from(node_endpoints),
-            );
-            metadata.insert(
-                "edge_endpoint_count".to_owned(),
-                Value::from(edge_endpoints),
-            );
-            metadata.insert(
-                "total_endpoint_count".to_owned(),
-                Value::from(node_endpoints + edge_endpoints),
-            );
-        }
-        metadata
-            .entry("lifecycle_status".to_owned())
-            .or_insert_with(|| Value::String("active".to_owned()));
-        if revision.entity_kind == "edge" {
-            metadata
-                .entry("redirect_to_id".to_owned())
-                .or_insert(Value::Null);
-        }
-
-        let mut payload = serde_json::Map::new();
-        payload.insert("id".to_owned(), Value::String(revision.entity_id.clone()));
-        payload.insert(
-            "entity_kind".to_owned(),
-            Value::String(revision.entity_kind.clone()),
-        );
-        payload.insert("document".to_owned(), Value::String(document));
-        payload.insert("metadata".to_owned(), Value::Object(metadata));
-        payload.insert(
-            "source_fingerprint".to_owned(),
-            Value::String(fingerprint.to_owned()),
-        );
-        Ok(NamedProjectionWrite {
-            payload,
-            last_authoritative_seq: revision.revision,
-            last_materialized_seq: revision.revision,
-            projection_schema_version: STAGE1_RECOVERY_PROJECTION_SCHEMA_VERSION,
-            materialization_status: "pending".to_owned(),
-        })
+        kogwistar_store_sqlite::stage1_projection_from_canonical_event(
+            &revision.namespace,
+            &revision.entity_kind,
+            &revision.entity_id,
+            revision.revision,
+            &revision.payload,
+            fingerprint,
+        )
     }
 
     fn graph_kind(entity_kind: &str) -> Result<kogwistar_store::GraphEntityKind, StoreError> {

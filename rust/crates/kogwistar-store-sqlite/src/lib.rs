@@ -100,12 +100,16 @@ mod projections;
 mod recovery;
 mod row_mapping;
 mod schema;
+mod stage1_projection;
 mod store;
 mod trait_impls;
 mod types;
 mod workflow_runtime;
 
 pub use kogwistar_store::RestoredRawEntityEvent;
+pub use stage1_projection::{
+    STAGE1_PROJECTION_SCHEMA_VERSION, stage1_projection_from_canonical_event,
+};
 pub use types::{
     AppendedRawEvent, NamedProjectionCas, NewRawEntityEvent, RawEntityEvent, SqliteStoreError,
     SqliteStoreResult,

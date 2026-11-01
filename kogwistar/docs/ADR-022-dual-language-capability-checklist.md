@@ -251,8 +251,22 @@ Bounded Rust SQLite+Chroma graph snapshots now read through pending SQLite
 Stage-1 records, matching Python's direct-get visibility without admitting
 unembedded rows to vector search. `sqlite_chroma_snapshot_merges_only_current_scoped_stage1_records`
 verifies workspace filtering, current-revision visibility, and that a later
-tombstone fences the pending row; the broader `sqlite_chroma` API subset passed
-(**13 passed, 1 ignored**).
+tombstone fences the pending row. Canonical SQLite graph mutations now create
+or replace the current pending Stage-1 projection in the same SQLite
+transaction as the event and index-job intent, using one shared Node/Edge
+formatter for writes and recovery. Retries derive Stage-1 from the latest
+canonical event so an old event replay cannot rewind it; tombstones and
+ungrounded revisions clear it. Missing or empty `mentions` are never treated
+as source grounding or rewritten in the canonical event.
+The tests `canonical_graph_batch_commits_events_and_projection_jobs_together`,
+`canonical_tombstone_clears_stage1_projection_in_the_event_transaction`,
+`ungrounded_graph_mutation_remains_canonical_but_is_not_stage1_indexed`, and
+`canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails`
+verify current visibility, no fabricated evidence, tombstone removal, and
+transaction rollback (**8 graph mutation tests passed**). The broader
+`sqlite_chroma` API subset passed (**13 passed, 1 ignored**). Chroma remains an
+eventual derived projection; this does not close the remaining SQLite+Chroma
+syscall or full user-turn workflow parity tracked here.
 The first SQLite+Chroma native answer host step now revalidates the durable
 run owner for `read_graph`, obtains the ACL-filtered conversation projection,
 and rejects a missing, wrong-conversation, non-user, or tombstoned turn;
