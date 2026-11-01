@@ -237,7 +237,12 @@ now proves a Python worker can replay a lost graph-effect result through the
 Rust HTTP authority with SQLite canonical events and Chroma configured only as
 the eventual projection. It verifies one durable graph event, pending
 `node_embedding` and `node_docs` jobs, and no graph writes to Chroma during
-canonical commit; the existing Rust projection test separately verifies
+canonical commit. The `link_assistant_turn` worker-effect path now derives
+both endpoint IDs from workflow state instead of reading deferred turns from
+the process-local graph; `test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks`
+verifies the effect is prepared when neither endpoint exists locally, while
+the non-worker regression continues to exercise persisted-node lookup. The
+existing Rust projection test separately verifies
 failure/restart recovery and eventual application. The Rust SQLite+Chroma test
 subset passed (**11 passed, 1 ignored**), including
 `sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`.

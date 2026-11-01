@@ -572,7 +572,7 @@ def test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks():
         GraphMutationBatchPayload,
     )
     from kogwistar._rust_bridge import validate_graph_model_family
-    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.engine_core.models import Span
     from kogwistar.engine_core.utils.refs import edge_doc_and_meta
 
     class WorkerWrite(_WriteShim):
@@ -600,22 +600,8 @@ def test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks():
     ce.pre_add_edge_hooks = [
         lambda edge: edge.metadata.update({"prepared_by_hook": True})
     ]
-    for node_id, role in (("user1", "user"), ("assist1", "assistant")):
-        ce.nodes[node_id] = ConversationNode(
-            id=node_id,
-            label=node_id,
-            type="entity",
-            summary=node_id,
-            doc_id=f"conv:c1#{node_id}",
-            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            metadata={"entity_type": "conversation_turn", "level_from_root": 0},
-            role=role,
-            turn_index=0,
-            conversation_id="c1",
-            user_id="u1",
-            properties={},
-            embedding=[0.0, 0.1],
-        )
+    # Both turns are deferred worker effects and are not visible in this
+    # process-local graph when the edge effect is prepared.
 
     state = {
         "user_id": "u1",

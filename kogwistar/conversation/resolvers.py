@@ -932,8 +932,24 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
 
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
 
-    user_turn = ce.read.get_nodes([user_turn_id])[0]
-    resp_turn = ce.read.get_nodes([str(response_node_id)])[0]
+    if rust_worker_effects:
+        aa_res = sv.get("agentic_answering_result") or {}
+        prepared_response_id = (
+            aa_res.get("assistant_turn_node_id")
+            if isinstance(aa_res, dict)
+            else None
+        )
+        if prepared_response_id and str(prepared_response_id) != str(response_node_id):
+            raise RuntimeError(
+                "assistant response ID does not match the prepared worker result"
+            )
+        user_turn_ref = user_turn_id
+        response_turn_id = str(response_node_id)
+    else:
+        user_turn = ce.read.get_nodes([user_turn_id])[0]
+        resp_turn = ce.read.get_nodes([str(response_node_id)])[0]
+        user_turn_ref = str(user_turn.id)
+        response_turn_id = str(resp_turn.id)
 
     edge_id = get_id_for_conversation_turn_edge(
         ConversationEdge.id_kind,
@@ -941,8 +957,8 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
         conversation_id,
         "next_turn",
         turn_index,
-        [user_turn.id],
-        [resp_turn.id],
+        [user_turn_ref],
+        [response_turn_id],
         [],
         [],
         "conversation_edge",
@@ -955,8 +971,8 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
         provenance_span = span or Span.from_dummy_for_conversation()
         edge = ConversationEdge(
             id=edge_id,
-            source_ids=[user_turn.id],
-            target_ids=[resp_turn.id],
+            source_ids=[user_turn_ref],
+            target_ids=[response_turn_id],
             relation="next_turn",
             label="next_turn",
             type="relationship",
@@ -969,7 +985,7 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
             embedding=None,
             metadata={
                 "relation": "next_turn",
-                "target_id": resp_turn.id,
+                "target_id": response_turn_id,
                 "char_distance_from_last_summary": (
                     mts.prev_node_char_distance_from_last_summary
                 ),
