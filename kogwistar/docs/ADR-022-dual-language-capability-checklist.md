@@ -231,11 +231,18 @@ shared Python graph-effect serializer now emits the logical mutation contract
 without requiring PostgreSQL collection names; the conversation resolver
 regressions verify PostgreSQL-shaped and Chroma-shaped adapters produce the
 same logical table and embedding dimension, while still returning effects
-instead of writing directly. The combined resolver and worker/runtime suites
-passed (**130 passed, 7 skipped**), and
-`sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`
-passed (**1 passed**) for canonical SQLite events, eventual Chroma projection,
-failure/restart recovery, and retry. The Python contract test
+instead of writing directly. The real-server mixed-runtime integration
+`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]`
+now proves a Python worker can replay a lost graph-effect result through the
+Rust HTTP authority with SQLite canonical events and Chroma configured only as
+the eventual projection. It verifies one durable graph event, pending
+`node_embedding` and `node_docs` jobs, and no graph writes to Chroma during
+canonical commit; the existing Rust projection test separately verifies
+failure/restart recovery and eventual application. The Rust SQLite+Chroma test
+subset passed (**11 passed, 1 ignored**), including
+`sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`.
+The combined resolver and worker/runtime suites passed (**131 passed, 7
+skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies
 every advertised Python executor operation is registered at the fixture's
 declared version, preventing Rust admission metadata from drifting away from

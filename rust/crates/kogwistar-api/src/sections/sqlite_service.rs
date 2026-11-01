@@ -3274,6 +3274,7 @@ impl SqliteRunApplicationService {
         recipient_ids: Vec<String>,
     ) -> Result<Vec<RuntimeClaimedWork>, String> {
         let claim_owner = format!("{}#{}", input.claimed_by, uuid::Uuid::new_v4());
+        let supports_graph_mutation_batch = self.chroma_graph.is_some();
         self.store
             .immediate_transaction(|uow| {
             let mut claimed = Vec::new();
@@ -3333,13 +3334,18 @@ impl SqliteRunApplicationService {
                     &lane.message_id,
                     serde_json::to_string(&claimed_payload)?,
                 )?;
-                values.push(runtime_claimed_work(
+                let mut work = runtime_claimed_work(
                     lane,
                     &claim_owner,
                     run_id,
                     claimed_payload,
                     expected_event_seq,
-                ));
+                );
+                if supports_graph_mutation_batch {
+                    work.worker_effect_capabilities
+                        .push("graph_mutation_batch_v1".to_owned());
+                }
+                values.push(work);
             }
                 Ok(values)
             })
