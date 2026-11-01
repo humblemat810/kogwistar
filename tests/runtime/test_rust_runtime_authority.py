@@ -3964,7 +3964,17 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             assert trace["implementation_authority"] == "rust-native"
             assert trace["seam_crossings"] == []
             assert trace["run_id"] == run_id
-            assert trace["attempt"] == 1
+        trace_contract = workflow_contract["trace_contract"]
+        assert [trace["attempt"] for trace in native_traces] == trace_contract[
+            "expected_attempts"
+        ]
+        assert all(trace["trace_id"] == run_id for trace in native_traces)
+        if trace_contract["require_nonempty_span_ids"]:
+            assert all(trace["span_id"] and trace["parent_span_id"] for trace in native_traces)
+        if trace_contract["require_distinct_parent_span_ids"]:
+            assert all(
+                trace["span_id"] != trace["parent_span_id"] for trace in native_traces
+            )
         if backend == "sqlite-chroma":
             assert any("/collections" in path for path in chroma_requests)
     finally:

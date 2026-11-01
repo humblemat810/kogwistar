@@ -28,6 +28,12 @@
   "expected_status": "succeeded",
   "expected_completed_steps": ["first", "second"],
   "expected_step_sequences": [0, 1],
+  "trace_contract": {
+    "expected_attempts": [1, 1],
+    "trace_id_source": "run_id",
+    "require_nonempty_span_ids": true,
+    "require_distinct_parent_span_ids": true
+  },
   "expected_final_state": {
     "counter": 2
   }

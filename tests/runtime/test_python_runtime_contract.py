@@ -164,11 +164,12 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         predicate_registry={},
         sink=trace_capture,
     )
+    run_id = "python-shared-increment-contract"
     result = runtime.run(
         workflow_id=workflow_id,
         conversation_id="shared-increment-contract",
         turn_node_id="turn-shared-increment-contract",
-        run_id="python-shared-increment-contract",
+        run_id=run_id,
         initial_state=dict(contract["initial_state"]),
     )
 
@@ -185,17 +186,26 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         event for event in trace_capture.events if event["type"] == "workflow_run_started"
     )
     assert [event["node_id"] for event in completed_steps] == expected_steps
-    assert all(
-        event["run_id"] == "python-shared-increment-contract" for event in completed_steps
-    )
+    assert all(event["run_id"] == run_id for event in completed_steps)
     assert [event["step_seq"] for event in completed_steps] == contract[
         "expected_step_sequences"
     ]
+    trace_contract = contract["trace_contract"]
+    assert [event["attempt"] for event in completed_steps] == trace_contract[
+        "expected_attempts"
+    ]
+    assert all(event["trace_id"] == run_id for event in completed_steps)
+    if trace_contract["require_nonempty_span_ids"]:
+        assert all(event["span_id"] and event["parent_span_id"] for event in completed_steps)
+    if trace_contract["require_distinct_parent_span_ids"]:
+        assert all(
+            event["span_id"] != event["parent_span_id"] for event in completed_steps
+        )
     assert [json.loads(event["payload_json"])["status"] for event in completed_steps] == [
         "ok",
         "ok",
     ]
     assert run_started["parent_span_id"] == (
-        "stp:python-shared-increment-contract:python-shared-increment-contract:0:1:run"
+        f"stp:{run_id}:{run_id}:0:1:run"
     )
     assert run_started["parent_span_id"] != completed_steps[0]["span_id"]
