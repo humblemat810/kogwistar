@@ -217,6 +217,19 @@ async fn run_evidence_checks_authority_before_run_lookup() {
 }
 
 #[test]
+fn runtime_run_route_decodes_encoded_run_id_without_splitting_it() {
+    assert_eq!(
+        runtime_run_route("/api/runs/run%2F42%3Fx/evidence"),
+        Some(("run/42?x".to_owned(), vec!["evidence".to_owned()]))
+    );
+    assert_eq!(
+        runtime_run_route("/api/workflow/runs/plain-run/steps"),
+        Some(("plain-run".to_owned(), vec!["steps".to_owned()]))
+    );
+    assert_eq!(runtime_run_route("/api/runs/run%FF/evidence"), None);
+}
+
+#[test]
 fn rust_run_evidence_projection_matches_shared_v1_contract() {
     let expected: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/run-evidence-v1.json"
@@ -458,6 +471,29 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     ))
     .unwrap();
     assert_eq!(payload, expected);
+
+    let mcp_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"evidence-mcp","method":"tools/call","params":{"name":"workflow.run_evidence","arguments":{"run_id":"evidence-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_response.status(), StatusCode::OK);
+    let mcp_payload = serde_json::from_slice::<Value>(
+        &to_bytes(mcp_response.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mcp_payload["id"], "evidence-mcp");
+    assert_eq!(mcp_payload["result"], expected);
 
     let other_user_token = encode(
         &Header::new(Algorithm::HS256),

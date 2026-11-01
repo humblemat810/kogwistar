@@ -2046,8 +2046,12 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
             if let Some((run_id, tail)) = segments.split_first()
                 && !run_id.is_empty()
             {
+                let run_id = percent_encoding::percent_decode_str(run_id)
+                    .decode_utf8()
+                    .ok()?
+                    .into_owned();
                 return Some((
-                    (*run_id).to_owned(),
+                    run_id,
                     tail.iter().map(|value| (*value).to_owned()).collect(),
                 ));
             }

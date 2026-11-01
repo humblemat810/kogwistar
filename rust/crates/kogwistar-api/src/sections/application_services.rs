@@ -1204,6 +1204,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()));
         }
         name != "workflow.tool_audit"
+            && name != "workflow.run_evidence"
             && (name != "conversation.create" || self.chroma_graph.is_some())
             && (name != "conversation.ask"
                 || (self.chroma_graph.is_some()

@@ -417,6 +417,22 @@ async fn mcp_handler(
                     principal: principal.clone(),
                 })
             }
+            "workflow.run_evidence"
+                if !run_id.is_empty()
+                    && arguments.keys().all(|argument| argument == "run_id") =>
+            {
+                let encoded_run_id = percent_encoding::utf8_percent_encode(
+                    run_id,
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/runs/{encoded_run_id}/evidence"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
             "workflow.run_checkpoint_get" if !run_id.is_empty() => arguments
                 .get("step_seq")
                 .and_then(Value::as_i64)
