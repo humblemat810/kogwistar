@@ -403,7 +403,8 @@
 
         impl ApplicationService for RequestRecorder {
             fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-                surface == "workflow" && name == "workflow.run_lineage"
+                surface == "workflow"
+                    && matches!(name, "workflow.run_lineage" | "workflow.run_steps")
             }
 
             fn execute(
@@ -458,7 +459,30 @@
         assert_eq!(request.method, "GET");
         assert!(request.body.is_empty());
 
+        let steps_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workflow.run_steps","arguments":{"run_id":"run/42?x","limit":25}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(steps_response.status(), StatusCode::OK);
+        let steps_body = to_bytes(steps_response.into_body(), 4096).await.unwrap();
+        let steps_value: Value = serde_json::from_slice(&steps_body).unwrap();
+        assert_eq!(
+            steps_value["result"]["path_and_query"],
+            "/api/workflow/runs/run%2F42%3Fx/steps?limit=25"
+        );
+
         let invalid = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -476,6 +500,58 @@
             serde_json::from_slice::<Value>(&invalid_body).unwrap()["error"]["code"],
             -32602
         );
+    }
+
+    #[test]
+    fn run_steps_limit_is_mcp_scoped_and_rest_shape_remains_unbounded() {
+        let event = |seq: i64| ServerRunEvent {
+            seq,
+            run_id: "steps-run".to_owned(),
+            event_type: "workflow.recorded_transition.v1".to_owned(),
+            payload_json: json!({
+                "transition_id": format!("transition-{seq}"),
+                "reduced": {
+                    "state": {
+                        "workflow_id": "workflow-a",
+                        "last_step_seq": seq,
+                        "last_node_id": format!("node-{seq}"),
+                    },
+                    "result": {"step": seq},
+                    "errors": [],
+                    "server_status": "running",
+                }
+            })
+            .to_string(),
+            created_at_ms: seq,
+        };
+        let request = |path_and_query: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: path_and_query.to_owned(),
+            body: Vec::new(),
+            principal: json!({}),
+        };
+        let events = vec![event(1), event(2)];
+
+        let limited = runtime_inspection_effect(
+            &request("/api/workflow/runs/steps-run/steps?limit=1"),
+            "steps-run",
+            &["steps"],
+            events.clone(),
+        );
+        let limited: Value = serde_json::from_slice(&limited.body).unwrap();
+        assert_eq!(limited["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(limited["steps"][0]["step_seq"], 1);
+
+        let rest = runtime_inspection_effect(
+            &request("/api/workflow/runs/steps-run/steps"),
+            "steps-run",
+            &["steps"],
+            events,
+        );
+        let rest: Value = serde_json::from_slice(&rest.body).unwrap();
+        assert_eq!(rest["steps"].as_array().unwrap().len(), 2);
+        assert!(rest.get("truncated").is_none());
     }
 
     #[tokio::test]

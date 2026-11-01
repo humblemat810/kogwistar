@@ -1432,11 +1432,19 @@ fn runtime_inspection_effect(
 ) -> ApiEffectResponse {
     let steps = recorded_step_snapshots(events);
     match tail {
-        ["steps"] => json_effect(
-            StatusCode::OK,
-            json!({
-                "run_id": run_id,
-                "steps": steps.into_iter().map(|step| json!({
+        ["steps"] => {
+            let steps = if query_parameter_present(&request.path_and_query, "limit") {
+                let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000)
+                    as usize;
+                steps.into_iter().take(limit).collect::<Vec<_>>()
+            } else {
+                steps
+            };
+            json_effect(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "steps": steps.into_iter().map(|step| json!({
                     "node_id": format!("wf_step|{}|{}", run_id, step.step_seq),
                     "step_seq": step.step_seq,
                     "workflow_id": step.workflow_id,
@@ -1448,9 +1456,10 @@ fn runtime_inspection_effect(
                     "event_seq": step.event_seq,
                     "created_at_ms": step.created_at_ms,
                     "transition_id": step.transition_id,
-                })).collect::<Vec<_>>(),
-            }),
-        ),
+                    })).collect::<Vec<_>>(),
+                }),
+            )
+        }
         ["checkpoints"] => json_effect(
             StatusCode::OK,
             json!({

@@ -382,13 +382,35 @@ async fn mcp_handler(
                     principal: principal.clone(),
                 })
             }
-            "workflow.run_steps" if !run_id.is_empty() => Some(ApiEffectRequest {
-                contract_version: 1,
-                method: "GET".to_owned(),
-                path_and_query: format!("/api/workflow/runs/{run_id}/steps"),
-                body: Vec::new(),
-                principal: principal.clone(),
-            }),
+            "workflow.run_steps" if !run_id.is_empty() => {
+                let valid_arguments = !arguments
+                    .keys()
+                    .any(|argument| !matches!(argument.as_str(), "run_id" | "limit"))
+                    && arguments
+                        .get("limit")
+                        .map(Value::as_i64)
+                        .unwrap_or(Some(200))
+                        .is_some_and(|limit| (1..=1000).contains(&limit));
+                valid_arguments.then(|| {
+                    let limit = arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(200);
+                    let encoded_run_id = percent_encoding::utf8_percent_encode(
+                        run_id,
+                        percent_encoding::NON_ALPHANUMERIC,
+                    );
+                    ApiEffectRequest {
+                        contract_version: 1,
+                        method: "GET".to_owned(),
+                        path_and_query: format!(
+                            "/api/workflow/runs/{encoded_run_id}/steps?limit={limit}"
+                        ),
+                        body: Vec::new(),
+                        principal: principal.clone(),
+                    }
+                })
+            }
             "workflow.run_cancel" | "conversation.cancel_run" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
