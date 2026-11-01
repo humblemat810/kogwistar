@@ -2215,7 +2215,8 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let fake_chroma = tokio::spawn(async move {
         let mut projected = Vec::new();
-        for _ in 0..6 {
+        let mut fail_first_upsert = true;
+        for _ in 0..9 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let mut chunk = [0_u8; 2048];
@@ -2258,7 +2259,15 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
                 )
             } else {
                 projected.push((request_line, request));
-                ("200 OK", json!({}))
+                if fail_first_upsert && projected.last().unwrap().0.contains("/upsert") {
+                    fail_first_upsert = false;
+                    (
+                        "500 Internal Server Error",
+                        json!({"error":"injected Chroma projection failure"}),
+                    )
+                } else {
+                    ("200 OK", json!({}))
+                }
             };
             let response = response.to_string();
             let wire = format!(
@@ -2426,7 +2435,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
         .with_chroma_graph(graph)
-        .with_embedding_provider(provider);
+        .with_embedding_provider(provider.clone());
     let recovered_events = service.store.replay_raw_events("docs", 0, 10).unwrap();
     assert_eq!(recovered_events.len(), 2);
     for event in &recovered_events {
@@ -2444,22 +2453,70 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .unwrap();
     assert_eq!(recovered_jobs.len(), 2);
 
-    let projected = service
+    let failed_projection = service
         .run_embedding_projection_jobs_once(10, 30, Some("docs"))
         .await
         .unwrap();
+    assert_eq!(failed_projection.claimed, 2);
+    assert_eq!(failed_projection.projected, 1);
+    assert_eq!(failed_projection.retried, 1);
+    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 2);
+    let after_failure = service
+        .store
+        .list_index_jobs(Some("docs"), None, None, None, None, 10)
+        .unwrap();
+    assert_eq!(after_failure.iter().filter(|job| job.status == "DONE").count(), 1);
+    assert_eq!(after_failure.iter().filter(|job| job.status == "PENDING").count(), 1);
+
+    // A Chroma failure cannot undo canonical SQLite state. Reopen the service
+    // and retry only the durable failed projection job.
+    drop(service);
+    tokio::time::sleep(std::time::Duration::from_millis(2200)).await;
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("nodes"),
+        chroma_config("edges"),
+    )
+    .await
+    .unwrap();
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_embedding_provider(provider);
+    let final_projection = service
+        .run_embedding_projection_jobs_once(10, 30, Some("docs"))
+        .await
+        .unwrap();
+    assert_eq!(final_projection.claimed, 1);
+    assert_eq!(final_projection.projected, 0);
+    assert_eq!(final_projection.reused, 1);
+    assert_eq!(service.store.replay_raw_events("docs", 0, 10).unwrap().len(), 2);
     let projection_jobs = service
         .store
         .list_index_jobs(Some("docs"), None, None, None, None, 10)
         .unwrap();
-    assert_eq!(projected.claimed, 2);
-    assert_eq!(
-        projected.projected, 2,
-        "projection summary: {projected:?}; jobs: {projection_jobs:?}"
-    );
+    assert_eq!(projection_jobs.len(), 2);
+    assert!(projection_jobs.iter().all(|job| job.status == "DONE"));
     assert_eq!(embedding_calls.lock().unwrap().len(), 1);
     let chroma_upserts = fake_chroma.await.unwrap();
-    assert_eq!(chroma_upserts.len(), 2);
+    assert_eq!(chroma_upserts.len(), 3);
+    let node_attempts = chroma_upserts
+        .iter()
+        .filter(|(_, body)| body["ids"][0] == "node-1")
+        .collect::<Vec<_>>();
+    let edge_attempts = chroma_upserts
+        .iter()
+        .filter(|(_, body)| body["ids"][0] == "edge-1")
+        .collect::<Vec<_>>();
+    assert!((1..=2).contains(&node_attempts.len()));
+    assert!((1..=2).contains(&edge_attempts.len()));
+    assert_eq!(node_attempts.len() + edge_attempts.len(), 3);
+    let retried_attempts = if node_attempts.len() == 2 {
+        &node_attempts
+    } else {
+        &edge_attempts
+    };
+    assert_eq!(retried_attempts.len(), 2);
+    assert_eq!(retried_attempts[0].1, retried_attempts[1].1);
     let node_upsert = chroma_upserts
         .iter()
         .find(|(_, body)| body["ids"][0] == "node-1")
