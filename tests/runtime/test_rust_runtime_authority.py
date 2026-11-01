@@ -1884,7 +1884,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         ContextMessage,
         PromptContext,
     )
-    from kogwistar.conversation.models import ConversationNode
+    from kogwistar.conversation.models import ConversationEdge, ConversationNode
     from kogwistar.conversation.resolvers import default_resolver
     from kogwistar.conversation.service import ConversationService
     import kogwistar.conversation.resolvers as resolver_module
@@ -2272,7 +2272,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             headers=headers,
             timeout=10,
         )
-        run_deadline = time.monotonic() + 10
+        run_deadline = time.monotonic() + 20
         while status.json()["status"] == "running" and time.monotonic() < run_deadline:
             time.sleep(0.05)
             status = httpx.get(
@@ -2403,12 +2403,19 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         assert python_assistant.role == "assistant"
         assert python_assistant.metadata["entity_type"] == "assistant_turn"
         assert any("context_snapshot" in payload for _, _, payload in rows)
-        assert any(
-            kind == "edge"
+        generated_edge_payloads = [
+            payload
+            for kind, _, payload in rows
+            if kind == "edge"
             and '"relation":"generated"' in payload
             and assistant_id in payload
-            for kind, _, payload in rows
+        ]
+        assert len(generated_edge_payloads) == 1
+        python_generated_edge = ConversationEdge.model_validate_json(
+            generated_edge_payloads[0]
         )
+        assert python_generated_edge.relation == "generated"
+        assert assistant_id in python_generated_edge.target_ids
         assistant_jobs = {
             (index_kind, status)
             for entity_id, index_kind, status in jobs

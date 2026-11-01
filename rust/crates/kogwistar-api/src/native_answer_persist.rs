@@ -284,6 +284,7 @@ fn execute_persist_response(
         "source_edge_ids": [],
         "target_edge_ids": []
     });
+    // Python projection: kogwistar.conversation.models.ConversationEdge.
     let graph_scope = json!({
         "storage_namespace": namespace,
         "workspace": scope.get("workspace").cloned().unwrap_or(Value::Null),

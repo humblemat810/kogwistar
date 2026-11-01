@@ -499,8 +499,9 @@ The test verifies identical canonical assistant graph content and vector values;
 SQLite+Chroma uses its durable eventual projection, PostgreSQL Python-worker
 persists the supplied vector, and PostgreSQL Rust-native uses the configured
 Rust embedding provider. For every case, Python successfully hydrates the
-Rust-persisted assistant event as its typed `ConversationNode`, verifying the
-actual downstream model boundary. PostgreSQL server startup now loads owner-auth
+Rust-persisted assistant node and generated edge as typed `ConversationNode`
+and `ConversationEdge` models, preserving the generated relation and endpoint
+identity at the actual downstream model boundary. PostgreSQL server startup now loads owner-auth
 configuration for externally claimed native execution, and native graph effects
 are revalidated against the run owner's current write authority before commit.
 The Rust API library suite passed (**235 passed, 23 ignored**), and the explicit
