@@ -1434,6 +1434,41 @@ pub struct GraphScope {
     pub graph_space: Option<String>,
 }
 
+impl GraphScope {
+    /// Reject metadata that claims a storage-scope dimension absent from this
+    /// request, so backends cannot accidentally widen a scoped record.
+    pub fn validate_metadata_scope(&self, metadata: &Map<String, Value>) -> StoreResult<()> {
+        for (key, expected) in [
+            ("namespace", Some(self.namespace.as_str())),
+            ("workspace_id", self.workspace_id.as_deref()),
+            ("graph_space", self.graph_space.as_deref()),
+        ] {
+            match expected {
+                Some(expected)
+                    if metadata
+                        .get(key)
+                        .is_some_and(|actual| actual.as_str() != Some(expected)) =>
+                {
+                    return Err(StoreError::InvalidEntityEventPayload {
+                        message: format!(
+                            "graph metadata scope {key:?} conflicts with request scope"
+                        ),
+                    });
+                }
+                None if metadata.get(key).is_some_and(|actual| !actual.is_null()) => {
+                    return Err(StoreError::InvalidEntityEventPayload {
+                        message: format!(
+                            "graph metadata scope {key:?} is absent from request scope"
+                        ),
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One authoritative graph change plus its materialized vector projection.
 /// `table` names an existing Python pgvector collection (normally
 /// `gke_nodes` or `gke_edges`); implementations must not create a parallel
@@ -3205,6 +3240,39 @@ impl<S: ProjectionReadStore + Send + Sync> ProjectionReadStore for ShadowInspect
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_scope_metadata_rejects_unrequested_workspace_and_graph_space() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        assert!(
+            scope
+                .validate_metadata_scope(&Map::from_iter([(
+                    "workspace_id".to_owned(),
+                    Value::String("workspace-a".to_owned()),
+                )]))
+                .is_err()
+        );
+        assert!(
+            scope
+                .validate_metadata_scope(&Map::from_iter([(
+                    "graph_space".to_owned(),
+                    Value::String("conversation".to_owned()),
+                )]))
+                .is_err()
+        );
+        assert!(
+            scope
+                .validate_metadata_scope(&Map::from_iter([(
+                    "workspace_id".to_owned(),
+                    Value::Null,
+                )]))
+                .is_ok()
+        );
+    }
 
     #[test]
     fn standardized_vector_distance_scores_are_backend_neutral() {

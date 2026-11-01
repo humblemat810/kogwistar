@@ -200,27 +200,42 @@ fn persist_graph_scope(mutation: &mut GraphMutation) -> SqliteStoreResult<()> {
                 "canonical graph payload metadata must be an object".to_owned(),
             )
         })?;
+    mutation
+        .scope
+        .validate_metadata_scope(metadata)
+        .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string()))?;
+    mutation
+        .scope
+        .validate_metadata_scope(&mutation.record.metadata)
+        .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string()))?;
     for (key, expected) in [
         ("namespace", Some(mutation.scope.namespace.as_str())),
         ("workspace_id", mutation.scope.workspace_id.as_deref()),
         ("graph_space", mutation.scope.graph_space.as_deref()),
     ] {
-        let Some(expected) = expected else {
-            continue;
-        };
-        if metadata
-            .get(key)
-            .is_some_and(|actual| actual.as_str() != Some(expected))
-        {
-            return Err(SqliteStoreError::TransactionAborted(format!(
-                "canonical graph metadata {key:?} conflicts with its event scope"
-            )));
+        match expected {
+            Some(expected) => {
+                if metadata
+                    .get(key)
+                    .is_some_and(|actual| actual.as_str() != Some(expected))
+                {
+                    return Err(SqliteStoreError::TransactionAborted(format!(
+                        "canonical graph metadata {key:?} conflicts with its event scope"
+                    )));
+                }
+                metadata.insert(key.to_owned(), Value::String(expected.to_owned()));
+                mutation
+                    .record
+                    .metadata
+                    .insert(key.to_owned(), Value::String(expected.to_owned()));
+            }
+            None if metadata.get(key).is_some_and(|value| !value.is_null()) => {
+                return Err(SqliteStoreError::TransactionAborted(format!(
+                    "canonical graph metadata {key:?} has a scope absent from its event scope"
+                )));
+            }
+            None => {}
         }
-        metadata.insert(key.to_owned(), Value::String(expected.to_owned()));
-        mutation
-            .record
-            .metadata
-            .insert(key.to_owned(), Value::String(expected.to_owned()));
     }
     Ok(())
 }

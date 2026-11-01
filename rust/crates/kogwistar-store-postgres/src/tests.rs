@@ -4,6 +4,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Notify;
 
+#[test]
+fn postgres_graph_scope_rejects_metadata_dimensions_absent_from_request() {
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let extra_workspace = Map::from_iter([(
+        "workspace_id".to_owned(),
+        Value::String("workspace-a".to_owned()),
+    )]);
+    assert!(crate::graph::graph_metadata(&scope, &extra_workspace).is_err());
+}
+
 static NEXT_SCHEMA: AtomicUsize = AtomicUsize::new(0);
 
 fn test_schema(label: &str) -> String {

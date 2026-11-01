@@ -25,15 +25,9 @@ pub(crate) fn graph_metadata(
     metadata: &Map<String, Value>,
 ) -> PostgresStoreResult<Map<String, Value>> {
     let scope_pairs = graph_scope_pairs(scope)?;
-    for (key, expected) in &scope_pairs {
-        if let Some(actual) = metadata.get(key)
-            && actual != expected
-        {
-            return Err(PostgresStoreError::Backend(format!(
-                "graph metadata scope {key:?} conflicts with request scope"
-            )));
-        }
-    }
+    scope
+        .validate_metadata_scope(metadata)
+        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
     let mut materialized = metadata.clone();
     for (key, value) in scope_pairs {
         materialized.insert(key, value);

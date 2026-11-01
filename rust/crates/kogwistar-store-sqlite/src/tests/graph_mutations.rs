@@ -241,6 +241,47 @@ fn canonical_graph_batch_rejects_conflicting_payload_scope_before_writing() {
 }
 
 #[test]
+fn canonical_graph_batch_rejects_payload_scope_when_scope_dimension_is_absent() {
+    let (store, path) = store("canonical-graph-payload-extra-scope");
+    let mut conflicting = mutation("scope-conflict-event", "node-1");
+    conflicting.scope.workspace_id = None;
+    conflicting.scope.graph_space = None;
+    conflicting.payload["metadata"] = serde_json::json!({"namespace":"conversation"});
+    let result = store.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: vec![conflicting],
+        index_jobs: Vec::new(),
+    });
+    assert!(result.is_err());
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut record_conflict = mutation("record-scope-conflict-event", "node-2");
+    record_conflict.scope.workspace_id = None;
+    record_conflict.scope.graph_space = None;
+    record_conflict.payload["metadata"] = serde_json::json!({"namespace":"conversation"});
+    assert!(
+        store
+            .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: vec![record_conflict],
+                index_jobs: Vec::new(),
+            })
+            .is_err()
+    );
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty()
+    );
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     let (store, path) = store("canonical-edge-projection-kind");
     let mut edge = mutation("edge-event-1", "edge-1");
