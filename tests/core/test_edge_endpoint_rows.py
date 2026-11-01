@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from kogwistar.engine_core.edge_endpoint_rows import edge_endpoint_rows
+from kogwistar.engine_core.models import PureChromaEdge
 from kogwistar.json_types import JsonValue
 
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
@@ -36,6 +37,27 @@ def test_endpoint_projection_accepts_structural_edge_protocol() -> None:
 
     assert [row["endpoint_type"] for row in rows] == ["node", "node", "edge"]
     assert rows[2]["id"] == "edge-1::src::edge::parent"
+
+
+def test_endpoint_projection_accepts_pure_chroma_edge_model() -> None:
+    edge = PureChromaEdge(
+        id="pure-edge",
+        label="related",
+        type="relationship",
+        summary="Connects two nodes",
+        relation="supports",
+        source_ids=["source"],
+        target_ids=["target"],
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
+
+    rows = edge_endpoint_rows(edge)
+
+    assert [row["id"] for row in rows] == [
+        "pure-edge::src::node::source",
+        "pure-edge::tgt::node::target",
+    ]
 
 
 def test_endpoint_projection_preserves_legacy_safe_id_fallback() -> None:
