@@ -2108,19 +2108,68 @@ fn validate_runtime_lane_executor(
 
 fn validate_python_worker_submission_trace_binding(
     trace_events: &[Value],
-    lease_claim_id: &str,
+    handoff: &RecordedWorkerHandoff,
 ) -> Result<(), &'static str> {
-    let mut submitted_events = trace_events.iter().filter(|event| {
-        event.get("event").and_then(Value::as_str)
-            == Some("runtime.python_worker.result_submitted")
-    });
-    let Some(event) = submitted_events.next() else {
+    // PYTHON_PARITY_V1: rust=kogwistar-api/src/sections/contracts_and_runtime.rs#validate_python_worker_submission_trace_binding; python=kogwistar/runtime/rust_worker.py#_with_worker_execution_trace,_with_worker_submission_trace; rust_test=kogwistar-api/src/tests/part_05.rs#inline_runtime_iteration_uses_typed_hook_not_generic_effect_path; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_worker_journals_callback_before_send_and_replays_after_restart
+    let expected_fields = [
+        ("message_id", handoff.message_id.as_str()),
+        ("run_id", handoff.run_id.as_str()),
+        ("step_id", handoff.step_id.as_str()),
+        ("correlation_id", handoff.correlation_id.as_str()),
+    ];
+    let mut prepared_count = 0;
+    let mut submitted_events = Vec::new();
+    for event in trace_events {
+        let kind = event.get("event").and_then(Value::as_str);
+        if !matches!(
+            kind,
+            Some("runtime.python_worker.result_prepared")
+                | Some("runtime.python_worker.result_submitted")
+        ) {
+            continue;
+        }
+        if event
+            .get("schema_version")
+            .is_some_and(|value| value.as_u64() != Some(1))
+            || event
+                .get("executor_target")
+                .is_some_and(|value| value.as_str() != Some("python-worker"))
+            || event.get("identity_source").is_some_and(|value| {
+                value.as_str() != Some("worker_configuration")
+            })
+            || event
+                .get("worker_id")
+                .and_then(Value::as_str)
+                .is_some_and(str::is_empty)
+        {
+            return Err("Python worker trace event has an invalid identity envelope");
+        }
+        for (field, expected) in expected_fields {
+            if event
+                .get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|actual| actual != expected)
+            {
+                return Err("Python worker trace event does not match the claimed handoff");
+            }
+        }
+        match kind {
+            Some("runtime.python_worker.result_prepared") => prepared_count += 1,
+            Some("runtime.python_worker.result_submitted") => submitted_events.push(event),
+            _ => unreachable!("filtered to known Python worker trace events"),
+        }
+    }
+    if prepared_count > 1 {
+        return Err("multiple Python worker result-prepared trace events");
+    }
+    let Some(event) = submitted_events.first() else {
         return Ok(());
     };
-    if submitted_events.next().is_some() {
+    if submitted_events.len() > 1 {
         return Err("multiple Python worker result-submitted trace events");
     }
 
+    let lease_claim_id = handoff.claimed_by.as_str();
     let Some((worker_id, lease_nonce)) = lease_claim_id.rsplit_once('#') else {
         return Err("Python worker submission lease claim ID is malformed");
     };

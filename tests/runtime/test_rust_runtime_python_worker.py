@@ -1216,6 +1216,11 @@ def test_worker_journals_callback_before_send_and_replays_after_restart(
     assert submitted_trace["event"] == "runtime.python_worker.result_submitted"
     assert submitted_trace["worker_id"] == "worker-2"
     assert submitted_trace["lease_claim_id"] == "worker-2"
+    for trace in (prepared_trace, submitted_trace):
+        assert trace["message_id"] == "lane-1"
+        assert trace["run_id"] == "run-1"
+        assert trace["step_id"] == "start"
+        assert trace["correlation_id"] == "run-1"
 
 
 def test_step_resolver_worker_rejects_callback_inside_transaction(

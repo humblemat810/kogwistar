@@ -3855,7 +3855,7 @@ impl PostgresRunApplicationService {
             && let Err(message) =
                 validate_python_worker_submission_trace_binding(
                     &effect.trace_events,
-                    &input.handoff.claimed_by,
+                    &input.handoff,
                 )
         {
             return effect_error(

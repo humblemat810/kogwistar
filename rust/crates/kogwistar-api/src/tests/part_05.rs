@@ -2032,6 +2032,29 @@
             mismatched_response.status(),
             StatusCode::UNPROCESSABLE_ENTITY
         );
+        for field in ["message_id", "run_id", "step_id", "correlation_id"] {
+            let mut mismatched_binding = effect_payload.clone();
+            mismatched_binding["effect"]["trace_events"][1][field] =
+                json!(format!("forged-{field}"));
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/internal/runtime/results")
+                        .header("content-type", "application/json")
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::from(serde_json::to_vec(&mismatched_binding).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "contradictory worker trace field {field} must be rejected"
+            );
+        }
         store
             .append_server_run_event(&effect_run_id, "test.competing", "{}".to_owned())
             .unwrap();
