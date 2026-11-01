@@ -696,6 +696,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     ):
         monkeypatch.setenv(name, "python")
 
+    from kogwistar.conversation.models import ConversationNode
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import (
         Edge,
@@ -1070,6 +1071,22 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             )
             assert response.status_code == 200, response.text
             result = response.json().get("result")
+            assert isinstance(result, dict), response.text
+            return result
+
+        def rust_syscall(
+            op: str, args: dict[str, object], claims: dict[str, object]
+        ) -> dict[str, object]:
+            response = httpx.post(
+                f"{base}/api/syscall/v1/{op}",
+                headers={
+                    "Authorization": f"Bearer {_hs256_token(secret, claims)}"
+                },
+                json={"version": "v1", "op": op, "args": args},
+                timeout=10,
+            )
+            assert response.status_code == 200, response.text
+            result = response.json()
             assert isinstance(result, dict), response.text
             return result
 
@@ -1821,6 +1838,112 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         rust_mcp_after_tombstone = rust_mcp_neighbors(reader_claims)
         assert set(rust_mcp_after_tombstone["nodes"]) == python_after_tombstone["nodes"]
         assert set(rust_mcp_after_tombstone["edges"]) == python_after_tombstone["edges"]
+
+        conversation_id = f"{id_prefix}-python-written-conversation"
+        # Rust stores graph types in its configured schema and partitions them
+        # by namespace, so the Python producer must target that same schema.
+        conversation_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=3, schema=pg_schema
+        )
+        conversation_backend.ensure_schema()
+        conversation_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "python_persisted_conversation"),
+            backend=conversation_backend,
+            namespace="conversation",
+            kg_graph_type="conversation",
+            embedding_function=fixture_embedding,
+            embedding_profile=EmbeddingProfile(
+                provider="ollama",
+                model="fixture-embedding-v1",
+                dimension=3,
+                similarity_metric="cosine",
+                embedding_kind="single_vector",
+            ),
+            acl_enabled=True,
+        )
+        conversation_owner = {
+            "agent_id": "conversation-owner",
+            "sub": "conversation-owner",
+            "role": "rw",
+            "ns": "conversation",
+            "storage_ns": "conversation",
+        }
+        conversation_write_token = claims_ctx.set(conversation_owner)
+        try:
+            for turn_index, (role, content) in enumerate(
+                (("user", "Python persisted question"), ("assistant", "Python persisted answer"))
+            ):
+                conversation_engine.write.add_node(
+                    ConversationNode(
+                        id=f"{id_prefix}-conversation-turn-{turn_index}",
+                        label=f"Conversation {role} turn",
+                        type="entity",
+                        summary=content,
+                        role=role,
+                        turn_index=turn_index,
+                        conversation_id=conversation_id,
+                        user_id="conversation-owner",
+                        metadata={
+                            "entity_type": "conversation_turn",
+                            "in_conversation_chain": True,
+                            "in_ui_chain": True,
+                            "level_from_root": 0,
+                            "visibility": "public",
+                        },
+                        mentions=[
+                            mk_document_grounding(f"conversation:{conversation_id}")
+                        ],
+                    )
+                )
+        finally:
+            claims_ctx.reset(conversation_write_token)
+
+        conversation_read_token = claims_ctx.set(conversation_owner)
+        try:
+            python_conversation_nodes = conversation_engine.read.get_nodes(
+                where={"conversation_id": conversation_id}
+            )
+        finally:
+            claims_ctx.reset(conversation_read_token)
+        python_transcript = [
+            {
+                "node_id": node.id,
+                "turn_index": node.turn_index,
+                "role": node.role,
+                "content": node.summary,
+                "entity_type": node.metadata["entity_type"],
+            }
+            for node in sorted(
+                python_conversation_nodes,
+                key=lambda node: (node.turn_index, node.id),
+            )
+            if node.metadata.get("entity_type")
+            in {"conversation_turn", "assistant_turn"}
+        ]
+        rust_transcript = rust_syscall(
+            "invoke_tool",
+            {
+                "tool_name": "list_transcript",
+                "conversation_id": conversation_id,
+            },
+            {
+                "sub": "conversation-owner",
+                "role": "rw",
+                "roles": ["reader"],
+                "ns": "conversation",
+                "storage_ns": "conversation",
+                "capabilities": ["invoke_tool", "read_graph"],
+                "exp": 4_102_444_800,
+            },
+        )
+        assert rust_transcript["version"] == "v1"
+        assert rust_transcript["op"] == "invoke_tool"
+        assert rust_transcript["status"] == "ok"
+        assert rust_transcript["result"] == {
+            "tool_name": "list_transcript",
+            "conversation_id": conversation_id,
+            "messages": python_transcript,
+        }
     finally:
         process.terminate()
         try:

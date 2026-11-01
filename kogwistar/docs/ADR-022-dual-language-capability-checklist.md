@@ -457,8 +457,10 @@ hydration, PostgreSQL `$ne` includes records with absent metadata keys (matching
 the Python filter contract), and pure-edge writes materialize endpoint rows for
 ordinary traversal. The live
 `test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
-passed with semantic seed and two-hop topology parity; Python graph-query tests
-(11 passed), Wisdom/JSONB tests (7 passed), and Ruff passed. DL-16BQ remains open.
+passed with semantic seed, two-hop topology, and Python-written conversation
+transcript parity through authenticated Rust HTTP syscall; Python graph-query
+tests (11 passed), Wisdom/JSONB tests (7 passed), and Ruff passed. DL-16BQ
+remains open.
 
 Graph-role parity uses Python's `GraphKnowledgeEngine` contract: each role is
 host-selected, graph roles remain independent of namespace and backend, and
