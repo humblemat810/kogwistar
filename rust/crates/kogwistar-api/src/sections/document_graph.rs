@@ -685,17 +685,10 @@ fn graph_upsert_mutation_batch(
 }
 
 fn normalize_graph_role(role: &str) -> Result<String, String> {
-    let normalized = role.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
+    if role.trim().is_empty() {
         return Err("graph role must not be empty".to_owned());
     }
-    Ok(match normalized.as_str() {
-        "kg" => "knowledge".to_owned(),
-        "wf" => "workflow".to_owned(),
-        "w" => "wisdom".to_owned(),
-        "chat" | "conv" | "dialog" => "conversation".to_owned(),
-        _ => normalized,
-    })
+    Ok(kogwistar_contracts::normalize_graph_kind(Some(role)))
 }
 
 impl SqliteRunApplicationService {

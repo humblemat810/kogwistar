@@ -14,6 +14,7 @@ mod conversation;
 mod delegation;
 mod document;
 mod graph_extraction;
+mod graph_kind;
 mod graph_model;
 mod graph_mutation;
 mod graph_read;
@@ -41,6 +42,7 @@ pub use document::{DOCUMENT_UPSERT_WIRE_VERSION, DocumentUpsertV1, DocumentUpser
 pub use graph_extraction::{
     GRAPH_EXTRACTION_WIRE_VERSION, GraphExtractionRequestV1, GraphExtractionValidationError,
 };
+pub use graph_kind::normalize_graph_kind;
 pub use graph_model::{
     AclEdgeMetadataV1, AclEdgeTypeV1, AclGrainV1, AclModeV1, AclNodeMetadataV1,
     ConversationCausalTypeV1, ConversationEdgeMetadataV1, ConversationNodeMetadataV1,

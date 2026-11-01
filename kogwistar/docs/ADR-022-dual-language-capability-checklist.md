@@ -436,6 +436,21 @@ projection/reopen test passed against disposable Chroma 1.5.9. This adds
 evidence to the existing DL-16BQ gate; it does not add a checklist item or
 change the denominator.
 
+Graph-role parity uses Python's `GraphKnowledgeEngine` contract: each role is
+host-selected, graph roles remain independent of namespace and backend, and
+role-separated application engines still share the same graph interface. The
+shared `contracts/golden/graph-kind-v1.json` binds Python
+`normalize_graph_kind` and Rust core `normalize_graph_kind`, including
+canonical roles, aliases, custom extensible roles, and Python's
+`None`/empty/whitespace behavior. The Rust server's configuration builder
+separately rejects whitespace-only role configuration. Python
+`tests/core/test_graph_kind_contract.py` and Rust
+`graph_kind::tests::graph_kind_normalization_matches_shared_python_fixture`
+consume the same fixture; both passed. `cargo test -p kogwistar-contracts --lib`
+passed (**95 passed**), and `cargo test -p kogwistar-api --lib` passed (**228
+passed, 23 ignored**). This remains evidence within DL-16BQ and does not close
+the gate.
+
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix
 gates pass. A native
