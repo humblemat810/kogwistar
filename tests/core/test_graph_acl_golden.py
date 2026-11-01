@@ -119,14 +119,24 @@ def test_python_edge_usage_matches_shared_golden_contract() -> None:
                 mode="private",
                 owner_id=fixture["owner_id"],
             )
-        for endpoint, mode_key in (
-            (case["source_node_id"], "source_node_mode"),
-            (case["target_node_id"], "target_node_mode"),
+        for endpoint_id, mode_key, exists in (
+            (
+                case["source_node_id"],
+                "source_node_mode",
+                case.get("source_node_exists", True),
+            ),
+            (
+                case["target_node_id"],
+                "target_node_mode",
+                case.get("target_node_exists", True),
+            ),
         ):
+            if not exists:
+                continue
             acl.add_record(
                 grain="node",
                 truth_graph=fixture["truth_graph"],
-                entity_id=endpoint,
+                entity_id=endpoint_id,
                 version=1,
                 mode=case[mode_key],
                 owner_id=fixture["owner_id"],

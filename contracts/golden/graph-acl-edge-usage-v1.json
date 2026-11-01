@@ -38,6 +38,16 @@
       "expected_visible": true
     },
     {
+      "edge_id": "edge-missing-node-endpoint",
+      "source_node_id": "source-missing-node-endpoint",
+      "source_node_exists": false,
+      "target_node_id": "target-missing-node-endpoint",
+      "source_node_mode": "shared",
+      "target_node_mode": "shared",
+      "mention_span_counts": [],
+      "expected_visible": false
+    },
+    {
       "edge_id": "edge-references-private-edge",
       "source_node_id": "source-private-reference",
       "target_node_id": "target-private-reference",

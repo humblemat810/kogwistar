@@ -648,11 +648,13 @@ pub fn graph_records_visible_by_acl_with_index(
             return false;
         };
         let endpoint_ids = source_ids.into_iter().chain(target_ids);
+        // Python counterpart: ACLAwareReadSubsystem._edge_visible requires every
+        // referenced node to resolve and pass ACL checks before returning the edge.
         endpoint_ids.into_iter().all(|endpoint_id| {
             nodes
                 .iter()
                 .find(|node| node.id == endpoint_id && !is_acl_record(node))
-                .is_none_or(|node| visible(node, "node"))
+                .is_some_and(|node| visible(node, "node"))
         })
     };
     let mut visible_edge_ids = edges
@@ -4646,23 +4648,24 @@ mod tests {
             let edge_id = case["edge_id"].as_str().expect("edge ID");
             let source_id = case["source_node_id"].as_str().expect("source ID");
             let target_id = case["target_node_id"].as_str().expect("target ID");
-            let mut nodes = vec![
-                acl_record(edge_id, "edge", None, "shared"),
-                acl_record(
+            let mut nodes = vec![acl_record(edge_id, "edge", None, "shared")];
+            for (endpoint_id, exists, mode) in [
+                (
                     source_id,
-                    "node",
-                    None,
+                    case["source_node_exists"].as_bool().unwrap_or(true),
                     case["source_node_mode"].as_str().expect("source ACL mode"),
                 ),
-                acl_record(
+                (
                     target_id,
-                    "node",
-                    None,
+                    case["target_node_exists"].as_bool().unwrap_or(true),
                     case["target_node_mode"].as_str().expect("target ACL mode"),
                 ),
-                GraphRecord::new(source_id),
-                GraphRecord::new(target_id),
-            ];
+            ] {
+                if exists {
+                    nodes.push(acl_record(endpoint_id, "node", None, mode));
+                    nodes.push(GraphRecord::new(endpoint_id));
+                }
+            }
             let mut edge = GraphRecord::new(edge_id);
             edge.metadata
                 .insert("source_ids".into(), serde_json::json!([source_id]));
