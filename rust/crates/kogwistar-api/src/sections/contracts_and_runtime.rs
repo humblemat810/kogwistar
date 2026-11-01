@@ -354,6 +354,7 @@ mod server_backend_tests {
     }
 }
 
+// PYTHON_PARITY: kogwistar/server/bootstrap.py::ServerStorageSettings.schema_for("wisdom")
 fn configured_wisdom_schema(base_schema: &str, configured: Option<&str>) -> Result<String, String> {
     match configured {
         Some(schema) if schema.trim().is_empty() => {

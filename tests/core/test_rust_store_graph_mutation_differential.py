@@ -314,6 +314,81 @@ def test_graph_space_scope_preserves_shared_python_rust_node_edge_storage(
             assert python_rows["metadatas"][0]["graph_space"] == graph_space
 
 
+def test_rust_reads_python_persisted_wisdom_graph_from_role_schema(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    """Rust can read Wisdom rows persisted by Python's role-specific backend."""
+    dsn, base_schema = _require_pg(pg_dsn, pg_schema)
+    wisdom_schema = f"{base_schema}_wisdom"
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, schema=wisdom_schema
+    )
+    backend.ensure_schema()
+
+    node_id = "python-wisdom-node"
+    edge_id = "python-wisdom-edge"
+    node_document = json.dumps(
+        {
+            "id": node_id,
+            "label": "Legacy Python lesson",
+            "summary": "A persisted Wisdom node from the Python graph engine.",
+            "type": "wisdom_lesson",
+        },
+        separators=(",", ":"),
+    )
+    edge_document = json.dumps(
+        {
+            "id": edge_id,
+            "label": "supports",
+            "summary": "The lesson supports the observed pattern.",
+            "relation": "supports",
+            "source_ids": [node_id],
+            "target_ids": [node_id],
+        },
+        separators=(",", ":"),
+    )
+    backend.node_upsert(
+        ids=[node_id],
+        documents=[node_document],
+        metadatas=[{"namespace": "wisdom", "_class_name": "PureChromaNode"}],
+        embeddings=[[1.0, 0.0, 0.0]],
+    )
+    backend.edge_upsert(
+        ids=[edge_id],
+        documents=[edge_document],
+        metadatas=[
+            {
+                "namespace": "wisdom",
+                "_class_name": "PureChromaEdge",
+                "relation": "supports",
+                "source_ids": [node_id],
+                "target_ids": [node_id],
+            }
+        ],
+        embeddings=[[0.0, 1.0, 0.0]],
+    )
+
+    for table, entity_id, expected_document in (
+        ("gke_nodes", node_id, node_document),
+        ("gke_edges", edge_id, edge_document),
+    ):
+        rust_rows = _rust(
+            dsn,
+            wisdom_schema,
+            {
+                "kind": "graph_projection_records",
+                "namespace": "wisdom",
+                "table": table,
+                "ids": [entity_id],
+                "limit": 1,
+            },
+        )
+        assert len(rust_rows) == 1
+        assert rust_rows[0]["id"] == entity_id
+        assert rust_rows[0]["document"] == expected_document
+        assert rust_rows[0]["metadata"]["namespace"] == "wisdom"
+
+
 @pytest.mark.parametrize("level", [1 << 200, -(1 << 200)])
 def test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python(
     sa_engine, pg_dsn: str | None, pg_schema: str | None, level: int
