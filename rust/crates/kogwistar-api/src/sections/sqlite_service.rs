@@ -3028,6 +3028,8 @@ impl SqliteRunApplicationService {
                 ));
             }
         };
+        nodes.retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
+        edges.retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
         if let Err(error) = self.filter_current_chroma_stage2(namespace, &mut nodes, &mut edges) {
             return Err(effect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -3050,6 +3052,8 @@ impl SqliteRunApplicationService {
                 ));
             }
         }
+        nodes.retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
+        edges.retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
         let principal = graph_acl_principal_from_claims(
             &request.principal,
             scope_value["security_scope"].as_str(),
@@ -4903,6 +4907,11 @@ impl SqliteRunApplicationService {
                 }
             }
         }
+        for matches in &mut matches_by_query {
+            matches.retain(|matched| {
+                chroma_record_matches_principal_scope(&matched.record, &request.principal)
+            });
+        }
 
         let projected_hits = matches_by_query
             .iter()
@@ -4990,6 +4999,9 @@ impl SqliteRunApplicationService {
                     }
                 };
                 for record in referenced {
+                    if !chroma_record_matches_principal_scope(&record, &request.principal) {
+                        continue;
+                    }
                     if !known_edge_ids.insert(record.id.clone()) {
                         continue;
                     }
@@ -5014,7 +5026,7 @@ impl SqliteRunApplicationService {
                     "edge endpoint ACL set exceeds the 10000-record limit",
                 );
             }
-            let nodes = match graph
+            let mut nodes = match graph
                 .graph_records_by_ids_of_kind(namespace, GraphEntityKind::Node, &node_ids)
                 .await
             {
@@ -5027,6 +5039,8 @@ impl SqliteRunApplicationService {
                     );
                 }
             };
+            nodes
+                .retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
             (nodes, edges)
         };
         let mut acl_filter = MetadataFilter {
@@ -5050,7 +5064,7 @@ impl SqliteRunApplicationService {
                 .equals
                 .insert("graph_space".to_owned(), json!(graph_space));
         }
-        let acl_records = match graph
+        let mut acl_records = match graph
             .graph_records_of_kind_bounded(namespace, GraphEntityKind::Node, &acl_filter, 10_000)
             .await
         {
@@ -5063,6 +5077,8 @@ impl SqliteRunApplicationService {
                 );
             }
         };
+        acl_records
+            .retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
         let mut acl_index = GraphAclIndex::default();
         acl_index.extend_from_records(&acl_records, &input.truth_graph);
         let principal = graph_acl_principal_from_claims(
@@ -6931,6 +6947,25 @@ fn sqlite_native_answer_view_from_visible_records(
         "context_nodes": context_nodes,
         "context_edges": context_edges
     }))
+}
+
+fn chroma_record_matches_principal_scope(record: &GraphRecord, principal: &Value) -> bool {
+    let workspace = principal
+        .get("workspace_id")
+        .or_else(|| principal.get("workspace"))
+        .and_then(Value::as_str);
+    if workspace.is_some_and(|workspace| {
+        record.metadata.get("workspace_id").and_then(Value::as_str) != Some(workspace)
+    }) {
+        return false;
+    }
+    let graph_space = principal.get("graph_space").and_then(Value::as_str);
+    if graph_space.is_some_and(|graph_space| {
+        record.metadata.get("graph_space").and_then(Value::as_str) != Some(graph_space)
+    }) {
+        return false;
+    }
+    true
 }
 
 fn conversation_record_from_raw_event(

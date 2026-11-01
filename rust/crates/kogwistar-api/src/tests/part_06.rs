@@ -5322,43 +5322,47 @@
                     json!({"id": format!("collection-{}", input["name"].as_str().unwrap()), "metadata":{"hnsw:space":"cosine"}})
                 } else if line.contains("collection-nodes/query") {
                     let scoped = |document: &str| {
-                        let original = if document == "doc2" {
-                            json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1})
+                        let workspace = if document == "doc5" {"workspace-b"} else {"workspace-a"};
+                        let original = if document == "doc5" {
+                            json!({"workspace_id":workspace,"graph_space":"facts"})
+                        } else if document == "doc2" {
+                            json!({"workspace_id":workspace,"graph_space":"facts","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1})
                         } else {
-                            json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2})
+                            json!({"workspace_id":workspace,"graph_space":"facts","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2})
                         };
                         json!({
                             "_kogwistar_namespace":"scope-a",
-                            "workspace_id":"workspace-a",
+                            "workspace_id":workspace,
                             "graph_space":"facts",
                             "_kogwistar_original_metadata":original.to_string(),
                             "_test_document": document
                         })
                     };
                     json!({
-                        "ids":[["n4","n2"]],
-                        "documents":[["doc4","doc2"]],
-                        "metadatas":[[scoped("doc4"),scoped("doc2")]],
-                        "embeddings":[[[0.1,0.2],[0.1,0.2]]],
-                        "distances":[[0.03,0.1]]
+                        "ids":[["n4","n2","n5"]],
+                        "documents":[["doc4","doc2","doc5"]],
+                        "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5")]],
+                        "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
+                        "distances":[[0.03,0.1,0.01]]
                     })
                 } else if line.contains("collection-edges/query") {
                     let scoped = |document: &str| json!({
                         "_kogwistar_namespace":"scope-a",
                         "workspace_id":"workspace-a",
                         "graph_space":"facts",
-                        "_kogwistar_original_metadata":"{}",
+                        "_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\"}",
                         "_test_document": document
                     });
                     json!({
-                        "ids":[["e2","e1"]],
+                        "ids":[["e2","e1","e3"]],
                         "documents":[[
                             r#"{"source_ids":["n1"],"target_ids":["n3"]}"#,
-                            r#"{"source_ids":["n1"],"target_ids":["n2"]}"#
+                            r#"{"source_ids":["n1"],"target_ids":["n2"]}"#,
+                            r#"{"source_ids":["n1"],"target_ids":["n5"]}"#
                         ]],
-                        "metadatas":[[scoped("edge2"),scoped("edge1")]],
-                        "embeddings":[[[0.1,0.2],[0.1,0.2]]],
-                        "distances":[[0.02,0.1]]
+                        "metadatas":[[scoped("edge2"),scoped("edge1"),scoped("edge3")]],
+                        "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
+                        "distances":[[0.02,0.1,0.01]]
                     })
                 } else if line.contains("collection-nodes/get") {
                     let metas = [
@@ -5366,20 +5370,30 @@
                         json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1}),
                         json!({}),
                         json!({"_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2}),
+                        json!({}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n2","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n3","acl_version":1,"acl_mode":"private"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n4","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n5","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e3","acl_version":1,"acl_mode":"public"}),
                     ];
-                    json!({"ids":["n1","n2","n3","n4","acl-n1","acl-n2","acl-n3","acl-n4","acl-e1"],
-                        "documents":["{}","{}","{}","{}","{}","{}","{}","{}","{}"],
-                        "metadatas":metas.into_iter().map(|m| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":m.to_string()})).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null]})
+                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3"];
+                    json!({"ids":ids,
+                        "documents":["{}","{}","{}","{}","{}","{}","{}","{}","{}","{}","{}","{}"],
+                        "metadatas":metas.into_iter().enumerate().map(|(index, m)| {
+                            let workspace = if index == 4 || index == 9 {"workspace-b"} else {"workspace-a"};
+                            let mut original = m.as_object().unwrap().clone();
+                            original.insert("workspace_id".to_owned(), json!(workspace));
+                            original.insert("graph_space".to_owned(), json!("facts"));
+                            json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
+                        }).collect::<Vec<_>>(),
+                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null]})
                 } else {
                     json!({"ids":["e1"],
                         "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"]}"#],
-                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{}"})],
+                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\"}"})],
                         "embeddings":[null]})
                 };
                 let body = payload.to_string();
@@ -5411,11 +5425,11 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 9, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 12, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
-        assert_eq!(visible_nodes.len(), 3, "ACL-visible nodes: {visible_nodes:?}");
+        assert_eq!(visible_nodes.len(), 4, "ACL-visible nodes: {visible_nodes:?}");
         assert_eq!(visible_edges.len(), 1, "ACL-visible edges: {visible_edges:?}");
         assert_eq!(
             graph_neighbors_from_records("n1", &visible_nodes, &visible_edges, None).nodes,
@@ -5568,6 +5582,10 @@
             assert!(
                 !visualization.to_string().contains("n3"),
                 "private graph endpoint must not leak through {tool}: {visualization}"
+            );
+            assert!(
+                !visualization.to_string().contains("n5"),
+                "cross-workspace graph entity must not leak through {tool}: {visualization}"
             );
         }
 
@@ -5800,11 +5818,14 @@
                     let metadatas = nodes
                         .iter()
                         .map(|(_, metadata)| {
+                            let mut original = metadata.as_object().unwrap().clone();
+                            original.insert("workspace_id".to_owned(), json!("workspace-a"));
+                            original.insert("graph_space".to_owned(), json!("conversation"));
                             json!({
                                 "_kogwistar_namespace":"scope-a",
                                 "workspace_id":"workspace-a",
                                 "graph_space":"conversation",
-                                "_kogwistar_original_metadata":metadata.to_string()
+                                "_kogwistar_original_metadata":Value::Object(original).to_string()
                             })
                         })
                         .collect::<Vec<_>>();
