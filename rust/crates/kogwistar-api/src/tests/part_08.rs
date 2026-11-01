@@ -364,6 +364,205 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
 }
 
 #[tokio::test]
+async fn in_memory_vector_query_matches_shared_python_acl_contract() {
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-acl-vector-query-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(fixture["schema_version"], 1);
+
+    let secret = "in-memory-vector-acl-contract-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |subject: &str, capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": subject,
+                "role": "rw",
+                "ns": ["docs"],
+                "storage_ns": fixture["scope"]["namespace"],
+                "workspace": fixture["scope"]["workspace_id"],
+                "workspace_id": fixture["scope"]["workspace_id"],
+                "capabilities": capabilities,
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec![],
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(InMemoryGraphApplicationService::default()),
+    );
+    let scope = json!({
+        "namespace": fixture["scope"]["namespace"],
+        "workspace_id": fixture["scope"]["workspace_id"],
+        "graph_space": null
+    });
+    let mut mutations = Vec::new();
+    for (kind, table, records) in [
+        ("node", "gke_nodes", &fixture["nodes"]),
+        ("edge", "gke_edges", &fixture["edges"]),
+    ] {
+        for spec in records.as_array().unwrap() {
+            let id = spec["id"].as_str().unwrap();
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("entity_type".to_owned(), json!(kind));
+            if kind == "node" {
+                metadata.insert("label".to_owned(), json!(id));
+            } else {
+                metadata.insert("source_ids".to_owned(), spec["source_ids"].clone());
+                metadata.insert("target_ids".to_owned(), spec["target_ids"].clone());
+            }
+            mutations.push(json!({
+                "scope": scope,
+                "table": table,
+                "entity_kind": kind,
+                "event_id": format!("{kind}-{id}"),
+                "op": "ADD",
+                "payload": {"id": id},
+                "record": {
+                    "id": id,
+                    "document": id,
+                    "metadata": metadata,
+                    "embedding": spec["embedding"]
+                },
+                "embedding_dim": 2
+            }));
+
+            let mut acl_metadata = serde_json::Map::new();
+            for (key, value) in [
+                ("entity_type", json!("acl_record")),
+                ("acl_truth_graph", fixture["truth_graph"].clone()),
+                ("acl_target_entity_id", json!(id)),
+                ("acl_target_grain", json!(kind)),
+                ("acl_version", json!(1)),
+                ("acl_mode", spec["mode"].clone()),
+            ] {
+                acl_metadata.insert(key.to_owned(), value);
+            }
+            if let Some(owner_id) = spec["owner_id"].as_str() {
+                acl_metadata.insert("owner_id".to_owned(), json!(owner_id));
+            }
+            let acl_id = format!("acl-{kind}-{id}");
+            mutations.push(json!({
+                "scope": scope,
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": format!("event-{acl_id}"),
+                "op": "ADD",
+                "payload": {"id": acl_id},
+                "record": {
+                    "id": acl_id,
+                    "document": null,
+                    "metadata": acl_metadata,
+                    "embedding": null
+                },
+                "embedding_dim": 0
+            }));
+        }
+    }
+    let write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("owner-b", &["write_graph"])),
+                )
+                .body(Body::from(
+                    json!({"contract_version":1,"atomic":true,"mutations":mutations,"index_jobs":[]})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.status(), StatusCode::OK);
+
+    for principal in fixture["principals"].as_array().unwrap() {
+        let subject = principal["id"].as_str().unwrap();
+        for (kind, expected_key) in [("node", "nodes"), ("edge", "edges")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/internal/graph/vector-query")
+                        .header("content-type", "application/json")
+                        .header(
+                            "authorization",
+                            format!("Bearer {}", token(subject, &["read_graph"])),
+                        )
+                        .body(Body::from(
+                            json!({
+                                "entity_kind": kind,
+                                "query_embeddings": fixture["query_embeddings"],
+                                "metric": fixture["metric"],
+                                "truth_graph": fixture["truth_graph"],
+                                "n_results": fixture["n_results"],
+                                "include": ["distances"]
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let result: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap())
+                    .unwrap();
+            assert_eq!(result["implementation_authority"], "rust");
+            assert_eq!(result["seam_attestation_version"], 1);
+            assert_eq!(result["seam_crossings"], json!([]));
+            assert_eq!(
+                result["ids"], principal["expected"][expected_key],
+                "unexpected {kind} candidates for {subject}"
+            );
+            let expected_distances = &principal["expected"]["distances"][expected_key];
+            let actual_distances = result["distances"].as_array().unwrap();
+            assert_eq!(
+                actual_distances.len(),
+                expected_distances.as_array().unwrap().len()
+            );
+            for (actual, expected_values) in actual_distances
+                .iter()
+                .zip(expected_distances.as_array().unwrap())
+            {
+                let actual = actual.as_array().unwrap();
+                let expected_values = expected_values.as_array().unwrap();
+                assert_eq!(actual.len(), expected_values.len());
+                for (actual, expected) in actual.iter().zip(expected_values) {
+                    assert!(
+                        (actual.as_f64().unwrap() - expected.as_f64().unwrap()).abs() < 1e-5,
+                        "unexpected {kind} vector distance for {subject}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn in_memory_mcp_traversal_matches_shared_python_contract() {
     let fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
