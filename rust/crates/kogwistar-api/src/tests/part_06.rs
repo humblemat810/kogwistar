@@ -7890,3 +7890,69 @@
         let _ = std::fs::remove_file(auth_path);
         let _ = std::fs::remove_file(server_log_path);
     }
+
+    #[test]
+    fn sqlite_native_answer_view_projects_only_the_admitted_conversation() {
+        let record = |id: &str, document: Value, metadata: serde_json::Map<String, Value>| {
+            GraphRecord {
+                id: id.to_owned(),
+                document: Some(serde_json::to_string(&document).unwrap()),
+                metadata,
+                embedding: None,
+            }
+        };
+        let nodes = vec![
+            record("turn-c1", json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "c1",
+                "role": "user",
+                "content": "question",
+            }), serde_json::Map::new()),
+            record("context-c1", json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "c1",
+                "role": "assistant",
+                "content": "answer",
+            }), serde_json::Map::new()),
+            record("turn-c2", json!({
+                "entity_type": "conversation_turn",
+                "conversation_id": "c2",
+                "role": "user",
+                "content": "other question",
+            }), serde_json::Map::new()),
+        ];
+        let edges = vec![
+            record("edge-c1", json!({"source": "turn-c1", "target": "context-c1"}),
+                serde_json::Map::from_iter([("doc_id".to_owned(), json!("conv:c1"))])),
+            record("edge-c2", json!({"source": "turn-c2", "target": "context-c2"}),
+                serde_json::Map::from_iter([("doc_id".to_owned(), json!("conv:c2"))])),
+        ];
+
+        let view = match sqlite_native_answer_view_from_visible_records(
+            &nodes,
+            &edges,
+            "c1",
+            "turn-c1",
+        ) {
+            Ok(view) => view,
+            Err(_) => panic!("valid visible conversation context should be accepted"),
+        };
+        assert_eq!(view["turn"]["id"], "turn-c1");
+        assert_eq!(view["context_nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(view["context_edges"].as_array().unwrap().len(), 1);
+
+        let inactive_turn = record("turn-c1", json!({
+            "entity_type": "conversation_turn",
+            "conversation_id": "c1",
+            "role": "user",
+            "content": "question",
+            "lifecycle_status": "tombstoned",
+        }), serde_json::Map::new());
+        assert!(sqlite_native_answer_view_from_visible_records(
+            &[inactive_turn],
+            &[],
+            "c1",
+            "turn-c1",
+        )
+        .is_err());
+    }

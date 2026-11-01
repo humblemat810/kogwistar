@@ -247,6 +247,12 @@ existing Rust projection test separately verifies
 failure/restart recovery and eventual application. The Rust SQLite+Chroma test
 subset passed (**11 passed, 1 ignored**), including
 `sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`.
+The first SQLite+Chroma native answer host step now revalidates the durable
+run owner for `read_graph`, obtains the ACL-filtered conversation projection,
+and rejects a missing, wrong-conversation, non-user, or tombstoned turn;
+`sqlite_native_answer_view_projects_only_the_admitted_conversation` covers
+conversation isolation and inactive-turn rejection. This is context preparation
+only, not a complete SQLite+Chroma answer execution path.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies

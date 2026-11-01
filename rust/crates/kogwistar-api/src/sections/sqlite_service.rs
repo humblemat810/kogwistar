@@ -252,19 +252,14 @@ impl RevisionFencedChromaProjectionStore {
         }
         let document = kogwistar_contracts::canonical_json(&document_payload, false);
 
-        let source_metadata = revision
-            .payload
-            .get("metadata")
-            .and_then(Value::as_object);
+        let source_metadata = revision.payload.get("metadata").and_then(Value::as_object);
         let mut metadata = source_metadata.cloned().unwrap_or_default();
-        if metadata
-            .get("namespace")
-            .is_some_and(|value| {
-                !value.is_null() && value.as_str() != Some(revision.namespace.as_str())
-            })
-        {
+        if metadata.get("namespace").is_some_and(|value| {
+            !value.is_null() && value.as_str() != Some(revision.namespace.as_str())
+        }) {
             return Err(StoreError::InvalidEntityEventPayload {
-                message: "canonical graph metadata namespace conflicts with its event scope".to_owned(),
+                message: "canonical graph metadata namespace conflicts with its event scope"
+                    .to_owned(),
             });
         }
         metadata.insert(
@@ -273,18 +268,33 @@ impl RevisionFencedChromaProjectionStore {
         );
         if revision.entity_kind == "node" {
             metadata.retain(|_, value| !value.is_null());
-            for field in ["doc_id", "label", "type", "summary", "domain_id", "canonical_entity_id"] {
+            for field in [
+                "doc_id",
+                "label",
+                "type",
+                "summary",
+                "domain_id",
+                "canonical_entity_id",
+            ] {
                 if let Some(value) = revision.payload.get(field).filter(|value| !value.is_null()) {
                     metadata.insert(field.to_owned(), value.clone());
                 }
             }
-            if let Some(value) = revision.payload.get("properties").filter(|value| !value.is_null()) {
+            if let Some(value) = revision
+                .payload
+                .get("properties")
+                .filter(|value| !value.is_null())
+            {
                 metadata.insert(
                     "properties".to_owned(),
                     Value::String(kogwistar_contracts::canonical_json(value, false)),
                 );
             }
-            if let Some(value) = revision.payload.get("mentions").filter(|value| !value.is_null()) {
+            if let Some(value) = revision
+                .payload
+                .get("mentions")
+                .filter(|value| !value.is_null())
+            {
                 metadata.insert(
                     "mentions".to_owned(),
                     Value::String(kogwistar_contracts::canonical_json(value, false)),
@@ -292,13 +302,24 @@ impl RevisionFencedChromaProjectionStore {
             }
         } else {
             for field in [
-                "doc_id", "relation", "type", "summary", "domain_id", "canonical_entity_id",
+                "doc_id",
+                "relation",
+                "type",
+                "summary",
+                "domain_id",
+                "canonical_entity_id",
             ] {
                 if let Some(value) = revision.payload.get(field).filter(|value| !value.is_null()) {
                     metadata.insert(field.to_owned(), value.clone());
                 }
             }
-            for field in ["source_ids", "target_ids", "source_edge_ids", "target_edge_ids", "properties"] {
+            for field in [
+                "source_ids",
+                "target_ids",
+                "source_edge_ids",
+                "target_edge_ids",
+                "properties",
+            ] {
                 if let Some(value) = revision.payload.get(field).filter(|value| !value.is_null()) {
                     metadata.insert(
                         field.to_owned(),
@@ -306,7 +327,11 @@ impl RevisionFencedChromaProjectionStore {
                     );
                 }
             }
-            if let Some(value) = revision.payload.get("mentions").filter(|value| !value.is_null()) {
+            if let Some(value) = revision
+                .payload
+                .get("mentions")
+                .filter(|value| !value.is_null())
+            {
                 metadata.insert(
                     "references".to_owned(),
                     Value::String(kogwistar_contracts::canonical_json(value, false)),
@@ -336,8 +361,14 @@ impl RevisionFencedChromaProjectionStore {
                 .filter_map(|key| revision.payload.get(*key).and_then(Value::as_array))
                 .map(Vec::len)
                 .sum::<usize>();
-            metadata.insert("node_endpoint_count".to_owned(), Value::from(node_endpoints));
-            metadata.insert("edge_endpoint_count".to_owned(), Value::from(edge_endpoints));
+            metadata.insert(
+                "node_endpoint_count".to_owned(),
+                Value::from(node_endpoints),
+            );
+            metadata.insert(
+                "edge_endpoint_count".to_owned(),
+                Value::from(edge_endpoints),
+            );
             metadata.insert(
                 "total_endpoint_count".to_owned(),
                 Value::from(node_endpoints + edge_endpoints),
@@ -354,10 +385,16 @@ impl RevisionFencedChromaProjectionStore {
 
         let mut payload = serde_json::Map::new();
         payload.insert("id".to_owned(), Value::String(revision.entity_id.clone()));
-        payload.insert("entity_kind".to_owned(), Value::String(revision.entity_kind.clone()));
+        payload.insert(
+            "entity_kind".to_owned(),
+            Value::String(revision.entity_kind.clone()),
+        );
         payload.insert("document".to_owned(), Value::String(document));
         payload.insert("metadata".to_owned(), Value::Object(metadata));
-        payload.insert("source_fingerprint".to_owned(), Value::String(fingerprint.to_owned()));
+        payload.insert(
+            "source_fingerprint".to_owned(),
+            Value::String(fingerprint.to_owned()),
+        );
         Ok(NamedProjectionWrite {
             payload,
             last_authoritative_seq: revision.revision,
@@ -531,8 +568,9 @@ impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjecti
         namespace: &str,
         entity_kind: &str,
         record: GraphRecord,
-    ) -> impl std::future::Future<Output = Result<kogwistar_store::ProjectionWriteOutcome, StoreError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<kogwistar_store::ProjectionWriteOutcome, StoreError>,
+    > + Send {
         async move {
             self.upsert_with_revision_fence(namespace, entity_kind, record)
                 .await
@@ -546,8 +584,9 @@ impl kogwistar_store::GraphProjectionWriteStore for RevisionFencedChromaProjecti
         namespace: &str,
         entity_kind: &str,
         id: &str,
-    ) -> impl std::future::Future<Output = Result<kogwistar_store::ProjectionWriteOutcome, StoreError>> + Send
-    {
+    ) -> impl std::future::Future<
+        Output = Result<kogwistar_store::ProjectionWriteOutcome, StoreError>,
+    > + Send {
         async move {
             self.delete_with_revision_fence(namespace, entity_kind, id)
                 .await
@@ -594,15 +633,12 @@ impl SqliteRunApplicationService {
                 };
                 let namespace = event.namespace.clone();
                 let entity_kind = event.entity_kind.clone();
-                read_canonical_entity_revision(
-                    &[event],
-                    &namespace,
-                    &entity_kind,
-                    &record.id,
-                )
-                .ok()
-                .flatten()
-                .is_some_and(|revision| revision.revision == source_revision && !revision.is_deleted())
+                read_canonical_entity_revision(&[event], &namespace, &entity_kind, &record.id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|revision| {
+                        revision.revision == source_revision && !revision.is_deleted()
+                    })
             }
             Some(Value::Bool(false)) | Some(_) => false,
         }
@@ -630,9 +666,7 @@ impl SqliteRunApplicationService {
                 .store
                 .latest_entity_events(namespace, entity_kind, &ids)
                 .map_err(|error| error.to_string())?;
-            records.retain(|record| {
-                Self::stage2_record_is_current(record, latest.get(&record.id))
-            });
+            records.retain(|record| Self::stage2_record_is_current(record, latest.get(&record.id)));
         }
         Ok(())
     }
@@ -1136,10 +1170,7 @@ impl SqliteRunApplicationService {
     /// Compose Chroma graph reads with SQLite's canonical event journal and
     /// durable projection queue. Graph mutations commit only to SQLite; Chroma
     /// remains an eventual, revision-fenced projection.
-    pub fn with_chroma_graph(
-        mut self,
-        graph: kogwistar_store_chroma::ChromaGraphStore,
-    ) -> Self {
+    pub fn with_chroma_graph(mut self, graph: kogwistar_store_chroma::ChromaGraphStore) -> Self {
         self.chroma_graph = Some(graph);
         self
     }
@@ -1263,10 +1294,7 @@ impl SqliteRunApplicationService {
         self
     }
 
-    pub async fn with_owner_auth_config(
-        mut self,
-        config: &AuthConfig,
-    ) -> Result<Self, String> {
+    pub async fn with_owner_auth_config(mut self, config: &AuthConfig) -> Result<Self, String> {
         self.owner_auth_store = Some(AuthStore::from_config(config).await?);
         Ok(self)
     }
@@ -1303,7 +1331,9 @@ impl SqliteRunApplicationService {
         )
         .map_err(|_| "native worker owner binding is invalid".to_owned())?;
         if binding.user_id != owner_id {
-            return Err("native worker owner binding does not match the durable run owner".to_owned());
+            return Err(
+                "native worker owner binding does not match the durable run owner".to_owned(),
+            );
         }
         let auth_store = self
             .owner_auth_store
@@ -1401,8 +1431,9 @@ impl SqliteRunApplicationService {
                     }
                     continue;
                 };
-                let fingerprint = RevisionFencedChromaProjectionStore::canonical_fingerprint(&current)
-                    .map_err(|error| error.to_string())?;
+                let fingerprint =
+                    RevisionFencedChromaProjectionStore::canonical_fingerprint(&current)
+                        .map_err(|error| error.to_string())?;
                 let staged_fingerprint = row
                     .payload
                     .get("source_fingerprint")
@@ -1433,17 +1464,16 @@ impl SqliteRunApplicationService {
                             .and_then(Value::as_str)
                             != Some(fingerprint.as_str())
                 }) {
-                    return Err("Stage-1 recovery did not persist the current canonical revision".to_owned());
+                    return Err(
+                        "Stage-1 recovery did not persist the current canonical revision"
+                            .to_owned(),
+                    );
                 }
                 // Never enqueue a revision that changed while the repair was
                 // being written; a later reconciliation can repair its row.
-                let latest = sqlite_canonical_entity_revision(
-                    &self.store,
-                    namespace,
-                    kind_name,
-                    &entity_id,
-                )
-                .map_err(|error| error.to_string())?;
+                let latest =
+                    sqlite_canonical_entity_revision(&self.store, namespace, kind_name, &entity_id)
+                        .map_err(|error| error.to_string())?;
                 if latest.as_ref().map(|revision| revision.revision) != Some(current.revision) {
                     continue;
                 }
@@ -1462,13 +1492,7 @@ impl SqliteRunApplicationService {
             let mut offset = 0_u32;
             loop {
                 let page = graph
-                    .graph_records_of_kind_page(
-                        namespace,
-                        kind,
-                        &filter,
-                        offset,
-                        page_size as u32,
-                    )
+                    .graph_records_of_kind_page(namespace, kind, &filter, offset, page_size as u32)
                     .await
                     .map_err(|error| error.to_string())?;
                 let count = page.len();
@@ -1556,19 +1580,17 @@ impl SqliteRunApplicationService {
                         }) {
                             continue;
                         }
-                        if restored_stage1
-                            .iter()
-                            .any(|(restored_kind, restored_id)| {
-                                *restored_kind == kind_name && restored_id == &record.id
-                            })
-                        {
+                        if restored_stage1.iter().any(|(restored_kind, restored_id)| {
+                            *restored_kind == kind_name && restored_id == &record.id
+                        }) {
                             continue;
                         }
-                        let stage1 = RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
-                            &current,
-                            &current_fingerprint,
-                        )
-                        .map_err(|error| error.to_string())?;
+                        let stage1 =
+                            RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
+                                &current,
+                                &current_fingerprint,
+                            )
+                            .map_err(|error| error.to_string())?;
                         self.store
                             .replace_stage1_node_projection(
                                 namespace,
@@ -1908,14 +1930,16 @@ impl SqliteRunApplicationService {
             .or_else(|| request.principal.get("workspace"))
             .and_then(Value::as_str)
         {
-            filter
-                .equals
-                .insert("workspace_id".to_owned(), Value::String(workspace.to_owned()));
+            filter.equals.insert(
+                "workspace_id".to_owned(),
+                Value::String(workspace.to_owned()),
+            );
         }
         if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
-            filter
-                .equals
-                .insert("graph_space".to_owned(), Value::String(graph_space.to_owned()));
+            filter.equals.insert(
+                "graph_space".to_owned(),
+                Value::String(graph_space.to_owned()),
+            );
         }
         let Some(graph) = &self.chroma_graph else {
             return Err(effect_error(
@@ -1963,6 +1987,72 @@ impl SqliteRunApplicationService {
         Ok((nodes, edges))
     }
 
+    async fn native_answer_view_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let run = self
+            .store
+            .get_server_run(&request.run_id)
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        if let Some(caller) = caller {
+            if authenticated_run_owner_id(caller) != Some(owner_id) {
+                return Err(NativeEvidenceContextError::CallerNotRunOwner);
+            }
+        }
+        let mut principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?;
+        principal["actor_id"] = json!(owner_id);
+
+        let turn_id = request
+            .turn_node_id
+            .as_deref()
+            .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str))
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        if request
+            .state
+            .get("turn_node_id")
+            .and_then(Value::as_str)
+            .is_some_and(|state_turn_id| state_turn_id != turn_id)
+        {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+
+        let graph_request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: String::new(),
+            body: Vec::new(),
+            principal,
+        };
+        let (nodes, edges) = self
+            .chroma_graph_snapshot(&graph_request, "conversation")
+            .await
+            .map_err(|response| {
+                if response.status >= StatusCode::INTERNAL_SERVER_ERROR.as_u16() {
+                    NativeEvidenceContextError::GraphReadUnavailable
+                } else {
+                    NativeEvidenceContextError::GraphReadRejected
+                }
+            })?;
+        sqlite_native_answer_view_from_visible_records(
+            &nodes,
+            &edges,
+            &request.conversation_id,
+            turn_id,
+        )
+    }
+
     async fn sqlite_chroma_receive_message_effect(
         &self,
         request: &ApiEffectRequest,
@@ -1997,27 +2087,21 @@ impl SqliteRunApplicationService {
             Ok(records) => records,
             Err(response) => return response,
         };
-        let transcript = match conversation_transcript_from_visible_records(
-            &nodes,
-            conversation_id,
-            10_000,
-        ) {
-            Ok(transcript) => transcript,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
-                    error.to_string(),
-                );
-            }
-        };
+        let transcript =
+            match conversation_transcript_from_visible_records(&nodes, conversation_id, 10_000) {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                        error.to_string(),
+                    );
+                }
+            };
         syscall_result(
             &input.version,
             "receive_message",
-            json_effect(
-                StatusCode::OK,
-                legacy_receive_message_value(transcript),
-            ),
+            json_effect(StatusCode::OK, legacy_receive_message_value(transcript)),
         )
     }
 
@@ -2135,20 +2219,17 @@ impl SqliteRunApplicationService {
             Ok(records) => records,
             Err(response) => return response,
         };
-        let transcript = match conversation_transcript_from_visible_records(
-            &nodes,
-            &conversation_id,
-            10_000,
-        ) {
-            Ok(transcript) => transcript,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_CONVERSATION_NOT_FOUND",
-                    error.to_string(),
-                );
-            }
-        };
+        let transcript =
+            match conversation_transcript_from_visible_records(&nodes, &conversation_id, 10_000) {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                        error.to_string(),
+                    );
+                }
+            };
         let mut payload = serde_json::to_value(transcript).expect("transcript serializes");
         if let Some(object) = payload.as_object_mut() {
             object.remove("schema_version");
@@ -2281,10 +2362,7 @@ impl SqliteRunApplicationService {
         json_effect(StatusCode::OK, json!({"conversations": conversations}))
     }
 
-    async fn chroma_graph_neighbors_effect(
-        &self,
-        request: &ApiEffectRequest,
-    ) -> ApiEffectResponse {
+    async fn chroma_graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(
                 StatusCode::FORBIDDEN,
@@ -2309,12 +2387,8 @@ impl SqliteRunApplicationService {
             Ok(records) => records,
             Err(response) => return response,
         };
-        let neighbors = graph_neighbors_from_records(
-            input.rid.trim(),
-            &nodes,
-            &edges,
-            input.doc_id.as_deref(),
-        );
+        let neighbors =
+            graph_neighbors_from_records(input.rid.trim(), &nodes, &edges, input.doc_id.as_deref());
         json_effect(
             StatusCode::OK,
             rust_native_attested(json!({
@@ -2384,9 +2458,7 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        if input.src_id.trim().is_empty()
-            || input.dst_id.trim().is_empty()
-            || input.max_depth > 128
+        if input.src_id.trim().is_empty() || input.dst_id.trim().is_empty() || input.max_depth > 128
         {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -2495,19 +2567,9 @@ impl SqliteRunApplicationService {
             Err(response) => return response,
         };
         let result = if cytoscape {
-            graph_viz_cytoscape_from_records(
-                &nodes,
-                &edges,
-                input.doc_id.as_deref(),
-                &input.mode,
-            )
+            graph_viz_cytoscape_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
         } else {
-            graph_viz_d3_from_records(
-                &nodes,
-                &edges,
-                input.doc_id.as_deref(),
-                &input.mode,
-            )
+            graph_viz_d3_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
     }
@@ -2550,14 +2612,16 @@ impl SqliteRunApplicationService {
             .or_else(|| request.principal.get("workspace"))
             .and_then(Value::as_str)
         {
-            metadata
-                .equals
-                .insert("workspace_id".to_owned(), Value::String(workspace.to_owned()));
+            metadata.equals.insert(
+                "workspace_id".to_owned(),
+                Value::String(workspace.to_owned()),
+            );
         }
         if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
-            metadata
-                .equals
-                .insert("graph_space".to_owned(), Value::String(graph_space.to_owned()));
+            metadata.equals.insert(
+                "graph_space".to_owned(),
+                Value::String(graph_space.to_owned()),
+            );
         }
 
         let Some(graph) = &self.chroma_graph else {
@@ -2788,7 +2852,12 @@ impl SqliteRunApplicationService {
                             .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
                 })
                 .collect::<Vec<_>>();
-            ids.push(matches.iter().map(|matched| json!(matched.record.id)).collect::<Vec<_>>());
+            ids.push(
+                matches
+                    .iter()
+                    .map(|matched| json!(matched.record.id))
+                    .collect::<Vec<_>>(),
+            );
             if input.include.iter().any(|field| field == "documents") {
                 documents.push(
                     matches
@@ -3277,76 +3346,82 @@ impl SqliteRunApplicationService {
         let supports_graph_mutation_batch = self.chroma_graph.is_some();
         self.store
             .immediate_transaction(|uow| {
-            let mut claimed = Vec::new();
-            for recipient_id in &recipient_ids {
-                let remaining = input.limit.saturating_sub(claimed.len());
-                if remaining == 0 {
-                    break;
+                let mut claimed = Vec::new();
+                for recipient_id in &recipient_ids {
+                    let remaining = input.limit.saturating_sub(claimed.len());
+                    if remaining == 0 {
+                        break;
+                    }
+                    claimed.extend(uow.claim_projected_lane_messages_filtered(
+                        LaneMessageClaimFilter {
+                            namespace: "workflow".to_owned(),
+                            inbox_id: "workflow-runtime".to_owned(),
+                            claimed_by: claim_owner.clone(),
+                            message_ids: None,
+                            run_id: input.run_id.clone(),
+                            msg_type: None,
+                            recipient_id: Some(recipient_id.clone()),
+                            limit: remaining,
+                            lease_seconds: input.lease_seconds,
+                        },
+                    )?);
                 }
-                claimed.extend(uow.claim_projected_lane_messages_filtered(
-                    LaneMessageClaimFilter {
-                        namespace: "workflow".to_owned(),
-                        inbox_id: "workflow-runtime".to_owned(),
-                        claimed_by: claim_owner.clone(),
-                        message_ids: None,
-                        run_id: input.run_id.clone(),
-                        msg_type: None,
-                        recipient_id: Some(recipient_id.clone()),
-                        limit: remaining,
-                        lease_seconds: input.lease_seconds,
-                    },
-                )?);
-            }
-            let mut values = Vec::new();
-            for lane in claimed {
-                let payload: Value =
-                    serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}"))?;
-                let run_id = lane.run_id.clone().unwrap_or_default();
-                if uow
-                    .get_server_run(&run_id)?
-                    .is_some_and(|run| run.cancel_requested)
-                {
-                    uow.update_projected_lane_message_status(&lane.message_id, "cancelled", None)?;
-                    continue;
+                let mut values = Vec::new();
+                for lane in claimed {
+                    let payload: Value =
+                        serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}"))?;
+                    let run_id = lane.run_id.clone().unwrap_or_default();
+                    if uow
+                        .get_server_run(&run_id)?
+                        .is_some_and(|run| run.cancel_requested)
+                    {
+                        uow.update_projected_lane_message_status(
+                            &lane.message_id,
+                            "cancelled",
+                            None,
+                        )?;
+                        continue;
+                    }
+                    let starts_runtime = lane.msg_type == "workflow.run.execute"
+                        && payload["runtime_started"].as_bool() != Some(true);
+                    let expected_event_seq = if starts_runtime {
+                        uow.apply_recorded_runtime_transition(
+                            runtime_start_transition(&payload, &run_id),
+                            false,
+                        )?
+                        .event_seq
+                    } else {
+                        payload["expected_event_seq"].as_i64().ok_or_else(|| {
+                            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                                format!(
+                                    "continuation lane message {:?} lacks expected_event_seq",
+                                    lane.message_id
+                                ),
+                            )
+                        })?
+                    };
+                    let mut claimed_payload = payload.clone();
+                    claimed_payload["expected_event_seq"] = json!(expected_event_seq);
+                    if lane.msg_type == "workflow.run.execute" {
+                        claimed_payload["runtime_started"] = json!(true);
+                    }
+                    uow.update_projected_lane_message_payload(
+                        &lane.message_id,
+                        serde_json::to_string(&claimed_payload)?,
+                    )?;
+                    let mut work = runtime_claimed_work(
+                        lane,
+                        &claim_owner,
+                        run_id,
+                        claimed_payload,
+                        expected_event_seq,
+                    );
+                    if supports_graph_mutation_batch {
+                        work.worker_effect_capabilities
+                            .push("graph_mutation_batch_v1".to_owned());
+                    }
+                    values.push(work);
                 }
-                let starts_runtime = lane.msg_type == "workflow.run.execute"
-                    && payload["runtime_started"].as_bool() != Some(true);
-                let expected_event_seq = if starts_runtime {
-                    uow.apply_recorded_runtime_transition(
-                        runtime_start_transition(&payload, &run_id),
-                        false,
-                    )?
-                    .event_seq
-                } else {
-                    payload["expected_event_seq"].as_i64().ok_or_else(|| {
-                        kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(format!(
-                            "continuation lane message {:?} lacks expected_event_seq",
-                            lane.message_id
-                        ))
-                    })?
-                };
-                let mut claimed_payload = payload.clone();
-                claimed_payload["expected_event_seq"] = json!(expected_event_seq);
-                if lane.msg_type == "workflow.run.execute" {
-                    claimed_payload["runtime_started"] = json!(true);
-                }
-                uow.update_projected_lane_message_payload(
-                    &lane.message_id,
-                    serde_json::to_string(&claimed_payload)?,
-                )?;
-                let mut work = runtime_claimed_work(
-                    lane,
-                    &claim_owner,
-                    run_id,
-                    claimed_payload,
-                    expected_event_seq,
-                );
-                if supports_graph_mutation_batch {
-                    work.worker_effect_capabilities
-                        .push("graph_mutation_batch_v1".to_owned());
-                }
-                values.push(work);
-            }
                 Ok(values)
             })
             .map_err(|error| error.to_string())
@@ -3520,7 +3595,13 @@ impl SqliteRunApplicationService {
                     validate_graph_mutation_envelopes(v1, &mutations)?;
                     validate_runtime_graph_mutations(&mutations)?;
                     let index_jobs = graph_index_jobs_value(v1, &mutations)?;
-                    Ok((GraphMutationBatch { mutations, index_jobs }, None))
+                    Ok((
+                        GraphMutationBatch {
+                            mutations,
+                            index_jobs,
+                        },
+                        None,
+                    ))
                 })()),
                 (None, Some(v2)) => Some((|| {
                     let (mutations, index_jobs) = graph_mutation_batch_v2_value(v2.clone())?;
@@ -3539,7 +3620,10 @@ impl SqliteRunApplicationService {
                         )?;
                     }
                     Ok((
-                        GraphMutationBatch { mutations, index_jobs },
+                        GraphMutationBatch {
+                            mutations,
+                            index_jobs,
+                        },
                         Some(v2.default_acl.truth_graph.clone()),
                     ))
                 })()),
@@ -3583,7 +3667,8 @@ impl SqliteRunApplicationService {
                     );
                 };
                 let scope = security_scope_value(principal);
-                if batch.mutations
+                if batch
+                    .mutations
                     .iter()
                     .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &scope))
                 {
@@ -3617,11 +3702,10 @@ impl SqliteRunApplicationService {
             None => None,
         };
         if let Some(effect) = input.effect.as_ref()
-            && let Err(message) =
-                validate_python_worker_submission_trace_binding(
-                    &effect.trace_events,
-                    &input.handoff.claimed_by,
-                )
+            && let Err(message) = validate_python_worker_submission_trace_binding(
+                &effect.trace_events,
+                &input.handoff.claimed_by,
+            )
         {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -4041,6 +4125,99 @@ impl SqliteRunApplicationService {
                 );
             }
         };
+        if native_request.operation == "aa_get_view_and_question" {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_NATIVE_ANSWER_VIEW_ASYNC_REQUIRED",
+                "native answer-view execution requires the asynchronous application-service path",
+            );
+        }
+        self.execute_native_request(input.handoff, native_request)
+    }
+
+    async fn execute_native_runtime_step_async(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let input: RuntimeNativeExecuteRequest = match serde_json::from_slice(&request.body) {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut native_request =
+            match native_step_request_from_payload(&input.handoff, input.payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::CONFLICT,
+                        "KOGWISTAR_NATIVE_HANDOFF_CONFLICT",
+                        error,
+                    );
+                }
+            };
+        if native_request.operation == "aa_get_view_and_question" {
+            match self
+                .native_answer_view_context(&native_request, Some(&request.principal))
+                .await
+            {
+                Ok(view) => {
+                    native_request
+                        .ephemeral_context
+                        .insert("authorized_answer_view".to_owned(), view);
+                }
+                Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                        "native answer view requires the authenticated run owner",
+                    );
+                }
+                Err(NativeEvidenceContextError::OwnerAuthorization) => {
+                    return self.apply_runtime_result_input(
+                        failed_native_result(
+                            input.handoff,
+                            &native_request,
+                            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                            "native answer view requires the run owner's current read_graph capability and admitted scope",
+                        ),
+                        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                        None,
+                    );
+                }
+                Err(NativeEvidenceContextError::GraphReadRejected) => {
+                    return self.apply_runtime_result_input(
+                        failed_native_result(
+                            input.handoff,
+                            &native_request,
+                            "KOGWISTAR_ANSWER_VIEW_REJECTED",
+                            "native answer view requires an active user turn in the admitted conversation",
+                        ),
+                        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                        None,
+                    );
+                }
+                Err(NativeEvidenceContextError::GraphReadUnavailable) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_ANSWER_VIEW_UNAVAILABLE",
+                        "native answer-view storage is temporarily unavailable; the work remains unacknowledged",
+                    );
+                }
+            }
+        }
+        self.execute_native_request(input.handoff, native_request)
+    }
+
+    fn execute_native_request(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        native_request: kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> ApiEffectResponse {
         let effect = match kogwistar_runtime::execute_native_step_with_registry(
             &native_request,
             &self.native_operations,
@@ -4055,7 +4232,7 @@ impl SqliteRunApplicationService {
             }
         };
         let result = RuntimeWorkerResultRequest {
-            handoff: input.handoff,
+            handoff,
             transition: None,
             effect: Some(effect),
         };
@@ -4065,6 +4242,84 @@ impl SqliteRunApplicationService {
             None,
         )
     }
+}
+
+fn sqlite_native_answer_view_from_visible_records(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    conversation_id: &str,
+    turn_id: &str,
+) -> Result<Value, NativeEvidenceContextError> {
+    fn record_document(record: &GraphRecord) -> Option<Value> {
+        record
+            .document
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+    }
+
+    fn field<'a>(record: &'a GraphRecord, document: &'a Value, key: &str) -> Option<&'a Value> {
+        let metadata = document.get("metadata").and_then(Value::as_object);
+        document
+            .get(key)
+            .or_else(|| metadata.and_then(|metadata| metadata.get(key)))
+            .or_else(|| record.metadata.get(key))
+    }
+
+    let Some(turn) = nodes.iter().find(|record| record.id == turn_id) else {
+        return Err(NativeEvidenceContextError::GraphReadRejected);
+    };
+    let Some(turn_document) = record_document(turn) else {
+        return Err(NativeEvidenceContextError::GraphReadRejected);
+    };
+    if field(turn, &turn_document, "entity_type").and_then(Value::as_str)
+        != Some("conversation_turn")
+        || field(turn, &turn_document, "conversation_id").and_then(Value::as_str)
+            != Some(conversation_id)
+        || field(turn, &turn_document, "role").and_then(Value::as_str) != Some("user")
+        || field(turn, &turn_document, "lifecycle_status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+    {
+        return Err(NativeEvidenceContextError::GraphReadRejected);
+    }
+
+    let record_value = |record: &GraphRecord| {
+        json!({
+            "id": record.id,
+            "document": record.document,
+            "metadata": record.metadata
+        })
+    };
+    let context_nodes = nodes
+        .iter()
+        .filter(|record| {
+            record_document(record).is_some_and(|document| {
+                field(record, &document, "conversation_id").and_then(Value::as_str)
+                    == Some(conversation_id)
+            })
+        })
+        .map(record_value)
+        .collect::<Vec<_>>();
+    let conversation_document_id = format!("conv:{conversation_id}");
+    let context_edges = edges
+        .iter()
+        .filter(|record| {
+            record.metadata.get("doc_id").and_then(Value::as_str)
+                == Some(conversation_document_id.as_str())
+                || record
+                    .metadata
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    == Some(conversation_id)
+        })
+        .map(record_value)
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "turn": record_value(turn),
+        "context_nodes": context_nodes,
+        "context_edges": context_edges
+    }))
 }
 
 fn apply_sqlite_provider_event_acknowledgement(
@@ -4089,9 +4344,11 @@ fn apply_sqlite_provider_event_acknowledgement(
         .as_ref()
         .is_some_and(|run| run.user_id.as_deref() == Some(owner_id))
     {
-        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
-            "provider event run owner changed before acknowledgement".to_owned(),
-        ));
+        return Err(
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event run owner changed before acknowledgement".to_owned(),
+            ),
+        );
     }
     let event: kogwistar_contracts::DurableProviderEventV1 = lane
         .payload_json
@@ -4122,9 +4379,11 @@ fn apply_sqlite_provider_event_acknowledgement(
         || state.conversation_id != lane.conversation_id
         || state.run_id != run_id
     {
-        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
-            "provider event acknowledgement is not bound to the active run claim".to_owned(),
-        ));
+        return Err(
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event acknowledgement is not bound to the active run claim".to_owned(),
+            ),
+        );
     }
     let handler_step_seq = state
         .state
@@ -4139,9 +4398,11 @@ fn apply_sqlite_provider_event_acknowledgement(
     let mut referenced_step_seqs = vec![handler_step_seq];
     if let Some(producer_step_seq) = event.trace.producer_step_seq {
         if producer_step_seq < 0 {
-            return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
-                "provider event has an invalid producer step sequence".to_owned(),
-            ));
+            return Err(
+                kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                    "provider event has an invalid producer step sequence".to_owned(),
+                ),
+            );
         }
         referenced_step_seqs.push(producer_step_seq);
     }
@@ -4173,15 +4434,19 @@ fn apply_sqlite_provider_event_acknowledgement(
             .producer_step_seq
             .is_some_and(|producer_step_seq| producer_step_seq >= step_seq)
     {
-        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
-            "provider event causal steps must precede the acknowledgement step".to_owned(),
-        ));
+        return Err(
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event causal steps must precede the acknowledgement step".to_owned(),
+            ),
+        );
     }
     let security_scope = security_scope_value(principal);
     if !graph_mutation_scope_allowed(scope, &security_scope) {
-        return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
-            "provider event handling graph scope changed before commit".to_owned(),
-        ));
+        return Err(
+            kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
+                "provider event handling graph scope changed before commit".to_owned(),
+            ),
+        );
     }
     let mut causal_mutations = provider_event_ack_graph_mutations(
         &acknowledgement.event_id,

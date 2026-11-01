@@ -19,7 +19,9 @@ fn fail_inline_graph_effect(
     effect.trace_events.clear();
 }
 
-fn recorded_effect_has_graph_batch(effect: &kogwistar_runtime::RecordedWorkerSuccessEffect) -> bool {
+fn recorded_effect_has_graph_batch(
+    effect: &kogwistar_runtime::RecordedWorkerSuccessEffect,
+) -> bool {
     effect.graph_mutation_batch.is_some() || effect.graph_mutation_batch_v2.is_some()
 }
 
@@ -75,17 +77,13 @@ impl PostgresRunApplicationService {
                 "completed native handoff replay requires an authenticated run owner",
             )
         })?;
-        let run = self
-            .store
-            .server_run(&handoff.run_id)
-            .await
-            .map_err(|_| {
-                effect_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "KOGWISTAR_RUNTIME_HANDOFF_UNAVAILABLE",
-                    "could not verify native handoff owner",
-                )
-            })?;
+        let run = self.store.server_run(&handoff.run_id).await.map_err(|_| {
+            effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_RUNTIME_HANDOFF_UNAVAILABLE",
+                "could not verify native handoff owner",
+            )
+        })?;
         if !run.is_some_and(|run| run.user_id.as_deref() == Some(caller_id)) {
             return Err(effect_error(
                 StatusCode::FORBIDDEN,
@@ -115,16 +113,17 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let mut native_request = match native_step_request_from_payload(&input.handoff, input.payload) {
-            Ok(value) => value,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::CONFLICT,
-                    "KOGWISTAR_NATIVE_HANDOFF_CONFLICT",
-                    error,
-                );
-            }
-        };
+        let mut native_request =
+            match native_step_request_from_payload(&input.handoff, input.payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::CONFLICT,
+                        "KOGWISTAR_NATIVE_HANDOFF_CONFLICT",
+                        error,
+                    );
+                }
+            };
         let handoff = input.handoff;
         match self
             .completed_native_handoff_response(&handoff, &request.principal)
@@ -444,7 +443,7 @@ impl PostgresRunApplicationService {
             None,
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
         )
-            .await
+        .await
     }
 }
 
@@ -520,11 +519,13 @@ impl ApplicationService for PostgresRunApplicationService {
                         "native answer view requires an active user turn in the admitted conversation",
                     ),
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
-                        return Err("native answer-view storage is temporarily unavailable".to_owned());
+                        return Err(
+                            "native answer-view storage is temporarily unavailable".to_owned()
+                        );
                     }
-                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
-                        "inline native execution has no external caller principal"
-                    ),
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                        unreachable!("inline native execution has no external caller principal")
+                    }
                 }
             } else if native_request.operation == "aa_retrieve_candidates" {
                 match self.native_candidate_context(&native_request, None).await {
@@ -559,11 +560,13 @@ impl ApplicationService for PostgresRunApplicationService {
                         "native candidate retrieval configuration or input is invalid",
                     ),
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
-                        return Err("native candidate retrieval is temporarily unavailable".to_owned());
+                        return Err(
+                            "native candidate retrieval is temporarily unavailable".to_owned()
+                        );
                     }
-                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
-                        "inline native execution has no external caller principal"
-                    ),
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                        unreachable!("inline native execution has no external caller principal")
+                    }
                 }
             } else if native_request.operation == "aa_materialize_evidence_pack" {
                 match self.native_evidence_context(&native_request, None).await {
@@ -600,9 +603,9 @@ impl ApplicationService for PostgresRunApplicationService {
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
                         return Err("native evidence storage is temporarily unavailable".to_owned());
                     }
-                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
-                        "inline native execution has no external caller principal"
-                    ),
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                        unreachable!("inline native execution has no external caller principal")
+                    }
                 }
             } else if native_request.operation == "aa_project_pointers" {
                 match self.native_pointer_context(&native_request, None).await {
@@ -639,9 +642,9 @@ impl ApplicationService for PostgresRunApplicationService {
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
                         return Err("native pointer storage is temporarily unavailable".to_owned());
                     }
-                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
-                        "inline native execution has no external caller principal"
-                    ),
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                        unreachable!("inline native execution has no external caller principal")
+                    }
                 }
             } else if native_request.operation == "link_assistant_turn" {
                 match self.native_turn_link_context(&native_request, None).await {
@@ -678,9 +681,9 @@ impl ApplicationService for PostgresRunApplicationService {
                     Err(NativeEvidenceContextError::GraphReadUnavailable) => {
                         return Err("native turn storage is temporarily unavailable".to_owned());
                     }
-                    Err(NativeEvidenceContextError::CallerNotRunOwner) => unreachable!(
-                        "inline native execution has no external caller principal"
-                    ),
+                    Err(NativeEvidenceContextError::CallerNotRunOwner) => {
+                        unreachable!("inline native execution has no external caller principal")
+                    }
                 }
             } else if native_request.operation == "agent.event.receive" {
                 match self.native_read_principal(&native_request, None).await {
@@ -690,7 +693,7 @@ impl ApplicationService for PostgresRunApplicationService {
                             .await?
                         else {
                             return Err(
-                                "no authorized provider event is currently claimable".to_owned(),
+                                "no authorized provider event is currently claimable".to_owned()
                             );
                         };
                         native_request.ephemeral_context.insert(
@@ -746,7 +749,12 @@ impl ApplicationService for PostgresRunApplicationService {
             };
             let scope_denied = inline_principal
                 .as_ref()
-                .zip(result.effect.as_ref().and_then(recorded_effect_graph_mutations))
+                .zip(
+                    result
+                        .effect
+                        .as_ref()
+                        .and_then(recorded_effect_graph_mutations),
+                )
                 .is_some_and(|(principal, mutations)| {
                     let security_scope = security_scope_value(principal);
                     mutations.iter().any(|mutation| {
@@ -827,7 +835,10 @@ impl ApplicationService for PostgresRunApplicationService {
         principal: &Value,
     ) -> bool {
         let graph_read_namespace = match name {
-            "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
+            "kg_find_edges"
+            | "kg_k_hop"
+            | "kg_neighbors"
+            | "kg_shortest_path"
             | "kg_semantic_seed_then_expand_text"
             | "kg_viz_cytoscape_json"
             | "kg_viz_d3_json" => Some("docs"),
@@ -848,8 +859,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let authorized = effective_capabilities(principal, &state).contains("read_graph");
-            return authorized
-                && self.supports_mcp_tool(surface, name);
+            return authorized && self.supports_mcp_tool(surface, name);
         }
         if name != "wisdom.kg_upsert_graph" {
             return self.supports_mcp_tool(surface, name);
@@ -874,10 +884,14 @@ impl ApplicationService for PostgresRunApplicationService {
         FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
-            && (method != "POST" || path != "/api/graph/upsert"
-                && path != "/api/document.upsert_tree"
-                || self.graph_authority_capability().supports_atomic_index_jobs()
-                    && self.document_authority_capability().supports_projection_upsert())
+            && (method != "POST"
+                || path != "/api/graph/upsert" && path != "/api/document.upsert_tree"
+                || self
+                    .graph_authority_capability()
+                    .supports_atomic_index_jobs()
+                    && self
+                        .document_authority_capability()
+                        .supports_projection_upsert())
     }
 
     fn execute(
@@ -907,7 +921,8 @@ impl ApplicationService for SqliteRunApplicationService {
         page_size: usize,
     ) -> Pin<Box<dyn Future<Output = Result<usize, String>> + Send + '_>> {
         Box::pin(async move {
-            self.reconcile_chroma_projection(&namespace, page_size).await
+            self.reconcile_chroma_projection(&namespace, page_size)
+                .await
         })
     }
 
@@ -953,6 +968,33 @@ impl ApplicationService for SqliteRunApplicationService {
                     context["claim"].clone(),
                 );
                 native_result_from_request(handoff, native_request, &self.native_operations)?
+            } else if work.payload.get("op").and_then(Value::as_str)
+                == Some("aa_get_view_and_question")
+            {
+                let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
+                let view = self
+                    .native_answer_view_context(&native_request, None)
+                    .await
+                    .map_err(|error| match error {
+                        NativeEvidenceContextError::OwnerAuthorization => {
+                            "native answer view requires the run owner's current read_graph authority"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadRejected => {
+                            "native answer view requires an active user turn in the admitted conversation"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadUnavailable => {
+                            "native answer-view storage is temporarily unavailable".to_owned()
+                        }
+                        NativeEvidenceContextError::CallerNotRunOwner => unreachable!(
+                            "inline native work has no external caller principal"
+                        ),
+                    })?;
+                native_request
+                    .ephemeral_context
+                    .insert("authorized_answer_view".to_owned(), view);
+                native_result_from_request(handoff, native_request, &self.native_operations)?
             } else {
                 native_result_for_claimed_work(work, &self.native_operations)?
             };
@@ -962,10 +1004,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     || !effect.provider_event_acknowledgements.is_empty()
             }) {
                 match self
-                    .resolve_inline_native_owner_principal(
-                        &result.handoff.run_id,
-                        "write_graph",
-                    )
+                    .resolve_inline_native_owner_principal(&result.handoff.run_id, "write_graph")
                     .await
                 {
                     Ok(principal) => Some(principal),
@@ -1063,9 +1102,8 @@ impl ApplicationService for SqliteRunApplicationService {
         let is_composed_conversation_detail = self.chroma_graph.is_some()
             && method == "GET"
             && conversation_detail_id(path).is_some();
-        let is_composed_conversation_list = self.chroma_graph.is_some()
-            && method == "GET"
-            && is_conversation_list_route(path);
+        let is_composed_conversation_list =
+            self.chroma_graph.is_some() && method == "GET" && is_conversation_list_route(path);
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
             || is_composed_graph_mutation
@@ -1091,11 +1129,14 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
-            if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE {
-                if let Ok(input) = serde_json::from_slice::<RuntimeWorkerResultRequest>(&request.body)
-                    && input.effect.as_ref().is_some_and(|effect| {
-                        !effect.provider_event_acknowledgements.is_empty()
-                    })
+            if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE
+            {
+                if let Ok(input) =
+                    serde_json::from_slice::<RuntimeWorkerResultRequest>(&request.body)
+                    && input
+                        .effect
+                        .as_ref()
+                        .is_some_and(|effect| !effect.provider_event_acknowledgements.is_empty())
                 {
                     let owner_principal = match self
                         .resolve_inline_native_owner_principal(&input.handoff.run_id, "write_graph")
@@ -1123,7 +1164,9 @@ impl ApplicationService for SqliteRunApplicationService {
             }
             if request.method == "GET" && self.chroma_graph.is_some() {
                 if conversation_detail_id(&request.path_and_query).is_some() {
-                    return self.sqlite_chroma_conversation_detail_effect(&request).await;
+                    return self
+                        .sqlite_chroma_conversation_detail_effect(&request)
+                        .await;
                 }
                 if is_conversation_list_route(&request.path_and_query) {
                     return self.sqlite_chroma_conversation_list_effect(&request).await;
@@ -1132,7 +1175,9 @@ impl ApplicationService for SqliteRunApplicationService {
             if request.method == "POST" && self.chroma_graph.is_some() {
                 match request.path_and_query.split('?').next() {
                     Some(PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE) if self.embedding_provider.is_some() => {
-                        return self.sqlite_public_wisdom_graph_upsert_effect(&request).await;
+                        return self
+                            .sqlite_public_wisdom_graph_upsert_effect(&request)
+                            .await;
                     }
                     Some(INTERNAL_GRAPH_MUTATIONS_ROUTE) => {
                         return self.sqlite_chroma_graph_mutation_effect(&request).await;
@@ -1159,13 +1204,20 @@ impl ApplicationService for SqliteRunApplicationService {
                         return self.chroma_graph_k_hop_effect(&request).await;
                     }
                     Some(INTERNAL_GRAPH_VIZ_D3_ROUTE) => {
-                        return self.chroma_graph_visualization_effect(&request, false).await;
+                        return self
+                            .chroma_graph_visualization_effect(&request, false)
+                            .await;
                     }
                     Some(INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE) => {
                         return self.chroma_graph_visualization_effect(&request, true).await;
                     }
                     _ => {}
                 }
+            }
+            if request.method == "POST"
+                && request.path_and_query == INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE
+            {
+                return self.execute_native_runtime_step_async(&request).await;
             }
             self.execute_sync(request)
         })
@@ -2295,9 +2347,10 @@ impl SqliteRunApplicationService {
                 .is_some_and(|(_, tail)| tail.as_slice() == ["evidence"])
         {
             let namespaces = principal_strings(&request.principal, "ns");
-            if !namespaces.iter().any(|namespace| {
-                matches!(namespace.as_str(), "*" | "workflow" | "conversation")
-            }) {
+            if !namespaces
+                .iter()
+                .any(|namespace| matches!(namespace.as_str(), "*" | "workflow" | "conversation"))
+            {
                 return effect_error(
                     StatusCode::FORBIDDEN,
                     "KOGWISTAR_NAMESPACE_FORBIDDEN",
@@ -2613,7 +2666,8 @@ impl SqliteRunApplicationService {
                             "run_id": run_id,
                             "events": events.into_iter().map(server_run_event_value).collect::<Vec<_>>(),
                         });
-                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence")
+                        {
                             let caller_id = authenticated_run_owner_id(&request.principal);
                             if caller_id.is_none() || run.user_id.as_deref() != caller_id {
                                 return effect_error(
@@ -2622,12 +2676,9 @@ impl SqliteRunApplicationService {
                                     "transient run deltas are visible only to the run owner",
                                 );
                             }
-                            let after_client_sequence = query_integer(
-                                &request.path_and_query,
-                                "after_client_sequence",
-                                0,
-                            )
-                            .max(0);
+                            let after_client_sequence =
+                                query_integer(&request.path_and_query, "after_client_sequence", 0)
+                                    .max(0);
                             let client_deltas = match self.transient_run_deltas.list(
                                 &run_id,
                                 after_client_sequence,
@@ -2682,7 +2733,8 @@ impl SqliteRunApplicationService {
                                 Some(&event.seq.to_string()),
                             ));
                         }
-                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence")
+                        {
                             let caller_id = authenticated_run_owner_id(&request.principal);
                             if caller_id.is_none() || run.user_id.as_deref() != caller_id {
                                 return effect_error(
@@ -2691,12 +2743,9 @@ impl SqliteRunApplicationService {
                                     "transient run deltas are visible only to the run owner",
                                 );
                             }
-                            let after_client_sequence = query_integer(
-                                &request.path_and_query,
-                                "after_client_sequence",
-                                0,
-                            )
-                            .max(0);
+                            let after_client_sequence =
+                                query_integer(&request.path_and_query, "after_client_sequence", 0)
+                                    .max(0);
                             let deltas = match self.transient_run_deltas.list(
                                 &run_id,
                                 after_client_sequence,
@@ -2716,7 +2765,8 @@ impl SqliteRunApplicationService {
                                     .as_str()
                                     .unwrap_or("response.text.delta")
                                     .to_owned();
-                                let sequence = delta["client_sse_sequence"].as_i64().unwrap_or_default();
+                                let sequence =
+                                    delta["client_sse_sequence"].as_i64().unwrap_or_default();
                                 delta["run_id"] = json!(run_id);
                                 let event_id = format!("delta-{sequence}");
                                 body.push_str(&sse_frame(&event_type, &delta, Some(&event_id)));
