@@ -375,7 +375,11 @@ effects instead of writing through the worker's local Python backend; ordinary
 Python execution retains its existing persistence path. The focused resolver
 and preparation tests passed (**20 passed**), including a regression that
 fails if Rust-worker mode calls the Python snapshot writer. These bounded paths
-do not prove whole-stack parity; DL-16BQ remains IN PROGRESS.
+do not prove whole-stack parity; DL-16BQ remains IN PROGRESS. The Rust-side
+`sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect` test also
+passes and verifies atomic canonical-event commit plus eventual index jobs for
+a Python-worker result. The producer and host tests are complementary contract
+evidence, not a single live Python-answer-to-Rust-host end-to-end run.
 
 Framework invariant evidence for DL-16BQ: Rust ACL visibility is derived from
 the complete canonical ACL set before helper records are removed. The additive

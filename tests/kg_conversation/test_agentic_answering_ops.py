@@ -832,6 +832,15 @@ def test_aa_select_used_evidence_writes_used_node_ids_subset():
 
 def test_aa_select_used_evidence_returns_snapshot_effect_for_rust_worker(monkeypatch):
     import kogwistar.conversation.resolvers as resolvers
+    from kogwistar.conversation.conversation_context import (
+        ContextItem,
+        ContextMessage,
+        PromptContext,
+    )
+    from kogwistar.conversation.service import ConversationService
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
 
     agent = _StubAgent()
     agent.config.evidence_selector = "llm"
@@ -842,40 +851,76 @@ def test_aa_select_used_evidence_returns_snapshot_effect_for_rust_worker(monkeyp
         model_dump=lambda: {"used_node_ids": ["n1"], "used_edge_ids": []}
     )
     ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.embedding_dim = 3
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**node.metadata, "namespace": "conversation"},
+        ),
+        edge_doc_and_meta=lambda edge: (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**edge.metadata, "namespace": "conversation"},
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return snapshot effects instead of writing directly"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return snapshot effects instead of writing directly"
+        ),
+    )
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
     hook_calls = []
     ce.pre_add_node_hooks.append(
         lambda node: (hook_calls.append("node"), node.metadata.update({"prepared": True}))
     )
+    ce.pre_add_edge_hooks.append(lambda _edge: False)
+    service = ConversationService.__new__(ConversationService)
+    service.conversation_engine = ce
     state = _mk_state(agent=agent, conv_engine=ce)
     state["run_id"] = "run-1"
     state["question"] = "Q"
     state["candidates"] = [{"id": "n1"}]
-    state["_rt"] = {"view": SimpleNamespace(items=(), messages=(), token_budget=10)}
+    state["_rt"] = {
+        "view": PromptContext(
+            conversation_id="c1",
+            purpose="answer",
+            token_budget=10,
+            tokens_used=2,
+            items=(
+                ContextItem(
+                    kind="tail_turn",
+                    role="user",
+                    text="Q",
+                    source="conversation",
+                    node_id="turn-1",
+                    token_cost=2,
+                ),
+            ),
+            messages=(ContextMessage(role="user", content="Q", source="conversation"),),
+        )
+    }
     state["_deps"]["_rust_worker_effects"] = True
 
-    class _SnapshotService:
-        conversation_engine = ce
-
-        def prepare_context_snapshot(self, **kwargs):
-            assert kwargs["stage"] == "select_used_evidence"
-            return "snapshot-1", SimpleNamespace(metadata={}), []
-
-    sentinel_batch = {"contract_version": 1, "atomic": True, "mutations": []}
-    monkeypatch.setattr(resolvers, "_chat_service", lambda _deps: _SnapshotService())
-    monkeypatch.setattr(
-        resolvers,
-        "_worker_graph_mutation_batch_for_entities",
-        lambda _ctx, _engine, entities: (
-            sentinel_batch
-            if len(entities) == 1 and entities[0][0].metadata["prepared"] is True
-            else pytest.fail("snapshot must pass through normal node preparation hooks")
-        ),
-    )
+    monkeypatch.setattr(resolvers, "_chat_service", lambda _deps: service)
 
     res = _run_op("aa_select_used_evidence", state, idempotency_key="msg-1")
 
     assert isinstance(res, RunSuccess)
-    assert res.graph_mutation_batch == sentinel_batch
+    batch = validate_graph_mutation_batch(res.graph_mutation_batch)
+    assert len(batch.mutations) == 2
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert batch.mutations[0].record.id == batch.mutations[0].payload["id"]
+    assert batch.mutations[0].payload["metadata"]["prepared"] is True
+    assert batch.mutations[1].payload["source_ids"] == [batch.mutations[0].record.id]
+    assert batch.mutations[1].payload["target_ids"] == ["turn-1"]
+    assert len(batch.index_jobs) == 4
     assert state["used_node_ids"] == ["n1"]
     assert hook_calls == ["node"]
 
