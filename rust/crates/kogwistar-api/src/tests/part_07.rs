@@ -4224,6 +4224,14 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         agentic_state.state["used_node_ids"],
         json!(["knowledge-node"])
     );
+    assert!(
+        agentic_state.state["_rt_node_executor_targets"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|target| target == "rust-native"),
+        "every agentic-answer workflow node must remain on the selected Rust implementation"
+    );
     assert_eq!(
         agentic_state.state["answer"]["claims"][0]["citations"][0]["source_node_id"],
         "knowledge-node"
@@ -4258,6 +4266,31 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                                 && payload["target_ids"] == json!([agentic_assistant_id])
                         })
             })
+    );
+    let execution_lanes = service
+        .store
+        .list_projected_lane_messages(kogwistar_store::LaneMessageFilter {
+            correlation_id: Some(agentic_run_id.to_owned()),
+            limit: 100,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!execution_lanes.is_empty());
+    assert!(execution_lanes.iter().all(|lane| {
+        lane.status == "completed" && lane.recipient_id != "python-worker"
+    }), "Rust-native workflow must not fall back to a Python worker: {execution_lanes:#?}");
+    let execution_traces = service
+        .store
+        .list_server_run_events(agentic_run_id, 0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "workflow.trace.v1")
+        .filter_map(|event| serde_json::from_str::<Value>(&event.payload_json).ok())
+        .filter(|event| event["trace"]["executor_target"] == "rust-native")
+        .collect::<Vec<_>>();
+    assert!(
+        !execution_traces.is_empty(),
+        "the Rust-native backend path must leave native execution trace evidence"
     );
     chat_server.await.unwrap();
     let _ = stop_tx.send(());
