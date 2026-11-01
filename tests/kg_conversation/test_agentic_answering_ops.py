@@ -1009,6 +1009,137 @@ def test_aa_generate_answer_with_citations_writes_answer():
     assert state.get("answer", {}).get("text") == "ok"
 
 
+def test_aa_generate_answer_returns_snapshot_effect_for_rust_worker(
+    monkeypatch, tmp_path: Path
+):
+    import kogwistar.conversation.resolvers as resolvers
+    from kogwistar.conversation.conversation_context import (
+        ContextItem,
+        ContextMessage,
+        PromptContext,
+    )
+    from kogwistar.conversation.service import ConversationService
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    agent.cache_dir = str(tmp_path)
+    agent._persist_context_snapshot = lambda **_kwargs: pytest.fail(
+        "Rust worker must not persist answer snapshots through Python"
+    )
+    provider_calls: list[dict[str, Any]] = []
+
+    def generate_answer(agent, **kwargs):
+        assert agent is agent_ref
+        provider_calls.append(kwargs)
+        return {"text": "provider answer", "reasoning": "", "claims": []}
+
+    agent_ref = agent
+    agent._generate_answer_with_citations = generate_answer
+
+    ce = _StubConversationEngine(last_user_text="Question")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.embedding_dim = 3
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**node.metadata, "namespace": "conversation"},
+        ),
+        edge_doc_and_meta=lambda edge: (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**edge.metadata, "namespace": "conversation"},
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return answer snapshot effects instead of writing"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return answer snapshot effects instead of writing"
+        ),
+    )
+    ce.embed = SimpleNamespace(
+        iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0]
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = []
+    ce.pre_add_edge_hooks = []
+    service = ConversationService.__new__(ConversationService)
+    service.conversation_engine = ce
+
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state.update(
+        {
+            "conversation_id": "c1",
+            "run_id": "run-1",
+            "run_step_seq": 4,
+            "attempt_seq": 0,
+            "question": "Question",
+            "system_prompt": "Use grounded sources.",
+            "used_node_ids": ["n1"],
+            "evidence_pack_digest": {"evidence_pack_hash": "digest-1"},
+            "_rt": {
+                "view": PromptContext(
+                    conversation_id="c1",
+                    purpose="answer",
+                    token_budget=32,
+                    tokens_used=2,
+                    items=(
+                        ContextItem(
+                            kind="tail_turn",
+                            role="user",
+                            text="Question",
+                            source="conversation",
+                            node_id="turn-1",
+                            token_cost=2,
+                        ),
+                    ),
+                    messages=(
+                        ContextMessage(
+                            role="user", content="Question", source="conversation"
+                        ),
+                    ),
+                ),
+                "evidence_pack": {"nodes": [{"node_id": "n1"}], "edges": []},
+            },
+        }
+    )
+    state["_deps"]["_rust_worker_effects"] = True
+    monkeypatch.setattr(resolvers, "_chat_service", lambda _deps: service)
+
+    result = _run_op(
+        "aa_generate_answer_with_citations",
+        state,
+        idempotency_key="stable-answer-worker-message",
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert all(
+        mutation.payload["metadata"]["entity_type"] == expected
+        for mutation, expected in zip(
+            batch.mutations, ("context_snapshot", "conversation_edge"), strict=True
+        )
+    )
+    assert {job.index_kind for job in batch.index_jobs} == {
+        "node_docs",
+        "node_refs",
+        "edge_refs",
+        "edge_endpoints",
+    }
+    assert state["answer"]["text"] == "provider answer"
+    assert provider_calls and provider_calls[0]["question"] == "Question"
+    assert provider_calls[0]["evidence_pack"] == {
+        "nodes": [{"node_id": "n1"}],
+        "edges": [],
+    }
+
+
 def test_citation_repair_retries_invalid_span_and_restores_valid_node_alias():
     from kogwistar.conversation.agentic_answering import (
         AgenticAnsweringAgent,
