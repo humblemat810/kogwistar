@@ -17,7 +17,7 @@ pub enum ConversationContractError {
     InvalidTurnIndex,
     #[error("conversation turn_count must be non-negative")]
     InvalidTurnCount,
-    #[error("conversation turns must be ordered by (turn_index, node_id)")]
+    #[error("conversation turns must be ordered by turn_index")]
     InvalidTurnOrder,
     #[error("unsupported conversation entity_type {entity_type:?}")]
     InvalidEntityType { entity_type: String },
@@ -115,14 +115,13 @@ impl ConversationTranscriptV1 {
                 field: "conversation_id",
             });
         }
-        let mut previous_order = None;
+        let mut previous_index = None;
         for turn in &self.turns {
             turn.validate()?;
-            let order = (turn.turn_index, turn.node_id.as_str());
-            if previous_order.is_some_and(|previous| order <= previous) {
+            if previous_index.is_some_and(|previous| turn.turn_index < previous) {
                 return Err(ConversationContractError::InvalidTurnOrder);
             }
-            previous_order = Some(order);
+            previous_index = Some(turn.turn_index);
         }
         Ok(())
     }
@@ -254,23 +253,21 @@ mod tests {
         assert_eq!(transcript.turns.len(), 2);
         assert_eq!(transcript.turns[0].turn_index, 0);
 
+        let tied_payload = include_str!(
+            "../../../../contracts/golden/conversation-transcript-tied-indices-v1.json"
+        );
+        let tied_transcript = conversation_transcript_from_str(tied_payload).unwrap();
+        assert_eq!(tied_transcript.turns.len(), 2);
+        assert_eq!(
+            tied_transcript.turns[0].node_id, "z-user-turn",
+            "the wire contract follows Python's nondecreasing-index rule, not a node-id tie-break"
+        );
+
         let error = conversation_transcript_from_str(
             r#"{"schema_version":1,"conversation_id":"c","turns":[{"schema_version":1,"node_id":"n2","turn_index":2,"role":"assistant","content":"later","entity_type":"assistant_turn"},{"schema_version":1,"node_id":"n1","turn_index":1,"role":"user","content":"first","entity_type":"conversation_turn"}]}"#,
         )
         .unwrap_err();
         assert_eq!(error, ConversationContractError::InvalidTurnOrder);
-
-        let tied_turns = conversation_transcript_from_str(
-            r#"{"schema_version":1,"conversation_id":"c","turns":[{"schema_version":1,"node_id":"user-turn","turn_index":1,"role":"user","content":"question","entity_type":"conversation_turn"},{"schema_version":1,"node_id":"assistant-turn","turn_index":1,"role":"assistant","content":"answer","entity_type":"assistant_turn"}]}"#,
-        )
-        .unwrap_err();
-        assert_eq!(tied_turns, ConversationContractError::InvalidTurnOrder);
-
-        let tied_turns = conversation_transcript_from_str(
-            r#"{"schema_version":1,"conversation_id":"c","turns":[{"schema_version":1,"node_id":"assistant-turn","turn_index":1,"role":"assistant","content":"answer","entity_type":"assistant_turn"},{"schema_version":1,"node_id":"user-turn","turn_index":1,"role":"user","content":"question","entity_type":"conversation_turn"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(tied_turns.turns.len(), 2);
     }
 
     #[test]

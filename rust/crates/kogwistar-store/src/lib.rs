@@ -762,8 +762,8 @@ pub fn tool_audit_items_from_visible_records(
 }
 
 /// Project already-authorized conversation nodes into the shared transcript
-/// contract.  Conversation ordering is strict here: duplicate turn indexes
-/// are rejected instead of silently changing the Python/Rust interpretation.
+/// contract. Stored projections require unique indexes; the wire DTO itself
+/// permits ties to match Python's nondecreasing-index validation.
 pub fn conversation_transcript_from_visible_records(
     records: &[GraphRecord],
     conversation_id: &str,
@@ -798,6 +798,12 @@ pub fn conversation_transcript_from_visible_records(
             .cmp(&right.turn_index)
             .then_with(|| left.node_id.cmp(&right.node_id))
     });
+    if turns
+        .windows(2)
+        .any(|pair| pair[0].turn_index == pair[1].turn_index)
+    {
+        return Err(ConversationContractError::InvalidTurnOrder);
+    }
     let mut transcript = ConversationTranscriptV1 {
         schema_version: kogwistar_contracts::CONVERSATION_WIRE_VERSION,
         conversation_id: conversation_id.to_owned(),

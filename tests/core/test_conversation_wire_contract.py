@@ -64,3 +64,17 @@ def test_conversation_transcript_matches_shared_golden() -> None:
     )
     transcript = ConversationTranscriptV1.model_validate(payload)
     assert transcript.model_dump(mode="json") == payload
+
+
+def test_conversation_transcript_tied_indexes_match_shared_golden() -> None:
+    payload = json.loads(
+        (
+            ROOT
+            / "contracts"
+            / "golden"
+            / "conversation-transcript-tied-indices-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    transcript = ConversationTranscriptV1.model_validate(payload)
+    assert transcript.model_dump(mode="json") == payload
+    assert transcript.turns[0].node_id == "z-user-turn"
