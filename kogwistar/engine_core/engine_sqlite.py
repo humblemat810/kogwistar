@@ -10,10 +10,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, TypeAlias
+from typing import Callable, Literal, TypeAlias
 
 from ..json_types import JsonValue
-from ..implementation_selection import assert_python_transaction_entry_allowed
+from ..implementation_selection import (
+    assert_callback_side_effect_allowed,
+    assert_python_transaction_entry_allowed,
+    callback_execution_active,
+)
 from ..messaging.models import ProjectedLaneMessageRow
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
@@ -28,6 +32,69 @@ _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
 _active_sqlite_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "gke_sqlite_active_path", default=None
 )
+_SQLITE_MUTATION_ACTIONS = frozenset(
+    action
+    for name in (
+        "SQLITE_ALTER_TABLE",
+        "SQLITE_ANALYZE",
+        "SQLITE_ATTACH",
+        "SQLITE_CREATE_INDEX",
+        "SQLITE_CREATE_TABLE",
+        "SQLITE_CREATE_TEMP_INDEX",
+        "SQLITE_CREATE_TEMP_TABLE",
+        "SQLITE_CREATE_TEMP_TRIGGER",
+        "SQLITE_CREATE_TEMP_VIEW",
+        "SQLITE_CREATE_TRIGGER",
+        "SQLITE_CREATE_VIEW",
+        "SQLITE_CREATE_VTABLE",
+        "SQLITE_DELETE",
+        "SQLITE_DETACH",
+        "SQLITE_DROP_INDEX",
+        "SQLITE_DROP_TABLE",
+        "SQLITE_DROP_TEMP_INDEX",
+        "SQLITE_DROP_TEMP_TABLE",
+        "SQLITE_DROP_TEMP_TRIGGER",
+        "SQLITE_DROP_TEMP_VIEW",
+        "SQLITE_DROP_TRIGGER",
+        "SQLITE_DROP_VIEW",
+        "SQLITE_DROP_VTABLE",
+        "SQLITE_INSERT",
+        "SQLITE_PRAGMA",
+        "SQLITE_REINDEX",
+        "SQLITE_SAVEPOINT",
+        "SQLITE_TRANSACTION",
+        "SQLITE_UPDATE",
+        "SQLITE_VDELETE",
+        "SQLITE_VINSERT",
+        "SQLITE_VUPDATE",
+    )
+    if (action := getattr(sqlite3, name, None)) is not None
+)
+
+
+def _sqlite_callback_authorizer() -> Callable[
+    [int, str | None, str | None, str | None, str | None], int
+]:
+    callback_readonly = callback_execution_active()
+
+    def authorize(
+        action: int,
+        _arg1: str | None,
+        _arg2: str | None,
+        _database_name: str | None,
+        _trigger_name: str | None,
+    ) -> int:
+        if action not in _SQLITE_MUTATION_ACTIONS:
+            return sqlite3.SQLITE_OK
+        if callback_readonly:
+            return sqlite3.SQLITE_DENY
+        try:
+            assert_callback_side_effect_allowed("SQLite statement mutation")
+        except RuntimeError:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    return authorize
 
 
 def _json_int(value: JsonValue | None, *, default: int = 0) -> int:
@@ -605,6 +672,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         Create a SQLite connection with sane defaults.
         """
+        assert_python_transaction_entry_allowed(allow_callback_readonly=True)
         lease = acquire_sqlite_database(self.db_path, "python")
         conn: _LeasedSQLiteConnection | None = None
         try:
@@ -622,8 +690,14 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 "PRAGMA journal_mode=WAL",
                 "PRAGMA synchronous=NORMAL",
             ):
+                if callback_execution_active() and statement in {
+                    "PRAGMA journal_mode=WAL",
+                    "PRAGMA synchronous=NORMAL",
+                }:
+                    continue
                 with closing(conn.execute(statement)):
                     pass
+            conn.set_authorizer(_sqlite_callback_authorizer())
             return conn
         except BaseException:
             if conn is not None:

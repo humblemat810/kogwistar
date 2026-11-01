@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -867,6 +868,61 @@ def test_backend_transactions_cannot_be_opened_from_worker_callback(
                     pytest.fail("backend transaction must not start in callback")
 
 
+def test_raw_sqlite_connection_cannot_write_inside_worker_callback(
+    tmp_path: Path,
+) -> None:
+    store = EngineSQLite(tmp_path / "raw-sqlite-callback.sqlite")
+    store.ensure_initialized()
+    store.set_user_seq("callback-user", 7)
+    setup_connection = sqlite3.connect(store.db_path)
+    try:
+        setup_connection.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        setup_connection.close()
+
+    with callback_execution_scope():
+        with store.connect() as connection:
+            row = connection.execute(
+                "SELECT value FROM user_seq WHERE user_id = ?",
+                ("callback-user",),
+            ).fetchone()
+            assert row[0] == 7
+
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                connection.execute(
+                    "UPDATE user_seq SET value = 8 WHERE user_id = ?",
+                    ("callback-user",),
+                )
+            with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+                connection.execute("BEGIN")
+
+    leaked_callback_connection: sqlite3.Connection | None = None
+    with callback_execution_scope():
+        leaked_callback_connection = store.connect()
+    assert leaked_callback_connection is not None
+    try:
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+            leaked_callback_connection.execute(
+                "UPDATE user_seq SET value = 8 WHERE user_id = ?",
+                ("callback-user",),
+            )
+    finally:
+        leaked_callback_connection.close()
+
+    inspection_connection = sqlite3.connect(store.db_path)
+    try:
+        journal_mode = inspection_connection.execute(
+            "PRAGMA journal_mode"
+        ).fetchone()[0]
+    finally:
+        inspection_connection.close()
+    assert journal_mode.lower() == "delete"
+
+    assert store.current_user_seq("callback-user") == 7
+    store.set_user_seq("callback-user", 8)
+    assert store.current_user_seq("callback-user") == 8
+
+
 def test_backend_collection_mutations_cannot_run_from_worker_callback() -> None:
     class PostgresBackendWithoutIO:
         _is_async_engine = False
@@ -1113,7 +1169,10 @@ def test_python_sqlite_and_memory_transactions_reject_rust_selection(
         EngineSQLite(tmp_path / "python-meta.sqlite").transaction(),
         InMemoryMetaStore().transaction(),
     )
+    sqlite_store = EngineSQLite(tmp_path / "raw-python-meta.sqlite")
     with implementation_selection_scope():
+        with pytest.raises(RuntimeError, match="frozen Rust transaction authority"):
+            sqlite_store.connect()
         for context in contexts:
             with pytest.raises(RuntimeError, match="frozen Rust transaction authority"):
                 with context:

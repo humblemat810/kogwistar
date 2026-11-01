@@ -111,6 +111,11 @@ def assert_callback_side_effect_allowed(effect: str) -> None:
         )
 
 
+def callback_execution_active() -> bool:
+    """Return whether the current context is executing a worker callback."""
+    return _callback_execution_active.get()
+
+
 def assert_transaction_entry_allowed() -> None:
     """Reject backend transaction entry from a worker resolver callback."""
     if _callback_execution_active.get():
@@ -119,9 +124,12 @@ def assert_transaction_entry_allowed() -> None:
         )
 
 
-def assert_python_transaction_entry_allowed() -> None:
-    """Reject Python-owned transactions when another authority owns the run."""
-    assert_transaction_entry_allowed()
+def assert_python_transaction_entry_allowed(
+    *, allow_callback_readonly: bool = False
+) -> None:
+    """Reject Python store access when another authority owns the run."""
+    if not (allow_callback_readonly and callback_execution_active()):
+        assert_transaction_entry_allowed()
     active = _transaction_authority.get()
     if active == "rust":
         raise RuntimeError(
