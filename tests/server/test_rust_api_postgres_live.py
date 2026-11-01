@@ -13,6 +13,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -2017,14 +2018,14 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         }
         python_worker_operations = {
             "start",
-            "aa_debug_answer_from_nodes",
+            "aa_debug_select_top_candidates",
             "end",
         }
         rust_native_operations = {
             "aa_prepare",
             "aa_get_view_and_question",
             "aa_retrieve_candidates",
-            "aa_debug_select_top_candidates",
+            "aa_debug_answer_from_nodes",
             "aa_project_pointers",
             "aa_persist_response",
             "link_assistant_turn",
@@ -2126,7 +2127,9 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             worker_id="python-answer-worker",
             journal_path=tmp_path / "rust-admitted-answer-worker.sqlite",
             step_resolver=default_resolver,
-            dependency_provider=lambda _work: {},
+            dependency_provider=lambda _work: {
+                "agent": SimpleNamespace(config=SimpleNamespace(max_used=3))
+            },
             headers={
                 "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
             },
@@ -2165,7 +2168,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 pytest.fail("Rust/Python answer workflow did not finish in 30 seconds")
             assert processed_ops == [
                 "start",
-                "aa_debug_answer_from_nodes",
+                "aa_debug_select_top_candidates",
                 "end",
             ]
         rust_answer_run = httpx.get(
