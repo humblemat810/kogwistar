@@ -223,6 +223,20 @@ The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` 
 
 ## Completion rule
 
+DL-16BQ also includes authenticated SQLite+Chroma conversation creation via
+the public `POST /api/conversations` route. It creates the normal typed
+`ConversationNode` and host-derived private ACL in one canonical SQLite
+transaction; transaction-scoped current-event metadata lookup rejects reused
+conversation IDs independently of the caller-selected start-node ID. Chroma is
+not consulted for uniqueness and receives no synchronous graph write. The
+standalone SQLite metadata service continues to fail closed for this route.
+Evidence: Rust API test
+`sqlite_chroma_conversation_create_uses_canonical_graph_and_private_acl` and
+SQLite store test
+`latest_entity_events_by_metadata_uses_current_canonical_revisions`. This
+closes conversation creation only; turn submission, full run progression,
+broader MCP parity, and cross-backend parity remain open.
+
 DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
 complete plan and compatible executors; `sqlite_chroma_admits_valid_python_answer_workflow_plan`

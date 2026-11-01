@@ -120,6 +120,46 @@ fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
 }
 
 #[test]
+fn latest_entity_events_by_metadata_uses_current_canonical_revisions() {
+    let (store, path) = store("latest-events-metadata");
+    store
+        .immediate_transaction(|uow| {
+            for (event_id, entity_id, op, conversation_id) in [
+                ("start-v1", "start", "ADD", "conversation-a"),
+                ("start-v2", "start", "REPLACE", "conversation-b"),
+                ("other-start", "other", "ADD", "conversation-a"),
+            ] {
+                uow.append_raw_entity_event(
+                    "conversation",
+                    NewRawEntityEvent {
+                        event_id: event_id.to_owned(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: op.to_owned(),
+                        payload_json: serde_json::json!({
+                            "metadata": {"conversation_id": conversation_id}
+                        })
+                        .to_string(),
+                    },
+                )?;
+            }
+            let matching = uow.latest_entity_events_by_metadata(
+                "conversation",
+                "node",
+                "conversation_id",
+                "conversation-a",
+            )?;
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].entity_id, "other");
+            assert_eq!(matching[0].event_id, "other-start");
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn global_user_and_scoped_sequences_are_isolated_and_current() {
     let (store, path) = store("sequences");
     assert_eq!(store.current_global_seq().unwrap(), 0);

@@ -2590,6 +2590,160 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 }
 
 #[tokio::test]
+    async fn sqlite_chroma_conversation_create_uses_canonical_graph_and_private_acl() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+        let fake_chroma = tokio::spawn(async move {
+            let mut projection_requests = Vec::new();
+            loop {
+                let (mut stream, _) = tokio::select! {
+                    _ = &mut stop_rx => break,
+                    accepted = listener.accept() => accepted.unwrap(),
+                };
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 2048];
+                let (header_end, content_length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0, "Chroma closed before receiving request body");
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(header_end) =
+                        bytes.windows(4).position(|part| part == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= header_end + 4 + content_length {
+                            break (header_end, content_length);
+                        }
+                    }
+                };
+                let request_line = String::from_utf8_lossy(&bytes[..header_end])
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let _body: Value = serde_json::from_slice(
+                    &bytes[header_end + 4..header_end + 4 + content_length],
+                )
+                .unwrap();
+                let response = if request_line.contains("/collections HTTP") {
+                    json!({"id":"collection-id", "metadata":{"hnsw:space":"cosine"}})
+                } else {
+                    projection_requests.push(request_line);
+                    json!({})
+                };
+                let response = response.to_string();
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(), response
+                );
+                stream.write_all(wire.as_bytes()).await.unwrap();
+            }
+            projection_requests
+        });
+        let config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: collection.to_owned(),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            config("conversation-nodes"),
+            config("conversation-edges"),
+        )
+        .await
+        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-conversation-create-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        assert!(service.supports_http_operation("POST", "/api/conversations"));
+
+        let principal = json!({
+            "sub":"conversation-owner", "user_id":"conversation-owner", "role":"rw",
+            "ns":["conversation"], "storage_ns":"conversation",
+            "workspace":"workspace-a", "graph_space":"conversation",
+            "capabilities":["spawn_process"]
+        });
+        let request = || ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/conversations".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "user_id":"conversation-owner",
+                "conversation_id":"conversation-create-contract",
+                "start_node_id":"conversation-create-start"
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        };
+        let response = service.execute(request()).await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["conversation_id"], "conversation-create-contract");
+        assert_eq!(body["start_node_id"], "conversation-create-start");
+        assert_eq!(body["turn_count"], 0);
+
+        let events = service.store.replay_raw_events("conversation", 0, 20).unwrap();
+        assert!(events.iter().any(|event| {
+            event.entity_kind == "node"
+                && event.entity_id == "conversation-create-start"
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload["metadata"]["entity_type"] == "conversation_start"
+                            && payload["metadata"]["conversation_id"]
+                                == "conversation-create-contract"
+                    })
+        }));
+        assert!(events.iter().any(|event| {
+            serde_json::from_str::<Value>(&event.payload_json)
+                .ok()
+                .is_some_and(|payload| payload["metadata"]["entity_type"] == "acl_record")
+        }));
+
+        let duplicate = service.execute(request()).await;
+        assert_eq!(duplicate.status, StatusCode::CONFLICT.as_u16());
+        let wrong_owner = ApiEffectRequest {
+            principal: json!({
+                "sub":"other-user", "user_id":"other-user", "role":"rw",
+                "ns":["conversation"], "storage_ns":"conversation",
+                "capabilities":["spawn_process"]
+            }),
+            ..request()
+        };
+        assert_eq!(
+            service.execute(wrong_owner).await.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        let _ = stop_tx.send(());
+        assert_eq!(fake_chroma.await.unwrap(), Vec::<String>::new());
+        drop(service);
+        remove_test_sqlite(&path);
+
+        let metadata_path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-metadata-conversation-create-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let metadata_only = SqliteRunApplicationService::open(&metadata_path).unwrap();
+        assert!(!metadata_only.supports_http_operation("POST", "/api/conversations"));
+        drop(metadata_only);
+        remove_test_sqlite(&metadata_path);
+    }
+
+#[tokio::test]
 async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

@@ -1218,6 +1218,297 @@ impl SqliteRunApplicationService {
         }
     }
 
+    async fn sqlite_chroma_create_conversation_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "create_conversation",
+            true,
+            &["spawn_process"],
+            "conversation",
+        ) {
+            return syscall_forbidden("create_conversation");
+        }
+        let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {
+            return effect_error(
+                StatusCode::UNAUTHORIZED,
+                "KOGWISTAR_AUTHENTICATION_REQUIRED",
+                "conversation creation requires an authenticated principal",
+            );
+        };
+        let Some(requested_user_id) = input
+            .args
+            .get("user_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "user_id is required",
+            );
+        };
+        if !requested_user_id.eq_ignore_ascii_case(owner_id) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "user_id must match the authenticated principal",
+            );
+        }
+        let optional_id = |key: &str| -> Result<Option<String>, ApiEffectResponse> {
+            match input.args.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(value)) if !value.trim().is_empty() => {
+                    Ok(Some(value.trim().to_owned()))
+                }
+                _ => Err(effect_error(
+                    StatusCode::BAD_REQUEST,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    format!("{key} must be a non-empty string or null"),
+                )),
+            }
+        };
+        let conversation_id = match optional_id("conversation_id") {
+            Ok(Some(value)) => value,
+            Ok(None) => uuid::Uuid::new_v4().to_string(),
+            Err(response) => return response,
+        };
+        let requested_start_id = match optional_id("start_node_id") {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+        let user_id = owner_id.to_owned();
+        let start_id = requested_start_id.unwrap_or_else(|| {
+            kogwistar_contracts::stable_id(
+                "conversation.node",
+                &[
+                    user_id.clone(),
+                    conversation_id.clone(),
+                    "Start of conversation".to_owned(),
+                    "-1".to_owned(),
+                    "system".to_owned(),
+                    "conversation_summary".to_owned(),
+                    "True".to_owned(),
+                ],
+            )
+            .to_string()
+        });
+        let scope_values = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_values["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: scope_values["workspace"].as_str().map(str::to_owned),
+            graph_space: Some("conversation".to_owned()),
+        };
+        if scope.namespace != "conversation" || !graph_mutation_scope_allowed(&scope, &scope_values)
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "conversation creation requires the authenticated conversation storage scope",
+            );
+        }
+
+        let metadata = json!({
+            "level_from_root": 0,
+            "entity_type": "conversation_start",
+            "turn_index": -1,
+            "in_conversation_chain": true,
+            "in_ui_chain": true,
+            "lifecycle_status": "active",
+            "redirect_to_id": null,
+            "role": "system",
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+        });
+        let mentions = json!([{
+            "spans": [{
+                "collection_page_url": "conversation/_conv:_dummy",
+                "document_page_url": "conversation/_conv:_dummy",
+                "doc_id": "_conv:_dummy",
+                "insertion_method": "system",
+                "page_number": 1,
+                "start_char": 0,
+                "end_char": 1,
+                "excerpt": "",
+                "context_before": "",
+                "context_after": "",
+                "source_cluster_id": null,
+                "verification": {"method": "system", "is_verified": true, "score": 1.0, "notes": ""}
+            }],
+            "multimodal_spans": []
+        }]);
+        let payload = json!({
+            "id": start_id,
+            "label": "conversation start",
+            "type": "entity",
+            "summary": "Start of conversation",
+            "domain_id": null,
+            "canonical_entity_id": null,
+            "properties": {"status": "active"},
+            "mentions": mentions,
+            "embedding": null,
+            "doc_id": null,
+            "metadata": metadata,
+            "level_from_root": 0,
+            "role": "system",
+            "turn_index": -1,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+        });
+        let envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::ConversationNode,
+            payload.clone(),
+        );
+        if let Err(error) = envelope.validate_family_v1() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_GRAPH_MODEL",
+                error.to_string(),
+            );
+        }
+        let document = {
+            let mut document_value = payload.clone();
+            if let Some(object) = document_value.as_object_mut() {
+                object.remove("metadata");
+                object.remove("embedding");
+            }
+            match serde_json::to_string(&document_value) {
+                Ok(document) => document,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_SERIALIZATION_FAILED",
+                        error.to_string(),
+                    );
+                }
+            }
+        };
+        let mut record_metadata = metadata.as_object().cloned().unwrap_or_default();
+        record_metadata.insert("namespace".to_owned(), json!(scope.namespace));
+        record_metadata.insert("_class_name".to_owned(), json!("ConversationNode"));
+        record_metadata.insert("label".to_owned(), json!("conversation start"));
+        record_metadata.insert("type".to_owned(), json!("entity"));
+        record_metadata.insert("summary".to_owned(), json!("Start of conversation"));
+        record_metadata.insert("properties".to_owned(), json!("{\"status\":\"active\"}"));
+        record_metadata.insert("mentions".to_owned(), json!(mentions.to_string()));
+        let event_id = kogwistar_contracts::stable_id(
+            "conversation.create.event",
+            &[conversation_id.clone(), start_id.clone()],
+        )
+        .to_string();
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: event_id.clone(),
+            op: "ADD".to_owned(),
+            payload: payload.clone(),
+            record: GraphRecord {
+                id: start_id.clone(),
+                document: Some(document),
+                metadata: record_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let owner_acl_id = user_id.to_ascii_lowercase();
+        let acl_scope = scope_values["security_scope"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_ascii_lowercase);
+        let response_conversation_id = conversation_id.clone();
+        let response_start_id = start_id.clone();
+        let transaction = self.store.immediate_transaction(|uow| {
+            if !uow
+                .latest_entity_events_by_metadata(
+                    &scope.namespace,
+                    "node",
+                    "conversation_id",
+                    &conversation_id,
+                )?
+                .is_empty()
+            {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "conversation_id already exists".to_owned(),
+                ));
+            }
+            if uow
+                .latest_entity_events(&scope.namespace, "node", std::slice::from_ref(&start_id))?
+                .contains_key(&start_id)
+            {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "start_node_id already exists".to_owned(),
+                ));
+            }
+            let targets = acl_targets_for_graph_mutations(std::slice::from_ref(&mutation)).0;
+            let target_ids = acl_target_entity_ids(&targets);
+            let existing =
+                uow.graph_acl_records_for_entities(&scope, "conversation", &target_ids)?;
+            let (acl_mutations, mut index_jobs) = derive_default_acl_graph_effects_from_records(
+                &scope,
+                std::slice::from_ref(&mutation),
+                targets,
+                existing,
+                "conversation",
+                &owner_acl_id,
+                acl_scope.as_deref(),
+                &event_id,
+            )
+            .map_err(SqliteStoreError::TransactionAborted)?;
+            index_jobs.push(NewIndexJob {
+                job_id: kogwistar_contracts::stable_id(
+                    "conversation.create.index_job",
+                    &[event_id.clone(), start_id.clone()],
+                )
+                .to_string(),
+                namespace: scope.namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: start_id.clone(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 10,
+            });
+            let mut mutations = vec![mutation.clone()];
+            mutations.extend(acl_mutations);
+            uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations,
+                index_jobs,
+            })?;
+            Ok(())
+        });
+        match transaction {
+            Ok(()) => syscall_result(
+                &input.version,
+                "create_conversation",
+                json_effect(
+                    StatusCode::CREATED,
+                    json!({
+                        "conversation_id": response_conversation_id,
+                        "user_id": user_id,
+                        "status": "active",
+                        "start_node_id": response_start_id,
+                        "tail_node_id": response_start_id,
+                        "turn_count": 0,
+                    }),
+                ),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_CREATE_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
@@ -2110,9 +2401,7 @@ impl SqliteRunApplicationService {
                 .equals
                 .insert("workspace_id".to_owned(), json!(workspace));
         }
-        if let Some(graph_space) = principal.get("graph_space")
-            .and_then(Value::as_str)
-        {
+        if let Some(graph_space) = principal.get("graph_space").and_then(Value::as_str) {
             metadata
                 .equals
                 .insert("graph_space".to_owned(), json!(graph_space));
@@ -2165,20 +2454,13 @@ impl SqliteRunApplicationService {
                 .insert("graph_space".to_owned(), json!(graph_space));
         }
         let mut acl_records = graph
-            .graph_records_of_kind_bounded(
-                &namespace,
-                GraphEntityKind::Node,
-                &acl_filter,
-                10_000,
-            )
+            .graph_records_of_kind_bounded(&namespace, GraphEntityKind::Node, &acl_filter, 10_000)
             .await
             .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
         self.filter_current_chroma_stage2(&namespace, &mut acl_records, &mut Vec::new())
             .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
-        let acl_principal = graph_acl_principal_from_claims(
-            &principal,
-            scope_value["security_scope"].as_str(),
-        );
+        let acl_principal =
+            graph_acl_principal_from_claims(&principal, scope_value["security_scope"].as_str());
         Ok(sqlite_native_candidate_values(
             &candidate_records,
             &acl_records,
@@ -2200,7 +2482,8 @@ impl SqliteRunApplicationService {
             .ok_or_else(|| "Rust-native structured-answer provider is not configured".to_owned())?
             .model()
             .to_owned();
-        let batch = crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
+        let batch =
+            crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
         let (mutations, mut index_jobs) = graph_mutation_batch_v2_value(batch)
             .map_err(|_| "native answer snapshot graph mutation is invalid".to_owned())?;
         validate_runtime_graph_mutations(&mutations)
@@ -2217,14 +2500,19 @@ impl SqliteRunApplicationService {
             .iter()
             .any(|capability| capability == "write_graph")
         {
-            return Err("native answer snapshot requires the run owner's current write_graph capability".to_owned());
+            return Err(
+                "native answer snapshot requires the run owner's current write_graph capability"
+                    .to_owned(),
+            );
         }
         let security_scope = security_scope_value(&principal);
         if mutations
             .iter()
             .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
         {
-            return Err("native answer snapshot scope is outside the run owner's admitted scope".to_owned());
+            return Err(
+                "native answer snapshot scope is outside the run owner's admitted scope".to_owned(),
+            );
         }
         let Some(scope) = mutations.first().map(|mutation| mutation.scope.clone()) else {
             return Err("native answer snapshot has no graph mutations".to_owned());
@@ -2280,7 +2568,8 @@ impl SqliteRunApplicationService {
                 }
                 let acl_targets = acl_targets_for_graph_mutations(&mutations).0;
                 let target_ids = acl_target_entity_ids(&acl_targets);
-                let existing = uow.graph_acl_records_for_entities(&scope, "conversation", &target_ids)?;
+                let existing =
+                    uow.graph_acl_records_for_entities(&scope, "conversation", &target_ids)?;
                 let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
                     &scope,
                     &mutations,
@@ -2349,7 +2638,9 @@ impl SqliteRunApplicationService {
         let mutations = provider_event_graph_mutations(
             &publication,
             &scope,
-            security_scope["security_scope"].as_str().unwrap_or_default(),
+            security_scope["security_scope"]
+                .as_str()
+                .unwrap_or_default(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_err(|_| "system clock is before Unix epoch".to_owned())?
@@ -2364,7 +2655,9 @@ impl SqliteRunApplicationService {
             .iter()
             .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
         {
-            return Err("provider event publication is outside the run owner's admitted scope".to_owned());
+            return Err(
+                "provider event publication is outside the run owner's admitted scope".to_owned(),
+            );
         }
         let owner_id = authenticated_run_owner_id(&principal)
             .ok_or_else(|| "provider event publication requires an authenticated owner".to_owned())?
@@ -2409,7 +2702,8 @@ impl SqliteRunApplicationService {
                     .any(|capability| capability == "write_graph")
                 {
                     return Err(SqliteStoreError::RecordedRuntimeConflict(
-                        "provider event write_graph capability was revoked before commit".to_owned(),
+                        "provider event write_graph capability was revoked before commit"
+                            .to_owned(),
                     ));
                 }
                 if mutations
@@ -2441,9 +2735,11 @@ impl SqliteRunApplicationService {
                         mutation.entity_kind == "node" && mutation.record.id == message_id
                     })
                     .cloned()
-                    .ok_or_else(|| SqliteStoreError::TransactionAborted(
-                        "provider event message node is missing".to_owned(),
-                    ))?;
+                    .ok_or_else(|| {
+                        SqliteStoreError::TransactionAborted(
+                            "provider event message node is missing".to_owned(),
+                        )
+                    })?;
                 let (acl_mutations, mut acl_jobs) = derive_default_acl_graph_effects_from_records(
                     &scope,
                     std::slice::from_ref(&message_mutation),
@@ -2467,9 +2763,11 @@ impl SqliteRunApplicationService {
                 })?;
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|_| SqliteStoreError::TransactionAborted(
-                        "system clock is before Unix epoch".to_owned(),
-                    ))?
+                    .map_err(|_| {
+                        SqliteStoreError::TransactionAborted(
+                            "system clock is before Unix epoch".to_owned(),
+                        )
+                    })?
                     .as_secs() as i64;
                 uow.project_lane_message(NewProjectedLaneMessage {
                     message_id,
@@ -2489,11 +2787,7 @@ impl SqliteRunApplicationService {
                     payload_json: Some(event_payload),
                     error_json: None,
                 })?;
-                uow.append_server_run_event(
-                    &event_run_id,
-                    run_event_type,
-                    run_event_payload,
-                )?;
+                uow.append_server_run_event(&event_run_id, run_event_type, run_event_payload)?;
                 Ok(())
             })
             .map_err(|_| "provider event SQLite transaction failed".to_owned())
@@ -2504,11 +2798,8 @@ impl SqliteRunApplicationService {
         handoff: RecordedWorkerHandoff,
         mut request: kogwistar_runtime::RuntimeNativeStepRequest,
     ) -> Result<RuntimeWorkerResultRequest, String> {
-        kogwistar_runtime::validate_native_step_registration(
-            &request,
-            &self.native_operations,
-        )
-        .map_err(|error| format!("native execution rejected: {error}"))?;
+        kogwistar_runtime::validate_native_step_registration(&request, &self.native_operations)
+            .map_err(|error| format!("native execution rejected: {error}"))?;
         let Some(provider) = self.chat_completion_provider.as_ref() else {
             return Ok(failed_native_result(
                 handoff,
@@ -2523,9 +2814,9 @@ impl SqliteRunApplicationService {
             .get("_rt")
             .and_then(Value::as_object)
             .ok_or_else(|| "native answer generation requires runtime context".to_owned())?;
-        let evidence_pack = runtime
-            .get("evidence_pack")
-            .ok_or_else(|| "native answer generation requires a materialized evidence pack".to_owned())?;
+        let evidence_pack = runtime.get("evidence_pack").ok_or_else(|| {
+            "native answer generation requires a materialized evidence pack".to_owned()
+        })?;
         let question = request
             .state
             .get("question")
@@ -2542,9 +2833,11 @@ impl SqliteRunApplicationService {
             .and_then(Value::as_array)
             .ok_or_else(|| "native answer generation requires selected evidence IDs".to_owned())?
             .iter()
-            .map(|id| id.as_str().map(str::to_owned).ok_or_else(|| {
-                "selected evidence IDs must be strings".to_owned()
-            }))
+            .map(|id| {
+                id.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "selected evidence IDs must be strings".to_owned())
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let run_id = request.run_id.clone();
         let workflow_id = request.workflow_id.clone();
@@ -2554,7 +2847,13 @@ impl SqliteRunApplicationService {
         let turn_node_id = request
             .turn_node_id
             .clone()
-            .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str).map(str::to_owned))
+            .or_else(|| {
+                request
+                    .state
+                    .get("turn_node_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .ok_or_else(|| "native answer generation requires a turn node ID".to_owned())?;
         let trace_context = kogwistar_runtime::native_trace_context_fields(&request);
         let model = provider.model().to_owned();
@@ -2576,14 +2875,21 @@ impl SqliteRunApplicationService {
                     let turn_node_id = turn_node_id.clone();
                     let model = event_model.clone();
                     async move {
-                        if let kogwistar_contracts::ProviderEventV1::TextDelta { delta, .. } = &event {
+                        if let kogwistar_contracts::ProviderEventV1::TextDelta { delta, .. } =
+                            &event
+                        {
                             if delta.chars().count() > 4096 {
-                                return Err("transient text delta exceeds the configured size limit".to_owned());
+                                return Err(
+                                    "transient text delta exceeds the configured size limit"
+                                        .to_owned(),
+                                );
                             }
                             let _ = service.transient_run_deltas.publish_next(&run_id, delta);
                             return Ok(());
                         }
-                        let Some(summary) = crate::native_answer_generation::semantic_event_trace_summary(&event) else {
+                        let Some(summary) =
+                            crate::native_answer_generation::semantic_event_trace_summary(&event)
+                        else {
                             return Ok(());
                         };
                         let event_value = serde_json::to_value(&event)
@@ -2605,12 +2911,26 @@ impl SqliteRunApplicationService {
                             attempt,
                             producer_step_seq: Some(step_seq),
                             producer_attempt: Some(attempt),
-                            trace_id: trace_context.get("trace_id").and_then(Value::as_str).map(str::to_owned),
-                            span_id: trace_context.get("span_id").and_then(Value::as_str).map(str::to_owned),
-                            parent_span_id: trace_context.get("parent_span_id").and_then(Value::as_str).map(str::to_owned),
+                            trace_id: trace_context
+                                .get("trace_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            span_id: trace_context
+                                .get("span_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            parent_span_id: trace_context
+                                .get("parent_span_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
                             provider_id: "openai_compatible_chat_completions".to_owned(),
-                            provider_response_id: event_value.get("response_id").and_then(Value::as_str).map(str::to_owned),
-                            provider_sequence: event_value.get("provider_sequence").and_then(Value::as_i64),
+                            provider_response_id: event_value
+                                .get("response_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            provider_sequence: event_value
+                                .get("provider_sequence")
+                                .and_then(Value::as_i64),
                             client_sse_sequence: Some(client_sse_sequence),
                         };
                         let durable = kogwistar_contracts::durable_provider_event(&trace, event);
@@ -2638,12 +2958,16 @@ impl SqliteRunApplicationService {
                 },
             )
             .await?;
-        request.ephemeral_context.insert("provider_answer".to_owned(), answer);
+        request
+            .ephemeral_context
+            .insert("provider_answer".to_owned(), answer);
         request.ephemeral_context.insert(
             "_provider_event_trace_summaries".to_owned(),
             Value::Array(event_summaries),
         );
-        request.ephemeral_context.insert("provider_model".to_owned(), json!(model));
+        request
+            .ephemeral_context
+            .insert("provider_model".to_owned(), json!(model));
         native_result_from_request(handoff, request, &self.native_operations)
     }
 

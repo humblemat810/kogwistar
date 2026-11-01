@@ -948,6 +948,7 @@ fn capability_effect(
 const SYSCALL_OPS: &[&str] = &[
     "spawn_process",
     "terminate_process",
+    "create_conversation",
     "send_message",
     "receive_message",
     "mount_memory",

@@ -1078,7 +1078,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()));
         }
         name != "workflow.tool_audit"
-            && name != "conversation.create"
+            && (name != "conversation.create" || self.chroma_graph.is_some())
             && name != "conversation.ask"
             && (name != "conversation.get_transcript" || self.chroma_graph.is_some())
             && rust_mcp_tool_supported(surface, name)
@@ -1136,13 +1136,17 @@ impl ApplicationService for SqliteRunApplicationService {
             && conversation_detail_id(path).is_some();
         let is_composed_conversation_list =
             self.chroma_graph.is_some() && method == "GET" && is_conversation_list_route(path);
+        let is_composed_conversation_create = self.chroma_graph.is_some()
+            && method == "POST"
+            && path.split('?').next() == Some("/api/conversations");
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
             || is_composed_graph_mutation
             || is_composed_wisdom_graph_upsert
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
-            || is_composed_conversation_list)
+            || is_composed_conversation_list
+            || is_composed_conversation_create)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (path != "/api/workflow/runs/{run_id}/lineage"
@@ -1153,7 +1157,8 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_wisdom_graph_upsert
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
-                || is_composed_conversation_list)
+                || is_composed_conversation_list
+                || is_composed_conversation_create)
     }
 
     fn execute(
@@ -1250,6 +1255,83 @@ impl ApplicationService for SqliteRunApplicationService {
                 && request.path_and_query == INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE
             {
                 return self.execute_native_runtime_step_async(&request).await;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/create_conversation")
+                && self.chroma_graph.is_some()
+            {
+                let input = match syscall_input(&request, "create_conversation") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                return self
+                    .sqlite_chroma_create_conversation_effect(&request, &input)
+                    .await;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next() == Some("/api/conversations")
+                && self.chroma_graph.is_some()
+            {
+                let input: CreateConversationHttpInput = match serde_json::from_slice(&request.body)
+                {
+                    Ok(input) => input,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let mut args =
+                    serde_json::Map::from_iter([("user_id".to_owned(), json!(input.user_id))]);
+                if let Some(conversation_id) = input.conversation_id {
+                    args.insert("conversation_id".to_owned(), json!(conversation_id));
+                }
+                if let Some(start_node_id) = input.start_node_id {
+                    args.insert("start_node_id".to_owned(), json!(start_node_id));
+                }
+                let syscall_request = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+                    body: serde_json::to_vec(&json!({
+                        "version":"v1",
+                        "op":"create_conversation",
+                        "args":args,
+                    }))
+                    .expect("typed conversation-create input serializes"),
+                    principal: request.principal,
+                };
+                let input = match syscall_input(&syscall_request, "create_conversation") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self
+                    .sqlite_chroma_create_conversation_effect(&syscall_request, &input)
+                    .await;
+                if !(200..300).contains(&response.status) {
+                    return response;
+                }
+                let envelope: Value = match serde_json::from_slice(&response.body) {
+                    Ok(envelope) => envelope,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::BAD_GATEWAY,
+                            "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                            error.to_string(),
+                        );
+                    }
+                };
+                return match envelope.get("result") {
+                    Some(result) => json_effect(StatusCode::OK, result.clone()),
+                    None => effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        "conversation-create syscall returned no result",
+                    ),
+                };
             }
             self.execute_sync(request)
         })
