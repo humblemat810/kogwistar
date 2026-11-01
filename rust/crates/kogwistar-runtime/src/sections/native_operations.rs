@@ -194,6 +194,7 @@ pub fn native_trace_context_fields(request: &RuntimeNativeStepRequest) -> Map<St
     ])
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-runtime/src/sections/native_operations.rs#attach_native_trace_context; python=kogwistar/runtime/telemetry.py#TraceContext.as_fields; fixture=contracts/golden/runtime-trace-context-v1.json; rust_test=rust/crates/kogwistar-runtime/src/tests.rs#native_trace_context_matches_shared_python_fixture; python_test=tests/runtime/test_trace_context_contract.py#test_trace_context_defaults_match_shared_rust_fixture
 fn attach_native_trace_context(trace: &mut Value, request: &RuntimeNativeStepRequest) {
     if let Some(fields) = trace.as_object_mut() {
         fields.extend(native_trace_context_fields(request));

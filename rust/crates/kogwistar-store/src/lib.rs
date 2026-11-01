@@ -598,7 +598,7 @@ fn graph_entity_usage_acl_visible(
 }
 
 /// Filter a complete graph snapshot using the same fail-closed ACL rules as Python.
-// PYTHON_PARITY_V1: rust=graph_records_visible_by_acl; python=kogwistar/acl/graph.py#ACLGraph.decide; fixture=contracts/golden/graph-acl-v1.json; rust_test=graph_acl_matches_shared_golden_contract; python_test_file=tests/core/test_graph_acl_golden.py; python_test=test_python_acl_visibility_matches_shared_golden_contract
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_records_visible_by_acl; python=kogwistar/acl/graph.py#ACLGraph.decide; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_acl_matches_shared_golden_contract; python_test=tests/core/test_graph_acl_golden.py#test_python_acl_visibility_matches_shared_golden_contract
 ///
 /// ACL records are persisted as graph nodes. Missing records deny access, and
 /// ACL helper nodes never enter the returned graph projection. Because the
