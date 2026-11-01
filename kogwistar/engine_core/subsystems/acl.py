@@ -40,6 +40,17 @@ if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
 
+ACLItem = Node | Edge | PureChromaNode | PureChromaEdge
+
+
+def _acl_entity_id(item: ACLItem) -> str:
+    safe_get_id = getattr(item, "safe_get_id", None)
+    entity_id = safe_get_id() if callable(safe_get_id) else getattr(item, "id", None)
+    if entity_id is None or not str(entity_id).strip():
+        raise ValueError("ACL graph items require a non-empty entity id")
+    return str(entity_id)
+
+
 def _as_acl_grain(value: str | None) -> ACLGrain | None:
     if value is None:
         return None
@@ -83,10 +94,10 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             security_scope = None
         return principal_id or "system", principal_groups, security_scope
 
-    def usage_ids_for_item(self, item: Node | Edge) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def usage_ids_for_item(self, item: ACLItem) -> tuple[tuple[str, ...], tuple[str, ...]]:
         groundings: list[str] = []
         spans: list[str] = []
-        item_id = str(item.safe_get_id())
+        item_id = _acl_entity_id(item)
         for i, grounding in enumerate(getattr(item, "mentions", None) or []):
             groundings.append(f"{item_id}::mention::{i}")
             for j, _span in enumerate(getattr(grounding, "spans", None) or []):
@@ -94,7 +105,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return tuple(groundings), tuple(spans)
 
     def _metadata_acl_defaults(
-        self, item: Node | Edge
+        self, item: ACLItem
     ) -> tuple[str, str, str | None, tuple[str, ...], tuple[str, ...]]:
         metadata = getattr(item, "metadata", {}) or {}
         principal_id, _groups, current_scope = self.current_principal_context()
@@ -136,7 +147,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     def _default_acl_context(
         self,
-        item: Node | Edge,
+        item: ACLItem,
         *,
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -153,7 +164,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             created_by = principal_id
         return {
             "truth_graph": self._e.kg_graph_type,
-            "entity_id": str(item.safe_get_id()),
+            "entity_id": _acl_entity_id(item),
             "mode": mode,
             "created_by": created_by,
             "owner_id": owner_id,
@@ -162,7 +173,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "shared_with_groups": tuple(shared_groups),
         }
 
-    def _default_acl_records_for_item(self, item: Node | Edge, *, grain: str) -> tuple[ACLRecord, ...]:
+    def _default_acl_records_for_item(self, item: ACLItem, *, grain: str) -> tuple[ACLRecord, ...]:
         ctx = self._default_acl_context(item)
         entity_id = str(ctx["entity_id"])
 
@@ -236,7 +247,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return 1 if previous is None else previous.version + 1
 
     @implementation_selection_bound
-    def record_default_acl_for_item(self, item: Node | Edge, *, grain: str) -> None:
+    def record_default_acl_for_item(self, item: ACLItem, *, grain: str) -> None:
         """Write default ACL rows for one truth item.
 
         This is the normal write-path helper. It writes the node/edge ACL record
@@ -1256,13 +1267,14 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._edge_visible(edge)
         }
 
-    def _node_visible(self, node: Node) -> bool:
+    def _node_visible(self, node: ACLItem) -> bool:
         principal_id, groups, security_scope = self._e.acl.current_principal_context()
         grounding_ids, span_ids = self._e.acl.usage_ids_for_item(node)
+        node_id = _acl_entity_id(node)
         decision = self._e.acl.decide_acl_node_read(
             item_grain="span",
             truth_graph=self._e.kg_graph_type,
-            entity_id=str(node.safe_get_id()),
+            entity_id=node_id,
             grounding_item_ids=grounding_ids,
             target_item_ids=span_ids,
             principal_id=principal_id,
@@ -1274,14 +1286,14 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         if "no_acl_record" in str(decision.reason or ""):
             repaired = self._e.acl.repair_acl_records_from_events(
                 truth_graph=self._e.kg_graph_type,
-                entity_id=str(node.safe_get_id()),
+                entity_id=node_id,
                 limit=64,
             )
             if repaired.get("repaired_acl_records", 0):
                 retry = self._e.acl.decide_acl_node_read(
                     item_grain="span",
                     truth_graph=self._e.kg_graph_type,
-                    entity_id=str(node.safe_get_id()),
+                    entity_id=node_id,
                     grounding_item_ids=grounding_ids,
                     target_item_ids=span_ids,
                     principal_id=principal_id,
@@ -1304,8 +1316,10 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 return retry.visible
         return False
 
-    def _edge_visible(self, edge: Edge, visited: set[str] | None = None) -> bool:
-        edge_id = str(edge.safe_get_id())
+    def _edge_visible(
+        self, edge: Edge | PureChromaEdge, visited: set[str] | None = None
+    ) -> bool:
+        edge_id = _acl_entity_id(edge)
         visited = set() if visited is None else visited
         if edge_id in visited:
             return True
@@ -1323,7 +1337,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if "no_acl_record" in str(edge_decision.reason or ""):
                 repaired = self._e.acl.repair_acl_records_from_events(
                     truth_graph=self._e.kg_graph_type,
-                    entity_id=str(edge.safe_get_id()),
+                    entity_id=edge_id,
                     limit=64,
                 )
                 if repaired.get("repaired_acl_records", 0):
@@ -1369,7 +1383,14 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if str(item)
         )
         if endpoint_ids:
-            endpoint_nodes = self._raw.get_nodes(node_type=Node, ids=list(endpoint_ids))
+            endpoint_node_type = (
+                PureChromaNode if isinstance(edge, PureChromaEdge) else Node
+            )
+            endpoint_nodes = self._raw.get_nodes(
+                node_type=endpoint_node_type, ids=list(endpoint_ids)
+            )
+            if {_acl_entity_id(item) for item in endpoint_nodes} != set(endpoint_ids):
+                return False
             for endpoint in endpoint_nodes:
                 if not self._node_visible(endpoint):
                     return False
@@ -1381,11 +1402,12 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         if endpoint_edge_ids:
             endpoint_edges = self._raw.get_edges(
-                ids=list(endpoint_edge_ids), edge_type=Edge
+                ids=list(endpoint_edge_ids),
+                edge_type=(
+                    PureChromaEdge if isinstance(edge, PureChromaEdge) else Edge
+                ),
             )
-            if {str(item.safe_get_id()) for item in endpoint_edges} != set(
-                endpoint_edge_ids
-            ):
+            if {_acl_entity_id(item) for item in endpoint_edges} != set(endpoint_edge_ids):
                 return False
             for endpoint in endpoint_edges:
                 if not self._edge_visible(endpoint, visited):
@@ -1734,11 +1756,18 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
 
     @implementation_selection_bound
     def add_pure_node(self, node: PureChromaNode) -> None:
-        self._raw.add_pure_node(node)
+        # PYTHON_PARITY: add_node() persists the truth item and its ACL record
+        # through the same guarded write surface; pure graph writes must not
+        # bypass the authoritative ACL graph either.
+        with self._e.uow():
+            self._raw.add_pure_node(node)
+            self._e.acl.record_default_acl_for_item(node, grain="node")
 
     @implementation_selection_bound
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
-        self._raw.add_pure_edge(edge)
+        with self._e.uow():
+            self._raw.add_pure_edge(edge)
+            self._e.acl.record_default_acl_for_item(edge, grain="edge")
 
     @implementation_selection_bound
     def add_domain(self, domain: Domain) -> None:
