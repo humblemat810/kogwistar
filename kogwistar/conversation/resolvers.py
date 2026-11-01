@@ -213,14 +213,12 @@ def _worker_graph_mutation_batch_for_entity(
     metadata = dict(raw_metadata)
     metadata["_class_name"] = type(entity).__name__
 
+    # The wire contract names logical graph tables, not physical backend
+    # collections. SQLite, Chroma, PostgreSQL, and in-memory adapters therefore
+    # share this projection as long as they expose the engine write/index seams.
+    table = "gke_nodes" if entity_kind == "node" else "gke_edges"
     backend = getattr(engine, "backend", None)
-    collection_name = "nodes" if entity_kind == "node" else "edges"
-    collection = getattr(backend, collection_name, None)
-    table = getattr(collection, "name", None)
-    embedding_dim = getattr(backend, "embedding_dim", None)
-    expected_table = "gke_nodes" if entity_kind == "node" else "gke_edges"
-    if table != expected_table or type(embedding_dim) is not int or embedding_dim < 0:
-        raise RuntimeError("Rust worker graph effects require a PostgreSQL graph backend")
+    configured_embedding_dim = getattr(backend, "embedding_dim", None)
     embedding = getattr(entity, "embedding", None)
     if not isinstance(embedding, list) or not embedding:
         embed_component = getattr(engine, "embed", None)
@@ -240,6 +238,15 @@ def _worker_graph_mutation_batch_for_entity(
         entity.embedding = embedding
     if not isinstance(embedding, list) or not embedding:
         raise RuntimeError("Rust worker graph effects require a non-empty embedding")
+    embedding_dim = (
+        configured_embedding_dim
+        if type(configured_embedding_dim) is int
+        else len(embedding)
+    )
+    if embedding_dim < 0 or embedding_dim != len(embedding):
+        raise RuntimeError(
+            "Rust worker graph effect embedding dimension does not match the backend"
+        )
 
     envelope = build_graph_model_envelope(entity, field_mode="backend")
     payload = envelope["payload"]

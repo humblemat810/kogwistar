@@ -227,11 +227,20 @@ DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
 complete plan and compatible executors; `sqlite_chroma_admits_valid_python_answer_workflow_plan`
 verifies admission and the initial `start` claim by the Python worker. The
-Python contract test `test_answer_designs_match_shared_runtime_admission_contract`
-also verifies every advertised Python executor operation is registered at the
-fixture's declared version, preventing Rust admission metadata from drifting
-away from the Python worker's actual resolver. The
-seam-free PostgreSQL path has stronger live evidence:
+shared Python graph-effect serializer now emits the logical mutation contract
+without requiring PostgreSQL collection names; the conversation resolver
+regressions verify PostgreSQL-shaped and Chroma-shaped adapters produce the
+same logical table and embedding dimension, while still returning effects
+instead of writing directly. The combined resolver and worker/runtime suites
+passed (**130 passed, 7 skipped**), and
+`sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`
+passed (**1 passed**) for canonical SQLite events, eventual Chroma projection,
+failure/restart recovery, and retry. The Python contract test
+`test_answer_designs_match_shared_runtime_admission_contract` also verifies
+every advertised Python executor operation is registered at the fixture's
+declared version, preventing Rust admission metadata from drifting away from
+the Python worker's actual resolver. The seam-free PostgreSQL path has
+stronger live evidence:
 `postgres_agentic_answer_workflow_executes_durably_without_python_worker`
 passed (**1 passed**) against the local pgvector container. It launches the
 packaged Rust server, uses authenticated REST to admit and complete a streamed
@@ -242,8 +251,8 @@ seam crossings on a Rust-native workflow. Standalone SQLite remains
 graph-authority-disabled; invalid plans and unsupported executors remain
 rejected. Still open: a complete SQLite+Chroma answer run through the Python
 worker, broader backend-interchangeability parity, support-matrix checks, and
-the remaining syscall parity named in DL-16BQ. This proves one PostgreSQL
-vertical path, not whole-stack parity; DL-16BQ remains IN PROGRESS.
+the remaining syscall parity named in DL-16BQ. These bounded paths do not
+prove whole-stack parity; DL-16BQ remains IN PROGRESS.
 
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix

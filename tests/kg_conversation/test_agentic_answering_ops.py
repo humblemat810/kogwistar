@@ -521,7 +521,14 @@ def test_aa_prepare_sets_run_identity():
     assert state.get("run_node_id")
 
 
-def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_write():
+@pytest.mark.parametrize(
+    ("backend_collection_name", "backend_embedding_dim", "expected_dim"),
+    [("gke_nodes", 3, 3), ("nodes", None, 3), ("gke_nodes", 2, None)],
+    ids=["postgres-shaped", "chroma-shaped", "dimension-mismatch"],
+)
+def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_write(
+    backend_collection_name, backend_embedding_dim, expected_dim
+):
     from kogwistar.conversation.models import MetaFromLastSummary
     from kogwistar.engine_core.graph_mutation_contract import (
         validate_graph_mutation_batch,
@@ -533,8 +540,9 @@ def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_wri
     ce.persistence_mode = "single_stage"
     ce._phase1_enable_index_jobs = True
     ce._disable_event_log = False
-    ce.backend.nodes = SimpleNamespace(name="gke_nodes")
-    ce.backend.embedding_dim = 3
+    ce.backend.nodes = SimpleNamespace(name=backend_collection_name)
+    if backend_embedding_dim is not None:
+        ce.backend.embedding_dim = backend_embedding_dim
     ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
     ce.write = SimpleNamespace(
         node_doc_and_meta=lambda node: (
@@ -555,15 +563,22 @@ def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_wri
     state["_deps"]["_rust_worker_effects"] = True
     state["_deps"]["prev_turn_meta_summary"] = MetaFromLastSummary(4, 2, 1)
 
-    result = _run_op(
-        "aa_prepare", state, idempotency_key="stable-worker-message-id"
-    )
+    if expected_dim is None:
+        failure = _run_op(
+            "aa_prepare", state, idempotency_key="stable-worker-message-id"
+        )
+        assert isinstance(failure, RunFailure)
+        assert any("embedding dimension" in error for error in failure.errors)
+        return
+    result = _run_op("aa_prepare", state, idempotency_key="stable-worker-message-id")
 
     assert isinstance(result, RunSuccess)
     batch = validate_graph_mutation_batch(result.graph_mutation_batch)
     assert len(batch.mutations) == 1
     assert batch.mutations[0].record.id == state["run_node_id"]
     assert batch.mutations[0].op == "ADD"
+    assert batch.mutations[0].table == "gke_nodes"
+    assert batch.mutations[0].embedding_dim == 3
     assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
     assert len(batch.index_jobs) == 2
     assert {job.index_kind for job in batch.index_jobs} == {"node_docs", "node_refs"}
