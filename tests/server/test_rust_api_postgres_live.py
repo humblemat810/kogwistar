@@ -1330,6 +1330,24 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         python_pure_edge = wisdom_engine.read.get_edges(ids=[pure_edge.id])[0]
         assert isinstance(python_pure_seed, PureChromaNode)
         assert isinstance(python_pure_edge, PureChromaEdge)
+        python_expected_endpoint_rows = edge_endpoint_rows(python_pure_edge)
+        python_endpoint_projection = wisdom_backend.edge_endpoints_get(
+            where={"edge_id": pure_edge.id}, include=["metadatas"]
+        )
+        python_endpoint_keys = set().union(
+            *(row.keys() for row in python_expected_endpoint_rows)
+        )
+        python_actual_endpoint_rows = [
+            {
+                key: metadata[key]
+                for key in python_endpoint_keys
+                if key in metadata
+            }
+            for metadata in python_endpoint_projection["metadatas"]
+        ]
+        assert sorted(python_actual_endpoint_rows, key=lambda row: row["id"]) == sorted(
+            python_expected_endpoint_rows, key=lambda row: row["id"]
+        )
 
         owner_python_claims = {
             **owner_claims,
