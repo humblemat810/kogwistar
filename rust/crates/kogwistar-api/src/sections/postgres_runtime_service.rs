@@ -1926,6 +1926,11 @@ impl PostgresRunApplicationService {
         handoff: RecordedWorkerHandoff,
         mut request: kogwistar_runtime::RuntimeNativeStepRequest,
     ) -> Result<RuntimeWorkerResultRequest, String> {
+        kogwistar_runtime::validate_native_step_registration(
+            &request,
+            &self.native_operations,
+        )
+        .map_err(|error| format!("native execution rejected: {error}"))?;
         if self.chat_completion_provider.is_none() {
             return Ok(failed_native_result(
                 handoff,

@@ -1138,39 +1138,7 @@ pub fn execute_native_step_with_registry(
     request: &RuntimeNativeStepRequest,
     registry: &NativeOperationRegistry,
 ) -> Result<RecordedWorkerSuccessEffect, RuntimeNativeExecutionError> {
-    if request.executor_target != RUST_NATIVE_EXECUTOR_TARGET {
-        return Err(RuntimeNativeExecutionError::WrongExecutorTarget {
-            expected: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
-            got: request.executor_target.clone(),
-        });
-    }
-    if request.operation.trim().is_empty() {
-        return Err(RuntimeNativeExecutionError::EmptyOperation);
-    }
-    for (field, value) in [
-        ("run_id", request.run_id.as_str()),
-        ("workflow_id", request.workflow_id.as_str()),
-        ("node_id", request.node_id.as_str()),
-        ("conversation_id", request.conversation_id.as_str()),
-        ("token_id", request.token_id.as_str()),
-    ] {
-        if value.trim().is_empty() {
-            return Err(RuntimeNativeExecutionError::EmptyIdentifier { field });
-        }
-    }
-    if request.step_seq < 0 {
-        return Err(RuntimeNativeExecutionError::NegativeStepSequence);
-    }
-    let Some(handler) = registry.handler(&request.operation, &request.op_version) else {
-        return Err(if registry.contains_operation(&request.operation) {
-            RuntimeNativeExecutionError::UnsupportedOperationVersion {
-                operation: request.operation.clone(),
-                version: request.op_version.clone(),
-            }
-        } else {
-            RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
-        });
-    };
+    let handler = native_handler_for_request(request, registry)?;
     let (
         output,
         graph_mutation_batch,
@@ -1279,6 +1247,55 @@ pub fn execute_native_step_with_registry(
         provider_event_publications: Vec::new(),
         provider_event_acknowledgements,
     })
+}
+
+/// Validate the request envelope and operation registration without invoking
+/// the handler, for services that perform persistence or provider work first.
+pub fn validate_native_step_registration(
+    request: &RuntimeNativeStepRequest,
+    registry: &NativeOperationRegistry,
+) -> Result<(), RuntimeNativeExecutionError> {
+    native_handler_for_request(request, registry).map(|_| ())
+}
+
+fn native_handler_for_request<'a>(
+    request: &RuntimeNativeStepRequest,
+    registry: &'a NativeOperationRegistry,
+) -> Result<&'a RegisteredNativeOperation, RuntimeNativeExecutionError> {
+    if request.executor_target != RUST_NATIVE_EXECUTOR_TARGET {
+        return Err(RuntimeNativeExecutionError::WrongExecutorTarget {
+            expected: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            got: request.executor_target.clone(),
+        });
+    }
+    if request.operation.trim().is_empty() {
+        return Err(RuntimeNativeExecutionError::EmptyOperation);
+    }
+    for (field, value) in [
+        ("run_id", request.run_id.as_str()),
+        ("workflow_id", request.workflow_id.as_str()),
+        ("node_id", request.node_id.as_str()),
+        ("conversation_id", request.conversation_id.as_str()),
+        ("token_id", request.token_id.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(RuntimeNativeExecutionError::EmptyIdentifier { field });
+        }
+    }
+    if request.step_seq < 0 {
+        return Err(RuntimeNativeExecutionError::NegativeStepSequence);
+    }
+    let Some(handler) = registry.handler(&request.operation, &request.op_version) else {
+        return Err(if registry.contains_operation(&request.operation) {
+            RuntimeNativeExecutionError::UnsupportedOperationVersion {
+                operation: request.operation.clone(),
+                version: request.op_version.clone(),
+            }
+        } else {
+            RuntimeNativeExecutionError::UnsupportedOperation(request.operation.clone())
+        });
+    };
+    Ok(handler)
 }
 
 fn validate_native_output_state(

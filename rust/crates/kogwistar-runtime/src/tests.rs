@@ -1241,6 +1241,14 @@ fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
                 version
             }) if operation == "app/label" && version == "v1"
         ));
+        assert!(matches!(
+            validate_native_step_registration(&unregistered_version, &registry),
+            Err(RuntimeNativeExecutionError::UnsupportedOperationVersion {
+                operation,
+                version
+            }) if operation == "app/label" && version == "v1"
+        ));
+        assert!(validate_native_step_registration(&request, &registry).is_ok());
 
         let builtin = RuntimeNativeStepRequest {
             operation: "noop".to_owned(),
