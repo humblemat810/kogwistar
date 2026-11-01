@@ -26,6 +26,8 @@ Current DL-16BQ mixed-execution evidence: `test_rust_postgres_graph_read_tools_m
 
 DL-05 shared-state parity evidence: `contracts/golden/debug-rag-state-v1.json` is consumed by Python `test_debug_rag_steps_match_shared_rust_contract_fixture` and Rust `debug_rag_native_steps_match_python_state_and_answer_shape`. Both compare selection, selected candidates, answer/evaluation shape, and operation history against the same fixture; focused Python and Rust tests passed. This incrementally strengthens the existing DL-05/DL-16BQ gates; it does not close either gate.
 
+DL-16BQ in-memory backend evidence: Rust server configuration now accepts `KOGWISTAR_BACKEND=in_memory` and composes the existing `InMemoryStore` as an explicitly ephemeral graph authority. The authenticated API test `in_memory_backend_routes_authenticated_graph_write_and_mcp_read` atomically writes a node/edge graph plus ACL records over HTTP and reads the authorized neighbor result through MCP; missing `write_graph` and non-`docs` namespace requests are denied. The complete Rust API library suite passes (**236 passed, 23 ignored**). This verifies the graph write/read composition only: no process-restart durability, embedding worker, conversation/runtime parity, or Python differential parity is claimed. DL-16BQ remains open; checklist inventory remains **177 items, 147 PASS (83.1%)**.
+
 | ID | Status | Gate / evidence |
 | --- | --- | --- |
 | DL-01 | PASS | Record the dual-language support decision, native-path definition, and invariants in `ADR-022-dual-language-capability-paths.md`. |

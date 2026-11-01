@@ -71,6 +71,7 @@ mod native_event_stream;
 mod native_memory_pin;
 mod runtime_contract;
 mod transient_deltas;
+use kogwistar_store_memory::InMemoryStore;
 pub use cutover::{ImplementationSnapshot, TRANSPORT_OWNED_HTTP_ROUTES};
 use cutover::{is_pending_server_cutover_route, is_transport_owned_http_route};
 use runtime_contract::{
@@ -102,6 +103,7 @@ include!("sections/postgres_automation_service.rs");
 include!("sections/postgres_runtime_service.rs");
 include!("sections/provider_event_publication.rs");
 include!("sections/application_services.rs");
+include!("sections/in_memory_service.rs");
 include!("sections/auth_state.rs");
 include!("sections/auth_handlers.rs");
 include!("sections/http_transport.rs");
@@ -117,4 +119,5 @@ mod tests {
     include!("tests/part_05.rs");
     include!("tests/part_06.rs");
     include!("tests/part_07.rs");
+    include!("tests/part_08.rs");
 }

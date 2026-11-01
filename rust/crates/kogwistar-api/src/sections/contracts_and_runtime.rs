@@ -287,6 +287,7 @@ fn environment(name: &str, default: &str) -> String {
 enum ServerBackend {
     Postgres,
     Sqlite,
+    InMemory,
 }
 
 impl ServerBackend {
@@ -294,13 +295,10 @@ impl ServerBackend {
         match value.trim().to_ascii_lowercase().as_str() {
             "pg" => Ok(Self::Postgres),
             "sqlite" => Ok(Self::Sqlite),
-            "in_memory" => Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "KOGWISTAR_BACKEND=in_memory is not supported by the native server composition; use pg or sqlite",
-            )),
+            "in_memory" => Ok(Self::InMemory),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "KOGWISTAR_BACKEND must be pg or sqlite",
+                "KOGWISTAR_BACKEND must be pg, sqlite, or in_memory",
             )),
         }
     }
@@ -309,6 +307,7 @@ impl ServerBackend {
         match self {
             Self::Postgres => "pg",
             Self::Sqlite => "sqlite",
+            Self::InMemory => "in_memory",
         }
     }
 }
@@ -338,7 +337,11 @@ mod server_backend_tests {
             ServerBackend::from_config(" SQLITE ").unwrap(),
             ServerBackend::Sqlite
         );
-        for unsupported in ["in_memory", "chroma", "postgres", "typo", ""] {
+        assert_eq!(
+            ServerBackend::from_config(" IN_MEMORY ").unwrap(),
+            ServerBackend::InMemory
+        );
+        for unsupported in ["chroma", "postgres", "typo", ""] {
             let error = ServerBackend::from_config(unsupported)
                 .expect_err("unsupported backend must fail before server startup");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -531,14 +534,17 @@ fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std:
 /// a second platform-specific executable beside the extension module.
 pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let backend = ServerBackend::from_config(&environment("KOGWISTAR_BACKEND", "sqlite"))?;
-    let (setting_name, setting_value) = match backend {
-        ServerBackend::Postgres => ("KOGWISTAR_PG_DSN", std::env::var("KOGWISTAR_PG_DSN").ok()),
-        ServerBackend::Sqlite => (
+    let backend_setting = match backend {
+        ServerBackend::Postgres => Some(required_backend_setting(
+            "KOGWISTAR_PG_DSN",
+            std::env::var("KOGWISTAR_PG_DSN").ok(),
+        )?),
+        ServerBackend::Sqlite => Some(required_backend_setting(
             "KOGWISTAR_META_SQLITE_PATH",
             std::env::var("KOGWISTAR_META_SQLITE_PATH").ok(),
-        ),
+        )?),
+        ServerBackend::InMemory => None,
     };
-    let backend_setting = required_backend_setting(setting_name, setting_value)?;
     let host = environment("KOGWISTAR_SERVER_HOST", "127.0.0.1");
     let port = environment("KOGWISTAR_SERVER_PORT", "8000");
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
@@ -577,7 +583,9 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
     let mut embedding_worker_available = false;
     let mut projection_reconciliation_available = false;
     let application: Arc<dyn ApplicationService> = if backend == ServerBackend::Postgres {
-        let dsn = backend_setting.clone();
+        let dsn = backend_setting
+            .clone()
+            .expect("PostgreSQL backend requires its DSN");
                 let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
                 let wisdom_schema = configured_wisdom_schema(
                     &schema_base,
@@ -618,8 +626,9 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     .await
                     .map_err(std::io::Error::other)?;
                 Arc::new(service)
-    } else {
-        let path = backend_setting;
+    } else if backend == ServerBackend::Sqlite {
+        let path = backend_setting
+            .expect("SQLite backend requires its database path");
                 let chroma = match std::env::var("KOGWISTAR_CHROMA_ENDPOINT") {
                     Ok(endpoint) if !endpoint.trim().is_empty() => {
                         let metric = match environment("KOGWISTAR_CHROMA_METRIC", "cosine")
@@ -684,6 +693,8 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     }
                 }
                 Arc::new(service)
+    } else {
+        Arc::new(InMemoryGraphApplicationService::default())
     };
     if inline_embedding_worker && !embedding_worker_available {
         return Err(std::io::Error::new(

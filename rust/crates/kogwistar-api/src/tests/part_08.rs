@@ -1,0 +1,213 @@
+#[tokio::test]
+async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
+    let secret = "in-memory-api-contract-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |namespace: &str, capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "writer",
+                "role": "rw",
+                "ns": [namespace],
+                "storage_ns": "tenant-a",
+                "workspace": "workspace-a",
+                "workspace_id": "workspace-a",
+                "graph_space": "facts",
+                "capabilities": capabilities,
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let make_app = || {
+        router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: auth.clone(),
+            },
+            Arc::new(InMemoryGraphApplicationService::default()),
+        )
+    };
+    let app = make_app();
+    let scope = json!({
+        "namespace": "tenant-a",
+        "workspace_id": "workspace-a",
+        "graph_space": "facts"
+    });
+    let mutation = |id: &str, table: &str, kind: &str, metadata: Value, document: Option<&str>| {
+        json!({
+            "scope": scope.clone(),
+            "table": table,
+            "entity_kind": kind,
+            "event_id": format!("event-{id}"),
+            "op": "ADD",
+            "payload": {"id": id, "metadata": metadata},
+            "record": {
+                "id": id,
+                "document": document,
+                "metadata": metadata,
+                "embedding": null
+            },
+            "embedding_dim": 0
+        })
+    };
+    let mutations = vec![
+        mutation(
+            "n1",
+            "gke_nodes",
+            "node",
+            json!({"label":"one"}),
+            Some("one"),
+        ),
+        mutation(
+            "n2",
+            "gke_nodes",
+            "node",
+            json!({"label":"two"}),
+            Some("two"),
+        ),
+        mutation(
+            "e1",
+            "gke_edges",
+            "edge",
+            json!({"source_ids":["n1"],"target_ids":["n2"],"relation":"links"}),
+            Some(r#"{"source_ids":["n1"],"target_ids":["n2"]}"#),
+        ),
+        mutation(
+            "acl-n1",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-n2",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n2","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-e1",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+    ];
+    let body = json!({"contract_version":1,"atomic":true,"mutations":mutations,"index_jobs":[]});
+
+    let denied_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_write.status(), StatusCode::FORBIDDEN);
+
+    let denied_namespace = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("workflow", &["write_graph"])),
+                )
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_namespace.status(), StatusCode::FORBIDDEN);
+
+    let mut cross_workspace_body = body.clone();
+    for mutation in cross_workspace_body["mutations"].as_array_mut().unwrap() {
+        mutation["scope"]["workspace_id"] = json!("workspace-b");
+    }
+    let denied_scope = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["write_graph"])),
+                )
+                .body(Body::from(
+                    serde_json::to_vec(&cross_workspace_body).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_scope.status(), StatusCode::FORBIDDEN);
+
+    let written = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["write_graph"])),
+                )
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(written.status(), StatusCode::OK);
+    let written: Value =
+        serde_json::from_slice(&to_bytes(written.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(written["atomic"], true);
+    assert_eq!(written["results"].as_array().unwrap().len(), 6);
+
+    let read = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("docs", &["read_graph"])))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"neighbors","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"n1","truth_graph":"knowledge"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+    let read: Value =
+        serde_json::from_slice(&to_bytes(read.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(read["result"]["nodes"], json!(["n2"]), "response: {read}");
+    assert_eq!(read["result"]["edges"], json!(["e1"]));
+}
