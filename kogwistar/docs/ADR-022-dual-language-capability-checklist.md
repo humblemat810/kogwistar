@@ -491,16 +491,19 @@ end-to-end performance claim additionally requires DL-12 or DL-13 as applicable
 and DL-19/20 for the stated workload. Open items remain open even if a narrow
 benchmark or one deployment's canary passes.
 
-The mixed Python-worker/Rust-authority answer integration now has a focused
-backend comparison under this existing DL-16BQ gate. Its `sqlite-chroma` case
-verifies canonical SQLite event and durable index-job writes followed by the
-eventual Chroma embedding projection; its `pg` case verifies the equivalent
-Python-prepared graph effect through the Rust PostgreSQL authority, with the
-supplied vector stored in PostgreSQL and no Chroma projection. Evidence:
+The Python-answer/Rust-authority integration compares Python-worker and
+Rust-native persistence on both SQLite+Chroma and PostgreSQL. All four cases of
 `tests/runtime/test_rust_runtime_authority.py::test_python_agentic_answer_workflow_commits_graph_effects_through_rust_storage`
-passed for both variants (**2 passed**) against fake Chroma/Ollama and the
-disposable local pgvector service. This confirms these two tested compositions,
-not universal backend interchangeability or full Python/Rust behavioral parity.
+passed against fake Chroma/Ollama and disposable local pgvector (**4 passed**).
+The test verifies identical canonical assistant graph content and vector values;
+SQLite+Chroma uses its durable eventual projection, PostgreSQL Python-worker
+persists the supplied vector, and PostgreSQL Rust-native uses the configured
+Rust embedding provider. PostgreSQL server startup now loads owner-auth
+configuration for externally claimed native execution, and native graph effects
+are revalidated against the run owner's current write authority before commit.
+The Rust API library suite passed (**235 passed, 23 ignored**). This verifies
+these tested compositions and authority checks, not universal backend
+interchangeability or full Python/Rust behavioral parity; DL-16BQ remains open.
 
 The live PostgreSQL projection integration
 `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`

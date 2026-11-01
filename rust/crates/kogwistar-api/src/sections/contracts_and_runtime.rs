@@ -598,12 +598,10 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                 {
                     service = service.with_chat_completion_provider(provider);
                 }
-                if inline_native_runtime {
-                    service = service
-                        .with_owner_auth_config(&state.auth)
-                        .await
-                        .map_err(std::io::Error::other)?;
-                }
+                service = service
+                    .with_owner_auth_config(&state.auth)
+                    .await
+                    .map_err(std::io::Error::other)?;
                 let embedding_provider = embedding_provider_from_settings(
                     std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
                     std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),

@@ -2044,7 +2044,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
 
             @staticmethod
             def iterative_defensive_emb(_text: str) -> list[float]:
-                return [1.0, 0.0, 0.0]
+                return [0.6, 0.8, 0.0]
 
             @staticmethod
             def _node_projection(node: Any) -> tuple[str, dict[str, Any]]:
@@ -2292,8 +2292,8 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         assistant_id = final_state["agentic_answering_result"]["assistant_turn_node_id"]
 
         # SQLite+Chroma writes the canonical event/job first, then projects a
-        # freshly computed vector. PostgreSQL stores the vector already supplied
-        # by the Python graph effect in the same native graph mutation.
+        # freshly computed vector. PostgreSQL persists the same vector through
+        # either the Python graph effect or the configured Rust embedder.
         if backend == "sqlite-chroma":
             deadline = time.monotonic() + 15
             assistant_embedding_done = False
@@ -2325,9 +2325,18 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                     {"entity_id": assistant_id},
                 ).first()
             assert vector_row is not None
-            assert vector_row[0] == "[1,0,0]"
+            assert vector_row[0] == "[0.6,0.8,0]"
             assert vector_row[1]["namespace"] == graph_namespace
-            assert not embedding_requests, "PostgreSQL should persist the Python-supplied vector directly"
+            if persistence_target == "python-worker":
+                assert not embedding_requests, (
+                    "PostgreSQL should persist the Python-supplied vector directly"
+                )
+            else:
+                assert any(
+                    assistant_id in item
+                    for request in embedding_requests
+                    for item in request.get("input", [])
+                ), "Rust-native persistence should embed the assistant node through the configured provider"
         if backend == "sqlite-chroma":
             assistant_upserts = [
                 payload
@@ -2397,10 +2406,10 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             ("node_docs", "PENDING"),
             ("node_refs", "PENDING"),
         }
-        if backend == "sqlite-chroma":
+        if backend == "sqlite-chroma" or persistence_target == "rust-native":
             expected_assistant_jobs.add(("node_embedding", "DONE"))
         assert assistant_jobs == expected_assistant_jobs
-        if backend == "pg":
+        if backend == "pg" and persistence_target == "python-worker":
             assert not embedding_requests
         if backend == "sqlite-chroma":
             assert sum("/collections" in path and "/upsert" not in path for path in chroma_requests) == 2
