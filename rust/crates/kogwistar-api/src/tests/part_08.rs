@@ -1,3 +1,60 @@
+#[test]
+fn recorded_step_snapshots_matches_python_fixture() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-step-trace-context-v1.json"
+    ))
+    .unwrap();
+    let recorded = ServerRunEvent {
+        seq: 4,
+        run_id: "run-1".to_owned(),
+        event_type: "workflow.recorded_transition.v1".to_owned(),
+        payload_json: json!({
+            "transition_id": "transition-1",
+            "reduced": {
+                "state": {
+                    "last_step_seq": 0,
+                    "workflow_id": "workflow-1",
+                    "last_node_id": "node-1",
+                    "state": {}
+                },
+                "result": {"ok": true},
+                "errors": [],
+                "server_status": "running"
+            }
+        })
+        .to_string(),
+        created_at_ms: 10,
+    };
+    let trace = ServerRunEvent {
+        seq: 5,
+        run_id: "run-1".to_owned(),
+        event_type: "workflow.trace.v1".to_owned(),
+        payload_json: json!({
+            "trace": {
+                "event": "runtime.native.step.completed",
+                "step_seq": 0,
+                "node_id": "node-1",
+                "trace_id": fixture["trace_context"]["trace_id"],
+                "span_id": fixture["trace_context"]["span_id"],
+                "parent_span_id": fixture["trace_context"]["parent_span_id"],
+                "attempt": fixture["trace_context"]["attempt"]
+            }
+        })
+        .to_string(),
+        created_at_ms: 11,
+    };
+
+    let steps = recorded_step_snapshots(vec![recorded.clone(), trace]);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(
+        steps[0].trace_context.as_ref().unwrap(),
+        &fixture["trace_context"]
+    );
+    let legacy_steps = recorded_step_snapshots(vec![recorded]);
+    assert!(legacy_steps[0].trace_context.is_none());
+    assert!(fixture["legacy_step_omits_trace_context"].as_bool().unwrap());
+}
+
 #[tokio::test]
 async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let secret = "in-memory-api-contract-secret";

@@ -1138,13 +1138,18 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         steps = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
         steps.raise_for_status()
         assert [step["step_seq"] for step in steps.json()["steps"]] == [0, 1]
-        assert steps.json()["steps"][0]["trace_context"] == {
-            "trace_id": "trace-seed",
-            "span_id": "span-step-0",
-            "parent_span_id": "span-parent",
-            "attempt": 2,
-        }
-        assert "trace_context" not in steps.json()["steps"][1]
+        trace_fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-trace-context-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert steps.json()["steps"][0]["trace_context"] == trace_fixture[
+            "trace_context"
+        ]
+        assert (
+            "trace_context" not in steps.json()["steps"][1]
+        ) is trace_fixture["legacy_step_omits_trace_context"]
 
         checkpoints = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=workflow_headers

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "trace_context": {
+    "trace_id": "trace-seed",
+    "span_id": "span-step-0",
+    "parent_span_id": "span-parent",
+    "attempt": 2
+  },
+  "legacy_step_omits_trace_context": true
+}

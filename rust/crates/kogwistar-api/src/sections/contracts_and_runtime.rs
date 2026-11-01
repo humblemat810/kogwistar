@@ -1417,6 +1417,7 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
         .collect()
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#recorded_step_snapshots; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-trace-context-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#recorded_step_snapshots_matches_python_fixture; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
 fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
     let trace_events = events
         .iter()
@@ -2151,7 +2152,6 @@ fn validate_python_worker_submission_trace_binding(
     trace_events: &[Value],
     handoff: &RecordedWorkerHandoff,
 ) -> Result<(), &'static str> {
-    // PYTHON_PARITY_V1: rust=kogwistar-api/src/sections/contracts_and_runtime.rs#validate_python_worker_submission_trace_binding; python=kogwistar/runtime/rust_worker.py#_with_worker_execution_trace,_with_worker_submission_trace; rust_test=kogwistar-api/src/tests/part_05.rs#inline_runtime_iteration_uses_typed_hook_not_generic_effect_path; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_worker_journals_callback_before_send_and_replays_after_restart
     let expected_fields = [
         ("message_id", handoff.message_id.as_str()),
         ("run_id", handoff.run_id.as_str()),
