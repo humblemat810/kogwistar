@@ -2742,6 +2742,15 @@ impl PostgresRunApplicationService {
         }
         owner_principal["ns"] = json!([scope.namespace]);
         owner_principal["storage_ns"] = json!(scope.namespace);
+        if let Some(workspace) = scope.workspace_id.as_deref() {
+            owner_principal["workspace"] = json!(workspace);
+        }
+        if let Some(graph_space) = scope.graph_space.as_deref() {
+            owner_principal["graph_space"] = json!(graph_space);
+        }
+        if let Some(security_scope) = acl_principal.security_scope.as_deref() {
+            owner_principal["security_scope"] = json!(security_scope);
+        }
         let Some(owner_binding) = runtime_owner_binding_v1(&owner_principal, &self.capabilities)
         else {
             return effect_error(
@@ -3091,6 +3100,7 @@ impl PostgresRunApplicationService {
         initial_state.insert("user_text".to_owned(), json!(text));
         initial_state.insert("turn_node_id".to_owned(), json!(turn_id));
         initial_state.insert("user_id".to_owned(), json!(owner_id));
+        initial_state.insert("turn_index".to_owned(), json!(turn_index));
         initial_state.insert("max_retrieval_level".to_owned(), json!(4));
         let nested = ApiEffectRequest {
             contract_version: request.contract_version,

@@ -3776,6 +3776,10 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         .read_recorded_runtime_state(run_id, workflow_id, "conversation-create-contract")
         .unwrap()
         .expect("successful run has durable runtime state");
+    assert_eq!(
+        runtime.state["_rt_graph_scope"]["workspace"], "workspace-a",
+        "the native workflow must retain its admitted workspace scope"
+    );
     assert_eq!(runtime.state["done"], true);
     assert_eq!(runtime.state["answer"]["mode"], "debug_rag");
     assert_eq!(runtime.state["used_node_ids"], json!(["knowledge-node"]));
@@ -3827,6 +3831,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     );
 
     let mcp_ask = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -3882,6 +3887,80 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .expect("MCP ask run remains durable")
             .status,
         "succeeded"
+    );
+    let mcp_runtime = service
+        .store
+        .read_recorded_runtime_state(mcp_run_id, workflow_id, "conversation-create-contract")
+        .unwrap()
+        .expect("completed MCP run has durable runtime state");
+    assert_eq!(mcp_runtime.state["turn_index"], 2);
+
+    let run_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/workflow/runs/{run_id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_status.status(), StatusCode::OK);
+    let run_status_body: Value =
+        serde_json::from_slice(&to_bytes(run_status.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(run_status_body["run_id"], run_id);
+    assert_eq!(run_status_body["status"], "succeeded");
+    assert_eq!(
+        run_status_body["user_turn_node_id"],
+        send_response["user_turn_node_id"]
+    );
+
+    let transcript_snapshot = service
+        .chroma_graph_snapshot(&request(), "conversation")
+        .await
+        .unwrap();
+    assert!(
+        transcript_snapshot
+            .nodes()
+            .iter()
+            .any(|record| record.id == assistant_id),
+        "assistant turn should be visible in the authorized snapshot after durable completion"
+    );
+
+    let transcript_response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/conversations/conversation-create-contract/turns")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(transcript_response.status(), StatusCode::OK);
+    let transcript: Value = serde_json::from_slice(
+        &to_bytes(transcript_response.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let transcript_turns = transcript["turns"].as_array().unwrap();
+    assert_eq!(
+        transcript_turns
+            .iter()
+            .map(|turn| turn["role"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["user", "assistant", "user", "assistant"],
+        "turns={transcript_turns:#?}"
+    );
+    assert!(
+        transcript_turns.iter().all(|turn| {
+            turn.get("event_type").is_none() && turn.get("workflow_node_id").is_none()
+        }),
+        "workflow and event records must not leak into the user transcript"
     );
 
     let duplicate = service.execute(request()).await;
@@ -5250,8 +5329,8 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-    use tower::ServiceExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -5447,7 +5526,10 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
                 == Some(json!("conversation"))
         }),
         "expected ACL event for configured conversation graph role, got {:?}",
-        events.iter().map(|event| &event.payload_json).collect::<Vec<_>>()
+        events
+            .iter()
+            .map(|event| &event.payload_json)
+            .collect::<Vec<_>>()
     );
     let document = service
         .store
@@ -5503,7 +5585,11 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         .await;
     assert_eq!(hidden_reference.status, StatusCode::CONFLICT.as_u16());
     assert_eq!(
-        service.store.replay_raw_events("docs", 0, 100).unwrap().len(),
+        service
+            .store
+            .replay_raw_events("docs", 0, 100)
+            .unwrap()
+            .len(),
         committed_events,
         "cross-owner endpoint denial must not append graph or ACL events"
     );

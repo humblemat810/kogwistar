@@ -14,12 +14,17 @@ pub(crate) fn register(
 fn execute_start(
     request: &RuntimeNativeStepRequest,
 ) -> Result<NativeOperationOutput, kogwistar_runtime::RuntimeNativeExecutionError> {
+    let turn_index = request
+        .state
+        .get("turn_index")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
     execute_lifecycle_step(
         request,
         "start",
         Map::from_iter([
             ("started".to_owned(), Value::Bool(true)),
-            ("turn_index".to_owned(), Value::from(0)),
+            ("turn_index".to_owned(), Value::from(turn_index)),
         ]),
     )
 }
@@ -96,6 +101,18 @@ mod tests {
         assert_eq!(started["started"], true);
         assert_eq!(started["turn_index"], 0);
         assert_eq!(started["op_log"], json!(["prior", "start"]));
+
+        let mut admitted_turn = request("start");
+        admitted_turn
+            .state
+            .insert("turn_index".to_owned(), json!(8));
+        let started =
+            kogwistar_runtime::execute_native_step_with_registry(&admitted_turn, &registry)
+                .unwrap()
+                .result
+                .unwrap()["final_state"]
+                .clone();
+        assert_eq!(started["turn_index"], 8);
 
         let end = kogwistar_runtime::execute_native_step_with_registry(&request("end"), &registry)
             .unwrap();

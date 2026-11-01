@@ -17,7 +17,7 @@ pub enum ConversationContractError {
     InvalidTurnIndex,
     #[error("conversation turn_count must be non-negative")]
     InvalidTurnCount,
-    #[error("conversation turns must be strictly ordered by turn_index")]
+    #[error("conversation turns must be ordered by (turn_index, node_id)")]
     InvalidTurnOrder,
     #[error("unsupported conversation entity_type {entity_type:?}")]
     InvalidEntityType { entity_type: String },
@@ -115,13 +115,14 @@ impl ConversationTranscriptV1 {
                 field: "conversation_id",
             });
         }
-        let mut previous_index = None;
+        let mut previous_order = None;
         for turn in &self.turns {
             turn.validate()?;
-            if previous_index.is_some_and(|previous| turn.turn_index <= previous) {
+            let order = (turn.turn_index, turn.node_id.as_str());
+            if previous_order.is_some_and(|previous| order <= previous) {
                 return Err(ConversationContractError::InvalidTurnOrder);
             }
-            previous_index = Some(turn.turn_index);
+            previous_order = Some(order);
         }
         Ok(())
     }
@@ -258,6 +259,18 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error, ConversationContractError::InvalidTurnOrder);
+
+        let tied_turns = conversation_transcript_from_str(
+            r#"{"schema_version":1,"conversation_id":"c","turns":[{"schema_version":1,"node_id":"user-turn","turn_index":1,"role":"user","content":"question","entity_type":"conversation_turn"},{"schema_version":1,"node_id":"assistant-turn","turn_index":1,"role":"assistant","content":"answer","entity_type":"assistant_turn"}]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(tied_turns, ConversationContractError::InvalidTurnOrder);
+
+        let tied_turns = conversation_transcript_from_str(
+            r#"{"schema_version":1,"conversation_id":"c","turns":[{"schema_version":1,"node_id":"assistant-turn","turn_index":1,"role":"assistant","content":"answer","entity_type":"assistant_turn"},{"schema_version":1,"node_id":"user-turn","turn_index":1,"role":"user","content":"question","entity_type":"conversation_turn"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(tied_turns.turns.len(), 2);
     }
 
     #[test]

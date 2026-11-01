@@ -1943,8 +1943,14 @@ impl SqliteRunApplicationService {
         }
         owner_principal["ns"] = json!([scope.namespace]);
         owner_principal["storage_ns"] = json!(scope.namespace);
+        if let Some(workspace_id) = &scope.workspace_id {
+            owner_principal["workspace"] = json!(workspace_id);
+        }
         if let Some(graph_space) = &scope.graph_space {
             owner_principal["graph_space"] = json!(graph_space);
+        }
+        if let Some(security_scope) = &acl_principal.security_scope {
+            owner_principal["security_scope"] = json!(security_scope);
         }
         let Some(owner_binding) = runtime_owner_binding_v1(&owner_principal, &self.capabilities)
         else {
@@ -2283,6 +2289,7 @@ impl SqliteRunApplicationService {
             ("conversation_id".to_owned(), json!(conversation_id)),
             ("user_text".to_owned(), json!(text)),
             ("turn_node_id".to_owned(), json!(turn_id)),
+            ("turn_index".to_owned(), json!(turn_index)),
             ("user_id".to_owned(), json!(owner_id)),
             ("max_retrieval_level".to_owned(), json!(4)),
         ]);

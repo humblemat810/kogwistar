@@ -196,11 +196,11 @@ fn execute_persist_response(
         .and_then(|value| value.get("prev_node_distance_from_last_summary"))
         .and_then(Value::as_i64)
         .unwrap_or_default();
-    let previous_tail = previous
-        .and_then(|value| value.get("tail_turn_index"))
+    let user_turn_index = state
+        .get("turn_index")
         .and_then(Value::as_i64)
-        .unwrap_or_default();
-    let node_turn_index = checked_add(previous_tail, 1, "prev_turn_meta_summary")?;
+        .ok_or_else(|| invalid("turn_index", "expected the admitted user turn index"))?;
+    let node_turn_index = checked_add(user_turn_index, 1, "turn_index")?;
     let final_tail = checked_add(node_turn_index, 1, "prev_turn_meta_summary")?;
     let final_chars = checked_add(
         previous_chars,
@@ -434,6 +434,7 @@ mod tests {
         json!({
             "conversation_id": "conv-1",
             "run_node_id": "run-1",
+            "turn_index": 4,
             "_rt_graph_scope": {"storage_namespace": "ns-a", "workspace": "ws-a", "graph_space": "conversation"},
             "answer": {"text": "Hello 🌍", "claim_citations": [{"claim": "c1"}]},
             "used_node_ids": ["knowledge-1"],
@@ -557,5 +558,16 @@ mod tests {
         let mut no_scope = state();
         no_scope.as_object_mut().unwrap().remove("_rt_graph_scope");
         assert!(execute_native_step_with_registry(&request(no_scope), &registry).is_err());
+    }
+
+    #[test]
+    fn response_turn_index_follows_the_admitted_user_turn_not_stale_summary_tail() {
+        let registry = registry().unwrap();
+        let mut state = state();
+        state["turn_index"] = json!(8);
+        state["prev_turn_meta_summary"]["tail_turn_index"] = json!(2);
+        let effect = execute_native_step_with_registry(&request(state), &registry).unwrap();
+        let batch = effect.graph_mutation_batch_v2.unwrap();
+        assert_eq!(batch.mutations[0].record.metadata["turn_index"], 9);
     }
 }
