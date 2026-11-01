@@ -770,7 +770,18 @@ def where_jsonb(
                 elif op == "$lte":
                     clauses.append(lhs <= rhs)
                 elif op == "$ne":
-                    clauses.append(lhs != rhs)
+                    field_text = _json_text(metadata_col, k)
+                    if rhs is None:
+                        clauses.append(
+                            sa.or_(
+                                sa.not_(metadata_col.has_key(k)),  # type: ignore[attr-defined]
+                                field_text.is_not(None),
+                            )
+                        )
+                    else:
+                        # JSONB comparisons are UNKNOWN for missing/null keys;
+                        # the shared filter contract treats those as not equal.
+                        clauses.append(sa.or_(lhs != rhs, field_text.is_(None)))
                 else:
                     raise NotImplementedError(
                         f"Unsupported where operator: {op} (key={k})"

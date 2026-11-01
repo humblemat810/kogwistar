@@ -451,6 +451,15 @@ projection/reopen test passed against disposable Chroma 1.5.9. This adds
 evidence to the existing DL-16BQ gate; it does not add a checklist item or
 change the denominator.
 
+Python-written pure graph records are covered across the PostgreSQL/Rust MCP
+seam: `_class_name` preserves allowlisted `PureChromaNode`/`PureChromaEdge`
+hydration, PostgreSQL `$ne` includes records with absent metadata keys (matching
+the Python filter contract), and pure-edge writes materialize endpoint rows for
+ordinary traversal. The live
+`test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
+passed with semantic seed and two-hop topology parity; Python graph-query tests
+(11 passed), Wisdom/JSONB tests (7 passed), and Ruff passed. DL-16BQ remains open.
+
 Graph-role parity uses Python's `GraphKnowledgeEngine` contract: each role is
 host-selected, graph roles remain independent of namespace and backend, and
 role-separated application engines still share the same graph interface. The

@@ -31,6 +31,13 @@ def _as_graph_payload(value: object) -> GraphPayload:
     return cast(GraphPayload, value) if isinstance(value, dict) else {}
 
 
+def _entity_id(item: object) -> str:
+    """Read identity from either provenance-heavy or pure graph entities."""
+    safe_get_id = getattr(item, "safe_get_id", None)
+    value = safe_get_id() if callable(safe_get_id) else getattr(item, "id", None)
+    return str(value) if value is not None else ""
+
+
 class GraphQuery:
     """
     Thin traversal/search layer on top of GraphKnowledgeEngine's Chroma collections.
@@ -218,7 +225,7 @@ class GraphQuery:
                 edge = Edge.model_validate_json(str(document))
             except Exception:
                 continue
-            current_edge_id = str(edge.safe_get_id())
+            current_edge_id = _entity_id(edge)
             for role, ids, endpoint_type in (
                 ("src", edge.source_ids or [], "node"),
                 ("tgt", edge.target_ids or [], "node"),
@@ -278,8 +285,8 @@ class GraphQuery:
                 for endpoint_id in ids:
                     endpoints.append(
                         {
-                            "id": f"{edge.safe_get_id()}::{role}::{endpoint_type}::{endpoint_id}",
-                            "edge_id": str(edge.safe_get_id()),
+                            "id": f"{_entity_id(edge)}::{role}::{endpoint_type}::{endpoint_id}",
+                            "edge_id": _entity_id(edge),
                             "endpoint_id": str(endpoint_id),
                             "endpoint_type": endpoint_type,
                             "role": role,
@@ -350,7 +357,7 @@ class GraphQuery:
             return []
         visible_edge_ids = set(known_visible_edge_ids or ())
         visible_edge_ids.update(
-            str(edge.safe_get_id())
+            _entity_id(edge)
             for edge in self._read_edges(
                 ids=[edge_id for edge_id in edge_ids if edge_id not in visible_edge_ids],
                 limit=len(edge_ids),
@@ -706,7 +713,7 @@ class GraphQuery:
         nodes = self._read_nodes(where=(where or None))
         out: list[str] = []
         for n in nodes:
-            nid = n.safe_get_id()
+            nid = _entity_id(n)
             if not nid:
                 continue
             if type and (n.type != type):
@@ -767,7 +774,7 @@ class GraphQuery:
         edges = self._read_edges(where=where)
         out: list[str] = []
         for e in edges:
-            eid = e.safe_get_id()
+            eid = _entity_id(e)
             if not eid:
                 continue
 
@@ -815,7 +822,11 @@ class GraphQuery:
             )
         )
         if isinstance(hits, list):
-            seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
+            seed_ids = (
+                [entity_id for node in hits[0] if (entity_id := _entity_id(node))]
+                if hits
+                else []
+            )
         else:
             hit_payload = _as_graph_payload(hits)
             seed_ids = [nid for nid in (hit_payload.get("ids") or [[]])[0]]
@@ -862,7 +873,11 @@ class GraphQuery:
             )
         )
         if isinstance(hits, list):
-            seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
+            seed_ids = (
+                [entity_id for node in hits[0] if (entity_id := _entity_id(node))]
+                if hits
+                else []
+            )
             seed_docs = [node.model_dump_json() for node in hits[0]] if hits else []
         else:
             hit_payload = _as_graph_payload(hits)

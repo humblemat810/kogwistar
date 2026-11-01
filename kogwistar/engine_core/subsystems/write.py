@@ -1142,7 +1142,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 return True
         return False
 
-    def _allow_missing_doc_id(self, edge: Edge) -> bool:
+    def _allow_missing_doc_id(self, edge: Edge | PureChromaEdge) -> bool:
+        if isinstance(edge, PureChromaEdge):
+            return True
         for hook in self._e.allow_missing_doc_id_on_endpoint_rows_hooks:
             if bool(hook(edge)):
                 return True
@@ -1771,6 +1773,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise ValueError("pure node id must not be None")
         doc, meta = node_doc_and_meta_util(node)
         meta = self._attach_graph_namespace(meta)
+        meta["_class_name"] = type(node).__name__
         if meta.get("doc_id"):
             meta.pop("doc_id")
         model_envelope = _validate_graph_model_contract(
@@ -1819,7 +1822,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     @implementation_selection_bound
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
-        """Low-level edge add without endpoint fanout or duplicate checks."""
+        """Persist a pure edge and its rebuildable endpoint projection."""
         if edge.id is None:
             raise ValueError("pure edge id must not be None")
         s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
@@ -1836,6 +1839,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         metadata = self.enrich_edge_meta(cast(Edge, edge))
+        metadata["_class_name"] = type(edge).__name__
         model_envelope = _validate_graph_model_contract(
             edge,
             exclude=["embedding"],
@@ -1877,6 +1881,20 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     documents=[str(doc)],
                     embeddings=[embedding],
                     metadatas=[metadata],
+                )
+            )
+        endpoint_rows = self.fanout_endpoints_rows(edge, None)
+        if endpoint_rows:
+            endpoint_documents = [json.dumps(row) for row in endpoint_rows]
+            run_awaitable_blocking(
+                self._e.backend.edge_endpoints_add(
+                    ids=[str(row["id"]) for row in endpoint_rows],
+                    documents=endpoint_documents,
+                    metadatas=endpoint_rows,
+                    embeddings=[
+                        self._e.embed.iterative_defensive_emb(document)
+                        for document in endpoint_documents
+                    ],
                 )
             )
 
@@ -2084,7 +2102,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return ids
 
     def fanout_endpoints_rows(
-        self, edge: Edge, doc_id: str | None
+        self, edge: Edge | PureChromaEdge, doc_id: str | None
     ) -> list[dict[str, object]]:
         """Build derived edge_endpoints rows from the current edge payload.
 

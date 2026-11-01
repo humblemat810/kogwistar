@@ -697,7 +697,12 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         monkeypatch.setenv(name, "python")
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
-    from kogwistar.engine_core.models import Edge, Node
+    from kogwistar.engine_core.models import (
+        Edge,
+        Node,
+        PureChromaEdge,
+        PureChromaNode,
+    )
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
     from kogwistar.graph_query import GraphQuery
     from kogwistar.server.bootstrap import load_server_storage_settings
@@ -896,6 +901,32 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         doc_id=wisdom_doc_id,
         metadata={"visibility": "public"},
     )
+    pure_seed = PureChromaNode(
+        id=f"{id_prefix}-python-pure-wisdom-seed",
+        label="Semantic parity pure Wisdom seed",
+        type="entity",
+        summary="A public pure graph model persisted by Python.",
+        metadata={"visibility": "public"},
+    )
+    pure_related = PureChromaNode(
+        id=f"{id_prefix}-python-pure-wisdom-related",
+        label="Semantic parity pure Wisdom related node",
+        type="entity",
+        summary="A second public pure graph model persisted by Python.",
+        metadata={"visibility": "public"},
+    )
+    pure_edge = PureChromaEdge(
+        id=f"{id_prefix}-python-pure-wisdom-edge",
+        label="Pure Wisdom relation",
+        type="relationship",
+        summary="Connects pure Wisdom graph entities.",
+        relation="related_to",
+        source_ids=[pure_seed.id],
+        target_ids=[pure_related.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        metadata={"visibility": "public"},
+    )
     wisdom_writer = {
         "agent_id": "wisdom-owner",
         "sub": "wisdom-owner",
@@ -908,6 +939,9 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         wisdom_engine.write.add_node(wisdom_seed)
         wisdom_engine.write.add_node(wisdom_related)
         wisdom_engine.write.add_edge(wisdom_edge)
+        wisdom_engine.write.add_pure_node(pure_seed)
+        wisdom_engine.write.add_pure_node(pure_related)
+        wisdom_engine.write.add_pure_edge(pure_edge)
     finally:
         claims_ctx.reset(wisdom_token)
 
@@ -1075,24 +1109,46 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         wisdom_query = "deterministic semantic parity query"
         wisdom_read_token = claims_ctx.set(wisdom_reader_claims)
         try:
+            python_pure_seed_read = wisdom_engine.read.get_nodes(ids=[pure_seed.id])
+            python_pure_edge_read = wisdom_engine.read.get_edges(ids=[pure_edge.id])
+            assert [item.id for item in python_pure_seed_read] == [pure_seed.id], (
+                "Python ACL graph did not expose its public pure Wisdom node"
+            )
+            assert [item.id for item in python_pure_edge_read] == [pure_edge.id], (
+                "Python ACL graph did not expose its public pure Wisdom edge"
+            )
             python_wisdom = GraphQuery(wisdom_engine).semantic_seed_then_expand_text(
-                wisdom_query, top_k=10, hops=1
+                wisdom_query, top_k=10, hops=2
             )
         finally:
             claims_ctx.reset(wisdom_read_token)
         rust_wisdom = rust_mcp_tool(
             "wisdom.semantic_seed_then_expand",
-            {"text": wisdom_query, "top_k": 10, "hops": 1},
+            {"text": wisdom_query, "top_k": 10, "hops": 2},
             wisdom_reader_claims,
         )
         python_wisdom_ids, python_wisdom_layers = semantic_ids(python_wisdom)
         rust_wisdom_ids, rust_wisdom_layers = semantic_ids(rust_wisdom)
-        assert rust_wisdom_ids == python_wisdom_ids
+        assert rust_wisdom_ids == python_wisdom_ids, (
+            f"Rust/Python Wisdom seed order differs: rust={rust_wisdom_ids}, "
+            f"python={python_wisdom_ids}"
+        )
         assert rust_wisdom_layers == python_wisdom_layers
         assert wisdom_seed.id in rust_wisdom_ids
         assert wisdom_edge.id in set().union(
             *(layer["edges"] for layer in rust_wisdom_layers)
         )
+        assert pure_seed.id in rust_wisdom_ids
+        assert pure_related.id in set().union(
+            *(layer["nodes"] for layer in rust_wisdom_layers)
+        )
+        assert pure_edge.id in set().union(
+            *(layer["edges"] for layer in rust_wisdom_layers)
+        )
+        python_pure_seed = wisdom_engine.read.get_nodes(ids=[pure_seed.id])[0]
+        python_pure_edge = wisdom_engine.read.get_edges(ids=[pure_edge.id])[0]
+        assert isinstance(python_pure_seed, PureChromaNode)
+        assert isinstance(python_pure_edge, PureChromaEdge)
 
         owner_python_claims = {
             **owner_claims,

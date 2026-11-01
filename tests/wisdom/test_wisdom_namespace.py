@@ -80,7 +80,9 @@ def test_puregraph_persistence_scopes_node_and_edge_projections(tmp_path):
             ids=[edge.id], include=["metadatas"]
         )["metadatas"][0]
         assert node_metadata["namespace"] == "wisdom"
+        assert node_metadata["_class_name"] == "PureChromaNode"
         assert edge_metadata["namespace"] == "wisdom"
+        assert edge_metadata["_class_name"] == "PureChromaEdge"
 
 
 def test_acl_enabled_puregraph_persistence_records_authoritative_acl(tmp_path):
@@ -134,29 +136,19 @@ def test_acl_enabled_puregraph_persistence_records_authoritative_acl(tmp_path):
 
         owner_token = claims_ctx.set({"agent_id": "wisdom-owner", "ns": "wisdom"})
         try:
-            assert [
-                item.id
-                for item in eng.read.get_nodes(
-                    ids=[node.id], node_type=PureChromaNode
-                )
-            ] == [node.id]
-            assert [
-                item.id
-                for item in eng.read.get_edges(
-                    ids=[edge.id], edge_type=PureChromaEdge
-                )
-            ] == [edge.id]
+            nodes = eng.read.get_nodes(ids=[node.id])
+            edges = eng.read.get_edges(ids=[edge.id])
+            assert [item.id for item in nodes] == [node.id]
+            assert [item.id for item in edges] == [edge.id]
+            assert isinstance(nodes[0], PureChromaNode)
+            assert isinstance(edges[0], PureChromaEdge)
         finally:
             claims_ctx.reset(owner_token)
 
         other_token = claims_ctx.set({"agent_id": "other-user", "ns": "wisdom"})
         try:
-            assert eng.read.get_nodes(
-                ids=[node.id], node_type=PureChromaNode
-            ) == []
-            assert eng.read.get_edges(
-                ids=[edge.id], edge_type=PureChromaEdge
-            ) == []
+            assert eng.read.get_nodes(ids=[node.id]) == []
+            assert eng.read.get_edges(ids=[edge.id]) == []
         finally:
             claims_ctx.reset(other_token)
 
