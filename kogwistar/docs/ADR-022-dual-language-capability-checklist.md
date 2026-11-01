@@ -281,7 +281,9 @@ intents in one SQLite transaction. Chroma remains an eventual projection;
 standalone SQLite does not advertise this route. The shared golden-fixture test
 `sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract` verifies
 the write, source-document persistence, queued index jobs, and rejection of an
-altered excerpt without partial graph events. The full Rust API library suite
+altered excerpt without partial graph events. It also rejects read-only role,
+missing `write_graph`, and missing authenticated owner before any canonical
+event is written. The full Rust API library suite
 passed (**227 passed, 23 ignored**). The opt-in live test
 `sqlite_chroma_public_graph_upsert_survives_restart_and_projects_to_chroma`
 also passed against disposable Chroma 1.5.9: it starts with the generic public

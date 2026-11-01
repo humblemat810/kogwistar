@@ -5127,6 +5127,38 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         "sub": "alice", "user_id": "alice", "role": "rw",
         "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
     });
+    for denied_principal in [
+        json!({
+            "sub": "alice", "user_id": "alice", "role": "ro",
+            "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+        }),
+        json!({
+            "sub": "alice", "user_id": "alice", "role": "rw",
+            "ns": ["docs"], "storage_ns": "docs", "capabilities": ["read_graph"]
+        }),
+        json!({
+            "role": "rw", "ns": ["docs"], "storage_ns": "docs",
+            "capabilities": ["write_graph"]
+        }),
+    ] {
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+                body: body.clone(),
+                principal: denied_principal,
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert!(
+            service
+                .store
+                .replay_raw_events("docs", 0, 100)
+                .unwrap()
+                .is_empty()
+        );
+    }
     let response = service
         .execute(ApiEffectRequest {
             contract_version: 1,
