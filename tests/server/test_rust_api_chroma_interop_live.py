@@ -755,6 +755,12 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
             )
             assert python_edge["ids"] == [edge_id]
             assert python_edge["embeddings"][0] == pytest.approx([0.6, 0.8])
+            python_nodes = verifier.read.get_nodes(ids=[source_id, target_id])
+            python_edges = verifier.read.get_edges(ids=[edge_id])
+            assert {node.id for node in python_nodes} == {source_id, target_id}
+            assert {edge.id for edge in python_edges} == {edge_id}
+            assert python_edges[0].source_ids == [source_id]
+            assert python_edges[0].target_ids == [target_id]
         finally:
             verifier.close()
     finally:

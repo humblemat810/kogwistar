@@ -508,6 +508,13 @@ Python backend adapter and graph-model reconstruction path. PostgreSQL server
 startup now loads owner-auth configuration for externally claimed native
 execution, and native graph effects are revalidated against the run owner's
 current write authority before commit.
+The live Chroma projection test
+`tests/server/test_rust_api_chroma_interop_live.py::test_python_stage1_is_promoted_by_rust_native_worker`
+also reopens the Python graph engine after Rust-native promotion and reads the
+projected nodes and edge through `GraphKnowledgeEngine.read` (**1 passed** with
+real local Chroma and the rebuilt Rust server). This verifies projection
+consumption across languages, not Rust ownership of those canonical graph
+events.
 The Rust API library suite passed (**235 passed, 23 ignored**), and the explicit
 live `postgres_inline_native_graph_effect_revalidates_current_owner` test passed
 against disposable pgvector (**1 passed**), including revoked permission,
