@@ -822,6 +822,24 @@ def test_worker_callback_cannot_open_transaction_authority() -> None:
         assert active_transaction_authority() == "python"
 
 
+@pytest.mark.asyncio
+async def test_callback_guard_propagates_through_asyncio_to_thread(
+    tmp_path: Path,
+) -> None:
+    store = EngineSQLite(tmp_path / "callback-to-thread.sqlite")
+    store.ensure_initialized()
+    store.set_user_seq("callback-user", 7)
+
+    with callback_execution_scope():
+        with pytest.raises(
+            RuntimeError,
+            match="transaction authority cannot be opened from a worker callback",
+        ):
+            await asyncio.to_thread(store.set_user_seq, "callback-user", 8)
+
+    assert store.current_user_seq("callback-user") == 7
+
+
 def test_callback_execution_marker_is_cleared_after_callback_failure() -> None:
     with pytest.raises(ValueError, match="callback failure"):
         with callback_execution_scope():

@@ -162,6 +162,10 @@ def callback_execution_scope() -> Iterator[None]:
     claim/result transactions.  Keeping this check at the framework context
     boundary prevents a callback from accidentally re-entering a live Python
     or Rust transaction and creating a second, untracked authority path.
+
+    This is a cooperative, context-local guard, not a sandbox for arbitrary
+    callback code. Context-propagating hops such as ``asyncio.to_thread`` keep
+    the guard; raw threads and external database handles are outside its scope.
     """
     active = _transaction_authority.get()
     if active is not None:
