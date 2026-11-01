@@ -667,6 +667,7 @@ def _seed_step(
     step_seq: int,
     op: str,
     state_update: list,
+    trace_context: dict | None = None,
 ):
     node = WorkflowStepExecNode(
         id=f"wf_step|{run_id}|{step_seq}",
@@ -699,6 +700,15 @@ def _seed_step(
         canonical_entity_id=None,
         embedding=None,
     )
+    if trace_context is not None:
+        node.metadata.update(
+            {
+                "trace_id": trace_context["trace_id"],
+                "span_id": trace_context["span_id"],
+                "parent_span_id": trace_context["parent_span_id"],
+                "trace_attempt": trace_context["attempt"],
+            }
+        )
     conversation_engine.write.add_node(node)
 
 
@@ -1109,6 +1119,12 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             step_seq=0,
             op="prepare",
             state_update=[["u", {"counter": 1}]],
+            trace_context={
+                "trace_id": "trace-seed",
+                "span_id": "span-step-0",
+                "parent_span_id": "span-parent",
+                "attempt": 2,
+            },
         )
         _seed_step(
             conversation_engine,
@@ -1122,6 +1138,13 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         steps = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
         steps.raise_for_status()
         assert [step["step_seq"] for step in steps.json()["steps"]] == [0, 1]
+        assert steps.json()["steps"][0]["trace_context"] == {
+            "trace_id": "trace-seed",
+            "span_id": "span-step-0",
+            "parent_span_id": "span-parent",
+            "attempt": 2,
+        }
+        assert "trace_context" not in steps.json()["steps"][1]
 
         checkpoints = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=workflow_headers

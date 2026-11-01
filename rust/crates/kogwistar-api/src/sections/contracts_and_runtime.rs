@@ -1383,6 +1383,7 @@ struct RecordedInspectionSnapshot {
     result: Value,
     errors: Vec<Value>,
     server_status: String,
+    trace_context: Option<Value>,
 }
 
 fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
@@ -1410,17 +1411,47 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
                     .as_str()
                     .unwrap_or_default()
                     .to_owned(),
+                trace_context: None,
             })
         })
         .collect()
 }
 
 fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
+    let trace_events = events
+        .iter()
+        .filter(|event| event.event_type == "workflow.trace.v1")
+        .filter_map(|event| {
+            let payload: Value = serde_json::from_str(&event.payload_json).ok()?;
+            let trace = payload.get("trace")?;
+            let trace_event = trace.get("event")?.as_str()?;
+            if !matches!(trace_event, "runtime.native.step.completed" | "step_attempt_completed") {
+                return None;
+            }
+            let step_seq = trace.get("step_seq")?.as_i64()?;
+            let node_id = trace.get("node_id")?.as_str()?.to_owned();
+            let trace_context = json!({
+                "trace_id": trace.get("trace_id"),
+                "span_id": trace.get("span_id"),
+                "parent_span_id": trace.get("parent_span_id"),
+                "attempt": trace.get("attempt"),
+            });
+            Some((event.seq, step_seq, node_id, trace_context))
+        })
+        .collect::<Vec<_>>();
     let mut steps = Vec::<RecordedInspectionSnapshot>::new();
     for snapshot in recorded_inspection_snapshots(events) {
         if snapshot.step_seq < 0 {
             continue;
         }
+        let mut snapshot = snapshot;
+        snapshot.trace_context = trace_events
+            .iter()
+            .filter(|(_, step_seq, node_id, _)| {
+                *step_seq == snapshot.step_seq && node_id == &snapshot.workflow_node_id
+            })
+            .max_by_key(|(event_seq, _, _, _)| event_seq)
+            .map(|(_, _, _, trace_context)| trace_context.clone());
         if steps.last().is_some_and(|previous| {
             previous.step_seq == snapshot.step_seq
                 && previous.workflow_node_id == snapshot.workflow_node_id
@@ -1450,23 +1481,33 @@ fn runtime_inspection_effect(
             } else {
                 steps
             };
+            let steps = steps
+                .into_iter()
+                .map(|step| {
+                    let mut value = json!({
+                        "node_id": format!("wf_step|{}|{}", run_id, step.step_seq),
+                        "step_seq": step.step_seq,
+                        "workflow_id": step.workflow_id,
+                        "workflow_node_id": step.workflow_node_id,
+                        "op": step.workflow_node_id,
+                        "status": if step.errors.is_empty() { "success" } else { "failure" },
+                        "duration_ms": 0,
+                        "result": step.result,
+                        "event_seq": step.event_seq,
+                        "created_at_ms": step.created_at_ms,
+                        "transition_id": step.transition_id,
+                    });
+                    if let Some(trace_context) = step.trace_context {
+                        value["trace_context"] = trace_context;
+                    }
+                    value
+                })
+                .collect::<Vec<_>>();
             json_effect(
                 StatusCode::OK,
                 json!({
                     "run_id": run_id,
-                    "steps": steps.into_iter().map(|step| json!({
-                    "node_id": format!("wf_step|{}|{}", run_id, step.step_seq),
-                    "step_seq": step.step_seq,
-                    "workflow_id": step.workflow_id,
-                    "workflow_node_id": step.workflow_node_id,
-                    "op": step.workflow_node_id,
-                    "status": if step.errors.is_empty() { "success" } else { "failure" },
-                    "duration_ms": 0,
-                    "result": step.result,
-                    "event_seq": step.event_seq,
-                    "created_at_ms": step.created_at_ms,
-                    "transition_id": step.transition_id,
-                    })).collect::<Vec<_>>(),
+                    "steps": steps,
                 }),
             )
         }

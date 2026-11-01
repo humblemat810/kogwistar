@@ -160,6 +160,14 @@ class _RunInspectionService(_BaseComponent):
                     "result": None if not raw else json.loads(str(raw)),
                 }
             )
+            trace_context = {
+                "trace_id": metadata.get("trace_id"),
+                "span_id": metadata.get("span_id"),
+                "parent_span_id": metadata.get("parent_span_id"),
+                "attempt": metadata.get("trace_attempt"),
+            }
+            if any(value is not None for value in trace_context.values()):
+                out[-1]["trace_context"] = trace_context
         out.sort(key=lambda item: _json_int(item.get("step_seq")))
         return out
 

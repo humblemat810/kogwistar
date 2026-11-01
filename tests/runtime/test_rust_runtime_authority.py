@@ -3964,6 +3964,16 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             assert trace["implementation_authority"] == "rust-native"
             assert trace["seam_crossings"] == []
             assert trace["run_id"] == run_id
+        assert len(steps) == len(native_traces)
+        for step, trace in zip(steps, native_traces, strict=True):
+            assert step["step_seq"] == trace["step_seq"]
+            assert step["workflow_node_id"] == trace["node_id"]
+            assert step["trace_context"] == {
+                "trace_id": trace["trace_id"],
+                "span_id": trace["span_id"],
+                "parent_span_id": trace["parent_span_id"],
+                "attempt": trace["attempt"],
+            }
         trace_contract = workflow_contract["trace_contract"]
         assert [trace["attempt"] for trace in native_traces] == trace_contract[
             "expected_attempts"
