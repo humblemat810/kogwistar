@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,54 @@ def _python_symbol_exists(source: str, symbol: str) -> bool:
     return False
 
 
+def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> bool:
+    tree = ast.parse(source)
+    function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == symbol
+        ),
+        None,
+    )
+    if function is None:
+        return False
+    body_source = ast.get_source_segment(source, function) or ""
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+    ]
+    return (
+        fixture_name in body_source
+        and any(
+            isinstance(call.func, ast.Attribute) and call.func.attr == "read_text"
+            for call in calls
+        )
+        and any(
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "loads"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "json"
+            for call in calls
+        )
+    )
+
+
+def _rust_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> bool:
+    match = re.search(rf"\bfn {re.escape(symbol)}\s*\(", source)
+    if match is None:
+        return False
+    next_attribute = re.search(r"^\s*#\[", source[match.end() :], re.MULTILINE)
+    body_source = source[
+        match.start() : match.end() + next_attribute.start()
+        if next_attribute is not None
+        else len(source)
+    ]
+    return fixture_name in body_source and "include_str!" in body_source
+
+
 def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts() -> None:
     annotations: list[tuple[Path, dict[str, str]]] = []
     for rust_file in sorted(RUST_ROOT.rglob("*.rs")):
@@ -91,5 +140,45 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         fixture_path = ROOT / fields["fixture"]
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         assert fixture["schema_version"] == 1
-        assert fixture_path.name in rust_test_source
-        assert fixture_path.name in python_test_source
+        assert _rust_test_consumes_fixture(
+            rust_test_source, rust_test_symbol, fixture_path.name
+        ), rust_test_path
+        assert _python_test_consumes_fixture(
+            python_test_source, python_test_symbol, fixture_path.name
+        ), python_test_path
+
+
+def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
+    rust_body = textwrap.dedent("""
+    #[test]
+    fn parity_test() {
+        let data = include_str!(\"contracts/golden/shared.json\");
+        assert!(!data.is_empty());
+    }
+    """)
+    python_body = textwrap.dedent("""
+    def parity_test():
+        fixture = json.loads((ROOT / \"shared.json\").read_text())
+        assert fixture
+    """)
+    assert _rust_test_consumes_fixture(rust_body, "parity_test", "shared.json")
+    assert _python_test_consumes_fixture(python_body, "parity_test", "shared.json")
+
+    rust_comment_only = textwrap.dedent("""
+    #[test]
+    fn parity_test() {
+        // contracts/golden/shared.json
+        assert!(true);
+    }
+    """)
+    python_comment_only = textwrap.dedent("""
+    def parity_test():
+        # shared.json
+        assert True
+    """)
+    assert not _rust_test_consumes_fixture(
+        rust_comment_only, "parity_test", "shared.json"
+    )
+    assert not _python_test_consumes_fixture(
+        python_comment_only, "parity_test", "shared.json"
+    )
