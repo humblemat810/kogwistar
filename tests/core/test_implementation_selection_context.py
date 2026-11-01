@@ -943,6 +943,7 @@ def test_native_store_bridges_cannot_be_called_from_worker_callback(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from kogwistar import _rust_bridge
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 
     native_calls: list[str] = []
     monkeypatch.setattr(
@@ -953,6 +954,9 @@ def test_native_store_bridges_cannot_be_called_from_worker_callback(
     operations = (
         lambda: _rust_bridge.store_sqlite(
             path=tmp_path / "guarded.sqlite", operation={"kind": "add_node"}
+        ),
+        lambda: RustEngineSQLite(tmp_path, "guarded-facade.sqlite").set_user_seq(
+            "callback-user", 1
         ),
         lambda: _rust_bridge.store_postgres(
             dsn="postgresql://example/db",
@@ -966,6 +970,11 @@ def test_native_store_bridges_cannot_be_called_from_worker_callback(
         with callback_execution_scope():
             with pytest.raises(RuntimeError, match=expected):
                 operation()
+
+    with callback_execution_scope():
+        with pytest.raises(RuntimeError, match=expected):
+            with RustEngineSQLite(tmp_path, "guarded-transaction.sqlite").transaction():
+                pytest.fail("Rust SQLite facade must reject callback transaction entry")
 
     assert native_calls == []
 
