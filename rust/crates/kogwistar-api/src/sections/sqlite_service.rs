@@ -2934,11 +2934,18 @@ impl SqliteRunApplicationService {
                 .ok()
                 .flatten(),
         );
-        if is_answer_workflow_id(workflow_id) {
+        if is_answer_workflow_id(workflow_id)
+            && (self.chroma_graph.is_none()
+                || !answer_workflow_admission_ready(
+                    workflow_id,
+                    graph_plan.as_ref(),
+                    &self.native_operations,
+                ))
+        {
             return effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_ANSWER_WORKFLOW_NOT_READY",
-                "SQLite runtime has no conversation graph authority for answer workflows",
+                "SQLite answer workflows require configured graph authority and a complete plan with compatible executors",
             );
         }
         if graph_plan

@@ -223,6 +223,18 @@ The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` 
 
 ## Completion rule
 
+DL-16BQ evidence update: configured SQLite+Chroma now admits an authoritative
+`debug.rag.v1` answer-workflow plan only when the existing workflow admission
+validator confirms the complete compatible plan and executor set. The focused
+Rust test verifies admission and claim of the initial `start` step by the
+Python worker. Standalone SQLite remains graph-authority-disabled; missing or
+incompatible plans and unsupported executors remain rejected. Verification:
+`sqlite_chroma_admits_valid_python_answer_workflow_plan` and the focused
+`answer_workflow` Rust API tests (**3 passed, 1 ignored**). This is admission
+and initial step delivery evidence only; it does not establish a complete
+answer turn, Rust-native SQLite+Chroma answer execution, or cross-backend
+parity. DL-16BQ remains IN PROGRESS.
+
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix
 gates pass. A native

@@ -3641,6 +3641,197 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    #[tokio::test]
+    async fn sqlite_chroma_admits_valid_python_answer_workflow_plan() {
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-answer-chroma-{nonce}.sqlite3"));
+        let workflow_id = "debug.rag.v1";
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+        ))
+        .unwrap();
+        let workflow = &contract["workflows"][workflow_id];
+        let python_version = workflow["python_op_version"].as_str().unwrap();
+        let nodes = workflow["required_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|operation| {
+                let operation = operation.as_str().unwrap();
+                json!({
+                    "id": format!("node-{operation}"),
+                    "label": operation,
+                    "metadata": {
+                        "entity_type": "workflow_node",
+                        "workflow_id": workflow_id,
+                        "wf_op": operation,
+                        "wf_version": python_version,
+                        "wf_start": operation == "start",
+                        "wf_executor_target": "python-worker"
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let edges = workflow["required_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, route)| {
+                json!({
+                    "id": format!("edge-{index}"),
+                    "source_ids": [format!("node-{}", route["from"].as_str().unwrap())],
+                    "target_ids": [format!("node-{}", route["to"].as_str().unwrap())],
+                    "metadata": {
+                        "entity_type": "workflow_edge",
+                        "workflow_id": workflow_id,
+                        "wf_predicate": route["predicate"],
+                        "wf_priority": route["priority"],
+                        "wf_is_default": route["default"],
+                        "wf_multiplicity": route["multiplicity"]
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "rust_event_only".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .put_workflow_design_snapshot(
+                workflow_id,
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({"nodes": nodes, "edges": edges}))
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let chroma_setup = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 2048];
+                let (header_end, content_length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0, "Chroma connection closed before request body");
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(header_end) = bytes
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= header_end + 4 + content_length {
+                            break (header_end, content_length);
+                        }
+                    }
+                };
+                let request: Value = serde_json::from_slice(
+                    &bytes[header_end + 4..header_end + 4 + content_length],
+                )
+                .unwrap();
+                let response = json!({
+                    "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                    "metadata": {"hnsw:space": "cosine"}
+                })
+                .to_string();
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(), response
+                );
+                stream.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+        let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: collection.to_owned(),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            chroma_config("answer-nodes"),
+            chroma_config("answer-edges"),
+        )
+        .await
+        .unwrap();
+        chroma_setup.await.unwrap();
+
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        let response = service.submit_run(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "workflow_id": workflow_id,
+                "conversation_id": "answer-conversation",
+                "run_id": "answer-run-python-worker"
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub": "alice", "user_id": "alice", "role": "rw",
+                "ns": ["conversation", "workflow"],
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph", "write_graph"]
+            }),
+        });
+        assert_eq!(response.status, StatusCode::ACCEPTED.as_u16());
+        let claimed = service
+            .claim_runtime_work_items(
+                RuntimeClaimRequest {
+                    claimed_by: "python-worker".to_owned(),
+                    limit: 1,
+                    lease_seconds: 60,
+                    run_id: Some("answer-run-python-worker".to_owned()),
+                    recipient_ids: vec!["python-worker".to_owned()],
+                },
+                vec!["python-worker".to_owned()],
+            )
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].step_id.as_deref(), Some("node-start"));
+        assert_eq!(claimed[0].payload["op"], "start");
+        assert_eq!(claimed[0].payload["executor_target"], "python-worker");
+
+        drop(service);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn snapshot_syscall_compatibility_drops_rust_only_fields() {
         let expected = serde_json::from_str::<Value>(include_str!(
