@@ -18,7 +18,12 @@ impl InMemoryGraphApplicationService {
     fn supports_graph_tool(name: &str) -> bool {
         matches!(
             name,
-            "kg_find_edges" | "kg_k_hop" | "kg_neighbors" | "kg_shortest_path"
+            "kg_find_edges"
+                | "kg_k_hop"
+                | "kg_neighbors"
+                | "kg_shortest_path"
+                | "kg_viz_cytoscape_json"
+                | "kg_viz_d3_json"
         )
     }
 
@@ -92,6 +97,9 @@ impl InMemoryGraphApplicationService {
     }
 
     async fn graph_read_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
+            return self.graph_vector_query_effect(request).await;
+        }
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
             Err(response) => return response,
@@ -194,9 +202,161 @@ impl InMemoryGraphApplicationService {
                     .collect::<Vec<_>>();
                 json!({"layers": layers})
             }
+            INTERNAL_GRAPH_VIZ_D3_ROUTE | INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE => {
+                let input: GraphVisualizationRequest = match serde_json::from_slice(&request.body) {
+                    Ok(input) => input,
+                    Err(error) => return invalid_graph_request(error.to_string()),
+                };
+                if request.path_and_query == INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE {
+                    graph_viz_cytoscape_from_records(
+                        &nodes,
+                        &edges,
+                        input.doc_id.as_deref(),
+                        &input.mode,
+                    )
+                } else {
+                    graph_viz_d3_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
+                }
+            }
             _ => return unavailable_effect(request.clone()),
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
+    }
+
+    async fn graph_vector_query_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let scope = match self.authorized_graph_scope(request) {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let input = match parse_graph_vector_query_request(&request.body) {
+            Ok(input) => input,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let table = if input.entity_kind == "node" {
+            "gke_nodes"
+        } else {
+            "gke_edges"
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (nodes, edges) = match self.graph_snapshot(scope.clone()).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, &input.truth_graph, &acl_principal);
+        let visible_ids = if input.entity_kind == "node" {
+            visible_nodes
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<BTreeSet<_>>()
+        } else {
+            visible_edges
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<BTreeSet<_>>()
+        };
+        let mut ids = Vec::with_capacity(input.query_embeddings.len());
+        let mut documents = Vec::with_capacity(input.query_embeddings.len());
+        let mut metadatas = Vec::with_capacity(input.query_embeddings.len());
+        let mut embeddings = Vec::with_capacity(input.query_embeddings.len());
+        let mut distances = Vec::with_capacity(input.query_embeddings.len());
+        for embedding in &input.query_embeddings {
+            let matches = match self
+                .store
+                .graph_projection_vector_query(GraphProjectionVectorQuery {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    query: VectorQuery {
+                        embedding: embedding.clone(),
+                        limit: 10_000,
+                        metadata: input.where_filter.clone(),
+                        metric: input.metric,
+                    },
+                    embedding_dim: embedding.len(),
+                })
+                .await
+            {
+                Ok(matches) => matches,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_VECTOR_QUERY_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            let matches = matches
+                .into_iter()
+                .filter(|matched| visible_ids.contains(matched.record.id.as_str()))
+                .take(input.n_results)
+                .collect::<Vec<_>>();
+            ids.push(
+                matches
+                    .iter()
+                    .map(|matched| json!(matched.record.id))
+                    .collect::<Vec<_>>(),
+            );
+            if input.include.iter().any(|field| field == "documents") {
+                documents.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.record.document))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if input.include.iter().any(|field| field == "metadatas") {
+                metadatas.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.record.metadata))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if input.include.iter().any(|field| field == "embeddings") {
+                embeddings.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.record.embedding))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            if input.include.iter().any(|field| field == "distances") {
+                distances.push(
+                    matches
+                        .iter()
+                        .map(|matched| json!(matched.distance))
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+        let mut response = serde_json::Map::new();
+        response.insert("ids".to_owned(), json!(ids));
+        if input.include.iter().any(|field| field == "documents") {
+            response.insert("documents".to_owned(), json!(documents));
+        }
+        if input.include.iter().any(|field| field == "metadatas") {
+            response.insert("metadatas".to_owned(), json!(metadatas));
+        }
+        if input.include.iter().any(|field| field == "embeddings") {
+            response.insert("embeddings".to_owned(), json!(embeddings));
+        }
+        if input.include.iter().any(|field| field == "distances") {
+            response.insert("distances".to_owned(), json!(distances));
+        }
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(Value::Object(response)),
+        )
     }
 
     async fn graph_mutation_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
@@ -330,9 +490,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 path.split('?').next(),
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
                     | Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
                     | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
+                    | Some(INTERNAL_GRAPH_VIZ_D3_ROUTE)
+                    | Some(INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE)
             )
     }
 
@@ -349,9 +512,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
             } else if matches!(
                 request.path_and_query.as_str(),
                 INTERNAL_GRAPH_NEIGHBORS_ROUTE
+                    | INTERNAL_GRAPH_VECTOR_QUERY_ROUTE
                     | INTERNAL_GRAPH_FIND_EDGES_ROUTE
                     | INTERNAL_GRAPH_SHORTEST_PATH_ROUTE
                     | INTERNAL_GRAPH_K_HOP_ROUTE
+                    | INTERNAL_GRAPH_VIZ_D3_ROUTE
+                    | INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE
             ) {
                 self.graph_read_effect(&request).await
             } else {
