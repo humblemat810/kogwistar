@@ -923,6 +923,36 @@ def test_raw_sqlite_connection_cannot_write_inside_worker_callback(
     assert store.current_user_seq("callback-user") == 8
 
 
+def test_in_memory_meta_connection_cannot_mutate_from_worker_callback() -> None:
+    store = InMemoryMetaStore()
+    store.enqueue_index_job(
+        job_id="callback-job",
+        namespace="ns",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_docs",
+        op="UPSERT",
+    )
+    claimed = store.claim_index_jobs(limit=1, namespace="ns")
+    assert len(claimed) == 1
+    lease_until = claimed[0].lease_until
+    assert lease_until is not None
+
+    with callback_execution_scope():
+        with store.connect() as connection:
+            with pytest.raises(
+                RuntimeError,
+                match="transaction authority cannot be opened from a worker callback",
+            ):
+                connection.execute(
+                    "UPDATE INDEX_JOBS SET LEASE_UNTIL = 0 WHERE JOB_ID = ?",
+                    ("callback-job",),
+                )
+
+    row = store.list_index_jobs(namespace="ns", limit=1)[0]
+    assert row.lease_until == lease_until
+
+
 def test_backend_collection_mutations_cannot_run_from_worker_callback() -> None:
     class PostgresBackendWithoutIO:
         _is_async_engine = False
