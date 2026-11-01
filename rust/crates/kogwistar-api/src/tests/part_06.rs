@@ -5975,6 +5975,26 @@
         assert_eq!(resource_snapshot["result"]["tool_name"], "resource_snapshot");
         assert_eq!(resource_snapshot["result"]["snapshot"]["services"]["total_services"], 0);
 
+        let syscall_audit = service
+            .execute(read_request(
+                "/api/syscall/v1/audit?limit=10",
+                json!({"role":"ro","ns":["workflow"],"capabilities":["project_view"]}),
+            ))
+            .await;
+        assert_eq!(syscall_audit.status, StatusCode::OK.as_u16());
+        let syscall_audit: Value = serde_json::from_slice(&syscall_audit.body).unwrap();
+        let invoke_audit = syscall_audit["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["op"] == "invoke_tool")
+            .collect::<Vec<_>>();
+        assert_eq!(invoke_audit.len(), 5);
+        assert_eq!(
+            invoke_audit.iter().filter(|event| event["status"] == "error").count(),
+            1
+        );
+
         let auth = AuthConfig {
             mode: "dev".to_owned(),
             algorithm: Some("HS256".to_owned()),

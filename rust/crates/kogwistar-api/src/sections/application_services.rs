@@ -1388,7 +1388,18 @@ impl ApplicationService for SqliteRunApplicationService {
                         return self.sqlite_chroma_mount_memory_effect(&request).await;
                     }
                     Some("/api/syscall/v1/invoke_tool") => {
-                        return self.sqlite_chroma_invoke_builtin_tool_effect(&request).await;
+                        let response = self
+                            .sqlite_chroma_invoke_builtin_tool_effect(&request)
+                            .await;
+                        if let Ok(input) = syscall_input(&request, "invoke_tool") {
+                            syscall_audit(
+                                &self.capabilities,
+                                &input.version,
+                                "invoke_tool",
+                                syscall_audit_status(&response),
+                            );
+                        }
+                        return response;
                     }
                     Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
                         return self.chroma_graph_neighbors_effect(&request).await;

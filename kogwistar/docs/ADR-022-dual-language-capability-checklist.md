@@ -20,7 +20,7 @@ Current public-surface evidence for DL-02/DL-03: `contracts/dual-language-surfac
 
 The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` route before probing, so a missing handler cannot be mistaken for an implemented route merely because a nonexistent run returned 404.
 
-DL-16BQ incremental evidence: SQLite+Chroma `invoke_tool` now supports Python's four built-ins (`list_transcript`, `latest_snapshot`, `capability_snapshot`, `resource_snapshot`) by reusing scoped handlers and enforcing snapshot capabilities. `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` verifies those results, denial without required capabilities, and fail-closed SQLite metadata-only behavior (1 passed). The overall DL-16BQ gate remains open.
+DL-16BQ incremental evidence: SQLite+Chroma `invoke_tool` now supports Python's four built-ins (`list_transcript`, `latest_snapshot`, `capability_snapshot`, `resource_snapshot`) by reusing scoped handlers and enforcing snapshot capabilities; it records success and failure in the syscall audit. `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` verifies response shapes, authorization denial, audit entries, and fail-closed SQLite metadata-only behavior (1 passed). Full Rust API library suite: **228 passed, 23 ignored**. The overall DL-16BQ gate remains open.
 
 | ID | Status | Gate / evidence |
 | --- | --- | --- |
