@@ -73,22 +73,9 @@ impl InMemoryGraphApplicationService {
         &self,
         scope: GraphScope,
     ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), String> {
-        let read = |table: &str| GraphProjectionRead {
-            scope: scope.clone(),
-            table: table.to_owned(),
-            ids: None,
-            metadata: MetadataFilter::default(),
-            limit: 10_001,
-        };
-        let nodes = self
+        let (nodes, edges) = self
             .store
-            .graph_projection_records(read("gke_nodes"))
-            .await
-            .map_err(|error| error.to_string())?;
-        let edges = self
-            .store
-            .graph_projection_records(read("gke_edges"))
-            .await
+            .graph_node_edge_snapshot(&scope, 10_001)
             .map_err(|error| error.to_string())?;
         if nodes.len() > 10_000 || edges.len() > 10_000 {
             return Err("in-memory graph snapshot exceeds the 10000-record bound".to_owned());

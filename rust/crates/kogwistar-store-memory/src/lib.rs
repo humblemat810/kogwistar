@@ -1083,6 +1083,33 @@ impl InMemoryStore {
         Ok(())
     }
 
+    /// Read node and edge projections under one lock so readers cannot combine
+    /// opposite sides of an atomic graph-mutation batch from different states.
+    pub fn graph_node_edge_snapshot(
+        &self,
+        scope: &GraphScope,
+        limit: usize,
+    ) -> StoreResult<(Vec<GraphRecord>, Vec<GraphRecord>)> {
+        namespace(&scope.namespace)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.get(scope);
+        let rows_for_table = |table: &str| {
+            projection
+                .map(|projection| {
+                    projection
+                        .record_order
+                        .iter()
+                        .filter(|(record_table, _)| record_table == table)
+                        .filter_map(|key| projection.records.get(key))
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        Ok((rows_for_table("gke_nodes"), rows_for_table("gke_edges")))
+    }
+
     fn graph_projection_rows(&self, read: &GraphProjectionRead) -> StoreResult<Vec<GraphRecord>> {
         namespace(&read.scope.namespace)?;
         let state = self.state.read().expect("in-memory store lock poisoned");
@@ -2183,6 +2210,71 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn graph_node_edge_snapshot_never_mixes_atomic_batch_revisions() {
+        fn graph_batch(scope: &GraphScope, generation: i64) -> GraphMutationBatch {
+            let mutation = |table: &str, kind: &str, id: &str| GraphMutation {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                entity_kind: kind.to_owned(),
+                event_id: format!("{kind}-{generation}"),
+                op: if generation == 0 { "ADD" } else { "REPLACE" }.to_owned(),
+                payload: json!({"id": id, "generation": generation}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: None,
+                    metadata: json!({"generation": generation})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            };
+            GraphMutationBatch {
+                mutations: vec![
+                    mutation("gke_nodes", "node", "node-1"),
+                    mutation("gke_edges", "edge", "edge-1"),
+                ],
+                index_jobs: vec![],
+            }
+        }
+
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-snapshot".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        block_on(store.apply_graph_mutations_with_index_jobs_atomic(graph_batch(&scope, 0)))
+            .expect("initial graph pair is valid");
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let writer_store = store.clone();
+        let writer_scope = scope.clone();
+        let writer_barrier = barrier.clone();
+        let writer =
+            std::thread::spawn(move || {
+                writer_barrier.wait();
+                for generation in 1..=500 {
+                    block_on(writer_store.apply_graph_mutations_with_index_jobs_atomic(
+                        graph_batch(&writer_scope, generation),
+                    ))
+                    .expect("replacement graph pair is atomic");
+                }
+            });
+        barrier.wait();
+        for _ in 0..1_000 {
+            let (nodes, edges) = store
+                .graph_node_edge_snapshot(&scope, 10)
+                .expect("snapshot read succeeds");
+            let node_generation = nodes[0].metadata["generation"].as_i64().unwrap();
+            let edge_generation = edges[0].metadata["generation"].as_i64().unwrap();
+            assert_eq!(node_generation, edge_generation);
+        }
+        writer.join().expect("writer thread completes");
     }
 
     #[test]
