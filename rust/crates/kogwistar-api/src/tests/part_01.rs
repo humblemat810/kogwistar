@@ -711,6 +711,38 @@
 
         assert_eq!(response.status, StatusCode::OK.as_u16());
         let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        let invoke_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/invoke-tool-results-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(invoke_contract["version"], "v1");
+        assert_eq!(invoke_contract["op"], "invoke_tool");
+        let result_fields = payload["result"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let expected_result_fields = invoke_contract["results"]["capability_snapshot"]["root_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(result_fields, expected_result_fields);
+        let snapshot_fields = payload["result"]["snapshot"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let expected_snapshot_fields = invoke_contract["results"]["capability_snapshot"]["snapshot_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(snapshot_fields, expected_snapshot_fields);
         assert_eq!(payload["op"], "invoke_tool");
         assert_eq!(payload["result"]["tool_name"], "capability_snapshot");
         assert_eq!(payload["result"]["snapshot"]["current_subject"], "alice");

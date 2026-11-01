@@ -15,7 +15,7 @@ from tests.server.test_chat_server_api import (
     _runtime_success_runner,
     _token_header,
 )
-from kogwistar.server.syscall_api import create_syscall_router
+from kogwistar.server.syscall_api import _invoke_builtin_tool, create_syscall_router
 from tests.server.test_chat_server_api import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
@@ -229,6 +229,88 @@ def test_syscall_receive_message_matches_shared_wire_fixture():
     assert payload["status"] == "ok"
     assert payload["result"] == fixture
     assert authorized == [("role", "ro"), ("namespace", "conversation")]
+
+
+def test_invoke_builtin_tool_results_match_shared_contract_fixture():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/invoke-tool-results-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["version"] == "v1"
+    assert fixture["op"] == "invoke_tool"
+    results = fixture["results"]
+    service = SimpleNamespace(
+        list_transcript=lambda conversation_id: [
+            {"node_id": "turn-1", "role": "user", "content": "hello"}
+        ],
+        latest_snapshot=lambda conversation_id, *, run_id=None, stage=None: {
+            "snapshot_node_id": "snapshot-1",
+            "conversation_id": conversation_id,
+            "metadata": {"source": "test"},
+            "properties": {"snapshot_seq": 1},
+        },
+        capability_snapshot=lambda: {
+            "specs": [],
+            "approvals": [],
+            "revoked": [],
+            "audit_log": [],
+            "current_subject": "alice",
+            "effective_capabilities": ["project_view"],
+        },
+        resource_snapshot=lambda: {
+            "scheduler": {},
+            "runs": {},
+            "services": {},
+            "storage_usage_bytes": 0,
+            "cost_ledger": {},
+            "budget_model": {},
+            "policy_infra": {},
+        },
+    )
+    inputs = {
+        "list_transcript": {"tool_name": "list_transcript", "conversation_id": "conversation-1"},
+        "latest_snapshot": {
+            "tool_name": "latest_snapshot",
+            "conversation_id": "conversation-1",
+            "run_id": "run-1",
+            "stage": "answer",
+        },
+        "capability_snapshot": {"tool_name": "capability_snapshot"},
+        "resource_snapshot": {"tool_name": "resource_snapshot"},
+    }
+    expected = {
+        "list_transcript": {
+            "tool_name": "list_transcript",
+            "conversation_id": "conversation-1",
+            "messages": [{"node_id": "turn-1", "role": "user", "content": "hello"}],
+        },
+        "latest_snapshot": {
+            "tool_name": "latest_snapshot",
+            "conversation_id": "conversation-1",
+            "snapshot": {
+                "snapshot_node_id": "snapshot-1",
+                "conversation_id": "conversation-1",
+                "metadata": {"source": "test"},
+                "properties": {"snapshot_seq": 1},
+            },
+        },
+        "capability_snapshot": {
+            "tool_name": "capability_snapshot",
+            "snapshot": service.capability_snapshot(),
+        },
+        "resource_snapshot": {
+            "tool_name": "resource_snapshot",
+            "snapshot": service.resource_snapshot(),
+        },
+    }
+    for tool_name, args in inputs.items():
+        result = _invoke_builtin_tool(service, args)
+        assert result == expected[tool_name]
+        assert set(result) == set(results[tool_name]["root_fields"])
+        if "snapshot_fields" in results[tool_name]:
+            assert set(result["snapshot"]) == set(results[tool_name]["snapshot_fields"])
 
 
 def test_syscall_request_approval_branches(monkeypatch, engine_triplet):

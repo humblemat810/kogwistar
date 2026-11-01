@@ -5912,8 +5912,47 @@
                 }),
             ))
             .await;
+        let invoke_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/invoke-tool-results-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(invoke_contract["version"], "v1");
+        assert_eq!(invoke_contract["op"], "invoke_tool");
+        let assert_invoke_result_shape = |tool_name: &str, result: &Value| {
+            let expected = &invoke_contract["results"][tool_name];
+            let actual_root = result
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let expected_root = expected["root_fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(actual_root, expected_root, "{tool_name} root result fields");
+            if let Some(snapshot_fields) = expected["snapshot_fields"].as_array() {
+                let actual_snapshot = result["snapshot"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
+                let expected_snapshot = snapshot_fields
+                    .iter()
+                    .map(|field| field.as_str().unwrap().to_owned())
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(
+                    actual_snapshot, expected_snapshot,
+                    "{tool_name} nested snapshot fields"
+                );
+            }
+        };
         assert_eq!(invoked_transcript.status, StatusCode::OK.as_u16());
         let invoked_transcript: Value = serde_json::from_slice(&invoked_transcript.body).unwrap();
+        assert_invoke_result_shape("list_transcript", &invoked_transcript["result"]);
         assert_eq!(invoked_transcript["result"]["tool_name"], "list_transcript");
         assert_eq!(invoked_transcript["result"]["messages"].as_array().unwrap().len(), 2);
 
@@ -5930,6 +5969,7 @@
             .await;
         assert_eq!(invoked_snapshot.status, StatusCode::OK.as_u16());
         let invoked_snapshot: Value = serde_json::from_slice(&invoked_snapshot.body).unwrap();
+        assert_invoke_result_shape("latest_snapshot", &invoked_snapshot["result"]);
         assert_eq!(invoked_snapshot["result"]["tool_name"], "latest_snapshot");
         assert_eq!(invoked_snapshot["result"]["snapshot"]["snapshot_node_id"], "snapshot");
 
@@ -5954,6 +5994,7 @@
             .await;
         assert_eq!(capability_snapshot.status, StatusCode::OK.as_u16());
         let capability_snapshot: Value = serde_json::from_slice(&capability_snapshot.body).unwrap();
+        assert_invoke_result_shape("capability_snapshot", &capability_snapshot["result"]);
         assert_eq!(capability_snapshot["result"]["tool_name"], "capability_snapshot");
         assert_eq!(
             capability_snapshot["result"]["snapshot"]["effective_capabilities"][0],
@@ -5972,6 +6013,7 @@
             .await;
         assert_eq!(resource_snapshot.status, StatusCode::OK.as_u16());
         let resource_snapshot: Value = serde_json::from_slice(&resource_snapshot.body).unwrap();
+        assert_invoke_result_shape("resource_snapshot", &resource_snapshot["result"]);
         assert_eq!(resource_snapshot["result"]["tool_name"], "resource_snapshot");
         assert_eq!(resource_snapshot["result"]["snapshot"]["services"]["total_services"], 0);
 

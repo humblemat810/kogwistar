@@ -1,0 +1,21 @@
+{
+  "version": "v1",
+  "op": "invoke_tool",
+  "results": {
+    "list_transcript": {
+      "root_fields": ["tool_name", "conversation_id", "messages"]
+    },
+    "latest_snapshot": {
+      "root_fields": ["tool_name", "conversation_id", "snapshot"],
+      "snapshot_fields": ["snapshot_node_id", "conversation_id", "metadata", "properties"]
+    },
+    "capability_snapshot": {
+      "root_fields": ["tool_name", "snapshot"],
+      "snapshot_fields": ["specs", "approvals", "revoked", "audit_log", "current_subject", "effective_capabilities"]
+    },
+    "resource_snapshot": {
+      "root_fields": ["tool_name", "snapshot"],
+      "snapshot_fields": ["scheduler", "runs", "services", "storage_usage_bytes", "cost_ledger", "budget_model", "policy_infra"]
+    }
+  }
+}
