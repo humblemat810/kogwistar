@@ -713,9 +713,9 @@
         let payload: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(payload["op"], "invoke_tool");
         assert_eq!(payload["result"]["tool_name"], "capability_snapshot");
-        assert_eq!(payload["result"]["current_subject"], "alice");
-        assert!(payload["result"]["specs"].as_array().is_some());
-        assert!(payload["result"]["effective_capabilities"]
+        assert_eq!(payload["result"]["snapshot"]["current_subject"], "alice");
+        assert!(payload["result"]["snapshot"]["specs"].as_array().is_some());
+        assert!(payload["result"]["snapshot"]["effective_capabilities"]
             .as_array()
             .is_some_and(|capabilities| capabilities
                 .iter()

@@ -1665,12 +1665,10 @@ impl PostgresRunApplicationService {
                     .capabilities
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                let mut snapshot = capability_snapshot(&request.principal, &state);
-                snapshot
-                    .as_object_mut()
-                    .expect("capability snapshot is an object")
-                    .insert("tool_name".to_owned(), Value::String(tool_name.clone()));
-                snapshot
+                json!({
+                    "tool_name": tool_name,
+                    "snapshot": capability_snapshot(&request.principal, &state),
+                })
             }
             "resource_snapshot" => {
                 if !capability_allowed(
