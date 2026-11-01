@@ -268,6 +268,27 @@ mod tests {
     }
 
     #[test]
+    fn graph_role_is_metadata_not_entity_kind_or_storage_scope() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-mutation-batch-v1.json"
+        ));
+        for role in ["knowledge", "conversation", "wisdom", "acl"] {
+            let mut value: Value = serde_json::from_str(fixture).unwrap();
+            value["mutations"][0]["record"]["metadata"]["engine_type"] =
+                Value::String(role.to_owned());
+            let batch: GraphMutationBatchV1 = serde_json::from_value(value).unwrap();
+            let mutation = &batch.mutations[0];
+
+            assert_eq!(mutation.entity_kind, "node");
+            assert_eq!(mutation.table, "gke_nodes");
+            assert_eq!(mutation.scope.namespace, "tenant-a");
+            assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
+            assert_eq!(mutation.record.metadata["engine_type"], role);
+        }
+    }
+
+    #[test]
     fn graph_mutation_index_job_retry_default_is_backward_compatible() {
         let mut value: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
