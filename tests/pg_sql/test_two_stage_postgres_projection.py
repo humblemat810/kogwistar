@@ -1161,6 +1161,83 @@ async def test_postgres_two_stage_async_rust_authority_uses_native_facade(
 
 
 @pytest.mark.asyncio
+async def test_postgres_two_stage_async_rust_authority_promotes_edge(
+    async_pg_backend, monkeypatch
+) -> None:
+    """Rust-owned async two-stage projection promotes an edge and its endpoints."""
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "rust")
+    calls: list[int] = []
+
+    async def provider(texts):
+        calls.append(len(texts))
+        return [[0.25, 0.25, 0.5] for _ in texts]
+
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=provider,
+    )
+    edge_id = "async-rust-two-stage-edge"
+    try:
+        for node_id in ("async-rust-edge-source", "async-rust-edge-target"):
+            await engine.async_add_node(
+                build_entity_node(
+                    node_id=node_id,
+                    doc_id="async-rust-edge-doc",
+                    embedding=None,
+                )
+            )
+        await engine.async_add_edge(
+            build_relationship_edge(
+                edge_id=edge_id,
+                src="async-rust-edge-source",
+                tgt="async-rust-edge-target",
+                doc_id="async-rust-edge-doc",
+                embedding=None,
+            )
+        )
+        pending = await async_pg_backend.edge_get(
+            ids=[edge_id], include=["embeddings", "metadatas"]
+        )
+        assert pending["ids"] == [edge_id]
+        assert pending["embeddings"] == [None]
+        assert pending["metadatas"][0].get("_kogwistar_stage2_ready") is not True
+        assert any(
+            job.entity_id == edge_id and job.index_kind == "node_embedding"
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+        )
+
+        metrics = await AsyncIndexJobWorker(
+            engine=engine, batch_size=8, max_jobs_per_tick=8
+        ).tick()
+        assert metrics.done >= 1
+        assert calls == [3]
+        edge = await async_pg_backend.edge_get(
+            ids=[edge_id], include=["embeddings", "metadatas"]
+        )
+        assert edge["embeddings"] == [pytest.approx([0.25, 0.25, 0.5])]
+        assert edge["metadatas"][0]["_kogwistar_stage2_ready"] is True
+        endpoints = await async_pg_backend.edge_endpoints_get(
+            where={"edge_id": edge_id}, include=["metadatas"]
+        )
+        assert {item["endpoint_id"] for item in endpoints["metadatas"]} == {
+            "async-rust-edge-source",
+            "async-rust-edge-target",
+        }
+        events = list(
+            engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1)
+        )
+        assert any(event[2] == edge_id and event[3] == "ADD" for event in events)
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
 async def test_postgres_two_stage_async_rust_authority_rolls_back_event_and_stage1(
     async_pg_backend, monkeypatch
 ) -> None:

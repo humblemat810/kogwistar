@@ -68,6 +68,25 @@ where
         .map_err(|error| {
             PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
         })?;
+    if write.table == "gke_edges" {
+        if metadata.get("_kogwistar_stage2_ready") == Some(&Value::Bool(true)) {
+            let document = write.record.document.as_deref().unwrap_or_default();
+            let payload: Value = serde_json::from_str(document)?;
+            replace_graph_edge_endpoints(
+                client,
+                tables,
+                &write.scope,
+                &write.record.id,
+                Some(&payload),
+            )
+            .await?;
+        } else {
+            // Pending or invalidated edges must not expose endpoint rows from an
+            // older revision; promotion rebuilds them in this same native UoW.
+            replace_graph_edge_endpoints(client, tables, &write.scope, &write.record.id, None)
+                .await?;
+        }
+    }
     Ok(())
 }
 

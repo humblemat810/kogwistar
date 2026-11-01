@@ -107,21 +107,48 @@ where
         return Ok(());
     }
 
+    replace_graph_edge_endpoints(
+        client,
+        tables,
+        &mutation.scope,
+        &mutation.record.id,
+        if mutation.op == "TOMBSTONE" {
+            None
+        } else {
+            Some(&mutation.payload)
+        },
+    )
+    .await
+}
+
+pub(crate) async fn replace_graph_edge_endpoints<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &GraphScope,
+    edge_id: &str,
+    payload: Option<&Value>,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    if edge_id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+
     client
         .execute(
             &format!(
                 "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
                 tables.edge_endpoints
             ),
-            &[&mutation.record.id],
+            &[&edge_id],
         )
         .await
         .map_err(backend)?;
 
-    if mutation.op == "TOMBSTONE" {
+    let Some(payload) = payload else {
         return Ok(());
-    }
-    let payload = &mutation.payload;
+    };
     let object = payload.as_object().ok_or_else(|| {
         PostgresStoreError::Backend("edge mutation payload must be a JSON object".to_owned())
     })?;
@@ -140,16 +167,10 @@ where
         ("tgt", "target_edge_ids", "edge"),
     ] {
         for endpoint_id in graph_edge_endpoint_ids(payload, field)? {
-            let row_id = format!(
-                "{}::{role}::{endpoint_type}::{endpoint_id}",
-                mutation.record.id
-            );
+            let row_id = format!("{}::{role}::{endpoint_type}::{endpoint_id}", edge_id);
             let mut row = Map::new();
             row.insert("id".to_owned(), Value::String(row_id.clone()));
-            row.insert(
-                "edge_id".to_owned(),
-                Value::String(mutation.record.id.clone()),
-            );
+            row.insert("edge_id".to_owned(), Value::String(edge_id.to_owned()));
             row.insert("endpoint_id".to_owned(), Value::String(endpoint_id));
             row.insert(
                 "endpoint_type".to_owned(),
@@ -167,7 +188,7 @@ where
             }
 
             let row_document = serde_json::to_string(&row)?;
-            let metadata = serde_json::to_string(&graph_metadata(&mutation.scope, &row)?)?;
+            let metadata = serde_json::to_string(&graph_metadata(scope, &row)?)?;
             client
                 .execute(
                     &format!(

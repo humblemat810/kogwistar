@@ -101,6 +101,57 @@ class RustPostgresTwoStageProjectionAdapter:
         )
         return str(json.loads(payload).get("source_fingerprint") or "")
 
+    def stage1_query(self, **kwargs: object) -> list[dict[str, object]]:
+        """Expose current pending edge payloads for structural traversal."""
+        entity_kind = str(kwargs.get("entity_kind") or "node")
+        if entity_kind != "edge":
+            return []
+        raw_ids = kwargs.get("ids")
+        ids = (
+            [value for value in raw_ids if isinstance(value, str)]
+            if isinstance(raw_ids, list)
+            else None
+        )
+        raw_limit = kwargs.get("limit", 200)
+        limit = raw_limit if isinstance(raw_limit, int) and raw_limit > 0 else 200
+        records = self.meta.graph_projection_records(
+            namespace=self._namespace(),
+            workspace_id=None,
+            graph_space=None,
+            table=self._table("edge"),
+            ids=ids,
+            metadata={},
+            limit=limit,
+        )
+        rows: list[dict[str, object]] = []
+        for record in records:
+            entity_id = record.get("id")
+            metadata = record.get("metadata")
+            document = record.get("document")
+            if (
+                not isinstance(entity_id, str)
+                or not isinstance(metadata, dict)
+                or metadata.get("_kogwistar_stage2_ready") is True
+                or not isinstance(document, str)
+            ):
+                continue
+            fingerprint = metadata.get("_kogwistar_source_fingerprint")
+            if not isinstance(fingerprint, str) or not fingerprint:
+                continue
+            rows.append(
+                {
+                    "key": f"edge:{entity_id}",
+                    "payload": {
+                        "id": entity_id,
+                        "entity_kind": "edge",
+                        "document": document,
+                        "metadata": metadata,
+                        "source_fingerprint": fingerprint,
+                    },
+                }
+            )
+        return rows
+
     def _upsert(
         self,
         *,
@@ -110,6 +161,10 @@ class RustPostgresTwoStageProjectionAdapter:
         metadata: JsonObject,
     ) -> None:
         metadata = dict(metadata or {})
+        metadata["_kogwistar_stage2_ready"] = False
+        metadata["_kogwistar_source_fingerprint"] = self._fingerprint(
+            entity_kind, entity.safe_get_id()
+        )
         # Admission runs inside the parent's native UoW. Do not re-read the
         # event stream here: the current event is already the authority and
         # the job captures its fingerprint after the admission transaction.
