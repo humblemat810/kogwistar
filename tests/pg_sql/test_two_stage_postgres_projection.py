@@ -888,8 +888,10 @@ def test_postgres_two_stage_provider_batch_promotes_multiple_nodes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+@pytest.mark.parametrize("authority", ["python", "rust"])
 async def test_postgres_single_stage_async_writes_embedding_directly(
-    async_pg_backend,
+    async_pg_backend, entity_kind: str, authority: str, monkeypatch
 ) -> None:
     main_thread = threading.get_ident()
     call_threads: list[int] = []
@@ -899,24 +901,68 @@ async def test_postgres_single_stage_async_writes_embedding_directly(
         await asyncio.sleep(0)
         return [[1.0, 0.0, 0.0] for _ in documents]
 
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", authority)
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", authority)
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", authority)
     engine = GraphKnowledgeEngine(
         backend=async_pg_backend,
         embedding_function=provider,
         # Omitted intentionally: single_stage remains the default.
     )
     try:
-        node = build_entity_node(node_id="async-pg-single", doc_id="d1")
-        await engine.async_add_node(node)
-        got = await async_pg_backend.node_get(ids=[node.id], include=["embeddings"])
-        assert got["ids"] == [node.id]
+        if authority == "rust":
+            from kogwistar.engine_core.rust_postgres_session import (
+                RustEnginePostgresMetaStore,
+            )
+
+            assert isinstance(engine.meta_sqlite, RustEnginePostgresMetaStore)
+        assert engine.persistence_mode == "single_stage"
+        entity_id = f"async-pg-single-{entity_kind}"
+        if entity_kind == "edge":
+            for node_id in ("async-pg-single-source", "async-pg-single-target"):
+                await engine.async_add_node(
+                    build_entity_node(
+                        node_id=node_id,
+                        doc_id="d1",
+                        embedding=[0.1, 0.2, 0.3],
+                    )
+                )
+            entity = build_relationship_edge(
+                edge_id=entity_id,
+                src="async-pg-single-source",
+                tgt="async-pg-single-target",
+                doc_id="d1",
+                embedding=None,
+            )
+            await engine.async_add_edge(entity)
+        else:
+            entity = build_entity_node(node_id=entity_id, doc_id="d1")
+            await engine.async_add_node(entity)
+        got = await getattr(async_pg_backend, f"{entity_kind}_get")(
+            ids=[entity.id], include=["embeddings"]
+        )
+        assert got["ids"] == [entity.id]
         assert got["embeddings"] == [pytest.approx([1.0, 0.0, 0.0])]
-        assert call_threads and call_threads[0] == main_thread
+        assert call_threads
+        if entity_kind == "node":
+            assert call_threads[0] == main_thread
         events = list(
             engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1)
         )
-        assert any(event[2] == node.id and event[3] == "ADD" for event in events)
+        assert any(event[2] == entity.id and event[3] == "ADD" for event in events)
         jobs = engine.meta_sqlite.list_index_jobs(namespace="default")
-        assert all(job.index_kind != "node_embedding" for job in jobs)
+        assert all(
+            job.index_kind != "node_embedding" or job.entity_id != entity.id
+            for job in jobs
+        )
+        if entity_kind == "edge":
+            endpoints = await async_pg_backend.edge_endpoints_get(
+                where={"edge_id": entity.id}, include=["metadatas"]
+            )
+            assert {item["endpoint_id"] for item in endpoints["metadatas"]} == {
+                "async-pg-single-source",
+                "async-pg-single-target",
+            }
     finally:
         engine.close()
 
