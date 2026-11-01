@@ -223,17 +223,23 @@ The Rust route-inventory test seeds a persisted run for every frozen `{run_id}` 
 
 ## Completion rule
 
-DL-16BQ evidence update: configured SQLite+Chroma now admits an authoritative
-`debug.rag.v1` answer-workflow plan only when the existing workflow admission
-validator confirms the complete compatible plan and executor set. The focused
-Rust test verifies admission and claim of the initial `start` step by the
-Python worker. Standalone SQLite remains graph-authority-disabled; missing or
-incompatible plans and unsupported executors remain rejected. Verification:
-`sqlite_chroma_admits_valid_python_answer_workflow_plan` and the focused
-`answer_workflow` Rust API tests (**3 passed, 1 ignored**). This is admission
-and initial step delivery evidence only; it does not establish a complete
-answer turn, Rust-native SQLite+Chroma answer execution, or cross-backend
-parity. DL-16BQ remains IN PROGRESS.
+DL-16BQ current verified scope: configured SQLite+Chroma admits an
+authoritative `debug.rag.v1` plan only when the existing validator accepts its
+complete plan and compatible executors; `sqlite_chroma_admits_valid_python_answer_workflow_plan`
+verifies admission and the initial `start` claim by the Python worker. The
+seam-free PostgreSQL path has stronger live evidence:
+`postgres_agentic_answer_workflow_executes_durably_without_python_worker`
+passed (**1 passed**) against the local pgvector container. It launches the
+packaged Rust server, uses authenticated REST to admit and complete a streamed
+structured answer turn, verifies retrieval/context and evidence are durable
+before provider invocation, checks citations and persisted assistant turn,
+confirms no Python-worker handoff, and checks semantic event traces and empty
+seam crossings on a Rust-native workflow. Standalone SQLite remains
+graph-authority-disabled; invalid plans and unsupported executors remain
+rejected. Still open: a complete SQLite+Chroma answer run through the Python
+worker, broader backend-interchangeability parity, support-matrix checks, and
+the remaining syscall parity named in DL-16BQ. This proves one PostgreSQL
+vertical path, not whole-stack parity; DL-16BQ remains IN PROGRESS.
 
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix
