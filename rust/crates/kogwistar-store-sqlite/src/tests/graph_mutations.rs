@@ -95,6 +95,51 @@ fn canonical_graph_batch_commits_events_and_projection_jobs_together() {
 }
 
 #[test]
+fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
+    let (store, path) = store("canonical-graph-job-failure");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_canonical_projection_job
+             BEFORE INSERT ON index_jobs
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected projection-job failure');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = SqliteStore::open(&path).unwrap();
+    let result = store.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: vec![mutation(
+            "event-before-failed-job",
+            "node-before-failed-job",
+        )],
+        index_jobs: Vec::new(),
+    });
+
+    assert!(result.is_err());
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty(),
+        "canonical event must roll back with its failed projection intent"
+    );
+    assert!(
+        store
+            .list_index_jobs(Some("conversation"), None, None, None, None, 10)
+            .unwrap()
+            .is_empty()
+    );
+
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn invalid_replayed_event_rolls_back_the_entire_canonical_batch() {
     let (store, path) = store("canonical-graph-batch-rollback");
     let result = store.immediate_transaction(|uow| {
