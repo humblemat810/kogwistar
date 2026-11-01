@@ -279,6 +279,9 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         assert_eq!(response.status(), StatusCode::OK);
         let response: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(response["result"]["implementation_authority"], "rust");
+        assert_eq!(response["result"]["seam_attestation_version"], 1);
+        assert_eq!(response["result"]["seam_crossings"], json!([]));
         let mut result = response["result"].clone();
         for field in [
             "implementation_authority",
@@ -522,6 +525,9 @@ async fn in_memory_mcp_traversal_matches_shared_python_contract() {
                 serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap())
                     .unwrap();
             assert!(response.get("error").is_none(), "{name}: {response}");
+            assert_eq!(response["result"]["implementation_authority"], "rust");
+            assert_eq!(response["result"]["seam_attestation_version"], 1);
+            assert_eq!(response["result"]["seam_crossings"], json!([]));
             let mut result = response["result"].clone();
             for field in [
                 "implementation_authority",
@@ -766,6 +772,9 @@ async fn in_memory_mcp_acl_traversal_matches_shared_python_contract() {
                     serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap())
                         .unwrap();
                 assert!(response.get("error").is_none(), "{name}: {response}");
+                assert_eq!(response["result"]["implementation_authority"], "rust");
+                assert_eq!(response["result"]["seam_attestation_version"], 1);
+                assert_eq!(response["result"]["seam_crossings"], json!([]));
                 let mut result = response["result"].clone();
                 for field in [
                     "implementation_authority",
