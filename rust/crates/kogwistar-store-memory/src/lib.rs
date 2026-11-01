@@ -3,17 +3,17 @@ use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent,
     EventPruneStore, EventReadStore, EventWriteStore, GraphAuthorityCapability, GraphEntityKind,
-    GraphMutation, GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead,
-    GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope, GraphWriteStore, IndexJob,
-    IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
-    LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter, NamedProjection,
-    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionPageRead,
+    GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope,
+    GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
+    LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter,
+    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
     StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
     WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
     WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
-    validate_graph_mutation,
+    validate_graph_mutation, validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -34,6 +34,51 @@ struct State {
     index_jobs: BTreeMap<String, IndexJob>,
     lane_messages: BTreeMap<String, ProjectedLaneMessage>,
     next_claim_token: i64,
+}
+
+fn enqueue_index_job_into_state(state: &mut State, job: NewIndexJob) -> String {
+    let now = now_seconds();
+    let key = job.coalesce_key();
+    if let Some(existing) = state.index_jobs.values_mut().find(|row| {
+        row.namespace == job.namespace && row.coalesce_key == key && row.status == "PENDING"
+    }) {
+        if job.op == "DELETE" || existing.op == "DELETE" {
+            existing.op = "DELETE".to_owned();
+        } else {
+            existing.op = job.op;
+        }
+        existing.payload_json = job.payload_json;
+        existing.updated_at = integer_timestamp(now);
+        return existing.job_id.clone();
+    }
+    let job_id = job.job_id.clone();
+    state.index_jobs.insert(
+        job_id.clone(),
+        IndexJob {
+            job_id: job.job_id,
+            namespace: job.namespace,
+            entity_kind: job.entity_kind,
+            entity_id: job.entity_id,
+            index_kind: job.index_kind,
+            coalesce_key: key,
+            op: job.op,
+            status: "PENDING".to_owned(),
+            lease_until: None,
+            next_run_at: None,
+            max_retries: job.max_retries,
+            retry_count: 0,
+            last_error: None,
+            payload_json: job.payload_json,
+            created_at: integer_timestamp(now),
+            updated_at: integer_timestamp(now),
+            claim_token: None,
+            claim_attempts: 0,
+            accepted_result_json: None,
+            accepted_result_sha256: None,
+            accepted_at: None,
+        },
+    );
+    job_id
 }
 
 impl IndexJobReadStore for InMemoryStore {
@@ -480,49 +525,8 @@ impl LaneMessageWriteStore for InMemoryStore {
 impl IndexJobWriteStore for InMemoryStore {
     async fn enqueue_index_job(&self, job: NewIndexJob) -> StoreResult<String> {
         namespace(&job.namespace)?;
-        let now = now_seconds();
-        let key = job.coalesce_key();
         let mut state = self.state.write().expect("in-memory store lock poisoned");
-        if let Some(existing) = state.index_jobs.values_mut().find(|row| {
-            row.namespace == job.namespace && row.coalesce_key == key && row.status == "PENDING"
-        }) {
-            if job.op == "DELETE" || existing.op == "DELETE" {
-                existing.op = "DELETE".to_owned();
-            } else {
-                existing.op = job.op;
-            }
-            existing.payload_json = job.payload_json;
-            existing.updated_at = integer_timestamp(now);
-            return Ok(existing.job_id.clone());
-        }
-        let job_id = job.job_id.clone();
-        state.index_jobs.insert(
-            job_id.clone(),
-            IndexJob {
-                job_id: job.job_id,
-                namespace: job.namespace,
-                entity_kind: job.entity_kind,
-                entity_id: job.entity_id,
-                index_kind: job.index_kind,
-                coalesce_key: key,
-                op: job.op,
-                status: "PENDING".to_owned(),
-                lease_until: None,
-                next_run_at: None,
-                max_retries: job.max_retries,
-                retry_count: 0,
-                last_error: None,
-                payload_json: job.payload_json,
-                created_at: integer_timestamp(now),
-                updated_at: integer_timestamp(now),
-                claim_token: None,
-                claim_attempts: 0,
-                accepted_result_json: None,
-                accepted_result_sha256: None,
-                accepted_at: None,
-            },
-        );
-        Ok(job_id)
+        Ok(enqueue_index_job_into_state(&mut state, job))
     }
 
     async fn claim_index_jobs(
@@ -904,6 +908,86 @@ impl InMemoryStore {
             inserted: true,
             mutated: true,
         })
+    }
+
+    /// Apply a graph mutation group and its explicit indexing intents under
+    /// one in-memory write lock. This is atomic within this process, not durable.
+    pub async fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        batch: GraphMutationBatch,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        validate_graph_mutation_batch(&batch)?;
+        let namespace_name = batch.mutations[0].scope.namespace.clone();
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let mut next_seq = state
+            .namespaces
+            .get(&namespace_name)
+            .map_or(0, |scope| scope.next_event_seq);
+        let mut seen = BTreeMap::<String, EntityEvent>::new();
+        let mut pending = Vec::<(GraphMutation, EntityEvent)>::new();
+        let mut results = Vec::with_capacity(batch.mutations.len());
+
+        for mutation in batch.mutations {
+            let existing = state
+                .namespaces
+                .get(&namespace_name)
+                .and_then(|scope| {
+                    scope
+                        .event_seq_by_id
+                        .get(&mutation.event_id)
+                        .and_then(|seq| scope.events.iter().find(|event| event.seq == *seq))
+                })
+                .or_else(|| seen.get(&mutation.event_id));
+            if let Some(event) = existing {
+                validate_graph_mutation_replay(&mutation, event)?;
+                results.push(AppliedGraphMutation {
+                    event: event.clone(),
+                    inserted: false,
+                    mutated: false,
+                });
+                continue;
+            }
+
+            next_seq += 1;
+            let record = mutation.record.clone();
+            let event = EntityEvent {
+                namespace: namespace_name.clone(),
+                seq: next_seq,
+                event_id: mutation.event_id.clone(),
+                entity_kind: mutation.entity_kind.clone(),
+                entity_id: record.id.clone(),
+                op: mutation.op.clone(),
+                payload: mutation.payload.clone(),
+            };
+            seen.insert(event.event_id.clone(), event.clone());
+            pending.push((mutation, event.clone()));
+            results.push(AppliedGraphMutation {
+                event,
+                inserted: true,
+                mutated: true,
+            });
+        }
+
+        for (mutation, event) in pending {
+            let namespace_state = Self::scope_mut(&mut state, &namespace_name);
+            namespace_state.next_event_seq = event.seq;
+            namespace_state
+                .event_seq_by_id
+                .insert(event.event_id.clone(), event.seq);
+            namespace_state.events.push(event);
+
+            let projection = state.graph_projections.entry(mutation.scope).or_default();
+            let record_key = (mutation.table, mutation.record.id.clone());
+            if !projection.records.contains_key(&record_key) {
+                projection.record_order.push(record_key.clone());
+            }
+            projection.records.insert(record_key, mutation.record);
+        }
+
+        for job in batch.index_jobs {
+            enqueue_index_job_into_state(&mut state, job);
+        }
+        Ok(results)
     }
 
     /// Restore an isolated event snapshot without exposing restore semantics on
@@ -1544,7 +1628,7 @@ impl GraphWriteStore for InMemoryStore {
 
 impl GraphMutationStore for InMemoryStore {
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {
-        GraphAuthorityCapability::SingleMutation
+        GraphAuthorityCapability::AtomicBatchWithIndexJobs
     }
 
     async fn apply_graph_mutation(
@@ -1552,6 +1636,24 @@ impl GraphMutationStore for InMemoryStore {
         mutation: GraphMutation,
     ) -> StoreResult<AppliedGraphMutation> {
         InMemoryStore::apply_graph_mutation(self, mutation).await
+    }
+
+    async fn apply_graph_mutations_atomic(
+        &self,
+        mutations: Vec<GraphMutation>,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        self.apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+            mutations,
+            index_jobs: Vec::new(),
+        })
+        .await
+    }
+
+    async fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        batch: GraphMutationBatch,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        InMemoryStore::apply_graph_mutations_with_index_jobs_atomic(self, batch).await
     }
 
     async fn graph_projection_records(
@@ -2001,11 +2103,125 @@ mod tests {
     }
 
     #[test]
-    fn graph_authority_capability_is_explicit_and_does_not_claim_atomic_jobs() {
+    fn graph_authority_capability_declares_atomic_batches_and_index_jobs() {
         let capability = InMemoryStore::new().graph_authority_capability();
-        assert_eq!(capability, GraphAuthorityCapability::SingleMutation);
+        assert_eq!(
+            capability,
+            GraphAuthorityCapability::AtomicBatchWithIndexJobs
+        );
         assert!(capability.supports_single_mutation());
-        assert!(!capability.supports_atomic_index_jobs());
+        assert!(capability.supports_atomic_index_jobs());
+    }
+
+    #[test]
+    fn graph_mutation_batch_commits_events_projection_and_index_jobs_atomically() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-atomic".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let first = graph_mutation(scope.clone(), "first-event", "first", &[1.0, 0.0]);
+        let second = graph_mutation(scope.clone(), "second-event", "second", &[0.0, 1.0]);
+        let job = NewIndexJob {
+            job_id: "first-index-job".to_owned(),
+            namespace: scope.namespace.clone(),
+            entity_kind: "node".to_owned(),
+            entity_id: "first".to_owned(),
+            index_kind: "embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: Some("{}".to_owned()),
+            max_retries: 3,
+        };
+        let batch = GraphMutationBatch {
+            mutations: vec![first.clone(), second],
+            index_jobs: vec![job],
+        };
+
+        let applied = block_on(store.apply_graph_mutations_with_index_jobs_atomic(batch.clone()))
+            .expect("valid batch commits");
+        assert_eq!(applied.len(), 2);
+        assert!(applied.iter().all(|item| item.inserted && item.mutated));
+        assert_eq!(
+            block_on(store.replay_events(&scope.namespace, 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(
+            block_on(store.index_jobs(
+                Some(&scope.namespace),
+                Some("PENDING"),
+                None,
+                None,
+                None,
+                10,
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let replay = block_on(store.apply_graph_mutations_with_index_jobs_atomic(batch))
+            .expect("exact batch replay is idempotent");
+        assert!(replay.iter().all(|item| !item.inserted && !item.mutated));
+        assert_eq!(
+            block_on(store.replay_events(&scope.namespace, 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn invalid_graph_mutation_batch_has_no_partial_memory_effects() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-rollback".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let first = graph_mutation(scope.clone(), "valid-event", "valid", &[1.0, 0.0]);
+        let mut invalid = graph_mutation(scope.clone(), "invalid-event", "invalid", &[0.0, 1.0]);
+        invalid.payload = serde_json::json!({"id": 4});
+        let result = block_on(store.apply_graph_mutations_with_index_jobs_atomic(
+            GraphMutationBatch {
+                mutations: vec![first, invalid],
+                index_jobs: vec![NewIndexJob {
+                    job_id: "must-not-appear".to_owned(),
+                    namespace: scope.namespace.clone(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "valid".to_owned(),
+                    index_kind: "embedding".to_owned(),
+                    op: "UPSERT".to_owned(),
+                    payload_json: None,
+                    max_retries: 3,
+                }],
+            },
+        ));
+        assert!(result.is_err());
+        assert!(
+            block_on(store.replay_events(&scope.namespace, 0, 10))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            block_on(store.index_jobs(Some(&scope.namespace), None, None, None, None, 10,))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2455,7 +2671,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_atomic_graph_batches_fail_closed() {
+    fn atomic_graph_mutation_batch_is_supported() {
         let store = InMemoryStore::new();
         let scope = GraphScope {
             namespace: "atomic".to_owned(),
@@ -2464,13 +2680,10 @@ mod tests {
         };
         let mutation = graph_mutation(scope, "atomic-event", "atomic-node", &[1.0, 0.0]);
 
-        let error = block_on(store.apply_graph_mutations_atomic(vec![mutation]))
-            .expect_err("in-memory store must not claim atomic batch support");
-        assert!(
-            error
-                .to_string()
-                .contains("atomic graph mutation batches are not supported")
-        );
+        let applied = block_on(store.apply_graph_mutations_atomic(vec![mutation]))
+            .expect("in-memory store supports atomic graph batches");
+        assert_eq!(applied.len(), 1);
+        assert!(applied[0].inserted && applied[0].mutated);
     }
 
     #[test]

@@ -8,6 +8,6 @@ license.workspace = true
 [dependencies]
 kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-store = { path = "../kogwistar-store" }
+serde_json.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
