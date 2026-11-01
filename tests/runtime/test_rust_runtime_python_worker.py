@@ -1000,7 +1000,7 @@ def test_step_resolver_adapter_excludes_noncheckpointed_runtime_bucket() -> None
     assert "_rt" not in effect["result"]["final_state"]
 
 
-@pytest.mark.parametrize("key", ["_deps", "dream_deps", "_rt_join"])
+@pytest.mark.parametrize("key", ["_deps", "_rt", "dream_deps", "_rt_join"])
 def test_step_resolver_adapter_rejects_result_runtime_plumbing(key: str) -> None:
     resolver = MappingStepResolver()
 

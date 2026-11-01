@@ -379,7 +379,17 @@ serialized as durable workflow state. `_durable_state` now excludes the
 runtime-only `_rt` bucket, covered by
 `test_step_resolver_adapter_excludes_noncheckpointed_runtime_bucket`. Python
 answer resolver/preparation tests passed (**20 passed**); ordinary Python
-snapshot persistence remains covered. Still open: full provider-backed
+snapshot persistence remains covered. A shared runtime invariant now excludes
+the process-local `_rt` cache at Python checkpoint projection, Rust-authority
+initial-state projection, and Python-worker durable-result projection; direct
+JSON serialization rejects `_rt` rather than replacing its contents with an
+opaque reference. `_rt_join` remains checkpointable for resume. Evidence:
+`test_checkpointable_state_copy_drops_di_plumbing_keys`,
+`test_rust_authority_excludes_noncheckpointed_runtime_bucket`,
+`test_step_resolver_adapter_excludes_noncheckpointed_runtime_bucket`, and
+`test_serializer_raises_on_runtime_plumbing_key`; the runtime, authority, and
+worker regression modules passed (**125 passed, 7 skipped**), Ruff and
+`git diff --check` passed. Still open: full provider-backed
 SQLite+Chroma answer completion through the Python worker, broader
 backend-interchangeability parity, support-matrix checks, and the remaining
 syscall parity named in DL-16BQ. This closes the snapshot producer-to-host

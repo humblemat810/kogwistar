@@ -35,6 +35,7 @@ from kogwistar.runtime.rust_runtime_authority import (
     _python_worker_required_for_plan,
     _runtime_plan_requires_python_worker,
     _validate_resume_plan,
+    _json_state,
     freeze_runtime_plan,
 )
 from kogwistar.implementation_selection import capture_implementation_selection
@@ -47,6 +48,21 @@ RUST_SERVER = (
     / "debug"
     / ("kogwistar-server.exe" if os.name == "nt" else "kogwistar-server")
 )
+
+
+def test_rust_authority_excludes_noncheckpointed_runtime_bucket() -> None:
+    state = _json_state(
+        {
+            "durable": {"answer": "ok"},
+            "_rt": {"view": object()},
+            "_rt_join": {"pending": ["token-1"]},
+        }
+    )
+
+    assert state == {
+        "durable": {"answer": "ok"},
+        "_rt_join": {"pending": ["token-1"]},
+    }
 
 
 def _assert_worker_dependencies(

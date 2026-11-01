@@ -29,6 +29,7 @@ pytestmark = [pytest.mark.core, pytest.mark.runtime]
 def test_checkpointable_state_copy_drops_di_plumbing_keys():
     state = {
         "_deps": {"engine": object()},
+        "_rt": {"view": object()},
         "dream_deps": {"workflow_engine": object()},
         "_rt_join": {"pending": ["tok-1"]},
         "answer": "ok",
@@ -37,6 +38,7 @@ def test_checkpointable_state_copy_drops_di_plumbing_keys():
     out = checkpointable_state_copy(state)
 
     assert "_deps" not in out
+    assert "_rt" not in out
     assert "dream_deps" not in out
     assert out["_rt_join"] == {"pending": ["tok-1"]}
     assert out["answer"] == "ok"
@@ -71,9 +73,10 @@ def test_workflow_state_remains_open_while_conversation_checkpoint_is_narrow():
     assert "_deps" not in checkpointable_state_copy(runtime_state)
 
 
-def test_serializer_raises_on_deps_plumbing_key():
-    with pytest.raises(ValueError, match="Cannot serialize runtime dependency key '_deps'"):
-        try_serialize_with_ref({"keep": 1, "_deps": {"engine": object()}})
+@pytest.mark.parametrize("key", ["_deps", "_rt"])
+def test_serializer_raises_on_runtime_plumbing_key(key: str):
+    with pytest.raises(ValueError, match=f"Cannot serialize runtime dependency key '{key}'"):
+        try_serialize_with_ref({"keep": 1, key: {"runtime": object()}})
 
 
 def _signal(

@@ -72,6 +72,7 @@ RESERVED_ROOT_KEYS = {
 RESERVED_PREFIXES = ("_", "__")
 NON_CHECKPOINT_STATE_KEYS = {
     "_deps",
+    "_rt",
     "dream_deps",  # legacy dream DI key; keep out of checkpoints
 }
 

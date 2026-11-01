@@ -11,7 +11,7 @@ try:
 except Exception:  # pragma: no cover
     BaseModel = None  # type: ignore
 
-_NON_SERIALIZABLE_MAPPING_KEYS = {"_deps", "dream_deps"}
+_NON_SERIALIZABLE_MAPPING_KEYS = {"_deps", "_rt", "dream_deps"}
 
 
 def stable_json_dumps(obj: JsonValue) -> str:

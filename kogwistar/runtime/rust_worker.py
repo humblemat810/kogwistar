@@ -221,10 +221,12 @@ def _json_string_list(value: JsonValue | None) -> list[str]:
 
 
 def _durable_state(value: Mapping[str, object], *, field: str) -> JsonObject:
+    from .base_runtime import NON_CHECKPOINT_STATE_KEYS
+
     durable = {
         key: item
         for key, item in value.items()
-        if key not in {"_deps", "_rt", "dream_deps"}
+        if key not in NON_CHECKPOINT_STATE_KEYS
     }
     copied = _json_copy(durable, field=field)
     if not isinstance(copied, dict):
@@ -653,10 +655,12 @@ class RustStepResolverAdapter:
         }
         if isinstance(result_update, dict):
             result_keys.update(str(key) for key in result_update)
+        from .base_runtime import NON_CHECKPOINT_STATE_KEYS
+
         forbidden_result_keys = sorted(
             key
             for key in result_keys
-            if key in {"_deps", "dream_deps"} or key.startswith("_rt_")
+            if key in NON_CHECKPOINT_STATE_KEYS or key.startswith("_rt_")
         )
         if forbidden_result_keys:
             raise RustWorkerError(

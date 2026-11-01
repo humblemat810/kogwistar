@@ -129,10 +129,12 @@ def rust_runtime_authority_selected() -> bool:
 
 
 def _json_state(initial_state: Mapping[str, Any]) -> dict[str, Any]:
+    from .base_runtime import NON_CHECKPOINT_STATE_KEYS
+
     durable = {
         key: value
         for key, value in initial_state.items()
-        if key not in {"_deps", "dream_deps"}
+        if key not in NON_CHECKPOINT_STATE_KEYS
     }
     try:
         value = normalize_json_value(durable, field="initial_state")
@@ -320,10 +322,12 @@ def _client_result_effect(
     update = getattr(client_result, "update", None)
     if isinstance(update, Mapping):
         result_keys.update(str(key) for key in update)
+    from .base_runtime import NON_CHECKPOINT_STATE_KEYS
+
     forbidden_result_keys = sorted(
         key
         for key in result_keys
-        if key in {"_deps", "dream_deps"} or key.startswith("_rt_")
+        if key in NON_CHECKPOINT_STATE_KEYS or key.startswith("_rt_")
     )
     if forbidden_result_keys:
         raise RustRuntimeAuthorityError(
