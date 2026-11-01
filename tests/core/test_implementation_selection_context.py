@@ -984,14 +984,15 @@ def test_native_extension_store_entrypoints_reject_worker_callback() -> None:
     from kogwistar import _rust
 
     entrypoints = (
-        _rust.store_sqlite_json,
-        _rust.store_postgres_json,
+        (_rust.store_sqlite_json, ("{}",)),
+        (_rust.store_postgres_json, ("{}",)),
+        (_rust.api_run_server, ()),
     )
     expected = "transaction authority cannot be opened from a worker callback"
-    for entrypoint in entrypoints:
+    for entrypoint, args in entrypoints:
         with callback_execution_scope():
             with pytest.raises(RuntimeError, match=expected):
-                entrypoint("{}")
+                entrypoint(*args)
 
 
 def test_postgres_sql_write_primitives_cannot_be_called_from_worker_callback() -> None:

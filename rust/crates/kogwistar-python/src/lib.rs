@@ -6836,6 +6836,7 @@ fn api_cli_health(payload_json: &str) -> PyResult<String> {
 
 #[pyfunction]
 fn api_run_server(py: Python<'_>) -> PyResult<()> {
+    assert_transaction_entry_allowed_from_callback(py)?;
     py.detach(|| {
         TokioRuntimeBuilder::new_multi_thread()
             .enable_all()
