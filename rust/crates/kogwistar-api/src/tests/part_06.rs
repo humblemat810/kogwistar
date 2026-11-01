@@ -3800,7 +3800,11 @@
             body: serde_json::to_vec(&json!({
                 "workflow_id": workflow_id,
                 "conversation_id": "answer-conversation",
-                "run_id": "answer-run-python-worker"
+                "run_id": "answer-run-python-worker",
+                "initial_state": {
+                    "_rt_graph_scope": {"storage_namespace":"attacker-scope"},
+                    "_rt_run_owner_id": "attacker"
+                }
             }))
             .unwrap(),
             principal: json!({
@@ -3827,6 +3831,16 @@
         assert_eq!(claimed[0].step_id.as_deref(), Some("node-start"));
         assert_eq!(claimed[0].payload["op"], "start");
         assert_eq!(claimed[0].payload["executor_target"], "python-worker");
+        assert_eq!(
+            claimed[0].payload["initial_state"]["_rt_graph_scope"]["storage_namespace"],
+            "conversation",
+            "SQLite admission must replace caller-supplied runtime scope with authenticated scope"
+        );
+        assert_eq!(
+            claimed[0].payload["initial_state"]["_rt_run_owner_id"],
+            "alice",
+            "SQLite admission must replace caller-supplied runtime owner"
+        );
 
         drop(service);
         std::fs::remove_file(path).unwrap();

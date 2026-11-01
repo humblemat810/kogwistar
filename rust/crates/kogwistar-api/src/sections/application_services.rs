@@ -1022,6 +1022,61 @@ impl ApplicationService for SqliteRunApplicationService {
                     .insert("authorized_candidate_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
             } else if work.payload.get("op").and_then(Value::as_str)
+                == Some("aa_project_pointers")
+            {
+                let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
+                let records = self
+                    .native_pointer_context(&native_request, None)
+                    .await
+                    .map_err(|error| match error {
+                        NativeEvidenceContextError::OwnerAuthorization => {
+                            "native pointer projection requires the run owner's current read_graph authority"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadRejected => {
+                            "native pointer projection input or evidence is not authorized"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadUnavailable => {
+                            "native pointer projection storage is temporarily unavailable"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::CallerNotRunOwner => unreachable!(
+                            "inline native work has no external caller principal"
+                        ),
+                    })?;
+                native_request
+                    .ephemeral_context
+                    .insert("authorized_pointer_records".to_owned(), records);
+                native_result_from_request(handoff, native_request, &self.native_operations)?
+            } else if work.payload.get("op").and_then(Value::as_str)
+                == Some("link_assistant_turn")
+            {
+                let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
+                let records = self
+                    .native_turn_link_context(&native_request, None)
+                    .await
+                    .map_err(|error| match error {
+                        NativeEvidenceContextError::OwnerAuthorization => {
+                            "native turn linking requires the run owner's current read_graph authority"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadRejected => {
+                            "native turn linking requires visible, active turns in this conversation"
+                                .to_owned()
+                        }
+                        NativeEvidenceContextError::GraphReadUnavailable => {
+                            "native turn storage is temporarily unavailable".to_owned()
+                        }
+                        NativeEvidenceContextError::CallerNotRunOwner => unreachable!(
+                            "inline native work has no external caller principal"
+                        ),
+                    })?;
+                native_request
+                    .ephemeral_context
+                    .insert("authorized_turn_records".to_owned(), records);
+                native_result_from_request(handoff, native_request, &self.native_operations)?
+            } else if work.payload.get("op").and_then(Value::as_str)
                 == Some("aa_generate_answer_with_citations")
             {
                 let (handoff, native_request) = native_request_for_claimed_work(&work)?;

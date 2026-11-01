@@ -2592,6 +2592,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 #[tokio::test]
 async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -2728,6 +2729,85 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .with_owner_auth_config(&owner_auth)
             .await
             .unwrap();
+
+        let workflow_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+        )))
+        .unwrap();
+        let workflow_id = "debug.rag.v1";
+        let workflow = &workflow_contract["workflows"][workflow_id];
+        let nodes = workflow["required_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| {
+                let op = value.as_str().unwrap();
+                json!({
+                    "id": op,
+                    "label": op,
+                    "metadata": {
+                        "entity_type": "workflow_node",
+                        "workflow_id": workflow_id,
+                        "wf_op": op,
+                        "wf_version": "v1",
+                        "wf_executor_target": "rust-native",
+                        "wf_start": op == "start"
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let edges = workflow["required_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, route)| {
+                json!({
+                    "id": format!("debug-rag-route-{index}"),
+                    "source_ids": [route["from"]],
+                    "target_ids": [route["to"]],
+                    "metadata": {
+                        "entity_type": "workflow_edge",
+                        "workflow_id": workflow_id,
+                        "wf_predicate": route["predicate"],
+                        "wf_priority": route["priority"],
+                        "wf_is_default": route["default"],
+                        "wf_multiplicity": route["multiplicity"]
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        service
+            .store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        service
+            .store
+            .put_workflow_design_snapshot(
+                workflow_id,
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({ "nodes": nodes, "edges": edges }))
+                        .unwrap(),
+                },
+            )
+            .unwrap();
         assert!(service.supports_http_operation("POST", "/api/conversations"));
         assert!(service.supports_mcp_tool("conversation", "conversation.ask"));
 
@@ -2805,7 +2885,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                     "args":{
                         "conversation_id":"conversation-create-contract",
                         "text":"A durable user turn",
-                        "workflow_id":"conversation-turn-contract-workflow"
+                        "workflow_id":workflow_id
                     }
                 }))
                 .unwrap(),
@@ -2844,6 +2924,54 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                 .ok()
                 .is_some_and(|payload| payload["metadata"]["entity_type"] == "acl_record")
         }));
+
+        for _ in 0..32 {
+            let status = service
+                .store
+                .get_server_run(run_id)
+                .unwrap()
+                .expect("admitted answer run remains durable");
+            if matches!(status.status.as_str(), "succeeded" | "failed" | "cancelled") {
+                break;
+            }
+            assert!(
+                service.execute_inline_native_work_once().await.unwrap(),
+                "native scheduler stopped before the answer run became terminal: {status:#?}"
+            );
+        }
+        let completed_run = service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .expect("completed answer run remains durable");
+        assert_eq!(completed_run.status, "succeeded");
+        let runtime = service
+            .store
+            .read_recorded_runtime_state(run_id, workflow_id, "conversation-create-contract")
+            .unwrap()
+            .expect("successful run has durable runtime state");
+        assert_eq!(runtime.state["done"], true);
+        assert_eq!(runtime.state["answer"]["mode"], "debug_rag");
+        let assistant_id = runtime.state["agentic_answering_result"]["assistant_turn_node_id"]
+            .as_str()
+            .expect("answer workflow records the assistant turn")
+            .to_owned();
+        let assistant = service
+            .store
+            .latest_entity_events("conversation", "node", &[assistant_id.clone()])
+            .unwrap();
+        assert!(assistant.contains_key(&assistant_id), "assistant turn is canonical");
+        let edges = service.store.replay_raw_events("conversation", 0, 100).unwrap();
+        assert!(edges.iter().any(|event| {
+            event.entity_kind == "edge"
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| {
+                        payload["relation"] == "next_turn"
+                            && payload["source_ids"] == json!([runtime.state["turn_node_id"]])
+                            && payload["target_ids"] == json!([assistant_id])
+                    })
+        }), "assistant turn {assistant_id} is linked to user turn {} by the canonical graph edge", runtime.state["turn_node_id"]);
 
         let duplicate = service.execute(request()).await;
         assert_eq!(duplicate.status, StatusCode::CONFLICT.as_u16());

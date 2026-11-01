@@ -2987,6 +2987,349 @@ impl SqliteRunApplicationService {
         ))
     }
 
+    async fn native_pointer_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let run = self
+            .store
+            .get_server_run(&request.run_id)
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        if caller.is_some_and(|caller| authenticated_run_owner_id(caller) != Some(owner_id)) {
+            return Err(NativeEvidenceContextError::CallerNotRunOwner);
+        }
+        let mut principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?;
+        principal["actor_id"] = json!(owner_id);
+
+        let read_ids = |field: &str| -> Result<Vec<String>, NativeEvidenceContextError> {
+            let Some(value) = request.state.get(field) else {
+                return Ok(Vec::new());
+            };
+            value
+                .as_array()
+                .filter(|values| values.len() <= 100)
+                .ok_or(NativeEvidenceContextError::GraphReadRejected)?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                        .map(str::to_owned)
+                        .ok_or(NativeEvidenceContextError::GraphReadRejected)
+                })
+                .collect()
+        };
+        let used_ids = read_ids("used_node_ids")?;
+        let conversation_id = request
+            .state
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .filter(|id| *id == request.conversation_id)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let run_node_id = request
+            .state
+            .get("run_node_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let pointer_ids = used_ids
+            .iter()
+            .map(|id| {
+                crate::native_answer_persist::stable_conversation_id(
+                    "ptr",
+                    &[
+                        ("scope", &format!("conv:{conversation_id}")),
+                        ("pointer_kind", "kg_node"),
+                        ("target_kind", "node"),
+                        ("target_id", id),
+                    ],
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let mut wanted_nodes = pointer_ids.clone();
+        wanted_nodes.insert(run_node_id.to_owned());
+        let wanted_edges = pointer_ids
+            .iter()
+            .map(|pointer_id| {
+                crate::native_answer_persist::stable_conversation_id(
+                    "e",
+                    &[
+                        ("scope", &format!("conv:{conversation_id}")),
+                        ("rel", "used_evidence"),
+                        ("src", run_node_id),
+                        ("dst", pointer_id),
+                    ],
+                )
+            })
+            .collect::<BTreeSet<_>>();
+
+        let scope = security_scope_value(&principal);
+        let namespace = scope["storage_namespace"]
+            .as_str()
+            .unwrap_or("default");
+        let mut filter = MetadataFilter::default();
+        if let Some(workspace) = principal
+            .get("workspace_id")
+            .or_else(|| principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            filter.equals.insert("workspace_id".to_owned(), json!(workspace));
+        }
+        if let Some(graph_space) = principal.get("graph_space").and_then(Value::as_str) {
+            filter.equals.insert("graph_space".to_owned(), json!(graph_space));
+        }
+        let graph = self
+            .chroma_graph
+            .as_ref()
+            .ok_or(NativeEvidenceContextError::GraphReadUnavailable)?;
+        const MAX_POINTER_SNAPSHOT_RECORDS: usize = 10_000;
+        let (mut nodes, mut edges) = tokio::try_join!(
+            graph.graph_records_of_kind_bounded(
+                namespace,
+                GraphEntityKind::Node,
+                &filter,
+                MAX_POINTER_SNAPSHOT_RECORDS,
+            ),
+            graph.graph_records_of_kind_bounded(
+                namespace,
+                GraphEntityKind::Edge,
+                &filter,
+                MAX_POINTER_SNAPSHOT_RECORDS,
+            ),
+        )
+        .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        self.filter_current_chroma_stage2(namespace, &mut nodes, &mut edges)
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        for (kind, records) in [("node", &mut nodes), ("edge", &mut edges)] {
+            self.merge_current_stage1_records(
+                namespace,
+                kind,
+                &filter,
+                records,
+                MAX_POINTER_SNAPSHOT_RECORDS,
+            )
+            .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
+        }
+        let acl_principal = graph_acl_principal_from_claims(
+            &principal,
+            scope["security_scope"].as_str(),
+        );
+        let knowledge = GraphAclProjection::from_complete_snapshot(
+            &nodes,
+            &edges,
+            "knowledge",
+            &acl_principal,
+        );
+        let conversation = GraphAclProjection::from_complete_snapshot(
+            &nodes,
+            &edges,
+            "conversation",
+            &acl_principal,
+        );
+        let selected = used_ids.iter().cloned().collect::<BTreeSet<_>>();
+        let knowledge_records = knowledge
+            .nodes()
+            .iter()
+            .filter(|record| selected.contains(&record.id))
+            .collect::<Vec<_>>();
+        let visible_knowledge = knowledge_records
+            .iter()
+            .filter(|record| {
+                !matches!(
+                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                    Some("tombstoned" | "deleted")
+                )
+            })
+            .map(|record| record.id.clone())
+            .collect::<BTreeSet<_>>();
+        if visible_knowledge != selected {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let conversation_nodes = conversation
+            .nodes()
+            .iter()
+            .filter(|record| wanted_nodes.contains(&record.id))
+            .collect::<Vec<_>>();
+        let conversation_edges = conversation
+            .edges()
+            .iter()
+            .filter(|record| wanted_edges.contains(&record.id))
+            .collect::<Vec<_>>();
+        let raw_node_ids = nodes
+            .iter()
+            .filter(|record| wanted_nodes.contains(&record.id))
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let raw_edge_ids = edges
+            .iter()
+            .filter(|record| wanted_edges.contains(&record.id))
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if conversation_nodes.iter().map(|record| record.id.as_str()).collect::<BTreeSet<_>>()
+            != raw_node_ids
+            || conversation_edges.iter().map(|record| record.id.as_str()).collect::<BTreeSet<_>>()
+                != raw_edge_ids
+        {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let run_record = conversation_nodes
+            .iter()
+            .find(|record| record.id == run_node_id)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        if run_record.metadata.get("entity_type").and_then(Value::as_str) != Some("agent_run")
+            || run_record.metadata.get("conversation_id").and_then(Value::as_str)
+                != Some(conversation_id)
+            || matches!(
+                run_record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                Some("tombstoned" | "deleted")
+            )
+        {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        let project = |records: Vec<&GraphRecord>| {
+            records
+                .into_iter()
+                .map(|record| {
+                    json!({"id": record.id, "document": record.document, "metadata": record.metadata})
+                })
+                .collect::<Vec<_>>()
+        };
+        Ok(json!({
+            "knowledge_nodes": project(knowledge_records),
+            "conversation_nodes": project(conversation_nodes),
+            "conversation_edges": project(conversation_edges)
+        }))
+    }
+
+    async fn native_turn_link_context(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        caller: Option<&Value>,
+    ) -> Result<Value, NativeEvidenceContextError> {
+        let response_id = request
+            .state
+            .get("answer")
+            .and_then(Value::as_object)
+            .and_then(|answer| {
+                answer
+                    .get("response_node_id")
+                    .or_else(|| answer.get("assistant_turn_node_id"))
+            })
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .or_else(|| {
+                request
+                    .state
+                    .get("agentic_answering_result")
+                    .and_then(Value::as_object)
+                    .and_then(|result| {
+                        result
+                            .get("assistant_turn_node_id")
+                            .or_else(|| result.get("response_node_id"))
+                    })
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+            });
+        let Some(response_id) = response_id else {
+            return Ok(json!({"nodes": [], "edges": []}));
+        };
+        let user_turn_id = request
+            .state
+            .get("turn_node_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let conversation_id = request
+            .state
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .filter(|id| *id == request.conversation_id)
+            .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+        let run = self
+            .store
+            .get_server_run(&request.run_id)
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
+        if caller.is_some_and(|caller| authenticated_run_owner_id(caller) != Some(owner_id)) {
+            return Err(NativeEvidenceContextError::CallerNotRunOwner);
+        }
+        let mut principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| NativeEvidenceContextError::OwnerAuthorization)?;
+        principal["actor_id"] = json!(owner_id);
+        let graph_request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: String::new(),
+            body: Vec::new(),
+            principal,
+        };
+        let snapshot = self
+            .chroma_graph_snapshot(&graph_request, "conversation")
+            .await
+            .map_err(|response| {
+                if response.status >= StatusCode::INTERNAL_SERVER_ERROR.as_u16() {
+                    NativeEvidenceContextError::GraphReadUnavailable
+                } else {
+                    NativeEvidenceContextError::GraphReadRejected
+                }
+            })?;
+        let nodes = snapshot
+            .nodes()
+            .iter()
+            .filter(|record| record.id == user_turn_id || record.id == response_id)
+            .collect::<Vec<_>>();
+        if nodes.len() != 2 {
+            return Err(NativeEvidenceContextError::GraphReadRejected);
+        }
+        for (expected_id, expected_type) in [
+            (user_turn_id, "conversation_turn"),
+            (response_id, "assistant_turn"),
+        ] {
+            let record = nodes
+                .iter()
+                .find(|record| record.id == expected_id)
+                .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
+            let actual_type = record.metadata.get("entity_type").and_then(Value::as_str);
+            let type_matches = actual_type == Some(expected_type)
+                || (expected_type == "assistant_turn" && actual_type == Some("conversation_turn"));
+            if !type_matches
+                || record.metadata.get("conversation_id").and_then(Value::as_str)
+                    != Some(conversation_id)
+                || matches!(
+                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                    Some("tombstoned" | "deleted")
+                )
+            {
+                return Err(NativeEvidenceContextError::GraphReadRejected);
+            }
+        }
+        Ok(json!({
+            "nodes": nodes.into_iter().map(|record| json!({
+                "id": record.id,
+                "document": record.document,
+                "metadata": record.metadata
+            })).collect::<Vec<_>>(),
+            "edges": []
+        }))
+    }
+
     async fn persist_sqlite_native_answer_snapshot(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
@@ -4554,6 +4897,17 @@ impl SqliteRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state.clone();
+        // Runtime scope and owner are server-derived authority, never caller state.
+        // Keep SQLite admission aligned with PostgreSQL before scheduling any step.
+        initial_state.remove("_rt_graph_scope");
+        initial_state.remove("_rt_run_owner_id");
+        initial_state.insert(
+            "_rt_graph_scope".to_owned(),
+            security_scope_value(&request.principal),
+        );
+        if let Some(owner_id) = run_user_id.as_deref() {
+            initial_state.insert("_rt_run_owner_id".to_owned(), json!(owner_id));
+        }
         install_authoritative_node_executor_targets(
             &mut initial_state,
             &effective_node_executor_targets,

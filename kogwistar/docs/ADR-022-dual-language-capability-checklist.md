@@ -253,9 +253,10 @@ synchronous Chroma mutation; the full `kogwistar-api` library suite passed
 `test_submit_turn_for_answer_rejects_user_id_not_owned_by_conversation`, and
 `test_submit_turn_for_answer_keeps_authorized_actor_distinct_from_owner` also
 passed (**3 passed**), confirming the corresponding capability, owner, and
-actor/owner separation semantics. This closes the bounded user-turn admission
-step only; it does not verify Python worker completion or a full SQLite+Chroma
-answer run.
+actor/owner separation semantics. The deterministic Rust-native `debug.rag.v1`
+workflow now runs from admitted user turn through terminal success on configured
+SQLite+Chroma; Python-worker completion and provider-backed workflow parity
+remain separate requirements.
 
 DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
@@ -312,16 +313,21 @@ persists semantic stream events with trace metadata and lane messages in SQLite,
 and leaves index jobs for eventual Chroma projection. The local fake-provider
 integration `sqlite_chroma_native_answer_snapshots_before_provider_and_persists_stream_events`
 verifies snapshot-before-provider ordering, successful structured output,
-durable provider events, and queued index jobs. This is executor-level evidence,
-not a complete user-submission-to-terminal-turn run; full SQLite+Chroma workflow
-progression remains open. Candidate retrieval
+durable provider events, and queued index jobs. That provider test is
+executor-level evidence. The deterministic `debug.rag.v1` native run now
+verifies user submission through terminal success, authorized pointer
+projection, assistant persistence,
+and the canonical `next_turn` edge in SQLite events; the `sqlite_chroma` API
+subset passed (**14 passed, 1 ignored**). This does not prove provider-backed
+`agentic_answering.v2` or Python-worker completion. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
 ACL records before projecting candidates. The generic Chroma and in-memory
 contract tests cover backend query filtering, top-N order, and the read-only
 shadow wrapper; `sqlite_native_candidates_exclude_acl_private_and_tombstoned_records`
-covers candidate projection's ACL and lifecycle filtering. This still does not
-prove the complete answer workflow on SQLite+Chroma.
+covers candidate projection's ACL and lifecycle filtering. Provider-backed and
+cross-runtime completion remain open; the deterministic debug workflow is
+verified end to end.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies
@@ -351,10 +357,12 @@ than bare vectors. Legacy ACL filtering functions remain available. The store
 test `acl_projection_reuses_index_after_helper_records_are_removed` proves
 stable authorized visibility through the typed projection and fail-closed
 behavior when ACL context is incorrectly rebuilt from filtered records. The
-store library suite passed (**42 passed**), the full API library suite passed
-(**222 passed, 22 ignored**), and the SQLite+Chroma create-and-send admission
-regression passed (**1 passed**). This adds evidence to the existing DL-16BQ
-gate; it does not add a checklist item or change the denominator.
+store library suite passed (**42 passed**), and the full API library suite
+passed (**222 passed, 22 ignored**), including the SQLite+Chroma native
+end-to-end debug workflow. The focused `sqlite_chroma` API subset also passed
+(**14 passed, 1 ignored**); the ignored test requires an explicitly configured
+live Chroma service. This adds evidence to the existing DL-16BQ gate; it does
+not add a checklist item or change the denominator.
 
 The dual-language architecture is implemented for a capability only when its
 applicable contract, transaction-seam, authority, parity, and support-matrix
