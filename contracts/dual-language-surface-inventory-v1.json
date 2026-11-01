@@ -12,7 +12,7 @@
     "http_operations": 84,
     "mcp_operations": 62,
     "pending_http_operations": 6,
-    "allowlisted_mcp_operations": 50,
+    "allowlisted_mcp_operations": 52,
     "pending_syscalls": 4
   },
   "http_operations": [
@@ -604,13 +604,13 @@
       "surface": "root",
       "name": "kg_viz_cytoscape_json",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "root",
       "name": "kg_viz_d3_json",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "root",
