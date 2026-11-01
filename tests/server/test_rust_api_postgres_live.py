@@ -2309,6 +2309,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         mcp_answer_state = mcp_answer_checkpoints.json()["checkpoints"][-1]["state"]
         assert mcp_answer_state["answer"]["mode"] == "debug_rag"
         assert mcp_answer_state["agentic_answering_result"]["assistant_text"]
+        mcp_assistant_edge_id = mcp_answer_state["assistant_turn_edge_id"]
         mcp_assistant_turn_id = mcp_answer_state["agentic_answering_result"][
             "assistant_turn_node_id"
         ]
@@ -2318,9 +2319,23 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             python_rust_nodes = conversation_engine.read.get_nodes(
                 where={"conversation_id": rust_conversation_id}
             )
+            rest_next_edges = conversation_engine.read.get_edges(
+                ids=[rust_answer_state["assistant_turn_edge_id"]], edge_type=Edge
+            )
+            mcp_next_edges = conversation_engine.read.get_edges(
+                ids=[mcp_assistant_edge_id], edge_type=Edge
+            )
         finally:
             claims_ctx.reset(conversation_read_token)
         assert any(node.id == rust_start_node_id for node in python_rust_nodes)
+        assert len(rest_next_edges) == 1
+        assert rest_next_edges[0].source_ids == [rust_user_turn_id]
+        assert rest_next_edges[0].target_ids == [rust_assistant_turn_id]
+        assert rest_next_edges[0].relation == "next_turn"
+        assert len(mcp_next_edges) == 1
+        assert mcp_next_edges[0].source_ids == [rust_syscall_turn_id]
+        assert mcp_next_edges[0].target_ids == [mcp_assistant_turn_id]
+        assert mcp_next_edges[0].relation == "next_turn"
         python_rust_transcript = [
             {
                 "node_id": node.id,
