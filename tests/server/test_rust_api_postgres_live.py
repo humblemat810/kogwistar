@@ -2015,7 +2015,34 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "capabilities": ["workflow.design.write", "workflow.design.inspect"],
             "exp": 4_102_444_800,
         }
+        python_worker_operations = {
+            "start",
+            "aa_debug_answer_from_nodes",
+            "end",
+        }
+        rust_native_operations = {
+            "aa_prepare",
+            "aa_get_view_and_question",
+            "aa_retrieve_candidates",
+            "aa_debug_select_top_candidates",
+            "aa_project_pointers",
+            "aa_persist_response",
+            "link_assistant_turn",
+        }
+        assert set(workflow_spec["required_ops"]) == (
+            python_worker_operations | rust_native_operations
+        )
         for operation in workflow_spec["required_ops"]:
+            executor_target = (
+                "python-worker"
+                if operation in python_worker_operations
+                else "rust-native"
+                if operation in rust_native_operations
+                else None
+            )
+            metadata = {"wf_version": workflow_spec["python_op_version"]}
+            if executor_target is not None:
+                metadata["wf_executor_target"] = executor_target
             design_response = httpx.post(
                 f"{base}/api/workflow/design/{workflow_id}/nodes",
                 headers={
@@ -2028,10 +2055,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                     "op": operation,
                     "start": operation == "start",
                     "terminal": operation == "end",
-                    "metadata": {
-                        "wf_version": workflow_spec["python_op_version"],
-                        "wf_executor_target": "python-worker",
-                    },
+                    "metadata": metadata,
                 },
                 timeout=10,
             )
@@ -2080,6 +2104,97 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert rust_turn_payload["workflow_id"] == workflow_id
         assert rust_turn_payload["status"] == "queued"
         rust_user_turn_id = rust_turn_payload["user_turn_node_id"]
+
+        from kogwistar.conversation.resolvers import default_resolver
+
+        monkeypatch.setattr(
+            conversation_engine.write,
+            "add_node",
+            lambda *_args, **_kwargs: pytest.fail(
+                "Rust-owned answer worker must not write nodes through Python"
+            ),
+        )
+        monkeypatch.setattr(
+            conversation_engine.write,
+            "add_edge",
+            lambda *_args, **_kwargs: pytest.fail(
+                "Rust-owned answer worker must not write edges through Python"
+            ),
+        )
+        with RustRuntimeWorker.from_step_resolver(
+            base_url=base,
+            worker_id="python-answer-worker",
+            journal_path=tmp_path / "rust-admitted-answer-worker.sqlite",
+            step_resolver=default_resolver,
+            dependency_provider=lambda _work: {},
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+            },
+        ) as answer_worker:
+            processed_ops: list[str] = []
+            worker_deadline = time.monotonic() + 30
+            while time.monotonic() < worker_deadline:
+                owner_context = claims_ctx.set(conversation_owner)
+                try:
+                    claimed = answer_worker.claim(
+                        run_id=rust_turn_payload["run_id"], limit=1
+                    )
+                    if claimed:
+                        processed_ops.append(claimed[0]["payload"]["op"])
+                        result = answer_worker.process(claimed[0])
+                        assert result["event_seq"] > 0
+                finally:
+                    claims_ctx.reset(owner_context)
+                current_run = httpx.get(
+                    f"{base}/api/workflow/runs/{rust_turn_payload['run_id']}",
+                    headers={
+                        "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+                    },
+                    timeout=10,
+                )
+                assert current_run.status_code == 200, current_run.text
+                current_status = current_run.json()["status"]
+                if current_status == "succeeded":
+                    break
+                assert current_status not in {"failed", "cancelled"}, (
+                    current_run.json().get("error")
+                )
+                if not claimed:
+                    time.sleep(0.05)
+            else:
+                pytest.fail("Rust/Python answer workflow did not finish in 30 seconds")
+            assert processed_ops == [
+                "start",
+                "aa_debug_answer_from_nodes",
+                "end",
+            ]
+        rust_answer_run = httpx.get(
+            f"{base}/api/workflow/runs/{rust_turn_payload['run_id']}",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+            },
+            timeout=10,
+        )
+        assert rust_answer_run.status_code == 200, rust_answer_run.text
+        answer_run_payload = rust_answer_run.json()
+        assert answer_run_payload["status"] == "succeeded", answer_run_payload.get(
+            "error"
+        )
+        rust_answer_checkpoints = httpx.get(
+            f"{base}/api/workflow/runs/{rust_turn_payload['run_id']}/checkpoints",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, turn_claims)}"
+            },
+            timeout=10,
+        )
+        assert rust_answer_checkpoints.status_code == 200, rust_answer_checkpoints.text
+        rust_answer_state = rust_answer_checkpoints.json()["checkpoints"][-1]["state"]
+        assert rust_answer_state["answer"]["mode"] == "debug_rag"
+        assert rust_answer_state["agentic_answering_result"]["assistant_text"]
+        rust_assistant_turn_id = rust_answer_state["agentic_answering_result"][
+            "assistant_turn_node_id"
+        ]
+
         rust_syscall_turn = rust_syscall(
             "send_message",
             {
@@ -2116,7 +2231,10 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             }
             for node in sorted(
                 python_rust_nodes,
-                key=lambda node: (node.turn_index, node.id),
+                key=lambda node: (
+                    node.turn_index if isinstance(node.turn_index, int) else -1,
+                    node.id,
+                ),
             )
             if node.metadata.get("entity_type")
             in {"conversation_turn", "assistant_turn"}
@@ -2130,8 +2248,17 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "entity_type": "conversation_turn",
             },
             {
-                "node_id": rust_syscall_turn_id,
+                "node_id": rust_assistant_turn_id,
                 "turn_index": 1,
+                "role": "assistant",
+                "content": rust_answer_state["agentic_answering_result"][
+                    "assistant_text"
+                ],
+                "entity_type": "assistant_turn",
+            },
+            {
+                "node_id": rust_syscall_turn_id,
+                "turn_index": 2,
                 "role": "user",
                 "content": "Rust persisted syscall question",
                 "entity_type": "conversation_turn",
