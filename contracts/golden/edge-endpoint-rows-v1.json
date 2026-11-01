@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "edge": {
+    "id": "edge-1",
+    "source_ids": ["node-source"],
+    "target_ids": ["node-target"],
+    "source_edge_ids": ["edge-parent"],
+    "target_edge_ids": [],
+    "doc_id": "doc-1",
+    "relation": "supports",
+    "metadata": {"causal_type": "dependency"}
+  },
+  "expected_rows": [
+    {
+      "id": "edge-1::src::node::node-source",
+      "edge_id": "edge-1",
+      "endpoint_id": "node-source",
+      "endpoint_type": "node",
+      "role": "src",
+      "doc_id": "doc-1",
+      "relation": "supports",
+      "causal_type": "dependency"
+    },
+    {
+      "id": "edge-1::tgt::node::node-target",
+      "edge_id": "edge-1",
+      "endpoint_id": "node-target",
+      "endpoint_type": "node",
+      "role": "tgt",
+      "doc_id": "doc-1",
+      "relation": "supports",
+      "causal_type": "dependency"
+    },
+    {
+      "id": "edge-1::src::edge::edge-parent",
+      "edge_id": "edge-1",
+      "endpoint_id": "edge-parent",
+      "endpoint_type": "edge",
+      "role": "src",
+      "doc_id": "doc-1",
+      "relation": "supports",
+      "causal_type": "dependency"
+    }
+  ]
+}

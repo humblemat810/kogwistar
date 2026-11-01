@@ -95,6 +95,60 @@ pub(crate) fn graph_edge_endpoint_ids(
     }
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/graph/indexing.rs#graph_edge_endpoint_rows; python=kogwistar/engine_core/edge_endpoint_rows.py#edge_endpoint_rows; fixture=contracts/golden/edge-endpoint-rows-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#graph_edge_endpoint_rows_match_shared_python_fixture; python_test=tests/core/test_edge_endpoint_rows.py#test_endpoint_rows_match_shared_rust_fixture
+pub(crate) fn graph_edge_endpoint_rows(
+    edge_id: &str,
+    payload: &Value,
+) -> PostgresStoreResult<Vec<Map<String, Value>>> {
+    if edge_id.is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let object = payload.as_object().ok_or_else(|| {
+        PostgresStoreError::Backend("edge mutation payload must be a JSON object".to_owned())
+    })?;
+    let relation = object.get("relation").filter(|value| !value.is_null());
+    let doc_id = object.get("doc_id").filter(|value| !value.is_null());
+    let causal_type = object
+        .get("metadata")
+        .and_then(Value::as_object)
+        .and_then(|metadata| metadata.get("causal_type"))
+        .filter(|value| !value.is_null());
+
+    let mut rows = Vec::new();
+    for (role, field, endpoint_type) in [
+        ("src", "source_ids", "node"),
+        ("tgt", "target_ids", "node"),
+        ("src", "source_edge_ids", "edge"),
+        ("tgt", "target_edge_ids", "edge"),
+    ] {
+        for endpoint_id in graph_edge_endpoint_ids(payload, field)? {
+            let mut row = Map::new();
+            row.insert(
+                "id".to_owned(),
+                Value::String(format!("{edge_id}::{role}::{endpoint_type}::{endpoint_id}")),
+            );
+            row.insert("edge_id".to_owned(), Value::String(edge_id.to_owned()));
+            row.insert("endpoint_id".to_owned(), Value::String(endpoint_id));
+            row.insert(
+                "endpoint_type".to_owned(),
+                Value::String(endpoint_type.to_owned()),
+            );
+            row.insert("role".to_owned(), Value::String(role.to_owned()));
+            if let Some(value) = relation {
+                row.insert("relation".to_owned(), value.clone());
+            }
+            if let Some(value) = doc_id {
+                row.insert("doc_id".to_owned(), value.clone());
+            }
+            if let Some(value) = causal_type {
+                row.insert("causal_type".to_owned(), value.clone());
+            }
+            rows.push(row);
+        }
+    }
+    Ok(rows)
+}
+
 pub(crate) async fn sync_graph_edge_endpoints<C>(
     client: &C,
     tables: &Tables,
@@ -134,7 +188,6 @@ where
     if edge_id.is_empty() {
         return Err(StoreError::EmptyRecordId.into());
     }
-
     client
         .execute(
             &format!(
@@ -149,59 +202,25 @@ where
     let Some(payload) = payload else {
         return Ok(());
     };
-    let object = payload.as_object().ok_or_else(|| {
-        PostgresStoreError::Backend("edge mutation payload must be a JSON object".to_owned())
-    })?;
-    let relation = object.get("relation").filter(|value| !value.is_null());
-    let doc_id = object.get("doc_id").filter(|value| !value.is_null());
-    let causal_type = object
-        .get("metadata")
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("causal_type"))
-        .filter(|value| !value.is_null());
-
-    for (role, field, endpoint_type) in [
-        ("src", "source_ids", "node"),
-        ("tgt", "target_ids", "node"),
-        ("src", "source_edge_ids", "edge"),
-        ("tgt", "target_edge_ids", "edge"),
-    ] {
-        for endpoint_id in graph_edge_endpoint_ids(payload, field)? {
-            let row_id = format!("{}::{role}::{endpoint_type}::{endpoint_id}", edge_id);
-            let mut row = Map::new();
-            row.insert("id".to_owned(), Value::String(row_id.clone()));
-            row.insert("edge_id".to_owned(), Value::String(edge_id.to_owned()));
-            row.insert("endpoint_id".to_owned(), Value::String(endpoint_id));
-            row.insert(
-                "endpoint_type".to_owned(),
-                Value::String(endpoint_type.to_owned()),
-            );
-            row.insert("role".to_owned(), Value::String(role.to_owned()));
-            if let Some(value) = relation {
-                row.insert("relation".to_owned(), value.clone());
-            }
-            if let Some(value) = doc_id {
-                row.insert("doc_id".to_owned(), value.clone());
-            }
-            if let Some(value) = causal_type {
-                row.insert("causal_type".to_owned(), value.clone());
-            }
-
-            let row_document = serde_json::to_string(&row)?;
-            let metadata = serde_json::to_string(&graph_metadata(scope, &row)?)?;
-            client
-                .execute(
-                    &format!(
-                        "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
-                         ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
-                         metadata = EXCLUDED.metadata, updated_at = NOW()",
-                        tables.edge_endpoints
-                    ),
-                    &[&row_id, &row_document, &metadata],
-                )
-                .await
-                .map_err(backend)?;
-        }
+    for row in graph_edge_endpoint_rows(edge_id, payload)? {
+        let row_id = row
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| PostgresStoreError::Backend("endpoint row has no id".to_owned()))?;
+        let row_document = serde_json::to_string(&row)?;
+        let metadata = serde_json::to_string(&graph_metadata(scope, &row)?)?;
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
+                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                     metadata = EXCLUDED.metadata, updated_at = NOW()",
+                    tables.edge_endpoints
+                ),
+                &[&row_id, &row_document, &metadata],
+            )
+            .await
+            .map_err(backend)?;
     }
     Ok(())
 }

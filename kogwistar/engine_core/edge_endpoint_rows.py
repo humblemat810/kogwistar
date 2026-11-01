@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from ..json_types import JsonObject
+from ..json_types import JsonObject, JsonValue
 
 
 class EdgeEndpointLike(Protocol):
@@ -29,6 +29,9 @@ class EdgeEndpointLike(Protocol):
     @property
     def relation(self) -> str | None: ...
 
+    @property
+    def metadata(self) -> Mapping[str, JsonValue] | None: ...
+
     def safe_get_id(self) -> str: ...
 
 
@@ -51,6 +54,7 @@ def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[JsonObject]:
                 "role": role,
                 "doc_id": edge.doc_id,
                 "relation": edge.relation,
+                "causal_type": (edge.metadata or {}).get("causal_type"),
             })
     return [
         {key: value for key, value in row.items() if value is not None}

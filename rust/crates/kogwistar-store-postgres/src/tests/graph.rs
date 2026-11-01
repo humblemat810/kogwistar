@@ -74,6 +74,20 @@ fn graph_reference_rows_match_python_reference_projection_contract() {
     assert!(graph_reference_rows("document", "d-1", &document).is_empty());
 }
 
+#[test]
+fn graph_edge_endpoint_rows_match_shared_python_fixture() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/edge-endpoint-rows-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["schema_version"], 1);
+    let edge_id = fixture["edge"]["id"].as_str().unwrap();
+    let rows = crate::graph::graph_edge_endpoint_rows(edge_id, &fixture["edge"]).unwrap();
+    let actual: Vec<Value> = rows.into_iter().map(Value::Object).collect();
+    let expected: Vec<Value> = serde_json::from_value(fixture["expected_rows"].clone()).unwrap();
+    assert_eq!(actual, expected);
+}
+
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn concurrent_graph_schema_bootstrap_serializes_vector_extension_creation()
