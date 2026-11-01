@@ -6044,18 +6044,33 @@
 
         let syscall_audit = service
             .execute(read_request(
-                "/api/syscall/v1/audit?limit=10",
+            "/api/syscall/v1/audit?limit=100",
                 json!({"role":"ro","ns":["workflow"],"capabilities":["project_view"]}),
             ))
             .await;
         assert_eq!(syscall_audit.status, StatusCode::OK.as_u16());
         let syscall_audit: Value = serde_json::from_slice(&syscall_audit.body).unwrap();
-        let invoke_audit = syscall_audit["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|event| event["op"] == "invoke_tool")
-            .collect::<Vec<_>>();
+        let events = syscall_audit["events"].as_array().unwrap();
+        let audit_for = |operation: &str| {
+            events
+                .iter()
+                .filter(|event| event["op"] == operation)
+                .collect::<Vec<_>>()
+        };
+        let receive_audit = audit_for("receive_message");
+        assert_eq!(receive_audit.len(), 4);
+        assert_eq!(
+            receive_audit
+                .iter()
+                .filter(|event| event["status"] == "error")
+                .count(),
+            2
+        );
+        let mount_audit = audit_for("mount_memory");
+        assert_eq!(mount_audit.len(), 2);
+        assert_eq!(mount_audit[0]["status"], "error");
+        assert_eq!(mount_audit[1]["status"], "ok");
+        let invoke_audit = audit_for("invoke_tool");
         assert_eq!(invoke_audit.len(), 5);
         assert_eq!(
             invoke_audit.iter().filter(|event| event["status"] == "error").count(),

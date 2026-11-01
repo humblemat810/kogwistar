@@ -1389,10 +1389,28 @@ impl ApplicationService for SqliteRunApplicationService {
                         return self.sqlite_chroma_graph_mutation_effect(&request).await;
                     }
                     Some("/api/syscall/v1/receive_message") => {
-                        return self.sqlite_chroma_receive_message_effect(&request).await;
+                        let response = self.sqlite_chroma_receive_message_effect(&request).await;
+                        if let Ok(input) = syscall_input(&request, "receive_message") {
+                            syscall_audit(
+                                &self.capabilities,
+                                &input.version,
+                                "receive_message",
+                                syscall_audit_status(&response),
+                            );
+                        }
+                        return response;
                     }
                     Some("/api/syscall/v1/mount_memory") => {
-                        return self.sqlite_chroma_mount_memory_effect(&request).await;
+                        let response = self.sqlite_chroma_mount_memory_effect(&request).await;
+                        if let Ok(input) = syscall_input(&request, "mount_memory") {
+                            syscall_audit(
+                                &self.capabilities,
+                                &input.version,
+                                "mount_memory",
+                                syscall_audit_status(&response),
+                            );
+                        }
+                        return response;
                     }
                     Some("/api/syscall/v1/invoke_tool") => {
                         let response = self
