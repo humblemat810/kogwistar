@@ -32,7 +32,9 @@ from .step_context import (
 from .telemetry import EventEmitter, TraceContext
 from kogwistar.utils.log import bind_log_context
 
-CompletedStep: TypeAlias = tuple[str, StepRunResult, int, str, str | None, str, int]
+CompletedStep: TypeAlias = tuple[
+    str, StepRunResult, int, str, str | None, str, int, TraceContext | None
+]
 
 
 class StepWorkerConversationHost(Protocol):
@@ -279,6 +281,7 @@ class SyncStepWorker:
                         parent_token_id,
                         status,
                         mask,
+                        context.trace_ctx if context is not None else None,
                     )
                 )
                 with self.work_condition:

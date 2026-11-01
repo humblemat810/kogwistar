@@ -84,6 +84,7 @@ class SuspendedResumeHost(CheckpointRuntimeHost, Protocol):
         parent_token_id: str | None = None,
         join_mask: int | None = None,
         last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        trace_context: TraceContext | None = None,
     ) -> WorkflowStepExecNode: ...
 
     def _persist_checkpoint(
@@ -488,6 +489,12 @@ class SuspendedRunResumeMixin:
             last_exec_node=cast(
                 WorkflowStepExecNode | WorkflowRunNode | None,
                 previous_exec_node,
+            ),
+            trace_context=_resume_lifecycle_trace_context(
+                run_id=str(run_id),
+                token_id=str(suspended_token_id),
+                step_seq=int(step_seq_current),
+                node_id=str(suspended_node_id),
             ),
         )
         if (step_seq_current % self.checkpoint_every_n_steps) == 0:

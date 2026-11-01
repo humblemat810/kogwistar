@@ -9,10 +9,16 @@ import pytest
 
 from kogwistar._rust_bridge import RustExtensionUnavailableError
 from kogwistar.engine_core import GraphKnowledgeEngine
-from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.in_memory_backend import InMemoryBackend
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import (
+    RustEngineSQLite,
+    build_sqlite_meta_store,
+)
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.runtime import WorkflowRuntime
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_sync]
 
@@ -59,17 +65,27 @@ class _RuntimeLaneEdge:
 
 
 def _lane_runtime_engine(tmp_path: Path) -> GraphKnowledgeEngine:
+    def backend_factory(engine: GraphKnowledgeEngine) -> InMemoryBackend:
+        metadata = build_sqlite_meta_store(tmp_path, "meta.sqlite")
+        metadata.ensure_initialized()
+        engine.metadata = metadata
+        return InMemoryBackend(engine)
+
     return GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
         kg_graph_type="conversation",
-        backend_factory=build_in_memory_backend,
+        embedding_function=ConstantEmbeddingFunction(dim=4),
+        backend_factory=backend_factory,
     )
 
 
+@pytest.mark.parametrize("meta_store", ["python", "rust"])
 def test_python_runtime_matches_shared_native_increment_workflow_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, meta_store: str
 ) -> None:
-    """Run the shared native workflow trace through the Python runtime only."""
+    """Check Python trace persistence through both metadata authorities."""
+    if meta_store == "rust":
+        pytest.importorskip("kogwistar._rust")
     contract_path = (
         Path(__file__).resolve().parents[2]
         / "contracts"
@@ -116,12 +132,19 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         "KOGWISTAR_IMPL_SERVER",
     ):
         monkeypatch.delenv(selector, raising=False)
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", meta_store)
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
 
-    def unavailable_native_loader() -> None:
-        raise RustExtensionUnavailableError("Python-only runtime must not load Rust")
+    if meta_store == "python":
 
-    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable_native_loader)
+        def unavailable_native_loader() -> None:
+            raise RustExtensionUnavailableError(
+                "Python metadata mode must not load Rust"
+            )
+
+        monkeypatch.setattr(
+            "kogwistar._rust_bridge._load_extension", unavailable_native_loader
+        )
     monkeypatch.setattr(
         "kogwistar.runtime.runtime.validate_workflow_design",
         lambda **_kwargs: (nodes["first"], nodes, outgoing),
@@ -157,9 +180,13 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
             state_update=[("u", {"counter": int(ctx.state_view["counter"]) + 1})],
         )
 
+    conversation_engine = _lane_runtime_engine(tmp_path / "conversation")
+    conversation_engine._phase1_enable_index_jobs = False
+    if meta_store == "rust":
+        assert isinstance(conversation_engine.metadata, RustEngineSQLite)
     runtime = WorkflowRuntime(
         workflow_engine=cast(GraphKnowledgeEngine, object()),
-        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        conversation_engine=conversation_engine,
         step_resolver=resolver,
         predicate_registry={},
         sink=trace_capture,
@@ -183,7 +210,9 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
         if event["type"] == "step_attempt_completed"
     ]
     run_started = next(
-        event for event in trace_capture.events if event["type"] == "workflow_run_started"
+        event
+        for event in trace_capture.events
+        if event["type"] == "workflow_run_started"
     )
     assert [event["node_id"] for event in completed_steps] == expected_steps
     assert all(event["run_id"] == run_id for event in completed_steps)
@@ -196,16 +225,64 @@ def test_python_runtime_matches_shared_native_increment_workflow_contract(
     ]
     assert all(event["trace_id"] == run_id for event in completed_steps)
     if trace_contract["require_nonempty_span_ids"]:
-        assert all(event["span_id"] and event["parent_span_id"] for event in completed_steps)
+        assert all(
+            event["span_id"] and event["parent_span_id"] for event in completed_steps
+        )
     if trace_contract["require_distinct_parent_span_ids"]:
         assert all(
             event["span_id"] != event["parent_span_id"] for event in completed_steps
         )
-    assert [json.loads(event["payload_json"])["status"] for event in completed_steps] == [
+    assert [
+        json.loads(event["payload_json"])["status"] for event in completed_steps
+    ] == [
         "ok",
         "ok",
     ]
-    assert run_started["parent_span_id"] == (
-        f"stp:{run_id}:{run_id}:0:1:run"
-    )
+    assert run_started["parent_span_id"] == (f"stp:{run_id}:{run_id}:0:1:run")
     assert run_started["parent_span_id"] != completed_steps[0]["span_id"]
+
+    persisted_steps = conversation_engine.read.get_nodes(
+        ids=[
+            f"wf_step|{run_id}|{step_seq}"
+            for step_seq in contract["expected_step_sequences"]
+        ],
+        limit=len(contract["expected_step_sequences"]),
+    )
+    assert len(persisted_steps) == len(completed_steps)
+    completed_by_seq = {event["step_seq"]: event for event in completed_steps}
+    for step in persisted_steps:
+        step_seq = step.metadata.get("step_seq")
+        assert isinstance(step_seq, int)
+        event = completed_by_seq[step_seq]
+        assert step.metadata["trace_id"] == event["trace_id"]
+        assert step.metadata["span_id"] == event["span_id"]
+        assert step.metadata["parent_span_id"] == event["parent_span_id"]
+        assert step.metadata["trace_attempt"] == event["attempt"]
+
+    if isinstance(conversation_engine.metadata, RustEngineSQLite):
+        reopened_metadata = RustEngineSQLite(tmp_path / "conversation", "meta.sqlite")
+    else:
+        assert isinstance(conversation_engine.metadata, EngineSQLite)
+        reopened_metadata = EngineSQLite(tmp_path / "conversation", "meta.sqlite")
+    durable_events = list(
+        reopened_metadata.iter_entity_events(namespace=conversation_engine.namespace)
+    )
+    durable_steps = {
+        entity_id: json.loads(payload_json)
+        for _seq, entity_kind, entity_id, op, payload_json in durable_events
+        if entity_kind == "node"
+        and op == "ADD"
+        and entity_id.startswith(f"wf_step|{run_id}|")
+    }
+    assert set(durable_steps) == {
+        f"wf_step|{run_id}|{step_seq}"
+        for step_seq in contract["expected_step_sequences"]
+    }
+    for entity_id, payload in durable_steps.items():
+        step_seq = int(entity_id.rsplit("|", 1)[1])
+        metadata = payload["metadata"]
+        event = completed_by_seq[step_seq]
+        assert metadata["trace_id"] == event["trace_id"]
+        assert metadata["span_id"] == event["span_id"]
+        assert metadata["parent_span_id"] == event["parent_span_id"]
+        assert metadata["trace_attempt"] == event["attempt"]

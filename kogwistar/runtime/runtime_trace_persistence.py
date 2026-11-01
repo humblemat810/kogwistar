@@ -136,6 +136,7 @@ class RuntimeTracePersistenceMixin:
         parent_token_id: str | None = None,
         join_mask: int | None = None,
         last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        trace_context: TraceContext | None = None,
     ) -> WorkflowStepExecNode:
         result_json = try_serialize_with_ref(result)
         workspace_id = str(state.get("workspace_id") or "").strip()
@@ -180,6 +181,16 @@ class RuntimeTracePersistenceMixin:
         )
         if workspace_id:
             node.metadata["workspace_id"] = workspace_id
+        if trace_context is not None:
+            trace_fields = trace_context.as_fields()
+            node.metadata.update(
+                {
+                    "trace_id": trace_fields["trace_id"],
+                    "span_id": trace_fields["span_id"],
+                    "parent_span_id": trace_fields["parent_span_id"],
+                    "trace_attempt": trace_fields["attempt"],
+                }
+            )
         with self._trace_write_mode():
             self.conversation_engine.write.add_node(node)
             if last_exec_node:

@@ -1298,6 +1298,7 @@ class WorkflowRuntime(
                         parent_token_id,
                         status,
                         mask,
+                        step_trace_context,
                     ) = done_task
                     if status == "failure" and isinstance(run_result, RunFailure):
                         run_errors.extend(str(error) for error in run_result.errors)
@@ -1443,6 +1444,13 @@ class WorkflowRuntime(
                             ),
                             join_mask=int(mask),
                             last_exec_node=last_exec_node,
+                            trace_context=_lifecycle_trace_context(
+                                token_id=str(token_id),
+                                step_seq=int(step_seq),
+                                node_id=str(node_id),
+                            )
+                            if step_trace_context is None
+                            else step_trace_context,
                         )
 
                     # single-writer state apply:
