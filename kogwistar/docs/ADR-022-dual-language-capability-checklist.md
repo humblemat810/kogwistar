@@ -247,7 +247,7 @@ regression `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_a
 verifies create-then-send visibility, queued run and lane admission, canonical
 turn/edge/ACL events, duplicate-create rejection, wrong-owner rejection, and no
 synchronous Chroma mutation; the full `kogwistar-api` library suite passed
-(**222 passed, 22 ignored**) and `kogwistar-store-sqlite` passed (**50 passed,
+(**224 passed, 22 ignored**) and `kogwistar-store-sqlite` passed (**50 passed,
 1 ignored**). Python baseline tests
 `test_submit_turn_for_answer_requires_send_message`,
 `test_submit_turn_for_answer_rejects_user_id_not_owned_by_conversation`, and
@@ -322,11 +322,19 @@ turn, and canonical `next_turn` edge as SQLite events. The regression
 `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic`
 asserts the selected node ID, answer context, durable pointer event, and
 assistant turn. The same integration now also completes provider-backed
-`agentic_answering.v2` with explicit BM25 selection, a scoped current Chroma
-candidate, host-side ACL revalidation before evidence materialization, a
-streamed structured response whose evidence alias is restored to its canonical
-node ID, and durable completion. The full `kogwistar-api` library suite passed
-(**222 passed, 22 ignored**). This does not prove Python-worker completion or
+`agentic_answering.v2` with the selector omitted (Python's default mode), a
+scoped current Chroma candidate, host-side ACL revalidation before evidence
+materialization, a streamed structured response whose evidence alias is
+restored to its canonical node ID, and durable completion. The shared
+`answer-bm25-selection-v1.json` fixture verifies that Python's legacy `"llm"`
+selector path and Rust's default/`"llm"`/`"bm25"` modes produce the same
+deterministic selected-node result; Rust still rejects unknown strategy names.
+The current Python `"llm"` path does not invoke a model for selection: it runs
+the deterministic token-overlap selector after recording a selection context
+snapshot. Rust now matches the selection result, but does not yet persist that
+selection-stage snapshot. The full `kogwistar-api` library suite passed
+(**224 passed, 22 ignored**); the Python selector wrapper and BM25 fixture
+tests passed (**2 passed**). This does not prove Python-worker completion or
 cross-backend parity. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
@@ -335,7 +343,8 @@ contract tests cover backend query filtering, top-N order, and the read-only
 shadow wrapper; `sqlite_native_candidates_exclude_acl_private_and_tombstoned_records`
 covers candidate projection's ACL and lifecycle filtering. The configured
 provider-backed Rust-native workflow is verified on SQLite+Chroma; Python-worker
-completion and cross-runtime parity remain open. The deterministic debug
+completion, selection-stage snapshot parity, and cross-runtime parity remain
+open. The deterministic debug
 workflow is also verified end to end.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
@@ -367,7 +376,7 @@ test `acl_projection_reuses_index_after_helper_records_are_removed` proves
 stable authorized visibility through the typed projection and fail-closed
 behavior when ACL context is incorrectly rebuilt from filtered records. The
 store library suite passed (**42 passed**), and the full API library suite
-passed (**222 passed, 22 ignored**), including the SQLite+Chroma native
+passed (**224 passed, 22 ignored**), including the SQLite+Chroma native
 end-to-end debug workflow. The focused `sqlite_chroma` API subset also passed
 (**14 passed, 1 ignored**); the ignored test requires an explicitly configured
 live Chroma service. This adds evidence to the existing DL-16BQ gate; it does

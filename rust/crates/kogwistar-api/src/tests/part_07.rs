@@ -3261,7 +3261,6 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                     "turn_node_id":agentic_turn_id,
                     "user_id":"conversation-owner",
                     "turn_index":0,
-                    "evidence_selector":"bm25",
                     "max_candidates":10,
                     "max_used":4,
                     "max_retrieval_level":3,

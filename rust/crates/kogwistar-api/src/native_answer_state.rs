@@ -342,10 +342,21 @@ fn execute_select_used_evidence(
     request: &RuntimeNativeStepRequest,
 ) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
     let state = &request.state;
-    if state.get("evidence_selector").and_then(Value::as_str) != Some("bm25") {
+    let selector = match state.get("evidence_selector") {
+        None | Some(Value::Null) => "llm".to_owned(),
+        Some(Value::String(value)) if value.is_empty() => "llm".to_owned(),
+        Some(Value::String(value)) => value.to_ascii_lowercase(),
+        _ => {
+            return Err(RuntimeNativeExecutionError::InvalidState {
+                field: "evidence_selector",
+                reason: "evidence_selector must be a string when provided",
+            });
+        }
+    };
+    if !matches!(selector.as_str(), "llm" | "bm25") {
         return Err(RuntimeNativeExecutionError::InvalidState {
             field: "evidence_selector",
-            reason: "Rust-native evidence selection requires the explicit bm25 strategy",
+            reason: "evidence_selector must be the compatible llm or bm25 mode",
         });
     }
     let candidates = state
@@ -883,10 +894,37 @@ mod tests {
     }
 
     #[test]
-    fn bm25_evidence_selection_does_not_fallback_from_llm_mode() {
+    fn python_default_and_legacy_llm_selector_match_shared_bm25_contract() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-bm25-selection-v1.json"
+        ))
+        .unwrap();
+        for selector in [None, Some("llm"), Some("LLM"), Some("bm25"), Some("BM25")] {
+            let mut state = fixture["state"].clone();
+            if let Some(selector) = selector {
+                state["evidence_selector"] = json!(selector);
+            } else {
+                state.as_object_mut().unwrap().remove("evidence_selector");
+            }
+            let mut request = request(state);
+            request.operation = "aa_select_used_evidence".to_owned();
+            let result = execute_native_step_with_registry(&request, &registry)
+                .unwrap()
+                .result
+                .unwrap();
+            assert_eq!(
+                result["final_state"]["selection"],
+                fixture["expected"]["selection"]
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_selection_rejects_unknown_strategy() {
         let registry = crate::native_answer_persist::registry().unwrap();
         let mut request = request(json!({
-            "evidence_selector": "llm",
+            "evidence_selector": "provider_magic",
             "question": "graph retrieval",
             "candidates": [{"id": "node-1", "label": "graph", "summary": "retrieval"}]
         }));
@@ -896,6 +934,24 @@ mod tests {
             Err(RuntimeNativeExecutionError::InvalidState {
                 field: "evidence_selector",
                 ..
+            })
+        ));
+    }
+
+    #[test]
+    fn evidence_selection_rejects_malformed_strategy_type() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({
+            "evidence_selector": 7,
+            "question": "graph retrieval",
+            "candidates": [{"id": "node-1", "label": "graph", "summary": "retrieval"}]
+        }));
+        request.operation = "aa_select_used_evidence".to_owned();
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "evidence_selector",
+                reason: "evidence_selector must be a string when provided",
             })
         ));
     }
