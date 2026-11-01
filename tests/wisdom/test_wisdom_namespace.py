@@ -8,6 +8,7 @@ from kogwistar.engine_core.models import (
     PureGraph,
 )
 from tests._helpers.embeddings import ConstantEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
 
 pytestmark = pytest.mark.ci_full
 
@@ -37,6 +38,47 @@ def test_puregraph_persist(tmp_path):
         g = PureGraph(nodes=[node], edges=[edge])
         out = eng.persist_graph(parsed=g, session_id="unit-test")
         assert out["node_ids"] and out["edge_ids"]
+
+
+def test_puregraph_persistence_scopes_node_and_edge_projections(tmp_path):
+    with GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        namespace="wisdom",
+        kg_graph_type="wisdom",
+        embedding_function=ConstantEmbeddingFunction(dim=2),
+        backend_factory=build_fake_backend,
+    ) as eng:
+        node = PureChromaNode(
+            id="wisdom-node",
+            label="Lesson",
+            type="entity",
+            summary="A Wisdom lesson",
+        )
+        edge = PureChromaEdge(
+            id="wisdom-edge",
+            label="relates",
+            type="relationship",
+            summary="A relation",
+            relation="related_to",
+            source_ids=[node.id],
+            target_ids=[node.id],
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+
+        eng.persist_graph(
+            parsed=PureGraph(nodes=[node], edges=[edge]),
+            session_id="wisdom-namespace-contract",
+        )
+
+        node_metadata = eng.backend.node_get(
+            ids=[node.id], include=["metadatas"]
+        )["metadatas"][0]
+        edge_metadata = eng.backend.edge_get(
+            ids=[edge.id], include=["metadatas"]
+        )["metadatas"][0]
+        assert node_metadata["namespace"] == "wisdom"
+        assert edge_metadata["namespace"] == "wisdom"
 
 
 # def test_dev_token_endpoint_ns_field():

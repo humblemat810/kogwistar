@@ -1770,6 +1770,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if node.id is None:
             raise ValueError("pure node id must not be None")
         doc, meta = node_doc_and_meta_util(node)
+        meta = self._attach_graph_namespace(meta)
         if meta.get("doc_id"):
             meta.pop("doc_id")
         model_envelope = _validate_graph_model_contract(

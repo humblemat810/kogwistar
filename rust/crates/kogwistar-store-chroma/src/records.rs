@@ -40,6 +40,9 @@ pub(crate) fn chroma_metadata(namespace: &str, record: &GraphRecord) -> Result<V
 }
 
 pub(crate) fn query_where(namespace: &str, filter: &kogwistar_store::MetadataFilter) -> Value {
+    // PYTHON_PARITY: kogwistar/engine_core/subsystems/write.py::WriteSubsystem._attach_graph_namespace
+    // Python projections carry their graph namespace in metadata; retain the
+    // reserved key alternative for records written by this Rust projection.
     query_where_with_numeric_lte(namespace, filter, None)
 }
 
