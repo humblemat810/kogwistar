@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import sqlite3
 import socket
 import subprocess
 import threading
@@ -1004,6 +1005,33 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     )
     embedding_thread.start()
     embedding_endpoint = f"http://127.0.0.1:{embedding_server.server_port}"
+    auth_db_path = tmp_path / "owner-auth.sqlite"
+    with sqlite3.connect(auth_db_path) as auth_db:
+        auth_db.execute(
+            """CREATE TABLE users (
+                user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                display_name VARCHAR(255),
+                is_active BOOLEAN NOT NULL,
+                global_role VARCHAR(32),
+                global_ns VARCHAR(255),
+                created_at DATETIME NOT NULL,
+                last_login_at DATETIME
+            )"""
+        )
+        auth_db.execute(
+            """INSERT INTO users (
+                user_id, email, display_name, is_active, global_role, global_ns, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            (
+                "conversation-owner",
+                "conversation-owner@example.test",
+                "Conversation Test Owner",
+                1,
+                "rw",
+                "conversation",
+            ),
+        )
     env = os.environ.copy()
     for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
         env.pop(name, None)
@@ -1012,6 +1040,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "AUTH_MODE": "jwt",
             "JWT_SECRET": secret,
             "JWT_ALG": "HS256",
+            "AUTH_DB_URL": f"sqlite:///{auth_db_path.as_posix()}",
             "KOGWISTAR_BACKEND": "pg",
             "KOGWISTAR_PG_DSN": pg_dsn,
             "KOGWISTAR_PG_SCHEMA_BASE": pg_schema,
@@ -1022,6 +1051,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+            "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
         }
     )
     process = subprocess.Popen(
@@ -1944,6 +1974,42 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "conversation_id": conversation_id,
             "messages": python_transcript,
         }
+
+        rust_conversation_id = f"{id_prefix}-rust-written-conversation"
+        conversation_claims = {
+            "sub": "conversation-owner",
+            "role": "rw",
+            "roles": ["reader"],
+            "ns": "conversation",
+            "storage_ns": "conversation",
+            "capabilities": ["spawn_process", "read_graph"],
+            "exp": 4_102_444_800,
+        }
+        rust_create = httpx.post(
+            f"{base}/api/conversations",
+            headers={
+                "Authorization": f"Bearer {_hs256_token(secret, conversation_claims)}"
+            },
+            json={
+                "user_id": "conversation-owner",
+                "conversation_id": rust_conversation_id,
+            },
+            timeout=10,
+        )
+        assert rust_create.status_code == 200, rust_create.text
+        assert rust_create.json()["conversation_id"] == rust_conversation_id
+        rust_start_node_id = rust_create.json()["start_node_id"]
+
+        conversation_read_token = claims_ctx.set(conversation_owner)
+        try:
+            python_rust_nodes = conversation_engine.read.get_nodes(
+                where={"conversation_id": rust_conversation_id}
+            )
+        finally:
+            claims_ctx.reset(conversation_read_token)
+        assert [node.id for node in python_rust_nodes] == [rust_start_node_id]
+        assert python_rust_nodes[0].metadata["entity_type"] == "conversation_start"
+        assert python_rust_nodes[0].user_id == "conversation-owner"
     finally:
         process.terminate()
         try:

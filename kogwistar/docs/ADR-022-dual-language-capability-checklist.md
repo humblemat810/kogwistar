@@ -458,9 +458,12 @@ the Python filter contract), and pure-edge writes materialize endpoint rows for
 ordinary traversal. The live
 `test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
 passed with semantic seed, two-hop topology, and Python-written conversation
-transcript parity through authenticated Rust HTTP syscall; Python graph-query
-tests (11 passed), Wisdom/JSONB tests (7 passed), and Ruff passed. DL-16BQ
-remains open.
+transcript parity through authenticated Rust HTTP syscall. With a temporary
+active auth-store owner and inline native runtime enabled, the same live test
+also verifies Rust REST conversation creation is visible as a typed
+`ConversationNode` to Python from the shared PostgreSQL projection. Python
+graph-query tests (11 passed), Wisdom/JSONB tests (7 passed), and Ruff passed.
+DL-16BQ remains open.
 
 Graph-role parity uses Python's `GraphKnowledgeEngine` contract: each role is
 host-selected, graph roles remain independent of namespace and backend, and
