@@ -334,11 +334,14 @@ the deterministic token-overlap selector after recording a selection context
 snapshot. Rust now persists that same stage as ordinary conversation graph
 mutations before selection, and advances `run_step_seq` only for the default
 selector; explicit `"bm25"` retains its no-snapshot behavior. The SQLite+Chroma
-regression verifies canonical SQLite event persistence, while live PostgreSQL
-verification of this new path remains pending. The full `kogwistar-api`
-library suite passed (**225 passed, 22 ignored**); the selection snapshot,
-selector-sequence, and SQLite+Chroma persistence tests passed. This does not
-prove Python-worker completion or cross-backend parity. Candidate retrieval
+regression verifies canonical SQLite event persistence. The live
+`postgres_agentic_answer_workflow_executes_durably_without_python_worker`
+integration passed against disposable local pgvector with the selector omitted;
+the provider fixture confirmed the selection snapshot was durable before the
+answer request. The full `kogwistar-api` library suite passed (**225 passed,
+22 ignored**); the selection snapshot, selector-sequence, and SQLite+Chroma
+persistence tests passed. This does not prove Python-worker completion or
+cross-backend parity. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
 ACL records before projecting candidates. The generic Chroma and in-memory

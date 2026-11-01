@@ -6320,14 +6320,29 @@
                     },
                     table: "gke_nodes".to_owned(),
                     ids: None,
-                    metadata: MetadataFilter::default(),
+                    metadata: MetadataFilter {
+                        equals: BTreeMap::from([
+                            ("entity_type".to_owned(), json!("context_snapshot")),
+                            ("run_id".to_owned(), json!("rust-only-answer-e2e")),
+                        ]),
+                    },
                     limit: 10,
                 })
                 .await
                 .unwrap();
+            assert!(snapshots.iter().any(|record| {
+                record.metadata.get("entity_type").and_then(Value::as_str)
+                    == Some("context_snapshot")
+                    && record.metadata.get("stage").and_then(Value::as_str)
+                        == Some("select_used_evidence")
+                    && record.metadata.get("run_id").and_then(Value::as_str)
+                        == Some("rust-only-answer-e2e")
+            }), "default evidence selection snapshot must commit before provider invocation");
             let snapshot = snapshots.iter().find(|record| {
                 record.metadata.get("entity_type").and_then(Value::as_str)
                     == Some("context_snapshot")
+                    && record.metadata.get("stage").and_then(Value::as_str)
+                        == Some("generate_answer_with_citations")
                     && record.metadata.get("run_id").and_then(Value::as_str)
                         == Some("rust-only-answer-e2e")
             });
@@ -7620,7 +7635,7 @@
                 "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
                 "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
                 "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                    "turn_index":0,"evidence_selector":"bm25","max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
+                    "turn_index":0,"max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
             }))
             .send()
             .await
