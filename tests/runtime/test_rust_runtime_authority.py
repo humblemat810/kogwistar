@@ -1890,6 +1890,12 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
     import kogwistar.conversation.resolvers as resolver_module
     import sqlite3
 
+    assistant_contract = json.loads(
+        (ROOT / "contracts/golden/assistant-turn-graph-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
     pg_dsn = next(
         (
             os.getenv(name)
@@ -2398,6 +2404,14 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         ]
         assert len(assistant_payloads) == 1
         python_assistant = ConversationNode.model_validate_json(assistant_payloads[0])
+        assistant_payload = json.loads(assistant_payloads[0])
+        for field in assistant_contract["assistant_node"]["required_fields"]:
+            assert field in assistant_payload
+        for path, expected in assistant_contract["assistant_node"]["field_values"].items():
+            value: Any = assistant_payload
+            for part in path.split("."):
+                value = value[part]
+            assert value == expected
         assert python_assistant.id == assistant_id
         assert python_assistant.summary.startswith("The Rust runtime commits")
         assert python_assistant.role == "assistant"
@@ -2414,6 +2428,14 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         python_generated_edge = ConversationEdge.model_validate_json(
             generated_edge_payloads[0]
         )
+        generated_edge_payload = json.loads(generated_edge_payloads[0])
+        for field in assistant_contract["generated_edge"]["required_fields"]:
+            assert field in generated_edge_payload
+        for path, expected in assistant_contract["generated_edge"]["field_values"].items():
+            value = generated_edge_payload
+            for part in path.split("."):
+                value = value[part]
+            assert value == expected
         assert python_generated_edge.relation == "generated"
         assert assistant_id in python_generated_edge.target_ids
         if backend == "pg":

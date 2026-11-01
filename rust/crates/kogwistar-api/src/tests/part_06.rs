@@ -7989,6 +7989,40 @@
             1,
             "assistant response must be durable in the graph"
         );
+        let assistant_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/assistant-turn-graph-v1.json"
+        ))
+        .unwrap();
+        let mut assistant_document: Value = serde_json::from_str(
+            assistant[0].document.as_deref().expect("assistant document persisted"),
+        )
+        .unwrap();
+        assistant_document["metadata"] = Value::Object(
+            assistant[0]
+                .metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        for field in assistant_contract["assistant_node"]["required_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+        {
+            assert!(assistant_document.get(field).is_some(), "missing assistant field {field}");
+        }
+        for (path, expected) in assistant_contract["assistant_node"]["field_values"]
+            .as_object()
+            .unwrap()
+        {
+            let actual = path
+                .split('.')
+                .fold(Some(&assistant_document), |value, key| {
+                    value.and_then(|value| value.get(key))
+                });
+            assert_eq!(actual, Some(expected), "assistant projection mismatch at {path}");
+        }
         assert_eq!(
             assistant[0].metadata.get("role").and_then(Value::as_str),
             Some("assistant")
@@ -8020,6 +8054,54 @@
                 })),
             "assistant turn must be linked to the admitted user turn"
         );
+        let generated = edges.iter().find_map(|edge| {
+            edge.document
+                .as_deref()
+                .and_then(|document| serde_json::from_str::<Value>(document).ok())
+                .filter(|document| {
+                    document["relation"] == "generated"
+                        && document["target_ids"] == json!([assistant_id])
+                })
+        });
+        let mut generated = generated.expect("run-to-assistant generated edge must be durable");
+        let generated_record = edges
+            .iter()
+            .find(|edge| {
+                edge.document
+                    .as_deref()
+                    .and_then(|document| serde_json::from_str::<Value>(document).ok())
+                    .is_some_and(|document| {
+                        document["relation"] == "generated"
+                            && document["target_ids"] == json!([assistant_id])
+                    })
+            })
+            .expect("generated edge record exists");
+        generated["metadata"] = Value::Object(
+            generated_record
+                .metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        for field in assistant_contract["generated_edge"]["required_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+        {
+            assert!(generated.get(field).is_some(), "missing generated edge field {field}");
+        }
+        for (path, expected) in assistant_contract["generated_edge"]["field_values"]
+            .as_object()
+            .unwrap()
+        {
+            let actual = path
+                .split('.')
+                .fold(Some(&generated), |value, key| {
+                    value.and_then(|value| value.get(key))
+                });
+            assert_eq!(actual, Some(expected), "generated edge projection mismatch at {path}");
+        }
         let lanes = service
             .store
             .list_projected_lane_messages(LaneMessageFilter {
