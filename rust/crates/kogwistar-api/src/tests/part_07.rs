@@ -3872,6 +3872,31 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         assistant.contains_key(&assistant_id),
         "assistant turn is canonical"
     );
+    let assistant_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/assistant-turn-graph-v1.json"
+    ))
+    .unwrap();
+    let assistant_payload: Value =
+        serde_json::from_str(&assistant[&assistant_id].payload_json).unwrap();
+    for field in assistant_contract["assistant_node"]["required_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+    {
+        assert!(assistant_payload.get(field).is_some(), "missing assistant field {field}");
+    }
+    for (path, expected) in assistant_contract["assistant_node"]["field_values"]
+        .as_object()
+        .unwrap()
+    {
+        let actual = path
+            .split('.')
+            .fold(Some(&assistant_payload), |value, key| {
+                value.and_then(|value| value.get(key))
+            });
+        assert_eq!(actual, Some(expected), "assistant projection mismatch at {path}");
+    }
     let edges = service
         .store
         .replay_raw_events("conversation", 0, 100)
@@ -3890,6 +3915,35 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         "assistant turn {assistant_id} is linked to user turn {} by the canonical graph edge",
         runtime.state["turn_node_id"]
     );
+    let generated_edge = edges.iter().find_map(|event| {
+        (event.entity_kind == "edge")
+            .then(|| serde_json::from_str::<Value>(&event.payload_json).ok())
+            .flatten()
+            .filter(|payload| {
+                payload["relation"] == "generated"
+                    && payload["target_ids"] == json!([assistant_id])
+            })
+    });
+    let generated_edge = generated_edge.expect("run-to-assistant generated edge is canonical");
+    for field in assistant_contract["generated_edge"]["required_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+    {
+        assert!(generated_edge.get(field).is_some(), "missing generated edge field {field}");
+    }
+    for (path, expected) in assistant_contract["generated_edge"]["field_values"]
+        .as_object()
+        .unwrap()
+    {
+        let actual = path
+            .split('.')
+            .fold(Some(&generated_edge), |value, key| {
+                value.and_then(|value| value.get(key))
+            });
+        assert_eq!(actual, Some(expected), "generated edge projection mismatch at {path}");
+    }
 
     let mcp_ask = app
         .clone()
