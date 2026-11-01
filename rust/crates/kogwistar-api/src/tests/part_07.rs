@@ -5227,6 +5227,33 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     assert!(index_jobs.iter().all(|job| job.namespace == "docs"));
 
     let committed_events = events.len();
+    let mut hidden_edge = serde_json::from_slice::<Value>(&body).unwrap()["edges"][0].clone();
+    hidden_edge["id"] = json!("bob-reference-edge");
+    hidden_edge["local_id"] = json!("ne:bob-reference-edge");
+    hidden_edge["source_ids"] = json!([payload["node_ids"][0]]);
+    hidden_edge["target_ids"] = json!([]);
+    let mut hidden_request = serde_json::from_slice::<Value>(&body).unwrap();
+    hidden_request["nodes"] = json!([]);
+    hidden_request["edges"] = json!([hidden_edge]);
+    let hidden_reference = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&hidden_request).unwrap(),
+            principal: json!({
+                "sub": "bob", "user_id": "bob", "role": "rw",
+                "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(hidden_reference.status, StatusCode::CONFLICT.as_u16());
+    assert_eq!(
+        service.store.replay_raw_events("docs", 0, 100).unwrap().len(),
+        committed_events,
+        "cross-owner endpoint denial must not append graph or ACL events"
+    );
+
     let mut invalid: Value = serde_json::from_slice(&body).unwrap();
     invalid["nodes"][0]["references"][0]["excerpt"] = json!("forged");
     let rejected = service

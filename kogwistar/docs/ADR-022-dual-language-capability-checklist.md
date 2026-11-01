@@ -283,7 +283,9 @@ standalone SQLite does not advertise this route. The shared golden-fixture test
 the write, source-document persistence, queued index jobs, and rejection of an
 altered excerpt without partial graph events. It also rejects read-only role,
 missing `write_graph`, and missing authenticated owner before any canonical
-event is written. The full Rust API library suite
+event is written. A different authorized user also cannot create an edge to
+the original owner's private node; the request conflicts without appending
+graph or ACL events. The full Rust API library suite
 passed (**227 passed, 23 ignored**). The opt-in live test
 `sqlite_chroma_public_graph_upsert_survives_restart_and_projects_to_chroma`
 also passed against disposable Chroma 1.5.9: it starts with the generic public
