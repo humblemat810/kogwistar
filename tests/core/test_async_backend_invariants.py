@@ -695,6 +695,21 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert python_acl_edge[0].relation == "acl_supersedes"
     assert python_acl_edge[0].source_ids == [acl_current.id]
     assert python_acl_edge[0].target_ids == [acl_previous.id]
+    authorized = engine.decide_acl(
+        truth_graph="truth",
+        entity_id="target",
+        principal_id="user:reader",
+    )
+    denied = engine.decide_acl(
+        truth_graph="truth",
+        entity_id="target",
+        principal_id="user:outsider",
+    )
+    assert authorized.visible is True
+    assert authorized.record is not None and authorized.record.version == 2
+    assert authorized.reason == "principal_share"
+    assert denied.visible is False
+    assert denied.reason == "not_shared"
 
 
 @pytest.mark.asyncio
