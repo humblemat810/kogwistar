@@ -1113,6 +1113,236 @@ impl SqliteRunApplicationService {
         self
     }
 
+    async fn sqlite_chroma_invoke_builtin_tool_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let input = match syscall_input(request, "invoke_tool") {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "invoke_tool",
+            true,
+            &[],
+            "conversation",
+        ) {
+            return syscall_forbidden("invoke_tool");
+        }
+        let Some(tool_name) = input
+            .args
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_ascii_lowercase)
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "tool_name is required",
+            );
+        };
+
+        let result = match tool_name.as_str() {
+            "list_transcript" | "latest_snapshot" => {
+                let Some(conversation_id) = input
+                    .args
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        format!("conversation_id is required for {tool_name}"),
+                    );
+                };
+                let operation = if tool_name == "list_transcript" {
+                    "receive_message"
+                } else {
+                    "mount_memory"
+                };
+                let mut args = serde_json::Map::new();
+                args.insert(
+                    "conversation_id".to_owned(),
+                    Value::String(conversation_id.to_owned()),
+                );
+                if tool_name == "latest_snapshot" {
+                    for field in ["run_id", "stage"] {
+                        if let Some(value) = input.args.get(field) {
+                            args.insert(field.to_owned(), value.clone());
+                        }
+                    }
+                }
+                let nested_request = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/syscall/v1/{operation}"),
+                    body: serde_json::to_vec(&json!({
+                        "version": input.version,
+                        "args": args,
+                    }))
+                    .expect("nested syscall args serialize"),
+                    principal: request.principal.clone(),
+                };
+                let response = if tool_name == "list_transcript" {
+                    self.sqlite_chroma_receive_message_effect(&nested_request)
+                        .await
+                } else {
+                    self.sqlite_chroma_mount_memory_effect(&nested_request)
+                        .await
+                };
+                if !(200..300).contains(&response.status) {
+                    return response;
+                }
+                let payload: Value = match serde_json::from_slice(&response.body) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_INVALID_INTERNAL_RESPONSE",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let Some(mut value) = payload.get("result").cloned() else {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_INVALID_INTERNAL_RESPONSE",
+                        "built-in graph tool returned no result",
+                    );
+                };
+                if tool_name == "list_transcript" {
+                    value["tool_name"] = Value::String(tool_name.clone());
+                    value
+                } else {
+                    json!({
+                        "tool_name": tool_name,
+                        "conversation_id": conversation_id,
+                        "snapshot": value,
+                    })
+                }
+            }
+            "capability_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "read_security_scope"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "built-in tool \"capability_snapshot\" requires project_view and read_security_scope",
+                    );
+                }
+                let state = self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                json!({
+                    "tool_name": tool_name,
+                    "snapshot": capability_snapshot(&request.principal, &state),
+                })
+            }
+            "resource_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "read_security_scope"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "built-in tool \"resource_snapshot\" requires project_view and read_security_scope",
+                    );
+                }
+                let runs = match self.store.list_server_runs(None, None, None, 10_000) {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some("workflow".to_owned()),
+                    limit: 10_000,
+                    ..LaneMessageFilter::default()
+                }) {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let mut events = Vec::new();
+                for run in &runs {
+                    match self.store.list_server_run_events(&run.run_id, 0, 200) {
+                        Ok(mut rows) => events.append(&mut rows),
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    }
+                }
+                let service_rows = match self.store.list_named_projections("service_registry") {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let services = service_rows
+                    .into_iter()
+                    .map(|row| Value::Object(row.payload))
+                    .collect::<Vec<_>>();
+                let usage = usage_history(&events, 10_000);
+                let mut snapshot = resource_value(
+                    &runs,
+                    &lanes,
+                    &usage,
+                    &events,
+                    configured_storage_usage_bytes(),
+                );
+                snapshot["services"] = resource_service_value(&services);
+                snapshot
+                    .as_object_mut()
+                    .expect("resource snapshot is an object")
+                    .remove("migration");
+                json!({"tool_name": tool_name, "snapshot": snapshot})
+            }
+            _ => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_TOOL_NOT_FOUND",
+                    format!("unknown built-in tool: {tool_name}"),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "invoke_tool",
+            json_effect(StatusCode::OK, result),
+        )
+    }
+
     async fn sqlite_document_projection_effect(
         &self,
         request: &ApiEffectRequest,

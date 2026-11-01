@@ -5727,7 +5727,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..24 {
+            for _ in 0..28 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -5900,6 +5900,80 @@
         assert_eq!(mounted["result"]["metadata"]["summary"], "stored summary");
         assert_eq!(mounted["result"]["properties"]["references"], json!(["evidence-1"]));
         assert!(mounted["result"].get("schema_version").is_none());
+
+        let invoked_transcript = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"list_transcript","conversation_id":"c1"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation",
+                    "ns":["conversation"], "capabilities":["invoke_tool","read_graph"]
+                }),
+            ))
+            .await;
+        assert_eq!(invoked_transcript.status, StatusCode::OK.as_u16());
+        let invoked_transcript: Value = serde_json::from_slice(&invoked_transcript.body).unwrap();
+        assert_eq!(invoked_transcript["result"]["tool_name"], "list_transcript");
+        assert_eq!(invoked_transcript["result"]["messages"].as_array().unwrap().len(), 2);
+
+        let invoked_snapshot = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"latest_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation",
+                    "ns":["conversation"], "capabilities":["invoke_tool","project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(invoked_snapshot.status, StatusCode::OK.as_u16());
+        let invoked_snapshot: Value = serde_json::from_slice(&invoked_snapshot.body).unwrap();
+        assert_eq!(invoked_snapshot["result"]["tool_name"], "latest_snapshot");
+        assert_eq!(invoked_snapshot["result"]["snapshot"]["snapshot_node_id"], "snapshot");
+
+        let denied_builtin = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"capability_snapshot"}),
+                json!({"role":"rw","ns":["conversation"],"capabilities":["invoke_tool"]}),
+            ))
+            .await;
+        assert_eq!(denied_builtin.status, StatusCode::FORBIDDEN.as_u16());
+
+        let capability_snapshot = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"capability_snapshot"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "ns":["conversation"],
+                    "capabilities":["invoke_tool","project_view","read_security_scope"]
+                }),
+            ))
+            .await;
+        assert_eq!(capability_snapshot.status, StatusCode::OK.as_u16());
+        let capability_snapshot: Value = serde_json::from_slice(&capability_snapshot.body).unwrap();
+        assert_eq!(capability_snapshot["result"]["tool_name"], "capability_snapshot");
+        assert_eq!(
+            capability_snapshot["result"]["snapshot"]["effective_capabilities"][0],
+            "invoke_tool"
+        );
+
+        let resource_snapshot = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"resource_snapshot"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "ns":["conversation"],
+                    "capabilities":["invoke_tool","project_view","read_security_scope"]
+                }),
+            ))
+            .await;
+        assert_eq!(resource_snapshot.status, StatusCode::OK.as_u16());
+        let resource_snapshot: Value = serde_json::from_slice(&resource_snapshot.body).unwrap();
+        assert_eq!(resource_snapshot["result"]["tool_name"], "resource_snapshot");
+        assert_eq!(resource_snapshot["result"]["snapshot"]["services"]["total_services"], 0);
 
         let auth = AuthConfig {
             mode: "dev".to_owned(),
@@ -6188,7 +6262,7 @@
         assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
 
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 24);
+        assert_eq!(requests.len(), 28);
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")
@@ -6217,6 +6291,17 @@
             serde_json::from_slice::<Value>(&unsupported.body).unwrap()["code"],
             "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER"
         );
+        let unsupported_tool = metadata_only
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"list_transcript","conversation_id":"c1"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "storage_ns":"scope-a",
+                    "ns":["conversation"], "capabilities":["invoke_tool","read_graph"]
+                }),
+            ))
+            .await;
+        assert_eq!(unsupported_tool.status, StatusCode::NOT_IMPLEMENTED.as_u16());
         drop(metadata_only);
         let _ = std::fs::remove_file(metadata_only_path);
     }
