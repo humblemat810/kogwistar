@@ -4009,6 +4009,59 @@
             "run.created",
             serde_json::to_string(&json!({"runtime_owner_binding":binding})).unwrap(),
         ).unwrap();
+        let selection_request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: "rust-native".to_owned(),
+            operation: "aa_select_used_evidence".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "native-answer-run".to_owned(),
+            workflow_id: "debug.rag.v1".to_owned(),
+            node_id: "select-node".to_owned(),
+            conversation_id: "native-answer-conversation".to_owned(),
+            turn_node_id: Some("user-turn".to_owned()),
+            token_id: "selection-token".to_owned(),
+            parent_token_id: None,
+            step_seq: 2,
+            state: serde_json::from_value(json!({
+                "conversation_id":"native-answer-conversation",
+                "run_id":"native-answer-run",
+                "run_step_seq":2,
+                "attempt_seq":1,
+                "question":"question",
+                "system_prompt":"Select relevant evidence.",
+                "candidates":[{"id":"candidate-node","label":"Candidate","summary":"summary"}],
+                "conversation_context_messages":[{"role":"user","content":"prior context"}],
+                "conversation_context_node_ids":[],
+                "_rt_graph_scope": {
+                    "storage_namespace":"conversation",
+                    "workspace":null,
+                    "graph_space":"conversation"
+                }
+            })).unwrap(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: serde_json::Map::new(),
+        };
+        service
+            .persist_sqlite_native_selection_context_snapshot(&selection_request)
+            .await
+            .unwrap();
+        let selection_snapshot_id = kogwistar_contracts::stable_id(
+            "conversation.context_snapshot",
+            &[
+                "native-answer-conversation".to_owned(),
+                "native-answer-run".to_owned(),
+                "select_used_evidence".to_owned(),
+                "2".to_owned(),
+                "1".to_owned(),
+            ],
+        )
+        .to_string();
+        let selection_snapshot_events = service
+            .store
+            .latest_entity_events("conversation", "node", &[selection_snapshot_id.clone()])
+            .unwrap();
+        assert!(selection_snapshot_events
+            .get(&selection_snapshot_id)
+            .is_some_and(|event| event.payload_json.contains("select_used_evidence")));
         let request = kogwistar_runtime::RuntimeNativeStepRequest {
             executor_target: "rust-native".to_owned(),
             operation: "aa_generate_answer_with_citations".to_owned(),

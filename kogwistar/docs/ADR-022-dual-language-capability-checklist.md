@@ -331,21 +331,25 @@ selector path and Rust's default/`"llm"`/`"bm25"` modes produce the same
 deterministic selected-node result; Rust still rejects unknown strategy names.
 The current Python `"llm"` path does not invoke a model for selection: it runs
 the deterministic token-overlap selector after recording a selection context
-snapshot. Rust now matches the selection result, but does not yet persist that
-selection-stage snapshot. The full `kogwistar-api` library suite passed
-(**224 passed, 22 ignored**); the Python selector wrapper and BM25 fixture
-tests passed (**2 passed**). This does not prove Python-worker completion or
-cross-backend parity. Candidate retrieval
+snapshot. Rust now persists that same stage as ordinary conversation graph
+mutations before selection, and advances `run_step_seq` only for the default
+selector; explicit `"bm25"` retains its no-snapshot behavior. The SQLite+Chroma
+regression verifies canonical SQLite event persistence, while live PostgreSQL
+verification of this new path remains pending. The full `kogwistar-api`
+library suite passed (**225 passed, 22 ignored**); the selection snapshot,
+selector-sequence, and SQLite+Chroma persistence tests passed. This does not
+prove Python-worker completion or cross-backend parity. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
 ACL records before projecting candidates. The generic Chroma and in-memory
 contract tests cover backend query filtering, top-N order, and the read-only
 shadow wrapper; `sqlite_native_candidates_exclude_acl_private_and_tombstoned_records`
 covers candidate projection's ACL and lifecycle filtering. The configured
-provider-backed Rust-native workflow is verified on SQLite+Chroma; Python-worker
-completion, selection-stage snapshot parity, and cross-runtime parity remain
-open. The deterministic debug
-workflow is also verified end to end.
+provider-backed Rust-native workflow and default-selector snapshot persistence
+are verified on SQLite+Chroma; Python-worker completion, live PostgreSQL
+verification of the selection snapshot, broader cross-backend parity, and
+support-matrix parity remain open. The deterministic debug workflow is also
+verified end to end.
 The combined resolver and worker/runtime suites passed (**131 passed, 7
 skipped**). The Python contract test
 `test_answer_designs_match_shared_runtime_admission_contract` also verifies

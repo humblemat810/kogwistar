@@ -175,6 +175,33 @@ impl PostgresRunApplicationService {
                     );
                 }
             }
+        } else if native_request.operation == "aa_select_used_evidence"
+            && crate::native_answer_generation::selection_snapshot_is_enabled(&native_request)
+        {
+            if self
+                .persist_native_selection_context_snapshot(&native_request)
+                .await
+                .is_err()
+            {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_UNAVAILABLE",
+                    "native evidence-selection context snapshot could not be committed; the work remains unacknowledged",
+                );
+            }
+            match native_result_from_request(
+                handoff.clone(),
+                native_request.clone(),
+                &self.native_operations,
+            ) {
+                Ok(result) => result,
+                Err(_) => failed_native_result(
+                    handoff,
+                    &native_request,
+                    "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                    "native evidence selection rejected its bounded input",
+                ),
+            }
         } else if native_request.operation == "aa_get_view_and_question" {
             match self
                 .native_answer_view_context(&native_request, Some(&request.principal))
@@ -486,6 +513,16 @@ impl ApplicationService for PostgresRunApplicationService {
             } else if native_request.operation == "aa_generate_answer_with_citations" {
                 self.execute_native_answer_generation(handoff.clone(), native_request.clone())
                     .await?
+            } else if native_request.operation == "aa_select_used_evidence"
+                && crate::native_answer_generation::selection_snapshot_is_enabled(&native_request)
+            {
+                self.persist_native_selection_context_snapshot(&native_request)
+                    .await?;
+                native_result_from_request(
+                    handoff.clone(),
+                    native_request.clone(),
+                    &self.native_operations,
+                )?
             } else if native_request.operation == "aa_get_view_and_question" {
                 match self.native_answer_view_context(&native_request, None).await {
                     Ok(view) => {
@@ -1109,6 +1146,15 @@ impl ApplicationService for SqliteRunApplicationService {
                 let (handoff, native_request) = native_request_for_claimed_work(&work)?;
                 self.execute_sqlite_native_answer_generation(handoff, native_request)
                     .await?
+            } else if work.payload.get("op").and_then(Value::as_str)
+                == Some("aa_select_used_evidence")
+            {
+                let (handoff, native_request) = native_request_for_claimed_work(&work)?;
+                if crate::native_answer_generation::selection_snapshot_is_enabled(&native_request) {
+                    self.persist_sqlite_native_selection_context_snapshot(&native_request)
+                        .await?;
+                }
+                native_result_from_request(handoff, native_request, &self.native_operations)?
             } else {
                 native_result_for_claimed_work(work, &self.native_operations)?
             };

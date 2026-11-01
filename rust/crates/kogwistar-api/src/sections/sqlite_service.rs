@@ -3439,24 +3439,47 @@ impl SqliteRunApplicationService {
             .to_owned();
         let batch =
             crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
+        self.persist_sqlite_native_context_snapshot_batch(request, batch)
+            .await
+    }
+
+    async fn persist_sqlite_native_selection_context_snapshot(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<(), String> {
+        kogwistar_runtime::validate_native_step_registration(request, &self.native_operations)
+            .map_err(|_| "native evidence selection is not registered for this operation version".to_owned())?;
+        if self.chroma_graph.is_none() {
+            return Err("native selection snapshots require SQLite canonical graph events with Chroma projection".to_owned());
+        }
+        let batch = crate::native_answer_generation::selection_context_snapshot_batch(request)?;
+        self.persist_sqlite_native_context_snapshot_batch(request, batch)
+            .await
+    }
+
+    async fn persist_sqlite_native_context_snapshot_batch(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        batch: kogwistar_contracts::GraphMutationBatchV2,
+    ) -> Result<(), String> {
         let (mutations, mut index_jobs) = graph_mutation_batch_v2_value(batch)
-            .map_err(|_| "native answer snapshot graph mutation is invalid".to_owned())?;
+            .map_err(|_| "native context snapshot graph mutation is invalid".to_owned())?;
         validate_runtime_graph_mutations(&mutations)
-            .map_err(|_| "native answer snapshot graph mutation failed validation".to_owned())?;
+            .map_err(|_| "native context snapshot graph mutation failed validation".to_owned())?;
         let principal = self
             .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
             .await?;
         if !capability_allowed_for_principal(
             &principal,
             &self.capabilities,
-            "write_graph.native_answer_snapshot",
+            "write_graph.native_context_snapshot",
             &["write_graph"],
         ) || !principal_strings(&principal, "capabilities")
             .iter()
             .any(|capability| capability == "write_graph")
         {
             return Err(
-                "native answer snapshot requires the run owner's current write_graph capability"
+                "native context snapshot requires the run owner's current write_graph capability"
                     .to_owned(),
             );
         }
@@ -3466,14 +3489,14 @@ impl SqliteRunApplicationService {
             .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
         {
             return Err(
-                "native answer snapshot scope is outside the run owner's admitted scope".to_owned(),
+                "native context snapshot scope is outside the run owner's admitted scope".to_owned(),
             );
         }
         let Some(scope) = mutations.first().map(|mutation| mutation.scope.clone()) else {
-            return Err("native answer snapshot has no graph mutations".to_owned());
+            return Err("native context snapshot has no graph mutations".to_owned());
         };
         let owner_id = authenticated_run_owner_id(&principal)
-            .ok_or_else(|| "native answer snapshot requires an authenticated owner".to_owned())?
+            .ok_or_else(|| "native context snapshot requires an authenticated owner".to_owned())?
             .to_owned();
         let owner_acl_id = owner_id.to_ascii_lowercase();
         let acl_scope = principal
@@ -3492,25 +3515,25 @@ impl SqliteRunApplicationService {
             .immediate_transaction(move |uow| {
                 let run = uow.get_server_run(&run_id)?.ok_or_else(|| {
                     SqliteStoreError::RecordedRuntimeConflict(
-                        "native answer snapshot run is missing".to_owned(),
+                        "native context snapshot run is missing".to_owned(),
                     )
                 })?;
                 if run.user_id.as_deref() != Some(owner_id.as_str()) {
                     return Err(SqliteStoreError::RecordedRuntimeConflict(
-                        "native answer snapshot run owner changed before commit".to_owned(),
+                        "native context snapshot run owner changed before commit".to_owned(),
                     ));
                 }
                 if !capability_allowed_for_principal(
                     &principal,
                     &capabilities,
-                    "write_graph.native_answer_snapshot.commit",
+                    "write_graph.native_context_snapshot.commit",
                     &["write_graph"],
                 ) || !principal_strings(&principal, "capabilities")
                     .iter()
                     .any(|capability| capability == "write_graph")
                 {
                     return Err(SqliteStoreError::RecordedRuntimeConflict(
-                        "native answer snapshot write_graph capability was revoked".to_owned(),
+                        "native context snapshot write_graph capability was revoked".to_owned(),
                     ));
                 }
                 if mutations
@@ -3518,7 +3541,7 @@ impl SqliteRunApplicationService {
                     .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
                 {
                     return Err(SqliteStoreError::RecordedRuntimeConflict(
-                        "native answer snapshot scope changed before commit".to_owned(),
+                        "native context snapshot scope changed before commit".to_owned(),
                     ));
                 }
                 let acl_targets = acl_targets_for_graph_mutations(&mutations).0;
@@ -6163,6 +6186,15 @@ impl SqliteRunApplicationService {
                 "native answer generation requires the asynchronous application-service path",
             );
         }
+        if native_request.operation == "aa_select_used_evidence"
+            && crate::native_answer_generation::selection_snapshot_is_enabled(&native_request)
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_NATIVE_SELECTION_SNAPSHOT_ASYNC_REQUIRED",
+                "default native evidence selection requires the asynchronous snapshot transaction path",
+            );
+        }
         self.execute_native_request(input.handoff, native_request)
     }
 
@@ -6357,6 +6389,40 @@ impl SqliteRunApplicationService {
                     );
                 }
             }
+        }
+        if native_request.operation == "aa_select_used_evidence"
+            && crate::native_answer_generation::selection_snapshot_is_enabled(&native_request)
+        {
+            if self
+                .persist_sqlite_native_selection_context_snapshot(&native_request)
+                .await
+                .is_err()
+            {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_UNAVAILABLE",
+                    "native evidence-selection context snapshot could not be committed; the work remains unacknowledged",
+                );
+            }
+            let result = match native_result_from_request(
+                input.handoff.clone(),
+                native_request,
+                &self.native_operations,
+            ) {
+                Ok(result) => result,
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_NATIVE_EXECUTION_REJECTED",
+                        "native evidence selection rejected its bounded input",
+                    );
+                }
+            };
+            return self.apply_runtime_result_input(
+                result,
+                kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                None,
+            );
         }
         self.execute_native_request(input.handoff, native_request)
     }

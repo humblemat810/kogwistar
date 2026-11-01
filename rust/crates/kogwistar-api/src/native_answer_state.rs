@@ -428,6 +428,16 @@ fn execute_select_used_evidence(
     let mut update = Map::new();
     update.insert("selection".to_owned(), selection.clone());
     update.insert("used_node_ids".to_owned(), json!(used_node_ids));
+    if selector == "llm" {
+        let run_step_seq = state
+            .get("run_step_seq")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| u64::try_from(request.step_seq).unwrap_or_default());
+        update.insert(
+            "run_step_seq".to_owned(),
+            json!(run_step_seq.saturating_add(1)),
+        );
+    }
     let log_entry = format!("aa_select_used_evidence:{}", used_node_ids.len());
     let mut op_log = state
         .get("op_log")
@@ -917,6 +927,11 @@ mod tests {
                 result["final_state"]["selection"],
                 fixture["expected"]["selection"]
             );
+            if selector.is_some_and(|value| value.eq_ignore_ascii_case("bm25")) {
+                assert!(result["final_state"].get("run_step_seq").is_none());
+            } else {
+                assert_eq!(result["final_state"]["run_step_seq"], 8);
+            }
         }
     }
 

@@ -1804,6 +1804,24 @@ impl PostgresRunApplicationService {
             .model()
             .to_owned();
         let batch = crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
+        self.persist_native_context_snapshot_batch(request, batch).await
+    }
+
+    async fn persist_native_selection_context_snapshot(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<(), String> {
+        kogwistar_runtime::validate_native_step_registration(request, &self.native_operations)
+            .map_err(|_| "native evidence selection is not registered for this operation version".to_owned())?;
+        let batch = crate::native_answer_generation::selection_context_snapshot_batch(request)?;
+        self.persist_native_context_snapshot_batch(request, batch).await
+    }
+
+    async fn persist_native_context_snapshot_batch(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        batch: kogwistar_contracts::GraphMutationBatchV2,
+    ) -> Result<(), String> {
         let principal = self
             .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
             .await?;
@@ -1816,26 +1834,26 @@ impl PostgresRunApplicationService {
             .iter()
             .any(|capability| capability == "write_graph")
         {
-            return Err("native answer snapshot requires the run owner's current write_graph capability".to_owned());
+            return Err("native context snapshot requires the run owner's current write_graph capability".to_owned());
         }
         if !self
             .store
             .graph_authority_capability()
             .supports_atomic_index_jobs()
         {
-            return Err("native answer snapshot requires atomic graph authority".to_owned());
+            return Err("native context snapshot requires atomic graph authority".to_owned());
         }
         let (mutations, index_jobs) = graph_mutation_batch_v2_value(batch)
-            .map_err(|_| "native answer snapshot graph mutation is invalid".to_owned())?;
+            .map_err(|_| "native context snapshot graph mutation is invalid".to_owned())?;
         let security_scope = security_scope_value(&principal);
         if mutations.iter().any(|mutation| {
             !graph_mutation_scope_allowed(&mutation.scope, &security_scope)
         }) {
-            return Err("native answer snapshot scope is outside the run owner's admitted scope".to_owned());
+            return Err("native context snapshot scope is outside the run owner's admitted scope".to_owned());
         }
         let run_id = request.run_id.clone();
         let expected_owner = authenticated_run_owner_id(&principal)
-            .ok_or_else(|| "native answer snapshot requires an authenticated run owner".to_owned())?
+            .ok_or_else(|| "native context snapshot requires an authenticated run owner".to_owned())?
             .to_owned();
         let owner_id = expected_owner.to_ascii_lowercase();
         let acl_scope = principal
@@ -1866,7 +1884,7 @@ impl PostgresRunApplicationService {
                         run.user_id.as_deref() == Some(expected_owner.as_str())
                     }) {
                         return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
-                            "native answer snapshot run owner changed before commit".to_owned(),
+                            "native context snapshot run owner changed before commit".to_owned(),
                         ));
                     }
                     if !capability_allowed_for_principal(
@@ -1879,7 +1897,7 @@ impl PostgresRunApplicationService {
                         .any(|capability| capability == "write_graph")
                     {
                         return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
-                            "native answer snapshot write_graph capability was revoked before commit".to_owned(),
+                            "native context snapshot write_graph capability was revoked before commit".to_owned(),
                         ));
                     }
                     let commit_scope = security_scope_value(&principal);
@@ -1887,12 +1905,12 @@ impl PostgresRunApplicationService {
                         !graph_mutation_scope_allowed(&mutation.scope, &commit_scope)
                     }) {
                         return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
-                            "native answer snapshot scope changed before commit".to_owned(),
+                            "native context snapshot scope changed before commit".to_owned(),
                         ));
                     }
                     let scope = mutations.first().map(|mutation| mutation.scope.clone()).ok_or_else(|| {
                         kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
-                            "native answer snapshot has no graph mutation".to_owned(),
+                            "native context snapshot has no graph mutation".to_owned(),
                         )
                     })?;
                     let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
