@@ -39,6 +39,7 @@ from kogwistar.engine_core.postgres_backend import (
 )
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
 from kogwistar.engine_core.two_stage_async import AsyncPostgresTwoStageProjectionAdapter
+from kogwistar.agent import HookRegistry, HookSpec
 from kogwistar.implementation_selection import (
     active_transaction_authority,
     callback_execution_scope,
@@ -836,6 +837,40 @@ async def test_callback_guard_propagates_through_asyncio_to_thread(
             match="transaction authority cannot be opened from a worker callback",
         ):
             await asyncio.to_thread(store.set_user_seq, "callback-user", 8)
+
+    assert store.current_user_seq("callback-user") == 7
+
+
+@pytest.mark.parametrize("async_dispatch", [False, True])
+def test_framework_hook_thread_preserves_callback_write_guard(
+    tmp_path: Path, async_dispatch: bool
+) -> None:
+    store = EngineSQLite(tmp_path / f"hook-callback-{async_dispatch}.sqlite")
+    store.ensure_initialized()
+    store.set_user_seq("callback-user", 7)
+
+    hooks = HookRegistry()
+    hooks.register(
+        HookSpec(
+            hook_id="attempt-write",
+            callback=lambda _payload: store.set_user_seq("callback-user", 8),
+            failure_mode="fail_closed",
+        )
+    )
+
+    with callback_execution_scope():
+        if async_dispatch:
+            with pytest.raises(
+                RuntimeError,
+                match="transaction authority cannot be opened from a worker callback",
+            ):
+                asyncio.run(hooks.arun({}))
+        else:
+            with pytest.raises(
+                RuntimeError,
+                match="transaction authority cannot be opened from a worker callback",
+            ):
+                hooks.run({})
 
     assert store.current_user_seq("callback-user") == 7
 
