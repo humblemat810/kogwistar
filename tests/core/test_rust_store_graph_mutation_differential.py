@@ -43,6 +43,12 @@ def _require_pg(pg_dsn: str | None, pg_schema: str | None) -> tuple[str, str]:
     return pg_dsn, pg_schema
 
 
+def _drop_pg_schema(sa_engine: Any, schema: str) -> None:
+    bootstrap_engine = sa_engine.execution_options(kogwistar_schema_bootstrap=True)
+    with bootstrap_engine.begin() as connection:
+        connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
 def _mutation(
     *,
     event_id: str,
@@ -315,11 +321,15 @@ def test_graph_space_scope_preserves_shared_python_rust_node_edge_storage(
 
 
 def test_rust_reads_python_persisted_wisdom_graph_from_role_schema(
-    sa_engine, pg_dsn: str | None, pg_schema: str | None
+    request: pytest.FixtureRequest,
+    sa_engine,
+    pg_dsn: str | None,
+    pg_schema: str | None,
 ) -> None:
     """Rust can read Wisdom rows persisted by Python's role-specific backend."""
     dsn, base_schema = _require_pg(pg_dsn, pg_schema)
     wisdom_schema = f"{base_schema}_wisdom"
+    request.addfinalizer(lambda: _drop_pg_schema(sa_engine, wisdom_schema))
     backend = PgVectorBackend(
         engine=sa_engine, embedding_dim=3, schema=wisdom_schema
     )

@@ -41,6 +41,12 @@ def _port() -> int:
         return int(sock.getsockname()[1])
 
 
+def _drop_postgres_schema(sa_engine, schema: str) -> None:
+    bootstrap_engine = sa_engine.execution_options(kogwistar_schema_bootstrap=True)
+    with bootstrap_engine.begin() as connection:
+        connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
 def _hs256_token(secret: str, claims: dict[str, object]) -> str:
     def encode(value: object) -> str:
         raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
@@ -668,6 +674,7 @@ def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
 
 
 def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
+    request: pytest.FixtureRequest,
     pg_dsn: str | None,
     pg_schema: str | None,
     sa_engine,
@@ -693,6 +700,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     from kogwistar.engine_core.models import Edge, Node
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
     from kogwistar.graph_query import GraphQuery
+    from kogwistar.server.bootstrap import load_server_storage_settings
     from kogwistar.server.auth_middleware import claims_ctx
     from tests._helpers.graph_builders import (
         build_entity_node,
@@ -702,6 +710,15 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
 
     namespace = "alpha"
     graph_type = "knowledge"
+    python_storage = load_server_storage_settings(
+        {
+            "GKE_BACKEND": "pg",
+            "GKE_PG_URL": pg_dsn,
+            "GKE_PG_SCHEMA": pg_schema,
+        }
+    )
+    wisdom_schema = python_storage.schema_for("wisdom")
+    request.addfinalizer(lambda: _drop_postgres_schema(sa_engine, wisdom_schema))
     doc_id = "D-neighbor-parity"
     id_prefix = uuid.uuid4().hex
     source = build_entity_node(
@@ -837,6 +854,62 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         )
     finally:
         claims_ctx.reset(owner_token)
+
+    wisdom_backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, schema=wisdom_schema
+    )
+    wisdom_backend.ensure_schema()
+    wisdom_engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "python_persisted_wisdom"),
+        backend=wisdom_backend,
+        namespace="wisdom",
+        kg_graph_type="wisdom",
+        embedding_function=fixture_embedding,
+        embedding_profile=EmbeddingProfile(
+            provider="ollama",
+            model="fixture-embedding-v1",
+            dimension=3,
+            similarity_metric="cosine",
+            embedding_kind="single_vector",
+        ),
+        acl_enabled=True,
+    )
+    wisdom_doc_id = f"python-wisdom-{id_prefix}"
+    wisdom_seed = build_entity_node(
+        node_id=f"{id_prefix}-python-wisdom-seed",
+        doc_id=wisdom_doc_id,
+        label="Python persisted semantic parity lesson",
+        summary="A useful Wisdom record persisted by the Python graph engine.",
+        metadata={"visibility": "public"},
+    )
+    wisdom_related = build_entity_node(
+        node_id=f"{id_prefix}-python-wisdom-related",
+        doc_id=wisdom_doc_id,
+        label="Related Python Wisdom concept",
+        summary="This concept is connected to the persisted lesson.",
+        metadata={"visibility": "public"},
+    )
+    wisdom_edge = build_relationship_edge(
+        edge_id=f"{id_prefix}-python-wisdom-edge",
+        src=wisdom_seed.id,
+        tgt=wisdom_related.id,
+        doc_id=wisdom_doc_id,
+        metadata={"visibility": "public"},
+    )
+    wisdom_writer = {
+        "agent_id": "wisdom-owner",
+        "sub": "wisdom-owner",
+        "role": "rw",
+        "ns": "wisdom",
+        "storage_ns": "wisdom",
+    }
+    wisdom_token = claims_ctx.set(wisdom_writer)
+    try:
+        wisdom_engine.write.add_node(wisdom_seed)
+        wisdom_engine.write.add_node(wisdom_related)
+        wisdom_engine.write.add_edge(wisdom_edge)
+    finally:
+        claims_ctx.reset(wisdom_token)
 
     reader_claims: dict[str, object] = {
         "sub": "reader-b",
@@ -989,6 +1062,37 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                     }
                 )
             return seed_ids, layer_ids
+
+        wisdom_reader_claims: dict[str, object] = {
+            "sub": "wisdom-reader",
+            "role": "ro",
+            "roles": ["reader"],
+            "ns": ["wisdom"],
+            "storage_ns": "wisdom",
+            "capabilities": ["read_graph"],
+            "exp": 4_102_444_800,
+        }
+        wisdom_query = "deterministic semantic parity query"
+        wisdom_read_token = claims_ctx.set(wisdom_reader_claims)
+        try:
+            python_wisdom = GraphQuery(wisdom_engine).semantic_seed_then_expand_text(
+                wisdom_query, top_k=10, hops=1
+            )
+        finally:
+            claims_ctx.reset(wisdom_read_token)
+        rust_wisdom = rust_mcp_tool(
+            "wisdom.semantic_seed_then_expand",
+            {"text": wisdom_query, "top_k": 10, "hops": 1},
+            wisdom_reader_claims,
+        )
+        python_wisdom_ids, python_wisdom_layers = semantic_ids(python_wisdom)
+        rust_wisdom_ids, rust_wisdom_layers = semantic_ids(rust_wisdom)
+        assert rust_wisdom_ids == python_wisdom_ids
+        assert rust_wisdom_layers == python_wisdom_layers
+        assert wisdom_seed.id in rust_wisdom_ids
+        assert wisdom_edge.id in set().union(
+            *(layer["edges"] for layer in rust_wisdom_layers)
+        )
 
         owner_python_claims = {
             **owner_claims,
