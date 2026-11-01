@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sqlite3
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -873,6 +874,56 @@ def test_framework_hook_thread_preserves_callback_write_guard(
                 hooks.run({})
 
     assert store.current_user_seq("callback-user") == 7
+
+
+@pytest.mark.parametrize("async_dispatch", [False, True])
+def test_timed_out_framework_hook_keeps_guard_after_parent_scope_exits(
+    tmp_path: Path, async_dispatch: bool
+) -> None:
+    store = EngineSQLite(tmp_path / f"timed-out-hook-{async_dispatch}.sqlite")
+    store.ensure_initialized()
+    store.set_user_seq("callback-user", 7)
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    callback_finished = threading.Event()
+    callback_errors: list[str] = []
+
+    def callback(_payload: Mapping[str, JsonValue]) -> None:
+        callback_started.set()
+        assert release_callback.wait(timeout=2)
+        try:
+            store.set_user_seq("callback-user", 8)
+        except RuntimeError as error:
+            callback_errors.append(str(error))
+        finally:
+            callback_finished.set()
+
+    hooks = HookRegistry()
+    hooks.register(
+        HookSpec(
+            hook_id="delayed-write",
+            callback=callback,
+            timeout_ms=20,
+            failure_mode="fail_open",
+        )
+    )
+
+    try:
+        with callback_execution_scope():
+            if async_dispatch:
+                results = asyncio.run(hooks.arun({}))
+            else:
+                results = hooks.run({})
+        assert callback_started.is_set()
+        assert results[0].status == "failed"
+        release_callback.set()
+        assert callback_finished.wait(timeout=2)
+        assert callback_errors == [
+            "transaction authority cannot be opened from a worker callback"
+        ]
+        assert store.current_user_seq("callback-user") == 7
+    finally:
+        release_callback.set()
 
 
 def test_callback_execution_marker_is_cleared_after_callback_failure() -> None:
