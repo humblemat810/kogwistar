@@ -840,7 +840,7 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
             scope: GraphScope {
                 namespace: "docs".to_owned(),
                 workspace_id: None,
-                graph_space: None,
+                graph_space: Some(String::new()),
             },
             table: "gke_nodes".to_owned(),
             ids: Some(vec![graph_node_id.to_owned()]),
@@ -5039,4 +5039,185 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
 
     drop(service);
     remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
+async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let setup = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value =
+                serde_json::from_slice(&bytes[header_end + 4..header_end + 4 + content_length])
+                    .unwrap();
+            let response = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space": "cosine"}
+            })
+            .to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("knowledge-nodes"),
+        chroma_config("knowledge-edges"),
+    )
+    .await
+    .unwrap();
+    setup.await.unwrap();
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-public-upsert-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph);
+    let standalone_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-standalone-public-upsert-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let standalone = SqliteRunApplicationService::open(&standalone_path).unwrap();
+    assert!(!standalone.supports_http_operation("POST", PUBLIC_GRAPH_UPSERT_ROUTE));
+    assert!(service.supports_http_operation("POST", PUBLIC_GRAPH_UPSERT_ROUTE));
+
+    let body = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-extraction-v1.json"
+    ))
+    .as_bytes()
+    .to_vec();
+    let principal = json!({
+        "sub": "alice", "user_id": "alice", "role": "rw",
+        "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+    });
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: body.clone(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let payload: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(payload["document_id"], "doc-1");
+    assert_eq!(payload["nodes_added"], 2);
+    assert_eq!(payload["edges_added"], 1);
+
+    let events = service.store.replay_raw_events("docs", 0, 100).unwrap();
+    assert!(events.iter().any(|event| {
+        event.entity_id == payload["node_ids"][0]
+            && serde_json::from_str::<Value>(&event.payload_json)
+                .ok()
+                .and_then(|record| record.get("metadata").cloned())
+                .and_then(|metadata| metadata.get("engine_type").cloned())
+                == Some(json!("knowledge"))
+    }));
+    assert!(events.iter().any(|event| {
+        serde_json::from_str::<Value>(&event.payload_json)
+            .ok()
+            .and_then(|record| record.get("metadata").cloned())
+            .and_then(|metadata| metadata.get("entity_type").cloned())
+            == Some(json!("acl_record"))
+    }));
+    let document = service
+        .store
+        .source_document_projection(
+            &GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: Some(String::new()),
+                graph_space: Some(String::new()),
+            },
+            "doc-1",
+        )
+        .unwrap();
+    assert_eq!(
+        document.and_then(|record| record.document),
+        Some("Alpha connects to Beta.".to_owned())
+    );
+    let index_jobs = service
+        .store
+        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 100)
+        .unwrap();
+    assert!(
+        index_jobs
+            .iter()
+            .any(|job| job.entity_id == payload["node_ids"][0])
+    );
+    assert!(
+        index_jobs
+            .iter()
+            .any(|job| job.entity_id == payload["node_ids"][1])
+    );
+    assert!(index_jobs.iter().all(|job| job.namespace == "docs"));
+
+    let committed_events = events.len();
+    let mut invalid: Value = serde_json::from_slice(&body).unwrap();
+    invalid["nodes"][0]["references"][0]["excerpt"] = json!("forged");
+    let rejected = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&invalid).unwrap(),
+            principal,
+        })
+        .await;
+    assert_ne!(rejected.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        service
+            .store
+            .replay_raw_events("docs", 0, 100)
+            .unwrap()
+            .len(),
+        committed_events
+    );
+
+    drop(service);
+    drop(standalone);
+    remove_test_sqlite(&sqlite_path);
+    remove_test_sqlite(&standalone_path);
 }

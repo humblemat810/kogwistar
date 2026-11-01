@@ -16,8 +16,7 @@ fn is_public_graph_upsert_route(method: &str, path_and_query: &str) -> bool {
 }
 
 fn is_public_document_tree_upsert_route(method: &str, path_and_query: &str) -> bool {
-    method == "POST"
-        && path_and_query.split('?').next() == Some(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
+    method == "POST" && path_and_query.split('?').next() == Some(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
 }
 
 fn document_tree_upsert_graph_request(
@@ -45,13 +44,16 @@ fn document_tree_upsert_graph_request(
             "doc_id must be a non-empty string",
         ));
     }
-    let nodes = payload.get("nodes").and_then(Value::as_array).ok_or_else(|| {
-        effect_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "KOGWISTAR_INVALID_REQUEST",
-            "nodes must be an array",
-        )
-    })?;
+    let nodes = payload
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "nodes must be an array",
+            )
+        })?;
     let edges = match payload.get("edges") {
         None => Vec::new(),
         Some(Value::Array(edges)) => edges.clone(),
@@ -161,14 +163,17 @@ fn document_projection_write(
     })
 }
 
-fn graph_upsert_request(request: &ApiEffectRequest) -> Result<GraphExtractionRequestV1, ApiEffectResponse> {
-    let input: GraphExtractionRequestV1 = serde_json::from_slice(&request.body).map_err(|error| {
-        effect_error(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "KOGWISTAR_INVALID_REQUEST",
-            error.to_string(),
-        )
-    })?;
+fn graph_upsert_request(
+    request: &ApiEffectRequest,
+) -> Result<GraphExtractionRequestV1, ApiEffectResponse> {
+    let input: GraphExtractionRequestV1 =
+        serde_json::from_slice(&request.body).map_err(|error| {
+            effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            )
+        })?;
     input.validate().map_err(|error| {
         effect_error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -186,11 +191,17 @@ fn graph_upsert_request(request: &ApiEffectRequest) -> Result<GraphExtractionReq
     Ok(input)
 }
 
-fn graph_upsert_should_write_document(inline_content: Option<&str>, stored_content: Option<&str>) -> bool {
+fn graph_upsert_should_write_document(
+    inline_content: Option<&str>,
+    stored_content: Option<&str>,
+) -> bool {
     inline_content.is_some() || !stored_content.is_some_and(|content| !content.is_empty())
 }
 
-fn graph_upsert_endpoint_snapshot_matches(actual: &[GraphRecord], expected: &[GraphRecord]) -> bool {
+fn graph_upsert_endpoint_snapshot_matches(
+    actual: &[GraphRecord],
+    expected: &[GraphRecord],
+) -> bool {
     if actual.len() != expected.len() {
         return false;
     }
@@ -199,9 +210,11 @@ fn graph_upsert_endpoint_snapshot_matches(actual: &[GraphRecord], expected: &[Gr
         .map(|record| (record.id.as_str(), record))
         .collect::<BTreeMap<_, _>>();
     actual.iter().all(|record| {
-        expected_by_id.get(record.id.as_str()).is_some_and(|expected| {
-            record.document == expected.document && record.metadata == expected.metadata
-        })
+        expected_by_id
+            .get(record.id.as_str())
+            .is_some_and(|expected| {
+                record.document == expected.document && record.metadata == expected.metadata
+            })
     })
 }
 
@@ -289,9 +302,9 @@ fn normalize_extraction_entity(
         .entry("redirect_to_id".to_owned())
         .or_insert(Value::Null);
 
-    let raw_mentions = entity.remove("mentions").or_else(|| {
-        raw.get("groundings").cloned()
-    });
+    let raw_mentions = entity
+        .remove("mentions")
+        .or_else(|| raw.get("groundings").cloned());
     let mentions = match raw_mentions {
         Some(Value::Array(mentions)) => mentions,
         Some(_) => return Err("mentions must be an array".to_owned()),
@@ -344,20 +357,28 @@ fn normalize_extraction_mention(
         object
             .entry("doc_id".to_owned())
             .or_insert_with(|| Value::String(doc_id.to_owned()));
-        object.entry("collection_page_url".to_owned()).or_insert_with(|| {
-            Value::String(format!("doc://{doc_id}"))
-        });
-        object.entry("document_page_url".to_owned()).or_insert_with(|| {
-            Value::String(format!("doc://{doc_id}#span-{index}"))
-        });
+        object
+            .entry("collection_page_url".to_owned())
+            .or_insert_with(|| Value::String(format!("doc://{doc_id}")));
+        object
+            .entry("document_page_url".to_owned())
+            .or_insert_with(|| Value::String(format!("doc://{doc_id}#span-{index}")));
         object
             .entry("insertion_method".to_owned())
             .or_insert_with(|| Value::String(insertion_method.to_owned()));
-        object.entry("page_number".to_owned()).or_insert(Value::from(1));
-        object.entry("context_before".to_owned()).or_insert_with(|| Value::String(String::new()));
-        object.entry("context_after".to_owned()).or_insert_with(|| Value::String(String::new()));
+        object
+            .entry("page_number".to_owned())
+            .or_insert(Value::from(1));
+        object
+            .entry("context_before".to_owned())
+            .or_insert_with(|| Value::String(String::new()));
+        object
+            .entry("context_after".to_owned())
+            .or_insert_with(|| Value::String(String::new()));
         object.entry("chunk_id".to_owned()).or_insert(Value::Null);
-        object.entry("source_cluster_id".to_owned()).or_insert(Value::Null);
+        object
+            .entry("source_cluster_id".to_owned())
+            .or_insert(Value::Null);
     }
     Ok(mention)
 }
@@ -371,7 +392,10 @@ fn graph_upsert_mutation_batch(
     use std::collections::BTreeMap;
 
     input
-        .validate_source_spans(&BTreeMap::from([(input.doc_id.clone(), source_text.to_owned())]))
+        .validate_source_spans(&BTreeMap::from([(
+            input.doc_id.clone(),
+            source_text.to_owned(),
+        )]))
         .map_err(|error| error.to_string())?;
 
     let mut node_ids = BTreeMap::<String, String>::new();
@@ -410,7 +434,10 @@ fn graph_upsert_mutation_batch(
         )?);
     }
     for raw in &input.edges {
-        let token = raw.get("local_id").or_else(|| raw.get("id")).and_then(Value::as_str);
+        let token = raw
+            .get("local_id")
+            .or_else(|| raw.get("id"))
+            .and_then(Value::as_str);
         let id = match token {
             Some(value) if value.starts_with("ne:") => edge_ids
                 .entry(value.to_owned())
@@ -431,13 +458,8 @@ fn graph_upsert_mutation_batch(
     let mut pending_edges = Vec::with_capacity(input.edges.len());
     for (index, raw) in input.edges.iter().enumerate() {
         let id = edge_ids_in_input[index].clone();
-        let mut entity = normalize_extraction_entity(
-            raw,
-            &input.doc_id,
-            &input.insertion_method,
-            id,
-            true,
-        )?;
+        let mut entity =
+            normalize_extraction_entity(raw, &input.doc_id, &input.insertion_method, id, true)?;
         for field in ["source_ids", "target_ids"] {
             let endpoints = entity[field]
                 .as_array_mut()
@@ -456,7 +478,9 @@ fn graph_upsert_mutation_batch(
                                 .contains(token)
                                 .then(|| token.to_owned())
                         })
-                        .ok_or_else(|| format!("edge endpoint {token:?} is not a node in this request"))?,
+                        .ok_or_else(|| {
+                            format!("edge endpoint {token:?} is not a node in this request")
+                        })?,
                 );
             }
         }
@@ -509,6 +533,10 @@ fn graph_upsert_mutation_batch(
         pending_edges = next;
     }
 
+    for payload in normalized_nodes.iter_mut().chain(&mut normalized_edges) {
+        payload["metadata"]["engine_type"] = Value::String("knowledge".to_owned());
+    }
+
     let scope = GraphScope {
         namespace: security_scope["storage_namespace"]
             .as_str()
@@ -541,15 +569,22 @@ fn graph_upsert_mutation_batch(
             } else {
                 object.insert("embedding".to_owned(), Value::Null);
             }
-            let document = serde_json::to_string(&document_payload)
-                .map_err(|error| error.to_string())?;
+            let document =
+                serde_json::to_string(&document_payload).map_err(|error| error.to_string())?;
             let mut metadata = payload
                 .as_object()
                 .and_then(|object| object.get("metadata"))
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            for field in ["doc_id", "label", "type", "summary", "domain_id", "canonical_entity_id"] {
+            for field in [
+                "doc_id",
+                "label",
+                "type",
+                "summary",
+                "domain_id",
+                "canonical_entity_id",
+            ] {
                 if let Some(value) = payload.get(field) {
                     metadata.insert(field.to_owned(), value.clone());
                 }
@@ -557,13 +592,17 @@ fn graph_upsert_mutation_batch(
             if let Some(properties) = payload.get("properties") {
                 metadata.insert(
                     "properties".to_owned(),
-                    Value::String(serde_json::to_string(properties).map_err(|error| error.to_string())?),
+                    Value::String(
+                        serde_json::to_string(properties).map_err(|error| error.to_string())?,
+                    ),
                 );
             }
             if let Some(mentions) = payload.get("mentions") {
                 metadata.insert(
                     "mentions".to_owned(),
-                    Value::String(serde_json::to_string(mentions).map_err(|error| error.to_string())?),
+                    Value::String(
+                        serde_json::to_string(mentions).map_err(|error| error.to_string())?,
+                    ),
                 );
             }
             if entity_kind == "edge" {
@@ -571,15 +610,27 @@ fn graph_upsert_mutation_batch(
                     if let Some(value) = payload.get(field) {
                         metadata.insert(
                             field.to_owned(),
-                            Value::String(serde_json::to_string(value).map_err(|error| error.to_string())?),
+                            Value::String(
+                                serde_json::to_string(value).map_err(|error| error.to_string())?,
+                            ),
                         );
                     }
                 }
             }
-            metadata.insert("namespace".to_owned(), Value::String(scope.namespace.clone()));
+            metadata.insert(
+                "namespace".to_owned(),
+                Value::String(scope.namespace.clone()),
+            );
             metadata.insert(
                 "_class_name".to_owned(),
-                Value::String(if entity_kind == "node" { "Node" } else { "Edge" }.to_owned()),
+                Value::String(
+                    if entity_kind == "node" {
+                        "Node"
+                    } else {
+                        "Edge"
+                    }
+                    .to_owned(),
+                ),
             );
             let mut record_metadata = serde_json::Map::new();
             for (key, value) in metadata {
@@ -630,6 +681,342 @@ fn graph_upsert_mutation_batch(
         batch.validate().map_err(|error| error.to_string())?;
     }
     Ok((batch, result_nodes, result_edges))
+}
+
+impl SqliteRunApplicationService {
+    async fn sqlite_public_graph_upsert_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if self.chroma_graph.is_none() {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "Graph upsert requires SQLite canonical events and a configured Chroma projection",
+            );
+        }
+        if principal_role(&request.principal) != "rw"
+            || !capability_allowed_for_principal(
+                &request.principal,
+                &self.capabilities,
+                "write_graph",
+                &["write_graph"],
+            )
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph upsert requires rw and write_graph capability",
+            );
+        }
+        let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_GRAPH_OWNER_REQUIRED",
+                "Graph upsert requires an authenticated owner identity",
+            );
+        };
+        let input = match graph_upsert_request(request) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let security_scope = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .unwrap_or("docs")
+                .to_owned(),
+            workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
+            graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
+        };
+        let external_endpoints = match graph_upsert_external_endpoints(&input) {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let owner_id = owner_id.to_owned();
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            security_scope["security_scope"].as_str(),
+        );
+        let acl_security_scope = security_scope["security_scope"].as_str().map(str::to_owned);
+        let effect_id = uuid::Uuid::new_v4().to_string();
+        let committed = self.store.immediate_transaction(|uow| {
+            let existing_document = uow.source_document_projection(&scope, &input.doc_id)?;
+            let source_text = input
+                .content
+                .clone()
+                .or_else(|| {
+                    existing_document
+                        .as_ref()
+                        .and_then(|record| record.document.clone())
+                })
+                .unwrap_or_default();
+            let should_write_document = graph_upsert_should_write_document(
+                input.content.as_deref(),
+                existing_document
+                    .as_ref()
+                    .and_then(|record| record.document.as_deref()),
+            );
+            let (batch, node_ids, edge_ids) = graph_upsert_mutation_batch(
+                &input,
+                &source_text,
+                &security_scope,
+                &external_endpoints,
+            )
+            .map_err(SqliteStoreError::TransactionAborted)?;
+            let mutations = graph_mutation_batch_value(batch.clone())
+                .map_err(SqliteStoreError::TransactionAborted)?;
+            validate_graph_mutation_envelopes(&batch, &mutations)
+                .map_err(SqliteStoreError::TransactionAborted)?;
+            if mutations
+                .iter()
+                .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+            {
+                return Err(SqliteStoreError::TransactionAborted(
+                    "graph mutation scope is outside the principal storage scope".to_owned(),
+                ));
+            }
+
+            if !mutations.is_empty() {
+                let references = graph_mutation_references(&mutations);
+                let target_nodes = mutations
+                    .iter()
+                    .filter(|mutation| mutation.entity_kind == "node")
+                    .map(|mutation| mutation.record.id.clone())
+                    .collect::<BTreeSet<_>>();
+                let target_edges = mutations
+                    .iter()
+                    .filter(|mutation| mutation.entity_kind == "edge")
+                    .map(|mutation| mutation.record.id.clone())
+                    .collect::<BTreeSet<_>>();
+                let mut external_edges = BTreeMap::<String, GraphRecord>::new();
+                let mut endpoint_refs = references;
+                loop {
+                    let pending = endpoint_refs
+                        .edge_ids
+                        .iter()
+                        .filter(|id| {
+                            !target_edges.contains(*id) && !external_edges.contains_key(*id)
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if pending.is_empty() {
+                        break;
+                    }
+                    if endpoint_refs
+                        .node_ids
+                        .len()
+                        .saturating_add(endpoint_refs.edge_ids.len())
+                        > 10_000
+                    {
+                        return Err(SqliteStoreError::TransactionAborted(
+                            "graph endpoint closure exceeds 10000 entities".to_owned(),
+                        ));
+                    }
+                    let records = sqlite_canonical_graph_records(uow, &scope, "edge", &pending)?;
+                    if records.len() != pending.len() {
+                        return Err(SqliteStoreError::TransactionAborted(
+                            "one or more external graph edges are missing from the principal scope"
+                                .to_owned(),
+                        ));
+                    }
+                    for record in records {
+                        endpoint_refs.node_ids.extend(
+                            ["source_ids", "target_ids"]
+                                .into_iter()
+                                .flat_map(|field| graph_record_string_ids(&record, field)),
+                        );
+                        endpoint_refs.edge_ids.extend(
+                            ["source_edge_ids", "target_edge_ids"]
+                                .into_iter()
+                                .flat_map(|field| graph_record_string_ids(&record, field)),
+                        );
+                        external_edges.insert(record.id.clone(), record);
+                    }
+                }
+                endpoint_refs
+                    .node_ids
+                    .retain(|id| !target_nodes.contains(id));
+                endpoint_refs
+                    .edge_ids
+                    .retain(|id| !target_edges.contains(id));
+                if endpoint_refs
+                    .node_ids
+                    .len()
+                    .saturating_add(endpoint_refs.edge_ids.len())
+                    > 10_000
+                {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "graph endpoint closure exceeds 10000 entities".to_owned(),
+                    ));
+                }
+                let mut node_ids_to_check =
+                    endpoint_refs.node_ids.iter().cloned().collect::<Vec<_>>();
+                node_ids_to_check.extend(target_nodes.iter().cloned());
+                node_ids_to_check.sort();
+                node_ids_to_check.dedup();
+                let mut edge_ids_to_check =
+                    endpoint_refs.edge_ids.iter().cloned().collect::<Vec<_>>();
+                edge_ids_to_check.extend(target_edges.iter().cloned());
+                edge_ids_to_check.sort();
+                edge_ids_to_check.dedup();
+                let nodes =
+                    sqlite_canonical_graph_records(uow, &scope, "node", &node_ids_to_check)?;
+                let edges =
+                    sqlite_canonical_graph_records(uow, &scope, "edge", &edge_ids_to_check)?;
+                if endpoint_refs
+                    .node_ids
+                    .iter()
+                    .any(|id| !nodes.iter().any(|node| &node.id == id))
+                    || endpoint_refs
+                        .edge_ids
+                        .iter()
+                        .any(|id| !edges.iter().any(|edge| &edge.id == id))
+                {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "one or more graph endpoints are missing from the principal scope"
+                            .to_owned(),
+                    ));
+                }
+                let existing_ids = nodes
+                    .iter()
+                    .chain(&edges)
+                    .map(|record| record.id.clone())
+                    .collect::<Vec<_>>();
+                let acl_records =
+                    uow.graph_acl_records_for_entities(&scope, "knowledge", &existing_ids)?;
+                let mut acl_index = GraphAclIndex::default();
+                acl_index.extend_from_records(&acl_records, "knowledge");
+                let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
+                    &nodes,
+                    &edges,
+                    &acl_index,
+                    &acl_principal,
+                );
+                let expected = nodes
+                    .iter()
+                    .map(|record| ("node", record.id.as_str()))
+                    .chain(edges.iter().map(|record| ("edge", record.id.as_str())))
+                    .collect::<BTreeSet<_>>();
+                let visible = visible_nodes
+                    .iter()
+                    .map(|record| ("node", record.id.as_str()))
+                    .chain(
+                        visible_edges
+                            .iter()
+                            .map(|record| ("edge", record.id.as_str())),
+                    )
+                    .collect::<BTreeSet<_>>();
+                if expected != visible
+                    || nodes.iter().any(|record| {
+                        target_nodes.contains(&record.id) && wisdom_record_is_tombstoned(record)
+                    })
+                    || edges.iter().any(|record| {
+                        target_edges.contains(&record.id) && wisdom_record_is_tombstoned(record)
+                    })
+                {
+                    return Err(SqliteStoreError::TransactionAborted(
+                        "one or more graph endpoints are hidden or tombstoned".to_owned(),
+                    ));
+                }
+                let existing_targets = nodes
+                    .iter()
+                    .filter(|record| target_nodes.contains(&record.id))
+                    .map(|record| ("node".to_owned(), record.id.clone()))
+                    .chain(
+                        edges
+                            .iter()
+                            .filter(|record| target_edges.contains(&record.id))
+                            .map(|record| ("edge".to_owned(), record.id.clone())),
+                    )
+                    .collect::<BTreeSet<_>>();
+                let new_mutations = mutations
+                    .iter()
+                    .filter(|mutation| {
+                        !existing_targets
+                            .contains(&(mutation.entity_kind.clone(), mutation.record.id.clone()))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+                    &scope,
+                    &new_mutations,
+                    acl_targets_for_graph_mutations(&new_mutations).0,
+                    acl_records,
+                    "knowledge",
+                    &owner_id,
+                    acl_security_scope.as_deref(),
+                    &effect_id,
+                )
+                .map_err(SqliteStoreError::TransactionAborted)?;
+                let mut all_mutations = mutations;
+                all_mutations.extend(acl_mutations);
+                if should_write_document {
+                    let mut metadata = serde_json::Map::new();
+                    metadata.insert("doc_type".to_owned(), json!(input.doc_type));
+                    metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
+                    uow.upsert_source_document_projection(DocumentProjectionUpsert {
+                        scope: scope.clone(),
+                        record: GraphRecord {
+                            id: input.doc_id.clone(),
+                            document: Some(source_text.clone()),
+                            metadata,
+                            embedding: None,
+                        },
+                        embedding_dim: 0,
+                    })?;
+                }
+                // SQLite creates the canonical revision-fenced embedding intent for each
+                // graph event itself; the generic PostgreSQL DTO's duplicate intents are
+                // not copied into this backend's transaction.
+                uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                    mutations: all_mutations,
+                    index_jobs: acl_jobs,
+                })?;
+                return Ok((input.doc_id.clone(), node_ids, edge_ids));
+            }
+
+            if should_write_document {
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("doc_type".to_owned(), json!(input.doc_type));
+                metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
+                uow.upsert_source_document_projection(DocumentProjectionUpsert {
+                    scope: scope.clone(),
+                    record: GraphRecord {
+                        id: input.doc_id.clone(),
+                        document: Some(source_text),
+                        metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })?;
+            }
+            Ok((input.doc_id.clone(), node_ids, edge_ids))
+        });
+        match committed {
+            Ok((document_id, node_ids, edge_ids)) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "document_id": document_id,
+                    "node_ids": node_ids,
+                    "edge_ids": edge_ids,
+                    "nodes_added": node_ids.len(),
+                    "edges_added": edge_ids.len(),
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_GRAPH_UPSERT_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -711,7 +1098,7 @@ mod graph_upsert_tests {
             &principal_scope(),
             &GraphUpsertExternalEndpoints::default(),
         )
-            .expect("valid fixture converts to a native graph batch");
+        .expect("valid fixture converts to a native graph batch");
         assert_eq!(nodes.len(), 2);
         assert_eq!(edges.len(), 1);
         assert!(nodes.iter().all(|id| !id.starts_with("nn:")));
@@ -752,8 +1139,14 @@ mod graph_upsert_tests {
     fn graph_upsert_creates_placeholder_when_stored_document_has_no_text() {
         assert!(graph_upsert_should_write_document(None, None));
         assert!(graph_upsert_should_write_document(None, Some("")));
-        assert!(!graph_upsert_should_write_document(None, Some("stored source")));
-        assert!(graph_upsert_should_write_document(Some(""), Some("stored source")));
+        assert!(!graph_upsert_should_write_document(
+            None,
+            Some("stored source")
+        ));
+        assert!(graph_upsert_should_write_document(
+            Some(""),
+            Some("stored source")
+        ));
     }
 
     #[test]
@@ -793,13 +1186,15 @@ mod graph_upsert_tests {
         let mut input = extraction_fixture();
         input.edges[0]["source_ids"][0] = json!("nn:unknown");
         let source = input.content.as_deref().expect("fixture source text");
-        assert!(graph_upsert_mutation_batch(
-            &input,
-            source,
-            &principal_scope(),
-            &GraphUpsertExternalEndpoints::default(),
-        )
-        .is_err());
+        assert!(
+            graph_upsert_mutation_batch(
+                &input,
+                source,
+                &principal_scope(),
+                &GraphUpsertExternalEndpoints::default(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -829,13 +1224,15 @@ mod graph_upsert_tests {
             .collect::<Vec<_>>();
         assert_eq!(ordered, [edge_ids[1].as_str(), edge_ids[0].as_str()]);
         input.edges[1]["source_edge_ids"] = json!(["ne:connects"]);
-        assert!(graph_upsert_mutation_batch(
-            &input,
-            source,
-            &principal_scope(),
-            &GraphUpsertExternalEndpoints::default(),
-        )
-            .is_err_and(|error| error.contains("cycle")));
+        assert!(
+            graph_upsert_mutation_batch(
+                &input,
+                source,
+                &principal_scope(),
+                &GraphUpsertExternalEndpoints::default(),
+            )
+            .is_err_and(|error| error.contains("cycle"))
+        );
     }
 
     #[test]
@@ -849,13 +1246,9 @@ mod graph_upsert_tests {
         };
         let mut input = input;
         input.edges[0]["source_ids"][0] = Value::String(external_id.clone());
-        let (batch, _, _) = graph_upsert_mutation_batch(
-            &input,
-            &source,
-            &principal_scope(),
-            &external_endpoints,
-        )
-        .expect("host-validated external node references remain canonical");
+        let (batch, _, _) =
+            graph_upsert_mutation_batch(&input, &source, &principal_scope(), &external_endpoints)
+                .expect("host-validated external node references remain canonical");
         let edge = batch
             .mutations
             .iter()
@@ -876,13 +1269,9 @@ mod graph_upsert_tests {
             node_ids: std::collections::BTreeSet::new(),
             edge_ids: std::collections::BTreeSet::from(["persisted-edge".to_owned()]),
         };
-        let (batch, _, _) = graph_upsert_mutation_batch(
-            &input,
-            &source,
-            &principal_scope(),
-            &external_endpoints,
-        )
-        .expect("host-validated external edge references remain canonical");
+        let (batch, _, _) =
+            graph_upsert_mutation_batch(&input, &source, &principal_scope(), &external_endpoints)
+                .expect("host-validated external edge references remain canonical");
         let nested_edge = batch
             .mutations
             .iter()
@@ -894,11 +1283,13 @@ mod graph_upsert_tests {
                     .is_some_and(|ids| ids.iter().any(|id| id == "persisted-edge"))
             })
             .expect("nested edge mutation");
-        assert!(nested_edge.payload["source_edge_ids"]
-            .as_array()
-            .expect("edge endpoint list")
-            .iter()
-            .any(|id| id == "persisted-edge"));
+        assert!(
+            nested_edge.payload["source_edge_ids"]
+                .as_array()
+                .expect("edge endpoint list")
+                .iter()
+                .any(|id| id == "persisted-edge")
+        );
     }
 }
 
@@ -1233,9 +1624,7 @@ pub(crate) fn persisted_directory_bytes(paths: &[std::path::PathBuf]) -> u64 {
                     pending.push(entry.path());
                 } else if (file_type.is_file()
                     || (file_type.is_symlink()
-                        && entry
-                            .metadata()
-                            .is_ok_and(|metadata| metadata.is_file())))
+                        && entry.metadata().is_ok_and(|metadata| metadata.is_file())))
                     && let Ok(metadata) = entry.metadata()
                 {
                     total = total.saturating_add(metadata.len());
@@ -1251,16 +1640,18 @@ pub(crate) fn persisted_directory_bytes(paths: &[std::path::PathBuf]) -> u64 {
 }
 
 pub(crate) fn configured_storage_usage_bytes() -> u64 {
-    let configured = |name: &str, default: &str| {
-        std::env::var(name).unwrap_or_else(|_| default.to_owned())
-    };
+    let configured =
+        |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_owned());
     let directories = [
         configured("KOGWISTAR_PERSIST_DIRECTORY", ".kogwistar"),
         configured(
             "KOGWISTAR_CONVERSATION_PERSIST_DIRECTORY",
             ".kogwistar/conversation",
         ),
-        configured("KOGWISTAR_WORKFLOW_PERSIST_DIRECTORY", ".kogwistar/workflow"),
+        configured(
+            "KOGWISTAR_WORKFLOW_PERSIST_DIRECTORY",
+            ".kogwistar/workflow",
+        ),
     ]
     .into_iter()
     .map(std::path::PathBuf::from)
@@ -1352,19 +1743,14 @@ mod storage_usage_tests {
 
     #[test]
     fn persisted_directory_bytes_sums_files_and_ignores_missing_paths() {
-        let root = std::env::temp_dir().join(format!(
-            "kogwistar-storage-usage-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("kogwistar-storage-usage-{}", uuid::Uuid::new_v4()));
         let nested = root.join("nested");
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(root.join("one.bin"), [1_u8; 7]).unwrap();
         std::fs::write(nested.join("two.bin"), [2_u8; 11]).unwrap();
 
-        let bytes = persisted_directory_bytes(&[
-            root.clone(),
-            root.join("missing"),
-        ]);
+        let bytes = persisted_directory_bytes(&[root.clone(), root.join("missing")]);
 
         assert_eq!(bytes, 18);
         std::fs::remove_dir_all(root).unwrap();
@@ -1408,13 +1794,7 @@ fn operational_effect(
     } else {
         0
     };
-    let mut resources = resource_value(
-        &runs,
-        &lanes,
-        &usage,
-        &events,
-        storage_usage_bytes,
-    );
+    let mut resources = resource_value(&runs, &lanes, &usage, &events, storage_usage_bytes);
     resources["services"] = resource_service_value(&services);
     match path {
         "/api/workflow/catalog/ops" => json_effect(

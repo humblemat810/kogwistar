@@ -39,7 +39,7 @@ struct WisdomGraphReferences {
     edge_ids: BTreeSet<String>,
 }
 
-fn wisdom_graph_references(mutations: &[GraphMutation]) -> WisdomGraphReferences {
+fn graph_mutation_references(mutations: &[GraphMutation]) -> WisdomGraphReferences {
     let local_nodes = mutations
         .iter()
         .filter(|mutation| mutation.entity_kind == "node")
@@ -51,7 +51,10 @@ fn wisdom_graph_references(mutations: &[GraphMutation]) -> WisdomGraphReferences
         .map(|mutation| mutation.record.id.as_str())
         .collect::<BTreeSet<_>>();
     let mut references = WisdomGraphReferences::default();
-    for mutation in mutations.iter().filter(|mutation| mutation.entity_kind == "edge") {
+    for mutation in mutations
+        .iter()
+        .filter(|mutation| mutation.entity_kind == "edge")
+    {
         for field in ["source_ids", "target_ids"] {
             references.node_ids.extend(
                 graph_record_string_ids_from_value(&mutation.payload, field)
@@ -77,7 +80,13 @@ fn wisdom_graph_record_ids(record: &GraphRecord, field: &str) -> Vec<String> {
 fn parse_wisdom_graph_upsert(body: &[u8]) -> Result<WisdomGraphUpsertRequest, String> {
     let input: WisdomGraphUpsertRequest =
         serde_json::from_slice(body).map_err(|error| error.to_string())?;
-    if input.inp.nodes.iter().chain(&input.inp.edges).any(|item| !item.is_object()) {
+    if input
+        .inp
+        .nodes
+        .iter()
+        .chain(&input.inp.edges)
+        .any(|item| !item.is_object())
+    {
         return Err("nodes and edges must contain objects".to_owned());
     }
     Ok(input)
@@ -171,7 +180,14 @@ fn wisdom_graph_mutation(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    for field in ["label", "type", "summary", "doc_id", "domain_id", "canonical_entity_id"] {
+    for field in [
+        "label",
+        "type",
+        "summary",
+        "doc_id",
+        "domain_id",
+        "canonical_entity_id",
+    ] {
         if let Some(value) = payload.get(field).filter(|value| !value.is_null()) {
             metadata.insert(field.to_owned(), value.clone());
         }
@@ -180,14 +196,27 @@ fn wisdom_graph_mutation(
         metadata.insert("properties".to_owned(), properties.clone());
     }
     if entity_kind == "edge" {
-        for field in ["relation", "source_ids", "target_ids", "source_edge_ids", "target_edge_ids"] {
+        for field in [
+            "relation",
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+        ] {
             if let Some(value) = payload.get(field).filter(|value| !value.is_null()) {
                 metadata.insert(field.to_owned(), value.clone());
             }
         }
     }
     metadata.insert("namespace".to_owned(), json!(scope.namespace));
-    metadata.insert("_class_name".to_owned(), json!(if entity_kind == "node" { "PureChromaNode" } else { "PureChromaEdge" }));
+    metadata.insert(
+        "_class_name".to_owned(),
+        json!(if entity_kind == "node" {
+            "PureChromaNode"
+        } else {
+            "PureChromaEdge"
+        }),
+    );
     if let Some(workspace_id) = &scope.workspace_id {
         metadata.insert("workspace_id".to_owned(), json!(workspace_id));
     }
@@ -210,7 +239,12 @@ fn wisdom_graph_mutation(
             workspace_id: scope.workspace_id.clone(),
             graph_space: scope.graph_space.clone(),
         },
-        table: if entity_kind == "node" { "gke_nodes" } else { "gke_edges" }.to_owned(),
+        table: if entity_kind == "node" {
+            "gke_nodes"
+        } else {
+            "gke_edges"
+        }
+        .to_owned(),
         entity_kind: entity_kind.to_owned(),
         event_id: uuid::Uuid::new_v4().to_string(),
         op: "ADD".to_owned(),
@@ -286,12 +320,15 @@ fn prepare_wisdom_graph_mutations(
             .ok_or_else(|| "edge must be an object".to_owned())?;
         object.insert("id".to_owned(), json!(id));
         object.insert("doc_id".to_owned(), Value::Null);
-        object.entry("source_edge_ids".to_owned()).or_insert(Value::Null);
-        object.entry("target_edge_ids".to_owned()).or_insert(Value::Null);
-        let metadata = serde_json::from_value(
-            object.get("metadata").cloned().unwrap_or_else(|| json!({})),
-        )
-        .map_err(|error| format!("edge metadata is invalid: {error}"))?;
+        object
+            .entry("source_edge_ids".to_owned())
+            .or_insert(Value::Null);
+        object
+            .entry("target_edge_ids".to_owned())
+            .or_insert(Value::Null);
+        let metadata =
+            serde_json::from_value(object.get("metadata").cloned().unwrap_or_else(|| json!({})))
+                .map_err(|error| format!("edge metadata is invalid: {error}"))?;
         object.insert(
             "metadata".to_owned(),
             Value::Object(wisdom_metadata_value(
@@ -307,7 +344,10 @@ fn prepare_wisdom_graph_mutations(
             if let Some(id) = node_local_ids.get(&endpoint.0) {
                 endpoint.0 = id.clone();
             } else if endpoint.0.starts_with("nn:") || endpoint.0.starts_with("ne:") {
-                return Err(format!("unknown batch-local node endpoint {:?}", endpoint.0));
+                return Err(format!(
+                    "unknown batch-local node endpoint {:?}",
+                    endpoint.0
+                ));
             }
         }
         for endpoints in [&mut model.source_edge_ids, &mut model.target_edge_ids] {
@@ -316,7 +356,10 @@ fn prepare_wisdom_graph_mutations(
                     if let Some(id) = edge_local_ids.get(&endpoint.0) {
                         endpoint.0 = id.clone();
                     } else if endpoint.0.starts_with("nn:") || endpoint.0.starts_with("ne:") {
-                        return Err(format!("unknown batch-local edge endpoint {:?}", endpoint.0));
+                        return Err(format!(
+                            "unknown batch-local edge endpoint {:?}",
+                            endpoint.0
+                        ));
                     }
                 }
             }
@@ -371,7 +414,7 @@ fn graph_record_string_ids_from_value(value: &Value, field: &str) -> Vec<String>
         .collect()
 }
 
-fn sqlite_wisdom_records(
+fn sqlite_canonical_graph_records(
     uow: &kogwistar_store_sqlite::SqliteUnitOfWork<'_>,
     scope: &GraphScope,
     entity_kind: &str,
@@ -398,13 +441,9 @@ fn sqlite_wisdom_records(
                     "canonical graph event metadata must be an object".to_owned(),
                 )
             })?;
-        if scope.workspace_id.as_deref().is_some_and(|expected| {
-            metadata.get("workspace_id").and_then(Value::as_str) != Some(expected)
-        }) || scope.graph_space.as_deref().is_some_and(|expected| {
-            metadata.get("graph_space").and_then(Value::as_str) != Some(expected)
-        }) {
-            continue;
-        }
+        scope
+            .validate_metadata_scope(&metadata)
+            .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string()))?;
         if let Some(properties) = object.get("properties").and_then(Value::as_object) {
             metadata.extend(properties.clone());
         }
@@ -425,12 +464,14 @@ fn sqlite_wisdom_records(
                 metadata.insert(field.to_owned(), value.clone());
             }
         }
-        if matches!(event.op.to_ascii_uppercase().as_str(), "DELETE" | "TOMBSTONE")
-            || object
-                .get("lifecycle_patch")
-                .and_then(|patch| patch.get("lifecycle_status"))
-                .and_then(Value::as_str)
-                == Some("tombstoned")
+        if matches!(
+            event.op.to_ascii_uppercase().as_str(),
+            "DELETE" | "TOMBSTONE"
+        ) || object
+            .get("lifecycle_patch")
+            .and_then(|patch| patch.get("lifecycle_status"))
+            .and_then(Value::as_str)
+            == Some("tombstoned")
         {
             metadata.insert("tombstoned".to_owned(), Value::Bool(true));
             metadata.insert("lifecycle_status".to_owned(), json!("tombstoned"));
@@ -515,22 +556,33 @@ impl SqliteRunApplicationService {
         let parsed = match parse_wisdom_graph_upsert(&request.body) {
             Ok(parsed) => parsed,
             Err(error) => {
-                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
             }
         };
         let prepared = match prepare_wisdom_graph_mutations(parsed.inp, &scope) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
             }
         };
         if prepared.mutations.is_empty() {
-            return json_effect(StatusCode::OK, json!({
-                "node_ids": prepared.node_ids,
-                "edge_ids": prepared.edge_ids,
-                "nodes_added": 0,
-                "edges_added": 0,
-            }));
+            return json_effect(
+                StatusCode::OK,
+                json!({
+                    "node_ids": prepared.node_ids,
+                    "edge_ids": prepared.edge_ids,
+                    "nodes_added": 0,
+                    "edges_added": 0,
+                }),
+            );
         }
         let mut batch = GraphMutationBatchInput {
             contract_version: 1,
@@ -540,7 +592,11 @@ impl SqliteRunApplicationService {
         };
         let profile = provider.profile();
         if let Err(error) = profile.validate() {
-            return effect_error(StatusCode::BAD_GATEWAY, "KOGWISTAR_EMBEDDING_FAILED", error.to_string());
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                error.to_string(),
+            );
         }
         let mut embedding_positions = Vec::new();
         let mut embedding_texts = Vec::new();
@@ -560,16 +616,20 @@ impl SqliteRunApplicationService {
         }
         let vectors = match provider.embed(&embedding_texts).await {
             Ok(vectors) if vectors.len() == embedding_positions.len() => vectors,
-            Ok(_) => return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "embedding provider returned an unexpected vector count",
-            ),
-            Err(_) => return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "embedding provider failed",
-            ),
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider returned an unexpected vector count",
+                );
+            }
+            Err(_) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider failed",
+                );
+            }
         };
         for (position, vector) in embedding_positions.into_iter().zip(vectors) {
             if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
@@ -579,7 +639,10 @@ impl SqliteRunApplicationService {
                     "embedding provider returned an invalid vector",
                 );
             }
-            let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+            let vector = vector
+                .into_iter()
+                .map(|value| value as f32)
+                .collect::<Vec<_>>();
             if vector.iter().any(|value| !value.is_finite()) {
                 return effect_error(
                     StatusCode::BAD_GATEWAY,
@@ -591,17 +654,31 @@ impl SqliteRunApplicationService {
             batch.mutations[position].embedding_dim = profile.dimension;
         }
         if let Err(error) = batch.validate() {
-            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error.to_string());
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
         }
         let mutations = match graph_mutation_batch_value(batch.clone()) {
             Ok(mutations) => mutations,
-            Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
         };
         if let Err(error) = validate_graph_mutation_envelopes(&batch, &mutations) {
-            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
         }
 
-        let mut references = wisdom_graph_references(&mutations);
+        let mut references = graph_mutation_references(&mutations);
         let target_nodes = mutations
             .iter()
             .filter(|mutation| mutation.entity_kind == "node")
@@ -630,15 +707,21 @@ impl SqliteRunApplicationService {
                 if pending.is_empty() {
                     break;
                 }
-                if references.node_ids.len().saturating_add(references.edge_ids.len()) > 10_000 {
+                if references
+                    .node_ids
+                    .len()
+                    .saturating_add(references.edge_ids.len())
+                    > 10_000
+                {
                     return Err(SqliteStoreError::TransactionAborted(
                         "wisdom graph endpoint closure exceeds 10000 entities".to_owned(),
                     ));
                 }
-                let records = sqlite_wisdom_records(uow, &scope, "edge", &pending)?;
+                let records = sqlite_canonical_graph_records(uow, &scope, "edge", &pending)?;
                 if records.len() != pending.len() {
                     return Err(SqliteStoreError::TransactionAborted(
-                        "one or more external wisdom edges are missing from the caller scope".to_owned(),
+                        "one or more external wisdom edges are missing from the caller scope"
+                            .to_owned(),
                     ));
                 }
                 for record in records {
@@ -657,7 +740,12 @@ impl SqliteRunApplicationService {
             }
             references.node_ids.retain(|id| !target_nodes.contains(id));
             references.edge_ids.retain(|id| !target_edges.contains(id));
-            if references.node_ids.len().saturating_add(references.edge_ids.len()) > 10_000 {
+            if references
+                .node_ids
+                .len()
+                .saturating_add(references.edge_ids.len())
+                > 10_000
+            {
                 return Err(SqliteStoreError::TransactionAborted(
                     "wisdom graph endpoint closure exceeds 10000 entities".to_owned(),
                 ));
@@ -670,47 +758,78 @@ impl SqliteRunApplicationService {
             edge_ids.extend(target_edges.iter().cloned());
             edge_ids.sort();
             edge_ids.dedup();
-            let nodes = sqlite_wisdom_records(uow, &scope, "node", &node_ids)?;
-            let edges = sqlite_wisdom_records(uow, &scope, "edge", &edge_ids)?;
-            if references.node_ids.iter().any(|id| !nodes.iter().any(|node| &node.id == id))
-                || references.edge_ids.iter().any(|id| !edges.iter().any(|edge| &edge.id == id))
+            let nodes = sqlite_canonical_graph_records(uow, &scope, "node", &node_ids)?;
+            let edges = sqlite_canonical_graph_records(uow, &scope, "edge", &edge_ids)?;
+            if references
+                .node_ids
+                .iter()
+                .any(|id| !nodes.iter().any(|node| &node.id == id))
+                || references
+                    .edge_ids
+                    .iter()
+                    .any(|id| !edges.iter().any(|edge| &edge.id == id))
             {
                 return Err(SqliteStoreError::TransactionAborted(
-                    "one or more external wisdom endpoints are missing from the caller scope".to_owned(),
+                    "one or more external wisdom endpoints are missing from the caller scope"
+                        .to_owned(),
                 ));
             }
-            let existing_ids = nodes.iter().chain(&edges).map(|record| record.id.clone()).collect::<Vec<_>>();
-            let acl_records = uow.graph_acl_records_for_entities(&scope, "wisdom", &existing_ids)?;
+            let existing_ids = nodes
+                .iter()
+                .chain(&edges)
+                .map(|record| record.id.clone())
+                .collect::<Vec<_>>();
+            let acl_records =
+                uow.graph_acl_records_for_entities(&scope, "wisdom", &existing_ids)?;
             let mut acl_index = GraphAclIndex::default();
             acl_index.extend_from_records(&acl_records, "wisdom");
-            let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
-                &nodes,
-                &edges,
-                &acl_index,
-                &acl_principal,
-            );
-            let expected = nodes.iter().map(|record| ("node", record.id.as_str()))
+            let (visible_nodes, visible_edges) =
+                graph_records_visible_by_acl_with_index(&nodes, &edges, &acl_index, &acl_principal);
+            let expected = nodes
+                .iter()
+                .map(|record| ("node", record.id.as_str()))
                 .chain(edges.iter().map(|record| ("edge", record.id.as_str())))
                 .collect::<BTreeSet<_>>();
-            let visible = visible_nodes.iter().map(|record| ("node", record.id.as_str()))
-                .chain(visible_edges.iter().map(|record| ("edge", record.id.as_str())))
+            let visible = visible_nodes
+                .iter()
+                .map(|record| ("node", record.id.as_str()))
+                .chain(
+                    visible_edges
+                        .iter()
+                        .map(|record| ("edge", record.id.as_str())),
+                )
                 .collect::<BTreeSet<_>>();
             if expected != visible
-                || nodes.iter().any(|record| target_nodes.contains(&record.id) && wisdom_record_is_tombstoned(record))
-                || edges.iter().any(|record| target_edges.contains(&record.id) && wisdom_record_is_tombstoned(record))
+                || nodes.iter().any(|record| {
+                    target_nodes.contains(&record.id) && wisdom_record_is_tombstoned(record)
+                })
+                || edges.iter().any(|record| {
+                    target_edges.contains(&record.id) && wisdom_record_is_tombstoned(record)
+                })
             {
                 return Err(SqliteStoreError::TransactionAborted(
                     "one or more wisdom graph entities are hidden or tombstoned".to_owned(),
                 ));
             }
-            let existing_targets = nodes.iter().filter(|record| target_nodes.contains(&record.id))
+            let existing_targets = nodes
+                .iter()
+                .filter(|record| target_nodes.contains(&record.id))
                 .map(|record| ("node".to_owned(), record.id.clone()))
-                .chain(edges.iter().filter(|record| target_edges.contains(&record.id))
-                    .map(|record| ("edge".to_owned(), record.id.clone())))
+                .chain(
+                    edges
+                        .iter()
+                        .filter(|record| target_edges.contains(&record.id))
+                        .map(|record| ("edge".to_owned(), record.id.clone())),
+                )
                 .collect::<BTreeSet<_>>();
-            let new_mutations = mutations.iter().filter(|mutation| {
-                !existing_targets.contains(&(mutation.entity_kind.clone(), mutation.record.id.clone()))
-            }).cloned().collect::<Vec<_>>();
+            let new_mutations = mutations
+                .iter()
+                .filter(|mutation| {
+                    !existing_targets
+                        .contains(&(mutation.entity_kind.clone(), mutation.record.id.clone()))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
             let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
                 &scope,
                 &new_mutations,
@@ -720,7 +839,8 @@ impl SqliteRunApplicationService {
                 &owner_id,
                 security_scope.as_deref(),
                 &uuid::Uuid::new_v4().to_string(),
-            ).map_err(SqliteStoreError::TransactionAborted)?;
+            )
+            .map_err(SqliteStoreError::TransactionAborted)?;
             let mut all_mutations = mutations.clone();
             all_mutations.extend(acl_mutations);
             uow.apply_canonical_graph_mutation_batch(GraphMutationBatch {
@@ -730,13 +850,16 @@ impl SqliteRunApplicationService {
             Ok(())
         });
         match result {
-            Ok(()) => json_effect(StatusCode::OK, json!({
-                "node_ids": prepared.node_ids,
-                "edge_ids": prepared.edge_ids,
-                "nodes_added": prepared.node_ids.len(),
-                "edges_added": prepared.edge_ids.len(),
-                "projection_consistency": "eventual",
-            })),
+            Ok(()) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "node_ids": prepared.node_ids,
+                    "edge_ids": prepared.edge_ids,
+                    "nodes_added": prepared.node_ids.len(),
+                    "edges_added": prepared.edge_ids.len(),
+                    "projection_consistency": "eventual",
+                }),
+            ),
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_WISDOM_GRAPH_UPSERT_CONFLICT",
@@ -751,10 +874,9 @@ impl PostgresRunApplicationService {
         &self,
         input: &mut GraphMutationBatchInput,
     ) -> Result<(), String> {
-        let provider = self
-            .embedding_provider
-            .as_ref()
-            .ok_or_else(|| "wisdom graph writes require a configured embedding provider".to_owned())?;
+        let provider = self.embedding_provider.as_ref().ok_or_else(|| {
+            "wisdom graph writes require a configured embedding provider".to_owned()
+        })?;
         let profile = provider.profile();
         profile.validate().map_err(|error| error.to_string())?;
 
@@ -772,7 +894,9 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .ok_or_else(|| "wisdom graph entity is missing summary".to_owned())?;
             if mutation.embedding_dim != 0 && mutation.embedding_dim != profile.dimension {
-                return Err("embedding profile dimension conflicts with wisdom graph mutation".to_owned());
+                return Err(
+                    "embedding profile dimension conflicts with wisdom graph mutation".to_owned(),
+                );
             }
             positions.push(position);
             texts.push(format!("{label}: {summary}"));
@@ -791,7 +915,10 @@ impl PostgresRunApplicationService {
             if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
                 return Err("embedding provider returned an invalid vector".to_owned());
             }
-            let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+            let vector = vector
+                .into_iter()
+                .map(|value| value as f32)
+                .collect::<Vec<_>>();
             if vector.iter().any(|value| !value.is_finite()) {
                 return Err("embedding provider vector exceeds graph storage range".to_owned());
             }
@@ -805,7 +932,11 @@ impl PostgresRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !self.wisdom_store.graph_authority_capability().supports_atomic_index_jobs() {
+        if !self
+            .wisdom_store
+            .graph_authority_capability()
+            .supports_atomic_index_jobs()
+        {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
                 "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
@@ -843,22 +974,33 @@ impl PostgresRunApplicationService {
         let input = match parse_wisdom_graph_upsert(&request.body) {
             Ok(input) => input,
             Err(error) => {
-                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
             }
         };
         let prepared = match prepare_wisdom_graph_mutations(input.inp, &scope) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
             }
         };
         if prepared.mutations.is_empty() {
-            return json_effect(StatusCode::OK, json!({
-                "node_ids": prepared.node_ids,
-                "edge_ids": prepared.edge_ids,
-                "nodes_added": 0,
-                "edges_added": 0,
-            }));
+            return json_effect(
+                StatusCode::OK,
+                json!({
+                    "node_ids": prepared.node_ids,
+                    "edge_ids": prepared.edge_ids,
+                    "nodes_added": 0,
+                    "edges_added": 0,
+                }),
+            );
         }
         let mut batch = GraphMutationBatchInput {
             contract_version: 1,
@@ -869,7 +1011,11 @@ impl PostgresRunApplicationService {
         if let Err(error) = self.embed_wisdom_graph_mutations(&mut batch).await {
             return effect_error(StatusCode::BAD_GATEWAY, "KOGWISTAR_EMBEDDING_FAILED", error);
         }
-        if batch.mutations.iter().any(|mutation| mutation.record.embedding.is_none()) {
+        if batch
+            .mutations
+            .iter()
+            .any(|mutation| mutation.record.embedding.is_none())
+        {
             return effect_error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "KOGWISTAR_EMBEDDING_UNAVAILABLE",
@@ -879,11 +1025,19 @@ impl PostgresRunApplicationService {
         let mutations = match graph_mutation_batch_value(batch.clone()) {
             Ok(mutations) => mutations,
             Err(error) => {
-                return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
             }
         };
         if let Err(error) = validate_graph_mutation_envelopes(&batch, &mutations) {
-            return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error,
+            );
         }
         let acl_principal = graph_acl_principal_from_claims(
             &request.principal,
@@ -902,7 +1056,7 @@ impl PostgresRunApplicationService {
             .filter(|mutation| mutation.entity_kind == "edge")
             .map(|mutation| mutation.record.id.clone())
             .collect::<BTreeSet<_>>();
-        let mut references = wisdom_graph_references(&mutations);
+        let mut references = graph_mutation_references(&mutations);
         let mut external_edges = BTreeMap::<String, GraphRecord>::new();
         loop {
             let pending_edge_ids = references
@@ -914,7 +1068,12 @@ impl PostgresRunApplicationService {
             if pending_edge_ids.is_empty() {
                 break;
             }
-            if references.node_ids.len().saturating_add(references.edge_ids.len()) > 10_000 {
+            if references
+                .node_ids
+                .len()
+                .saturating_add(references.edge_ids.len())
+                > 10_000
+            {
                 return effect_error(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "KOGWISTAR_GRAPH_ENDPOINT_LIMIT",
@@ -961,10 +1120,19 @@ impl PostgresRunApplicationService {
                 );
                 external_edges.insert(record.id.clone(), record);
             }
-            references.edge_ids.retain(|id| !target_edge_ids.contains(id));
+            references
+                .edge_ids
+                .retain(|id| !target_edge_ids.contains(id));
         }
-        references.node_ids.retain(|id| !target_node_ids.contains(id));
-        if references.node_ids.len().saturating_add(references.edge_ids.len()) > 10_000 {
+        references
+            .node_ids
+            .retain(|id| !target_node_ids.contains(id));
+        if references
+            .node_ids
+            .len()
+            .saturating_add(references.edge_ids.len())
+            > 10_000
+        {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_GRAPH_ENDPOINT_LIMIT",
@@ -986,17 +1154,28 @@ impl PostgresRunApplicationService {
             })
             .await
         {
-            Ok(records) if references.node_ids.iter().all(|id| records.iter().any(|r| &r.id == id)) => records,
-            Ok(_) => return effect_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "KOGWISTAR_GRAPH_ENDPOINT_INVALID",
-                "One or more external wisdom nodes are missing from the caller scope",
-            ),
-            Err(error) => return effect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "KOGWISTAR_GRAPH_ENDPOINT_UNAVAILABLE",
-                error.to_string(),
-            ),
+            Ok(records)
+                if references
+                    .node_ids
+                    .iter()
+                    .all(|id| records.iter().any(|r| &r.id == id)) =>
+            {
+                records
+            }
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_GRAPH_ENDPOINT_INVALID",
+                    "One or more external wisdom nodes are missing from the caller scope",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_GRAPH_ENDPOINT_UNAVAILABLE",
+                    error.to_string(),
+                );
+            }
         };
         let expected_edges = match self
             .wisdom_store
@@ -1009,17 +1188,28 @@ impl PostgresRunApplicationService {
             })
             .await
         {
-            Ok(records) if references.edge_ids.iter().all(|id| records.iter().any(|r| &r.id == id)) => records,
-            Ok(_) => return effect_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "KOGWISTAR_GRAPH_ENDPOINT_INVALID",
-                "One or more external wisdom edges are missing from the caller scope",
-            ),
-            Err(error) => return effect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "KOGWISTAR_GRAPH_ENDPOINT_UNAVAILABLE",
-                error.to_string(),
-            ),
+            Ok(records)
+                if references
+                    .edge_ids
+                    .iter()
+                    .all(|id| records.iter().any(|r| &r.id == id)) =>
+            {
+                records
+            }
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_GRAPH_ENDPOINT_INVALID",
+                    "One or more external wisdom edges are missing from the caller scope",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_GRAPH_ENDPOINT_UNAVAILABLE",
+                    error.to_string(),
+                );
+            }
         };
         let existing_target_ids = expected_nodes
             .iter()
@@ -1035,14 +1225,19 @@ impl PostgresRunApplicationService {
         let new_mutations = mutations
             .iter()
             .filter(|mutation| {
-                !existing_target_ids.contains(&(mutation.entity_kind.clone(), mutation.record.id.clone()))
+                !existing_target_ids
+                    .contains(&(mutation.entity_kind.clone(), mutation.record.id.clone()))
             })
             .cloned()
             .collect::<Vec<_>>();
         let mut identity_locks = validation_node_ids
             .iter()
             .map(|id| ("node".to_owned(), id.clone()))
-            .chain(validation_edge_ids.iter().map(|id| ("edge".to_owned(), id.clone())))
+            .chain(
+                validation_edge_ids
+                    .iter()
+                    .map(|id| ("edge".to_owned(), id.clone())),
+            )
             .collect::<BTreeSet<_>>();
         let applied = self
             .wisdom_store
@@ -1062,7 +1257,8 @@ impl PostgresRunApplicationService {
                 let effect_id = effect_id.clone();
                 Box::pin(async move {
                     for (kind, id) in std::mem::take(&mut identity_locks) {
-                        uow.lock_entity_identity(&scope.namespace, &kind, &id).await?;
+                        uow.lock_entity_identity(&scope.namespace, &kind, &id)
+                            .await?;
                     }
                     let nodes = if validation_node_ids.is_empty() {
                         Vec::new()
@@ -1073,7 +1269,8 @@ impl PostgresRunApplicationService {
                             ids: Some(validation_node_ids.clone()),
                             metadata: MetadataFilter::default(),
                             limit: validation_node_ids.len(),
-                        }).await?
+                        })
+                        .await?
                     };
                     let edges = if validation_edge_ids.is_empty() {
                         Vec::new()
@@ -1084,7 +1281,8 @@ impl PostgresRunApplicationService {
                             ids: Some(validation_edge_ids.clone()),
                             metadata: MetadataFilter::default(),
                             limit: validation_edge_ids.len(),
-                        }).await?
+                        })
+                        .await?
                     };
                     if !graph_upsert_endpoint_snapshot_matches(&nodes, &expected_nodes)
                         || !graph_upsert_endpoint_snapshot_matches(&edges, &expected_edges)
@@ -1093,34 +1291,63 @@ impl PostgresRunApplicationService {
                             "wisdom graph entities changed during authorization".to_owned(),
                         ));
                     }
-                    let mut all_existing_ids = nodes.iter().chain(&edges)
-                        .map(|record| record.id.clone()).collect::<Vec<_>>();
+                    let mut all_existing_ids = nodes
+                        .iter()
+                        .chain(&edges)
+                        .map(|record| record.id.clone())
+                        .collect::<Vec<_>>();
                     all_existing_ids.sort();
                     all_existing_ids.dedup();
-                    let acl_records = uow.graph_acl_records_for_entities(&scope, "wisdom", &all_existing_ids).await?;
+                    let acl_records = uow
+                        .graph_acl_records_for_entities(&scope, "wisdom", &all_existing_ids)
+                        .await?;
                     let mut acl_index = GraphAclIndex::default();
                     acl_index.extend_from_records(&acl_records, "wisdom");
                     let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
-                        &nodes, &edges, &acl_index, &acl_principal,
+                        &nodes,
+                        &edges,
+                        &acl_index,
+                        &acl_principal,
                     );
-                    let expected_entity_keys = nodes.iter().map(|record| ("node", record.id.as_str()))
+                    let expected_entity_keys = nodes
+                        .iter()
+                        .map(|record| ("node", record.id.as_str()))
                         .chain(edges.iter().map(|record| ("edge", record.id.as_str())))
                         .collect::<BTreeSet<_>>();
-                    let visible_entity_keys = visible_nodes.iter().map(|record| ("node", record.id.as_str()))
-                        .chain(visible_edges.iter().map(|record| ("edge", record.id.as_str())))
+                    let visible_entity_keys = visible_nodes
+                        .iter()
+                        .map(|record| ("node", record.id.as_str()))
+                        .chain(
+                            visible_edges
+                                .iter()
+                                .map(|record| ("edge", record.id.as_str())),
+                        )
                         .collect::<BTreeSet<_>>();
                     if visible_entity_keys != expected_entity_keys
                         || nodes.iter().any(|record| {
                             target_node_ids.contains(&record.id)
-                                && matches!(record.metadata.get("lifecycle_status").and_then(Value::as_str), Some("tombstoned" | "deleted"))
+                                && matches!(
+                                    record
+                                        .metadata
+                                        .get("lifecycle_status")
+                                        .and_then(Value::as_str),
+                                    Some("tombstoned" | "deleted")
+                                )
                         })
                         || edges.iter().any(|record| {
                             target_edge_ids.contains(&record.id)
-                                && matches!(record.metadata.get("lifecycle_status").and_then(Value::as_str), Some("tombstoned" | "deleted"))
+                                && matches!(
+                                    record
+                                        .metadata
+                                        .get("lifecycle_status")
+                                        .and_then(Value::as_str),
+                                    Some("tombstoned" | "deleted")
+                                )
                         })
                     {
                         return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
-                            "one or more wisdom graph entities are missing, hidden, or tombstoned".to_owned(),
+                            "one or more wisdom graph entities are missing, hidden, or tombstoned"
+                                .to_owned(),
                         ));
                     }
                     let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
@@ -1144,12 +1371,15 @@ impl PostgresRunApplicationService {
             })
             .await;
         match applied {
-            Ok(()) => json_effect(StatusCode::OK, json!({
-                "node_ids": prepared.node_ids,
-                "edge_ids": prepared.edge_ids,
-                "nodes_added": prepared.node_ids.len(),
-                "edges_added": prepared.edge_ids.len(),
-            })),
+            Ok(()) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "node_ids": prepared.node_ids,
+                    "edge_ids": prepared.edge_ids,
+                    "nodes_added": prepared.node_ids.len(),
+                    "edges_added": prepared.edge_ids.len(),
+                }),
+            ),
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_WISDOM_GRAPH_UPSERT_CONFLICT",

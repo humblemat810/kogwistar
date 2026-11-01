@@ -272,7 +272,20 @@ now proves a Python worker can replay a lost graph-effect result through the
 Rust HTTP authority with SQLite canonical events and Chroma configured only as
 the eventual projection. It verifies one durable graph event, pending
 `node_embedding` and `node_docs` jobs, and no graph writes to Chroma during
-canonical commit. The `link_assistant_turn` worker-effect path now derives
+canonical commit. The generic public `/api/graph/upsert` route is now supported
+only by configured SQLite+Chroma. It consumes the shared
+`GraphExtractionRequestV1`, validates exact source spans and endpoint closure,
+derives ACL from the authenticated owner, and commits the source-document
+projection, canonical Node/Edge events, ACL records, and SQLite-owned index
+intents in one SQLite transaction. Chroma remains an eventual projection;
+standalone SQLite does not advertise this route. The shared golden-fixture test
+`sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract` verifies
+the write, source-document persistence, queued index jobs, and rejection of an
+altered excerpt without partial graph events. The full Rust API library suite
+passed (**227 passed, 22 ignored**). This extends evidence within DL-16BQ but
+does not close it: cross-backend parity, live Chroma projection, broader
+security matrices, and whole-stack parity remain open. The
+`link_assistant_turn` worker-effect path now derives
 both endpoint IDs from workflow state instead of reading deferred turns from
 the process-local graph; `test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks`
 and `test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write`
