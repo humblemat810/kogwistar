@@ -146,15 +146,23 @@ have complete coverage. Work toward that target in this order:
 
 The practical dependency order is canonical persistence and graph effects,
 then workflow/worker execution and recovery, then conversation/agent and the
-remaining REST/MCP/CLI surfaces. PostgreSQL is the first complete graph and
-transaction proving ground. SQLite remains a metadata/event/runtime backend
-until a native graph authority is implemented and tested. The Rust service can
-compose SQLite metadata and durable queue state with Chroma node/edge projection
-reads and an optional inline Rust embedding projection worker. That worker
-writes only a derived Chroma projection; it does not make SQLite a graph
-authority or establish graph-write parity. In the
-PostgreSQL-to-Chroma projection design, Chroma is a derived projection, not a
-substitute for canonical graph authority. An internal
+remaining REST/MCP/CLI surfaces. PostgreSQL remains the first complete graph
+and transaction proving ground. Keep two SQLite configurations distinct:
+standalone SQLite metadata mode does not advertise graph authority; configured
+SQLite+Chroma uses canonical SQLite events, current-revision Stage-1 records,
+and durable index-job intents, with Chroma as a derived, revision-fenced,
+eventually reconciled vector projection. Graph effects and their index intents
+commit in one SQLite unit of work. Chroma is not a transaction participant or
+graph authority, and no Chroma transaction or multi-writer guarantee is
+required. This mirrors Python's two-stage ownership model: the metadata/event
+store owns canonical revisions and durable work, while the vector backend is
+promoted asynchronously and can be recovered from canonical state. A configured
+SQLite+Chroma graph mutation path is not, by itself, proof that public document
+ingestion is supported: that path must also establish authoritative source
+document persistence, exact source-span validation, endpoint visibility, and
+the legacy response contract before it can claim `/api/graph/upsert` parity.
+In the PostgreSQL-to-Chroma projection design, Chroma is likewise a derived
+projection, not a substitute for canonical graph authority. An internal
 pre-indexed route is a dependency, not proof that public ingestion, embeddings,
 or all graph operations are native. A Python provider used by a Rust-owned
 workflow makes that request mixed, not seam-free Rust.
