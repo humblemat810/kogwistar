@@ -3832,6 +3832,232 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    #[tokio::test]
+    async fn sqlite_chroma_native_answer_snapshots_before_provider_and_persists_stream_events() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        let db_path = std::env::temp_dir().join(format!("kogwistar-sqlite-native-answer-{nonce}.db"));
+        let auth_path = std::env::temp_dir().join(format!("kogwistar-sqlite-native-answer-auth-{nonce}.db"));
+        let auth = SqliteAuthStore::open(&auth_path).unwrap();
+        auth.resolve_external_identity(ResolveExternalIdentity {
+            issuer: "test".to_owned(),
+            subject: "alice".to_owned(),
+            email: "alice@example.test".to_owned(),
+            display_name: None,
+            new_user_id: "alice".to_owned(),
+            default_role: "rw".to_owned(),
+            default_ns: "conversation".to_owned(),
+        })
+        .await
+        .unwrap();
+        drop(auth);
+        let auth_config = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+            ..AuthConfig::default()
+        };
+
+        let chroma_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let chroma_endpoint = format!("http://{}", chroma_listener.local_addr().unwrap());
+        let chroma_server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = chroma_listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let (header_end, content_length) = loop {
+                    let mut chunk = [0_u8; 1024];
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..end]);
+                        let length = headers.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        }).unwrap_or(0);
+                        if bytes.len() >= end + 4 + length {
+                            break (end, length);
+                        }
+                    }
+                };
+                let request: Value = serde_json::from_slice(&bytes[header_end + 4..header_end + 4 + content_length]).unwrap();
+                let body = json!({
+                    "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                    "metadata": {"hnsw:space":"cosine"}
+                }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: chroma_endpoint.clone(),
+            collection: collection.to_owned(),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            chroma_config("native-answer-nodes"),
+            chroma_config("native-answer-edges"),
+        ).await.unwrap();
+        chroma_server.await.unwrap();
+
+        let chat_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let chat_endpoint = format!("http://{}/v1/chat/completions", chat_listener.local_addr().unwrap());
+        let db_path_for_provider = db_path.clone();
+        let chat_server = tokio::spawn(async move {
+            let (mut stream, _) = chat_listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let (header_end, content_length) = loop {
+                let mut chunk = [0_u8; 2048];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let length = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    }).unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        break (end, length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(&bytes[header_end + 4..header_end + 4 + content_length]).unwrap();
+            assert_eq!(request["stream"], true);
+            let sqlite = SqliteStore::open(&db_path_for_provider).unwrap();
+            let snapshot_id = kogwistar_contracts::stable_id(
+                "conversation.context_snapshot",
+                &[
+                    "native-answer-conversation".to_owned(),
+                    "native-answer-run".to_owned(),
+                    "generate_answer_with_citations".to_owned(),
+                    "3".to_owned(),
+                    "0".to_owned(),
+                ],
+            )
+            .to_string();
+            let snapshot_events = sqlite
+                .latest_entity_events("conversation", "node", &[snapshot_id.clone()])
+                .unwrap();
+            assert!(snapshot_events
+                .get(&snapshot_id)
+                .is_some_and(|event| event.payload_json.contains("context_snapshot")),
+                "context snapshot must commit before the provider request");
+
+            let answer = json!({"text":"answer","reasoning":"brief rationale","claims":[]}).to_string();
+            let chunks = [
+                json!({"id":"chatcmpl-test","choices":[{"delta":{"content":answer},"finish_reason":null}]}).to_string(),
+                json!({"id":"chatcmpl-test","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+            ];
+            let mut body = String::new();
+            for chunk in chunks { body.push_str(&format!("data: {chunk}\r\n\r\n")); }
+            body.push_str("data: [DONE]\r\n\r\n");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(), body
+            );
+            for chunk in response.as_bytes().chunks(17) {
+                stream.write_all(chunk).await.unwrap();
+            }
+        });
+
+        let principal = json!({
+            "sub":"alice", "user_id":"alice", "role":"rw",
+            "ns":["conversation"], "storage_ns":"conversation",
+            "capabilities":["read_graph", "write_graph"]
+        });
+        let service = SqliteRunApplicationService::open(&db_path)
+            .unwrap()
+            .with_chroma_graph(graph)
+            .with_chat_completion_provider(
+                crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+                    chat_endpoint, "fixture-answer-model", None,
+                ).unwrap().with_streaming(true),
+            )
+            .with_owner_auth_config(&auth_config).await.unwrap();
+        service.store.create_server_run(ServerRunCreate {
+            run_id: "native-answer-run".to_owned(),
+            conversation_id: "native-answer-conversation".to_owned(),
+            workflow_id: "debug.rag.v1".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "user-turn".to_owned(),
+            status: "running".to_owned(),
+        }).unwrap();
+        let binding = runtime_owner_binding_v1(&principal, &service.capabilities).unwrap();
+        service.store.append_server_run_event(
+            "native-answer-run",
+            "run.created",
+            serde_json::to_string(&json!({"runtime_owner_binding":binding})).unwrap(),
+        ).unwrap();
+        let request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: "rust-native".to_owned(),
+            operation: "aa_generate_answer_with_citations".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "native-answer-run".to_owned(),
+            workflow_id: "debug.rag.v1".to_owned(),
+            node_id: "answer-node".to_owned(),
+            conversation_id: "native-answer-conversation".to_owned(),
+            turn_node_id: Some("user-turn".to_owned()),
+            token_id: "token-1".to_owned(),
+            parent_token_id: None,
+            step_seq: 3,
+            state: serde_json::from_value(json!({
+                "conversation_id":"native-answer-conversation",
+                "question":"question",
+                "system_prompt":"Use only evidence.",
+                "used_node_ids":[],
+                "turn_node_id":"user-turn",
+                "_rt_graph_scope": {
+                    "storage_namespace":"conversation",
+                    "workspace":null,
+                    "graph_space":"conversation"
+                },
+                "_rt":{"evidence_pack":{"nodes":[],"edges":[]}}
+            })).unwrap(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: serde_json::Map::new(),
+        };
+        let result = service.execute_sqlite_native_answer_generation(
+            RecordedWorkerHandoff {
+                message_id:"lane-native-answer".to_owned(),
+                claimed_by:"rust-native-worker".to_owned(),
+                run_id:"native-answer-run".to_owned(),
+                step_id:"answer-node".to_owned(),
+                correlation_id:"token-1".to_owned(),
+            },
+            request,
+        ).await.unwrap();
+        chat_server.await.unwrap();
+
+        assert_eq!(result.effect.as_ref().unwrap().status, kogwistar_runtime::RuntimeWorkerEffectStatus::Success);
+        let first_update = serde_json::to_value(&result.effect.as_ref().unwrap().state_update[0])
+            .unwrap();
+        assert_eq!(first_update[1]["answer"]["text"], "answer");
+        let events = service.store.list_server_run_events("native-answer-run", 0, 100).unwrap();
+        assert!(events.iter().any(|event| event.event_type == "workflow.provider_event.v1"));
+        let lane_events = service.store.list_projected_lane_messages(LaneMessageFilter {
+            namespace: Some("conversation".to_owned()),
+            inbox_id: Some("agent-provider-events".to_owned()),
+            ..LaneMessageFilter::default()
+        }).unwrap();
+        assert!(!lane_events.is_empty());
+        assert!(!service
+            .store
+            .list_index_jobs(Some("conversation"), None, None, None, None, 100)
+            .unwrap()
+            .is_empty());
+
+        drop(service);
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(auth_path);
+    }
+
     #[test]
     fn snapshot_syscall_compatibility_drops_rust_only_fields() {
         let expected = serde_json::from_str::<Value>(include_str!(

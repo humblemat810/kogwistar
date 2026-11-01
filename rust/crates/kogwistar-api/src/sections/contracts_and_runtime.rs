@@ -659,6 +659,11 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     .await
                     .map_err(std::io::Error::other)?;
                 if chroma_configured {
+                    if let Some(provider) = chat_completion_provider_from_environment()
+                        .map_err(std::io::Error::other)?
+                    {
+                        service = service.with_chat_completion_provider(provider);
+                    }
                     let embedding_provider = embedding_provider_from_settings(
                         std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
                         std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),

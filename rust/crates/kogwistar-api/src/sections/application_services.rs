@@ -1021,6 +1021,12 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_candidate_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
+            } else if work.payload.get("op").and_then(Value::as_str)
+                == Some("aa_generate_answer_with_citations")
+            {
+                let (handoff, native_request) = native_request_for_claimed_work(&work)?;
+                self.execute_sqlite_native_answer_generation(handoff, native_request)
+                    .await?
             } else {
                 native_result_for_claimed_work(work, &self.native_operations)?
             };

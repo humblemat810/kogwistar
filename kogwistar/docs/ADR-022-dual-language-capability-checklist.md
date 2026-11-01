@@ -251,8 +251,16 @@ The first SQLite+Chroma native answer host step now revalidates the durable
 run owner for `read_graph`, obtains the ACL-filtered conversation projection,
 and rejects a missing, wrong-conversation, non-user, or tombstoned turn;
 `sqlite_native_answer_view_projects_only_the_admitted_conversation` covers
-conversation isolation and inactive-turn rejection. This is context preparation
-only, not a complete SQLite+Chroma answer execution path. Candidate retrieval
+conversation isolation and inactive-turn rejection. SQLite+Chroma now also has
+a Rust-native answer-generation executor: it commits the exact context snapshot
+to canonical SQLite events before calling the configured structured provider,
+persists semantic stream events with trace metadata and lane messages in SQLite,
+and leaves index jobs for eventual Chroma projection. The local fake-provider
+integration `sqlite_chroma_native_answer_snapshots_before_provider_and_persists_stream_events`
+verifies snapshot-before-provider ordering, successful structured output,
+durable provider events, and queued index jobs. This is executor-level evidence,
+not a complete user-submission-to-terminal-turn run; full SQLite+Chroma workflow
+progression remains open. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
 ACL records before projecting candidates. The generic Chroma and in-memory
