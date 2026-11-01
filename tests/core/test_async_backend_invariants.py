@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 
+from kogwistar.acl.models import ACLEdge, ACLNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Edge, Node
@@ -576,6 +577,60 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
             "entity_type": "conversation_edge",
         },
     )
+    acl_previous = ACLNode(
+        id="node::async-pg-derived-acl-v1",
+        label="acl:truth:target:node",
+        type="entity",
+        summary="private acl for target node",
+        doc_id="acl:truth",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "acl_record",
+            "acl_truth_graph": "truth",
+            "acl_target_entity_id": "target",
+            "acl_target_grain": "node",
+            "acl_version": 1,
+            "acl_mode": "private",
+        },
+        properties={"shared_with_principals": [], "shared_with_groups": []},
+    )
+    acl_current = ACLNode(
+        id="node::async-pg-derived-acl-v2",
+        label="acl:truth:target:node",
+        type="entity",
+        summary="shared acl for target node",
+        doc_id="acl:truth",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "acl_record",
+            "acl_truth_graph": "truth",
+            "acl_target_entity_id": "target",
+            "acl_target_grain": "node",
+            "acl_version": 2,
+            "acl_mode": "shared",
+            "supersedes_version": 1,
+        },
+        properties={"shared_with_principals": ["user:reader"], "shared_with_groups": []},
+    )
+    acl_edge = ACLEdge(
+        id="edge::async-pg-derived-acl-supersedes",
+        label="acl_supersedes",
+        type="relationship",
+        summary="acl supersedes previous acl state",
+        relation="acl_supersedes",
+        source_ids=[acl_current.id],
+        target_ids=[acl_previous.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        doc_id="acl:truth",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "acl_supersedes",
+            "acl_truth_graph": "truth",
+            "acl_target_entity_id": "target",
+            "acl_target_grain": "node",
+        },
+    )
 
     meta = engine.meta_sqlite
     original_apply = meta.apply_graph_mutation
@@ -591,11 +646,17 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     await engine.write.add_node_async(run_node)
     await engine.write.add_node_async(target)
     await engine.write.add_edge_async(runtime_edge)
+    await engine.write.add_node_async(acl_previous)
+    await engine.write.add_node_async(acl_current)
+    await engine.write.add_edge_async(acl_edge)
 
     assert [envelope["model_class"] for envelope in envelopes] == [
         "workflow_run_node",
         "node",
         "workflow_runtime_edge",
+        "acl_node",
+        "acl_node",
+        "acl_edge",
     ]
     events = list(meta.iter_entity_events(namespace=engine.namespace))
     event_payloads = {
@@ -607,6 +668,10 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         type(WorkflowRuntimeEdge.model_validate(event_payloads[runtime_edge.id]))
         is WorkflowRuntimeEdge
     )
+    assert type(ACLNode.model_validate(event_payloads[acl_current.id])) is ACLNode
+    assert type(ACLEdge.model_validate(event_payloads[acl_edge.id])) is ACLEdge
+    assert event_payloads[acl_edge.id]["source_ids"] == [acl_current.id]
+    assert event_payloads[acl_edge.id]["target_ids"] == [acl_previous.id]
 
     node_rows = await async_pg_backend.node_get(
         ids=[run_node.id], include=["documents", "metadatas"]
@@ -620,6 +685,16 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert edge_rows["metadatas"][0]["relation"] == "next"
     assert edge_rows["metadatas"][0]["node_endpoint_count"] == 2
     assert edge_rows["metadatas"][0]["edge_endpoint_count"] == 0
+
+    python_acl_node = engine.read.get_nodes(ids=[acl_current.id], node_type=ACLNode)
+    python_acl_edge = engine.read.get_edges(ids=[acl_edge.id], edge_type=ACLEdge)
+    assert len(python_acl_node) == 1
+    assert python_acl_node[0].metadata["acl_version"] == 2
+    assert python_acl_node[0].properties["shared_with_principals"] == ["user:reader"]
+    assert len(python_acl_edge) == 1
+    assert python_acl_edge[0].relation == "acl_supersedes"
+    assert python_acl_edge[0].source_ids == [acl_current.id]
+    assert python_acl_edge[0].target_ids == [acl_previous.id]
 
 
 @pytest.mark.asyncio
