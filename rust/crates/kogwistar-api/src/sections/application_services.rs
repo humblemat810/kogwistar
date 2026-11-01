@@ -1085,8 +1085,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_evidence_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("aa_project_pointers")
+            } else if work.payload.get("op").and_then(Value::as_str) == Some("aa_project_pointers")
             {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let records = self
@@ -1113,8 +1112,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_pointer_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("link_assistant_turn")
+            } else if work.payload.get("op").and_then(Value::as_str) == Some("link_assistant_turn")
             {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let records = self
@@ -1215,6 +1213,22 @@ impl ApplicationService for SqliteRunApplicationService {
             && rust_mcp_tool_supported(surface, name)
     }
 
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        if self.chroma_graph.is_some() {
+            GraphAuthorityCapability::AtomicBatchWithIndexJobs
+        } else {
+            GraphAuthorityCapability::Unsupported
+        }
+    }
+
+    fn document_authority_capability(&self) -> DocumentAuthorityCapability {
+        if self.chroma_graph.is_some() {
+            self.store.document_authority_capability()
+        } else {
+            DocumentAuthorityCapability::Unsupported
+        }
+    }
+
     fn supports_mcp_tool_for_principal(
         &self,
         surface: &str,
@@ -1256,6 +1270,8 @@ impl ApplicationService for SqliteRunApplicationService {
         let is_composed_graph_mutation = self.chroma_graph.is_some()
             && method == "POST"
             && path.split('?').next() == Some(INTERNAL_GRAPH_MUTATIONS_ROUTE);
+        let is_composed_document_projection =
+            self.chroma_graph.is_some() && is_document_projection_route(method, path);
         let is_composed_wisdom_graph_upsert = self.chroma_graph.is_some()
             && self.embedding_provider.is_some()
             && is_public_wisdom_graph_upsert_route(method, path);
@@ -1273,6 +1289,7 @@ impl ApplicationService for SqliteRunApplicationService {
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
             || is_composed_graph_mutation
+            || is_composed_document_projection
             || is_composed_wisdom_graph_upsert
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
@@ -1285,6 +1302,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
                 || is_composed_graph_read
                 || is_composed_graph_mutation
+                || is_composed_document_projection
                 || is_composed_wisdom_graph_upsert
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
@@ -1297,6 +1315,12 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST"
+                && self.chroma_graph.is_some()
+                && is_document_projection_route(&request.method, &request.path_and_query)
+            {
+                return self.sqlite_document_projection_effect(&request).await;
+            }
             if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE
             {
                 if let Ok(input) =
@@ -1401,8 +1425,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .await;
             }
             if request.method == "POST"
-                && request.path_and_query.split('?').next()
-                    == Some("/api/syscall/v1/send_message")
+                && request.path_and_query.split('?').next() == Some("/api/syscall/v1/send_message")
                 && self.chroma_graph.is_some()
             {
                 let input = match syscall_input(&request, "send_message") {

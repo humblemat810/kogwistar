@@ -194,6 +194,8 @@ mod acl_records;
 mod auth;
 #[path = "tests/authority.rs"]
 mod authority;
+#[path = "tests/documents.rs"]
+mod documents;
 #[path = "tests/events.rs"]
 mod events;
 #[path = "tests/graph_mutations.rs"]

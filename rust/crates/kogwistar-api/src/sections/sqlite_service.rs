@@ -563,10 +563,9 @@ impl SqliteRunApplicationService {
             }) else {
                 continue;
             };
-            let expected_fingerprint = RevisionFencedChromaProjectionStore::canonical_fingerprint(
-                &canonical,
-            )
-            .map_err(|error| error.to_string())?;
+            let expected_fingerprint =
+                RevisionFencedChromaProjectionStore::canonical_fingerprint(&canonical)
+                    .map_err(|error| error.to_string())?;
             if row
                 .payload
                 .get("source_fingerprint")
@@ -1064,8 +1063,9 @@ impl SqliteRunApplicationService {
     }
 
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
-        let native_operations = crate::native_answer_persist::registry()
-            .map_err(|error| format!("could not register native conversation operations: {error}"))?;
+        let native_operations = crate::native_answer_persist::registry().map_err(|error| {
+            format!("could not register native conversation operations: {error}")
+        })?;
         SqliteStore::open(path)
             .map(|store| Self {
                 store,
@@ -1102,6 +1102,34 @@ impl SqliteRunApplicationService {
     pub fn with_chroma_graph(mut self, graph: kogwistar_store_chroma::ChromaGraphStore) -> Self {
         self.chroma_graph = Some(graph);
         self
+    }
+
+    async fn sqlite_document_projection_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !self
+            .document_authority_capability()
+            .supports_projection_upsert()
+        {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_DOCUMENT_AUTHORITY_UNSUPPORTED",
+                "The selected SQLite+Chroma service does not own source-document projections",
+            );
+        }
+        let write = match document_projection_write(request, &self.capabilities) {
+            Ok(write) => write,
+            Err(response) => return response,
+        };
+        match self.store.upsert_document_projection(write).await {
+            Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+                error.to_string(),
+            ),
+        }
     }
 
     async fn sqlite_chroma_graph_mutation_effect(
@@ -1575,8 +1603,7 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let (scope, acl_principal) =
-            conversation_graph_scope_and_acl_principal(&request.principal);
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
         if scope.namespace != "conversation" {
             return effect_error(
                 StatusCode::FORBIDDEN,
@@ -1623,8 +1650,8 @@ impl SqliteRunApplicationService {
                 "conversation must have exactly one visible conversation_start node",
             );
         }
-        let Some(owner_id) = conversation_record_string(start, "user_id")
-            .filter(|value| !value.trim().is_empty())
+        let Some(owner_id) =
+            conversation_record_string(start, "user_id").filter(|value| !value.trim().is_empty())
         else {
             return effect_error(
                 StatusCode::CONFLICT,
@@ -1725,7 +1752,12 @@ impl SqliteRunApplicationService {
             .filter(|record| {
                 matches!(
                     conversation_record_string(record, "entity_type").as_deref(),
-                    Some("conversation_start" | "conversation_turn" | "conversation_summary" | "assistant_turn")
+                    Some(
+                        "conversation_start"
+                            | "conversation_turn"
+                            | "conversation_summary"
+                            | "assistant_turn"
+                    )
                 ) && conversation_record_value(record, "in_conversation_chain")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(true)
@@ -1801,7 +1833,10 @@ impl SqliteRunApplicationService {
         let mut node_projection = node_metadata.as_object().unwrap().clone();
         node_projection.extend([
             ("doc_id".to_owned(), json!(turn_id)),
-            ("label".to_owned(), json!(format!("Turn {turn_index} (user)"))),
+            (
+                "label".to_owned(),
+                json!(format!("Turn {turn_index} (user)")),
+            ),
             ("type".to_owned(), json!("entity")),
             ("summary".to_owned(), json!(text)),
             ("properties".to_owned(), json!("{}")),
@@ -1928,26 +1963,34 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        mutations[0].0.record.embedding = Some(
-            embeddings[0]
-                .iter()
-                .map(|value| *value as f32)
-                .collect(),
-        );
+        mutations[0].0.record.embedding =
+            Some(embeddings[0].iter().map(|value| *value as f32).collect());
         if let Some((edge_payload, edge_document, edge_envelope)) = edge_payload_and_document {
             let edge_id = edge_payload["id"].as_str().unwrap().to_owned();
             let mut metadata = edge_payload["metadata"].as_object().unwrap().clone();
             metadata.extend([
                 ("doc_id".to_owned(), edge_payload["doc_id"].clone()),
                 ("relation".to_owned(), json!("next_turn")),
-                ("source_ids".to_owned(), json!(edge_payload["source_ids"].to_string())),
-                ("target_ids".to_owned(), json!(edge_payload["target_ids"].to_string())),
+                (
+                    "source_ids".to_owned(),
+                    json!(edge_payload["source_ids"].to_string()),
+                ),
+                (
+                    "target_ids".to_owned(),
+                    json!(edge_payload["target_ids"].to_string()),
+                ),
                 ("source_edge_ids".to_owned(), json!("[]")),
                 ("target_edge_ids".to_owned(), json!("[]")),
                 ("type".to_owned(), json!("relationship")),
                 ("summary".to_owned(), json!("Sequential flow")),
-                ("properties".to_owned(), json!(edge_payload["properties"].to_string())),
-                ("mentions".to_owned(), json!(edge_payload["mentions"].to_string())),
+                (
+                    "properties".to_owned(),
+                    json!(edge_payload["properties"].to_string()),
+                ),
+                (
+                    "mentions".to_owned(),
+                    json!(edge_payload["mentions"].to_string()),
+                ),
                 ("node_endpoint_count".to_owned(), json!(2)),
                 ("edge_endpoint_count".to_owned(), json!(0)),
                 ("total_endpoint_count".to_owned(), json!(2)),
@@ -1970,12 +2013,7 @@ impl SqliteRunApplicationService {
                         id: edge_id.clone(),
                         document: Some(edge_document),
                         metadata,
-                        embedding: Some(
-                            embeddings[1]
-                                .iter()
-                                .map(|value| *value as f32)
-                                .collect(),
-                        ),
+                        embedding: Some(embeddings[1].iter().map(|value| *value as f32).collect()),
                     },
                     embedding_dim: profile.dimension,
                 },
@@ -1984,7 +2022,12 @@ impl SqliteRunApplicationService {
             for kind in conversation_index_job_kinds("edge")
                 .expect("edge conversation indexing contract exists")
             {
-                index_jobs.push(conversation_index_job(&scope.namespace, "edge", &edge_id, kind));
+                index_jobs.push(conversation_index_job(
+                    &scope.namespace,
+                    "edge",
+                    &edge_id,
+                    kind,
+                ));
             }
         }
         let prepared = PreparedConversationAdmission {
@@ -3168,19 +3211,21 @@ impl SqliteRunApplicationService {
             .collect::<BTreeSet<_>>();
 
         let scope = security_scope_value(&principal);
-        let namespace = scope["storage_namespace"]
-            .as_str()
-            .unwrap_or("default");
+        let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
         let mut filter = MetadataFilter::default();
         if let Some(workspace) = principal
             .get("workspace_id")
             .or_else(|| principal.get("workspace"))
             .and_then(Value::as_str)
         {
-            filter.equals.insert("workspace_id".to_owned(), json!(workspace));
+            filter
+                .equals
+                .insert("workspace_id".to_owned(), json!(workspace));
         }
         if let Some(graph_space) = principal.get("graph_space").and_then(Value::as_str) {
-            filter.equals.insert("graph_space".to_owned(), json!(graph_space));
+            filter
+                .equals
+                .insert("graph_space".to_owned(), json!(graph_space));
         }
         let graph = self
             .chroma_graph
@@ -3214,16 +3259,10 @@ impl SqliteRunApplicationService {
             )
             .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
         }
-        let acl_principal = graph_acl_principal_from_claims(
-            &principal,
-            scope["security_scope"].as_str(),
-        );
-        let knowledge = GraphAclProjection::from_complete_snapshot(
-            &nodes,
-            &edges,
-            "knowledge",
-            &acl_principal,
-        );
+        let acl_principal =
+            graph_acl_principal_from_claims(&principal, scope["security_scope"].as_str());
+        let knowledge =
+            GraphAclProjection::from_complete_snapshot(&nodes, &edges, "knowledge", &acl_principal);
         let conversation = GraphAclProjection::from_complete_snapshot(
             &nodes,
             &edges,
@@ -3240,7 +3279,10 @@ impl SqliteRunApplicationService {
             .iter()
             .filter(|record| {
                 !matches!(
-                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                    record
+                        .metadata
+                        .get("lifecycle_status")
+                        .and_then(Value::as_str),
                     Some("tombstoned" | "deleted")
                 )
             })
@@ -3269,9 +3311,15 @@ impl SqliteRunApplicationService {
             .filter(|record| wanted_edges.contains(&record.id))
             .map(|record| record.id.as_str())
             .collect::<BTreeSet<_>>();
-        if conversation_nodes.iter().map(|record| record.id.as_str()).collect::<BTreeSet<_>>()
+        if conversation_nodes
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>()
             != raw_node_ids
-            || conversation_edges.iter().map(|record| record.id.as_str()).collect::<BTreeSet<_>>()
+            || conversation_edges
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<BTreeSet<_>>()
                 != raw_edge_ids
         {
             return Err(NativeEvidenceContextError::GraphReadRejected);
@@ -3280,11 +3328,21 @@ impl SqliteRunApplicationService {
             .iter()
             .find(|record| record.id == run_node_id)
             .ok_or(NativeEvidenceContextError::GraphReadRejected)?;
-        if run_record.metadata.get("entity_type").and_then(Value::as_str) != Some("agent_run")
-            || run_record.metadata.get("conversation_id").and_then(Value::as_str)
+        if run_record
+            .metadata
+            .get("entity_type")
+            .and_then(Value::as_str)
+            != Some("agent_run")
+            || run_record
+                .metadata
+                .get("conversation_id")
+                .and_then(Value::as_str)
                 != Some(conversation_id)
             || matches!(
-                run_record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                run_record
+                    .metadata
+                    .get("lifecycle_status")
+                    .and_then(Value::as_str),
                 Some("tombstoned" | "deleted")
             )
         {
@@ -3404,10 +3462,16 @@ impl SqliteRunApplicationService {
             let type_matches = actual_type == Some(expected_type)
                 || (expected_type == "assistant_turn" && actual_type == Some("conversation_turn"));
             if !type_matches
-                || record.metadata.get("conversation_id").and_then(Value::as_str)
+                || record
+                    .metadata
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
                     != Some(conversation_id)
                 || matches!(
-                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                    record
+                        .metadata
+                        .get("lifecycle_status")
+                        .and_then(Value::as_str),
                     Some("tombstoned" | "deleted")
                 )
             {
@@ -3448,7 +3512,9 @@ impl SqliteRunApplicationService {
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
     ) -> Result<(), String> {
         kogwistar_runtime::validate_native_step_registration(request, &self.native_operations)
-            .map_err(|_| "native evidence selection is not registered for this operation version".to_owned())?;
+            .map_err(|_| {
+                "native evidence selection is not registered for this operation version".to_owned()
+            })?;
         if self.chroma_graph.is_none() {
             return Err("native selection snapshots require SQLite canonical graph events with Chroma projection".to_owned());
         }
@@ -3489,7 +3555,8 @@ impl SqliteRunApplicationService {
             .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
         {
             return Err(
-                "native context snapshot scope is outside the run owner's admitted scope".to_owned(),
+                "native context snapshot scope is outside the run owner's admitted scope"
+                    .to_owned(),
             );
         }
         let Some(scope) = mutations.first().map(|mutation| mutation.scope.clone()) else {
@@ -5204,7 +5271,12 @@ impl SqliteRunApplicationService {
                     .filter(|record| {
                         matches!(
                             conversation_record_string(record, "entity_type").as_deref(),
-                            Some("conversation_start" | "conversation_turn" | "conversation_summary" | "assistant_turn")
+                            Some(
+                                "conversation_start"
+                                    | "conversation_turn"
+                                    | "conversation_summary"
+                                    | "assistant_turn"
+                            )
                         ) && conversation_record_value(record, "in_conversation_chain")
                             .and_then(|value| value.as_bool())
                             .unwrap_or(true)
@@ -5237,8 +5309,11 @@ impl SqliteRunApplicationService {
                     .collect::<Vec<_>>();
                 let acl_targets = acl_targets_for_graph_mutations(&graph_mutations).0;
                 let target_ids = acl_target_entity_ids(&acl_targets);
-                let existing_acl =
-                    uow.graph_acl_records_for_entities(&admission.scope, "conversation", &target_ids)?;
+                let existing_acl = uow.graph_acl_records_for_entities(
+                    &admission.scope,
+                    "conversation",
+                    &target_ids,
+                )?;
                 let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
                     &admission.scope,
                     &graph_mutations,
@@ -5262,20 +5337,16 @@ impl SqliteRunApplicationService {
                     index_jobs,
                 })?;
             }
-            let created_event = uow.append_server_run_event(
-                &run_id,
-                "run.created",
-                {
-                    let mut payload = event_payload.clone();
-                    if let Some(actor_user_id) = admission_actor_user_id.as_deref() {
-                        payload["admission_actor"] = json!({
-                            "user_id": actor_user_id,
-                            "operation": "send_message",
-                        });
-                    }
-                    serde_json::to_string(&payload)?
-                },
-            )?;
+            let created_event = uow.append_server_run_event(&run_id, "run.created", {
+                let mut payload = event_payload.clone();
+                if let Some(actor_user_id) = admission_actor_user_id.as_deref() {
+                    payload["admission_actor"] = json!({
+                        "user_id": actor_user_id,
+                        "operation": "send_message",
+                    });
+                }
+                serde_json::to_string(&payload)?
+            })?;
             let mut persisted_worker_payload = worker_payload.clone();
             persisted_worker_payload["expected_event_seq"] = json!(created_event.seq);
             uow.project_lane_message(NewProjectedLaneMessage {

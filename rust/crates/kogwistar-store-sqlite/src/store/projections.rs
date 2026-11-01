@@ -1,6 +1,23 @@
 use super::super::*;
 
 impl SqliteStore {
+    pub fn source_document_projection(
+        &self,
+        scope: &GraphScope,
+        document_id: &str,
+    ) -> SqliteStoreResult<Option<GraphRecord>> {
+        self.with_connection(|connection| {
+            source_document_projection_for_scope(connection, scope, document_id)
+        })
+    }
+
+    pub fn upsert_source_document_projection(
+        &self,
+        write: DocumentProjectionUpsert,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| uow.upsert_source_document_projection(write))
+    }
+
     pub fn get_named_projection(
         &self,
         namespace: &str,

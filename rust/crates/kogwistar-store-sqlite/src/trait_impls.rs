@@ -1,3 +1,4 @@
+mod documents;
 mod events;
 mod index_jobs;
 mod lane_messages;

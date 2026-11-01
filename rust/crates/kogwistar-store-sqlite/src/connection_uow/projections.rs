@@ -1,6 +1,21 @@
 use super::*;
 
 impl SqliteUnitOfWork<'_> {
+    pub fn source_document_projection(
+        &mut self,
+        scope: &GraphScope,
+        document_id: &str,
+    ) -> SqliteStoreResult<Option<GraphRecord>> {
+        source_document_projection_for_scope(self.transaction, scope, document_id)
+    }
+
+    pub fn upsert_source_document_projection(
+        &mut self,
+        write: DocumentProjectionUpsert,
+    ) -> SqliteStoreResult<()> {
+        replace_source_document_projection(self.transaction, write)
+    }
+
     pub fn replace_named_projection(
         &mut self,
         namespace: &str,

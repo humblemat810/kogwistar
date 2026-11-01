@@ -1,5 +1,140 @@
 use super::*;
 
+const SOURCE_DOCUMENT_PROJECTION_NAMESPACE: &str = "kogwistar.source_documents.v1";
+
+fn source_document_projection_key(
+    scope: &GraphScope,
+    document_id: &str,
+) -> SqliteStoreResult<String> {
+    if scope.namespace.trim().is_empty() || document_id.trim().is_empty() {
+        return Err(SqliteStoreError::TransactionAborted(
+            "source-document namespace and ID must be non-empty".to_owned(),
+        ));
+    }
+    serde_json::to_string(&(
+        scope.namespace.as_str(),
+        scope.workspace_id.as_deref(),
+        scope.graph_space.as_deref(),
+        document_id,
+    ))
+    .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string()))
+}
+
+fn source_document_projection(write: DocumentProjectionUpsert) -> NamedProjectionWrite {
+    let payload = serde_json::Map::from_iter([
+        (
+            "namespace".to_owned(),
+            serde_json::json!(write.scope.namespace),
+        ),
+        (
+            "workspace_id".to_owned(),
+            serde_json::json!(write.scope.workspace_id),
+        ),
+        (
+            "graph_space".to_owned(),
+            serde_json::json!(write.scope.graph_space),
+        ),
+        (
+            "record".to_owned(),
+            serde_json::json!({
+                "id": write.record.id,
+                "document": write.record.document,
+                "metadata": write.record.metadata,
+            }),
+        ),
+        (
+            "embedding_dim".to_owned(),
+            serde_json::json!(write.embedding_dim),
+        ),
+    ]);
+    NamedProjectionWrite {
+        payload,
+        last_authoritative_seq: 0,
+        last_materialized_seq: 0,
+        projection_schema_version: 1,
+        materialization_status: "source_document".to_owned(),
+    }
+}
+
+fn source_document_from_projection(
+    projection: Option<NamedProjection>,
+    scope: &GraphScope,
+    document_id: &str,
+) -> SqliteStoreResult<Option<GraphRecord>> {
+    let Some(projection) = projection else {
+        return Ok(None);
+    };
+    let stored_scope_matches = [
+        ("namespace", Some(scope.namespace.as_str())),
+        ("workspace_id", scope.workspace_id.as_deref()),
+        ("graph_space", scope.graph_space.as_deref()),
+    ]
+    .into_iter()
+    .all(|(field, expected)| match expected {
+        Some(value) => {
+            projection
+                .payload
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                == Some(value)
+        }
+        None => projection
+            .payload
+            .get(field)
+            .is_some_and(serde_json::Value::is_null),
+    });
+    if !stored_scope_matches {
+        return Err(SqliteStoreError::TransactionAborted(
+            "stored source-document projection scope does not match its key".to_owned(),
+        ));
+    }
+    let record = projection
+        .payload
+        .get("record")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "stored source-document projection has no record object".to_owned(),
+            )
+        })?;
+    let id = record
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "stored source-document projection has no id".to_owned(),
+            )
+        })?;
+    let document = record
+        .get("document")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "stored source-document projection has no text".to_owned(),
+            )
+        })?;
+    if id != document_id {
+        return Err(SqliteStoreError::TransactionAborted(
+            "stored source-document ID does not match its key".to_owned(),
+        ));
+    }
+    let metadata = record
+        .get("metadata")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "stored source-document projection has invalid metadata".to_owned(),
+            )
+        })?;
+    Ok(Some(GraphRecord {
+        id: id.to_owned(),
+        document: Some(document.to_owned()),
+        metadata,
+        embedding: None,
+    }))
+}
+
 pub(super) fn projection_payload_json(
     payload: &serde_json::Map<String, serde_json::Value>,
 ) -> SqliteStoreResult<String> {
@@ -98,6 +233,40 @@ pub(super) fn stage1_node_projections(
         .query_map([namespace], projection_from_row)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+pub(super) fn source_document_projection_for_scope(
+    conn: &Connection,
+    scope: &GraphScope,
+    document_id: &str,
+) -> SqliteStoreResult<Option<GraphRecord>> {
+    let key = source_document_projection_key(scope, document_id)?;
+    source_document_from_projection(
+        named_projection(conn, SOURCE_DOCUMENT_PROJECTION_NAMESPACE, &key)?,
+        scope,
+        document_id,
+    )
+}
+
+pub(super) fn replace_source_document_projection(
+    conn: &Connection,
+    write: DocumentProjectionUpsert,
+) -> SqliteStoreResult<()> {
+    if write.scope.namespace.trim().is_empty()
+        || write.record.id.trim().is_empty()
+        || write.record.document.is_none()
+    {
+        return Err(SqliteStoreError::TransactionAborted(
+            "source-document namespace, ID, and text are required".to_owned(),
+        ));
+    }
+    let key = source_document_projection_key(&write.scope, &write.record.id)?;
+    replace_named_projection(
+        conn,
+        SOURCE_DOCUMENT_PROJECTION_NAMESPACE,
+        &key,
+        source_document_projection(write),
+    )
 }
 
 pub(super) fn replace_named_projection(
