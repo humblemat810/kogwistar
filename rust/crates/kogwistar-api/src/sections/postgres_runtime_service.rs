@@ -6194,10 +6194,17 @@ impl PostgresRunApplicationService {
                     .and_then(|value| value.as_str().map(str::to_owned))
                     .unwrap_or_default();
             }
-            return json_effect(
-                StatusCode::OK,
-                json!({"run_id": run_id, "lineage": lineage}),
-            );
+            if query_parameter_present(&request.path_and_query, "limit") {
+                let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000)
+                    as usize;
+                let truncated = lineage.len() > limit;
+                lineage.truncate(limit);
+                return json_effect(
+                    StatusCode::OK,
+                    json!({"run_id": run_id, "lineage": lineage, "truncated": truncated}),
+                );
+            }
+            return json_effect(StatusCode::OK, json!({"run_id": run_id, "lineage": lineage}));
         }
         if request.method == "GET" && tail == ["evidence"] {
             let authorization = ContextSnapshotAuthorization {

@@ -715,7 +715,7 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
                 [],
             )
             .unwrap();
-    let allowed = app.oneshot(request()).await.unwrap();
+    let allowed = app.clone().oneshot(request()).await.unwrap();
     assert_eq!(allowed.status(), StatusCode::OK);
     let allowed_body = to_bytes(allowed.into_body(), 8192).await.unwrap();
     let payload = serde_json::from_slice::<Value>(&allowed_body).unwrap();
@@ -724,6 +724,31 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
     assert_eq!(payload["lineage"][0]["workflow_id"], "wf-child");
     assert_eq!(payload["lineage"][0]["parent_run_id"], "lineage-parent");
     assert_eq!(payload["lineage"][1]["workflow_id"], "wf-parent");
+
+    let mcp_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"lineage-mcp","method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child","limit":1}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_response.status(), StatusCode::OK);
+    let mcp_payload = serde_json::from_slice::<Value>(
+        &to_bytes(mcp_response.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mcp_payload["id"], "lineage-mcp");
+    assert_eq!(mcp_payload["result"]["run_id"], "lineage-child");
+    assert_eq!(mcp_payload["result"]["lineage"].as_array().unwrap().len(), 1);
+    assert_eq!(mcp_payload["result"]["truncated"], true);
+    assert_eq!(mcp_payload["result"]["lineage"][0]["workflow_id"], "wf-child");
 
     drop(service);
     let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)

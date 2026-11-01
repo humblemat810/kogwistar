@@ -1205,6 +1205,7 @@ impl ApplicationService for SqliteRunApplicationService {
         }
         name != "workflow.tool_audit"
             && name != "workflow.run_evidence"
+            && name != "workflow.run_lineage"
             && (name != "conversation.create" || self.chroma_graph.is_some())
             && (name != "conversation.ask"
                 || (self.chroma_graph.is_some()

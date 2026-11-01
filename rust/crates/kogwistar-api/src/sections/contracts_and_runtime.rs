@@ -166,6 +166,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.run_checkpoint_get"
                 | "workflow.run_events"
                 | "workflow.run_evidence"
+                | "workflow.run_lineage"
                 | "workflow.run_replay"
                 | "workflow.run_resume"
                 | "workflow.run_resume_contract"

@@ -1975,6 +1975,7 @@
         assert!(postgres.supports_mcp_tool("root", "kg_neighbors"));
         assert!(postgres.supports_mcp_tool("workflow", "workflow.run_status"));
         assert!(postgres.supports_mcp_tool("workflow", "workflow.run_evidence"));
+        assert!(postgres.supports_mcp_tool("workflow", "workflow.run_lineage"));
         assert!(postgres.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(postgres.supports_mcp_tool("conversation", "conversation.ask"));
         assert!(postgres.supports_mcp_tool("conversation", "conversation.create"));
@@ -1991,6 +1992,7 @@
         assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
         assert!(sqlite.supports_mcp_tool("workflow", "workflow.run_status"));
         assert!(!sqlite.supports_mcp_tool("workflow", "workflow.run_evidence"));
+        assert!(!sqlite.supports_mcp_tool("workflow", "workflow.run_lineage"));
         assert!(!sqlite.supports_mcp_tool("workflow", "workflow.tool_audit"));
         assert!(!sqlite.supports_mcp_tool("conversation", "conversation.ask"));
         assert!(!sqlite.supports_mcp_tool("conversation", "conversation.create"));

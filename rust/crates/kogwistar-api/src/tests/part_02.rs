@@ -582,9 +582,10 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("workflow", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(supported, 39);
+        assert_eq!(supported, 40);
         assert!(rust_mcp_tool_supported("workflow", "workflow.run_steps"));
         assert!(rust_mcp_tool_supported("workflow", "workflow.run_evidence"));
+        assert!(rust_mcp_tool_supported("workflow", "workflow.run_lineage"));
     }
 
     #[tokio::test]
