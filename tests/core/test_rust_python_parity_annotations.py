@@ -63,25 +63,25 @@ def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -
     )
     if function is None:
         return False
-    body_source = ast.get_source_segment(source, function) or ""
     calls = [
         node
         for node in ast.walk(function)
         if isinstance(node, ast.Call)
     ]
-    return (
-        fixture_name in body_source
-        and any(
-            isinstance(call.func, ast.Attribute) and call.func.attr == "read_text"
-            for call in calls
-        )
-        and any(
-            isinstance(call.func, ast.Attribute)
-            and call.func.attr == "loads"
-            and isinstance(call.func.value, ast.Name)
-            and call.func.value.id == "json"
-            for call in calls
-        )
+    fixture_read_calls = {
+        call
+        for call in calls
+        if isinstance(call.func, ast.Attribute)
+        and call.func.attr == "read_text"
+        and fixture_name in (ast.get_source_segment(source, call) or "")
+    }
+    return any(
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "loads"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "json"
+        and any(child in fixture_read_calls for child in ast.walk(call))
+        for call in calls
     )
 
 
@@ -95,7 +95,37 @@ def _rust_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> 
         if next_attribute is not None
         else len(source)
     ]
-    return fixture_name in body_source and "include_str!" in body_source
+    for include_match in re.finditer(r"include_str!\s*\(", body_source):
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for index in range(include_match.end() - 1, len(body_source)):
+            char = body_source[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    break
+        if end is None:
+            continue
+        macro_source = body_source[include_match.start() : end]
+        string_literals = re.findall(r'"(?:\\.|[^"\\])*"', macro_source)
+        if any(fixture_name in literal for literal in string_literals):
+            return True
+    return False
 
 
 def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts() -> None:
@@ -174,11 +204,21 @@ def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
     python_comment_only = textwrap.dedent("""
     def parity_test():
         # shared.json
-        assert True
+        json.loads((ROOT / \"other.json\").read_text())
+    """)
+    rust_other_fixture = textwrap.dedent("""
+    #[test]
+    fn parity_test() {
+        // \"shared.json\"
+        let _data = include_str!(\"other.json\");
+    }
     """)
     assert not _rust_test_consumes_fixture(
         rust_comment_only, "parity_test", "shared.json"
     )
     assert not _python_test_consumes_fixture(
         python_comment_only, "parity_test", "shared.json"
+    )
+    assert not _rust_test_consumes_fixture(
+        rust_other_fixture, "parity_test", "shared.json"
     )
