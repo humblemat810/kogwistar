@@ -2,6 +2,7 @@
 pub struct PostgresRunApplicationService {
     store: PostgresStore,
     wisdom_store: PostgresStore,
+    graph_role: String,
     max_queue: usize,
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,

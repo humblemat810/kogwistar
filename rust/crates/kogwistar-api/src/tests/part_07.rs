@@ -5112,21 +5112,25 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     ));
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
-        .with_chroma_graph(graph);
+        .with_chroma_graph(graph)
+        .with_graph_role("conversation")
+        .unwrap();
     let standalone_path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-standalone-public-upsert-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
     let standalone = SqliteRunApplicationService::open(&standalone_path).unwrap();
+    assert_eq!(standalone.graph_role, "knowledge");
     assert!(!standalone.supports_http_operation("POST", PUBLIC_GRAPH_UPSERT_ROUTE));
     assert!(service.supports_http_operation("POST", PUBLIC_GRAPH_UPSERT_ROUTE));
 
-    let body = include_str!(concat!(
+    let mut extraction: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../contracts/golden/graph-extraction-v1.json"
-    ))
-    .as_bytes()
-    .to_vec();
+    )))
+    .unwrap();
+    extraction["nodes"][0]["metadata"]["engine_type"] = json!("attacker-selected");
+    let body = serde_json::to_vec(&extraction).unwrap();
     let principal = json!({
         "sub": "alice", "user_id": "alice", "role": "rw",
         "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
@@ -5221,7 +5225,7 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
                 .ok()
                 .and_then(|record| record.get("metadata").cloned())
                 .and_then(|metadata| metadata.get("engine_type").cloned())
-                == Some(json!("knowledge"))
+                == Some(json!("conversation"))
     }));
     assert!(events.iter().any(|event| {
         serde_json::from_str::<Value>(&event.payload_json)
@@ -5230,6 +5234,17 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
             .and_then(|metadata| metadata.get("entity_type").cloned())
             == Some(json!("acl_record"))
     }));
+    assert!(
+        events.iter().any(|event| {
+            serde_json::from_str::<Value>(&event.payload_json)
+                .ok()
+                .and_then(|record| record.get("metadata").cloned())
+                .and_then(|metadata| metadata.get("acl_truth_graph").cloned())
+                == Some(json!("conversation"))
+        }),
+        "expected ACL event for configured conversation graph role, got {:?}",
+        events.iter().map(|event| &event.payload_json).collect::<Vec<_>>()
+    );
     let document = service
         .store
         .source_document_projection(

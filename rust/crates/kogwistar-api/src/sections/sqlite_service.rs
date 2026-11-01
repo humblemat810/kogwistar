@@ -1,6 +1,7 @@
 #[derive(Clone)]
 pub struct SqliteRunApplicationService {
     store: SqliteStore,
+    graph_role: String,
     chroma_graph: Option<kogwistar_store_chroma::ChromaGraphStore>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
@@ -1069,6 +1070,7 @@ impl SqliteRunApplicationService {
         SqliteStore::open(path)
             .map(|store| Self {
                 store,
+                graph_role: "knowledge".to_owned(),
                 chroma_graph: None,
                 embedding_provider: None,
                 chat_completion_provider: None,
@@ -1094,6 +1096,13 @@ impl SqliteRunApplicationService {
     pub fn with_max_queue(mut self, max_queue: usize) -> Self {
         self.max_queue = max_queue.max(1);
         self
+    }
+
+    /// Select the host-owned graph role used by generic graph-upsert and ACL
+    /// truth-graph operations. The request payload cannot override this value.
+    pub fn with_graph_role(mut self, role: impl AsRef<str>) -> Result<Self, String> {
+        self.graph_role = normalize_graph_role(role.as_ref())?;
+        Ok(self)
     }
 
     /// Compose Chroma graph reads with SQLite's canonical event journal and

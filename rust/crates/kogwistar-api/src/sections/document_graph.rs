@@ -388,6 +388,7 @@ fn graph_upsert_mutation_batch(
     source_text: &str,
     security_scope: &Value,
     external_endpoints: &GraphUpsertExternalEndpoints,
+    graph_role: &str,
 ) -> Result<(GraphMutationBatchInput, Vec<String>, Vec<String>), String> {
     use std::collections::BTreeMap;
 
@@ -534,7 +535,7 @@ fn graph_upsert_mutation_batch(
     }
 
     for payload in normalized_nodes.iter_mut().chain(&mut normalized_edges) {
-        payload["metadata"]["engine_type"] = Value::String("knowledge".to_owned());
+        payload["metadata"]["engine_type"] = Value::String(graph_role.to_owned());
     }
 
     let scope = GraphScope {
@@ -683,6 +684,20 @@ fn graph_upsert_mutation_batch(
     Ok((batch, result_nodes, result_edges))
 }
 
+fn normalize_graph_role(role: &str) -> Result<String, String> {
+    let normalized = role.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err("graph role must not be empty".to_owned());
+    }
+    Ok(match normalized.as_str() {
+        "kg" => "knowledge".to_owned(),
+        "wf" => "workflow".to_owned(),
+        "w" => "wisdom".to_owned(),
+        "chat" | "conv" | "dialog" => "conversation".to_owned(),
+        _ => normalized,
+    })
+}
+
 impl SqliteRunApplicationService {
     async fn sqlite_public_graph_upsert_effect(
         &self,
@@ -746,6 +761,7 @@ impl SqliteRunApplicationService {
         );
         let acl_security_scope = security_scope["security_scope"].as_str().map(str::to_owned);
         let effect_id = uuid::Uuid::new_v4().to_string();
+        let graph_role = self.graph_role.clone();
         let committed = self.store.immediate_transaction(|uow| {
             let existing_document = uow.source_document_projection(&scope, &input.doc_id)?;
             let source_text = input
@@ -768,6 +784,7 @@ impl SqliteRunApplicationService {
                 &source_text,
                 &security_scope,
                 &external_endpoints,
+                &self.graph_role,
             )
             .map_err(SqliteStoreError::TransactionAborted)?;
             let mutations = graph_mutation_batch_value(batch.clone())
@@ -949,7 +966,7 @@ impl SqliteRunApplicationService {
                     &new_mutations,
                     acl_targets_for_graph_mutations(&new_mutations).0,
                     acl_records,
-                    "knowledge",
+                    &graph_role,
                     &owner_id,
                     acl_security_scope.as_deref(),
                     &effect_id,
@@ -1041,6 +1058,23 @@ mod graph_upsert_tests {
     }
 
     #[test]
+    fn graph_role_configuration_matches_python_aliases_and_fails_closed_when_blank() {
+        for (input, expected) in [
+            ("knowledge", "knowledge"),
+            (" KG ", "knowledge"),
+            ("chat", "conversation"),
+            ("conv", "conversation"),
+            ("dialog", "conversation"),
+            ("wf", "workflow"),
+            ("w", "wisdom"),
+            ("custom-role", "custom-role"),
+        ] {
+            assert_eq!(normalize_graph_role(input).unwrap(), expected);
+        }
+        assert!(normalize_graph_role("  ").is_err());
+    }
+
+    #[test]
     fn legacy_document_tree_request_maps_to_native_graph_contract() {
         let request = ApiEffectRequest {
             contract_version: 1,
@@ -1097,6 +1131,7 @@ mod graph_upsert_tests {
             source,
             &principal_scope(),
             &GraphUpsertExternalEndpoints::default(),
+            "knowledge",
         )
         .expect("valid fixture converts to a native graph batch");
         assert_eq!(nodes.len(), 2);
@@ -1130,6 +1165,7 @@ mod graph_upsert_tests {
             &source,
             &principal_scope(),
             &GraphUpsertExternalEndpoints::default(),
+            "knowledge",
         )
         .expect("stored source text validates an extraction without inline content");
         assert_eq!((batch.mutations.len(), nodes.len(), edges.len()), (3, 2, 1));
@@ -1154,7 +1190,7 @@ mod graph_upsert_tests {
         let mut input = extraction_fixture();
         input.nodes[0].insert(
             "metadata".to_owned(),
-            json!({"lifecycle_status":"tombstoned", "acl_mode":"public"}),
+            json!({"lifecycle_status":"tombstoned", "acl_mode":"public", "engine_type":"attacker"}),
         );
         let source = input.content.as_deref().expect("fixture source text");
         let (batch, _, _) = graph_upsert_mutation_batch(
@@ -1162,6 +1198,7 @@ mod graph_upsert_tests {
             source,
             &principal_scope(),
             &GraphUpsertExternalEndpoints::default(),
+            "conversation",
         )
         .expect("LLM-only input is normalized without trusting metadata");
         let node = batch
@@ -1170,6 +1207,7 @@ mod graph_upsert_tests {
             .find(|mutation| mutation.entity_kind == "node")
             .expect("node mutation");
         assert_eq!(node.payload["metadata"]["lifecycle_status"], "active");
+        assert_eq!(node.payload["metadata"]["engine_type"], "conversation");
         assert!(node.payload["metadata"].get("acl_mode").is_none());
 
         let mut tampered = extraction_fixture();
@@ -1192,6 +1230,7 @@ mod graph_upsert_tests {
                 source,
                 &principal_scope(),
                 &GraphUpsertExternalEndpoints::default(),
+                "knowledge",
             )
             .is_err()
         );
@@ -1213,6 +1252,7 @@ mod graph_upsert_tests {
             source,
             &principal_scope(),
             &GraphUpsertExternalEndpoints::default(),
+            "knowledge",
         )
         .expect("forward-declared hyperedge is topologically ordered");
         assert_eq!(edge_ids.len(), 2);
@@ -1230,6 +1270,7 @@ mod graph_upsert_tests {
                 source,
                 &principal_scope(),
                 &GraphUpsertExternalEndpoints::default(),
+                "knowledge",
             )
             .is_err_and(|error| error.contains("cycle"))
         );
@@ -1247,7 +1288,13 @@ mod graph_upsert_tests {
         let mut input = input;
         input.edges[0]["source_ids"][0] = Value::String(external_id.clone());
         let (batch, _, _) =
-            graph_upsert_mutation_batch(&input, &source, &principal_scope(), &external_endpoints)
+            graph_upsert_mutation_batch(
+                &input,
+                &source,
+                &principal_scope(),
+                &external_endpoints,
+                "knowledge",
+            )
                 .expect("host-validated external node references remain canonical");
         let edge = batch
             .mutations
@@ -1270,7 +1317,13 @@ mod graph_upsert_tests {
             edge_ids: std::collections::BTreeSet::from(["persisted-edge".to_owned()]),
         };
         let (batch, _, _) =
-            graph_upsert_mutation_batch(&input, &source, &principal_scope(), &external_endpoints)
+            graph_upsert_mutation_batch(
+                &input,
+                &source,
+                &principal_scope(),
+                &external_endpoints,
+                "knowledge",
+            )
                 .expect("host-validated external edge references remain canonical");
         let nested_edge = batch
             .mutations

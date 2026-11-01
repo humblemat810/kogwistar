@@ -587,6 +587,9 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                     &wisdom_schema,
                 )
                 .map_err(std::io::Error::other)?;
+                service = service
+                    .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
+                    .map_err(std::io::Error::other)?;
                 if let Some(provider) = chat_completion_provider_from_environment()
                     .map_err(std::io::Error::other)?
                 {
@@ -653,6 +656,9 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
                 projection_reconciliation_available = chroma_configured;
                 let mut service = open_sqlite_application_service(path, chroma)
                     .await
+                    .map_err(std::io::Error::other)?;
+                service = service
+                    .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
                     .map_err(std::io::Error::other)?;
                 service = service
                     .with_owner_auth_config(&state.auth)

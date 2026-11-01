@@ -517,6 +517,7 @@ impl PostgresRunApplicationService {
         Ok(Self {
                 store,
                 wisdom_store,
+                graph_role: "knowledge".to_owned(),
                 max_queue: runtime_max_queue(),
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations,
@@ -542,6 +543,13 @@ impl PostgresRunApplicationService {
             self.ensure_embedding_profile_binding(provider.profile()).await?;
         }
         Ok(())
+    }
+
+    /// Select the host-owned graph role used by the generic graph-upsert route
+    /// and its ACL truth-graph checks. The request payload cannot override it.
+    pub fn with_graph_role(mut self, role: impl AsRef<str>) -> Result<Self, String> {
+        self.graph_role = normalize_graph_role(role.as_ref())?;
+        Ok(self)
     }
 
     async fn ensure_embedding_profile_binding(
@@ -5172,6 +5180,7 @@ impl PostgresRunApplicationService {
                 &source_text,
                 &security_scope,
                 &external_endpoints,
+                &self.graph_role,
             ) {
             Ok(batch) => batch,
             Err(error) => {
@@ -5290,6 +5299,7 @@ impl PostgresRunApplicationService {
         let acl_security_scope = security_scope["security_scope"].as_str().map(str::to_owned);
         let acl_effect_id = uuid::Uuid::new_v4().to_string();
         let endpoint_scope = document_scope.clone();
+        let graph_role = self.graph_role.clone();
         let endpoint_node_ids = endpoint_node_ids.into_iter().collect::<Vec<_>>();
         let endpoint_edge_ids = endpoint_edges
             .iter()
@@ -5374,12 +5384,12 @@ impl PostgresRunApplicationService {
                         let acl_records = uow
                             .graph_acl_records_for_entities(
                                 &endpoint_scope,
-                                "knowledge",
+                                &graph_role,
                                 &all_endpoint_ids,
                             )
                             .await?;
                         let mut acl_index = GraphAclIndex::default();
-                        acl_index.extend_from_records(&acl_records, "knowledge");
+                        acl_index.extend_from_records(&acl_records, &graph_role);
                         let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
                             &nodes,
                             &edges,
@@ -5410,7 +5420,7 @@ impl PostgresRunApplicationService {
                         uow,
                         &endpoint_scope,
                         &mutations,
-                        "knowledge",
+                        &graph_role,
                         &owner_id,
                         acl_security_scope.as_deref(),
                         &acl_effect_id,
