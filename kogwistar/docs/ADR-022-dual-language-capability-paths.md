@@ -454,19 +454,26 @@ non-object JSON strings. Projection actions are recognized only by their
 versioned object markers and then validated against the strict action schema.
 
 The Rust PostgreSQL service uses this worker for its opt-in inline embedding
-worker, with PostgreSQL as both queue and graph store. Rust server selection
-also supports SQLite metadata with Chroma graph reads, but does not wire this
-worker to a Chroma projection destination. Its generic contract does not fence
-an older in-flight projection against a newer
-write from another worker for the same entity. This is an explicit limitation,
-not a requirement to reproduce PostgreSQL transactions in Chroma: overlapping
-writers may temporarily leave a stale physical projection, and only the
-canonical revision may be served. The eventual-repair contract requires
-reconciliation to restore the canonical projection after writes quiesce; it
-does not promise ordering or atomicity while distinct revisions race. During
-Python/Rust shadow or canary migration, retain ADR-015's single-writer
-operational restriction. Replaying the same accepted action is idempotent, but
-idempotency alone does not establish ordering between distinct revisions.
+worker, with PostgreSQL as both queue and graph store. The configured Rust
+SQLite+Chroma service also wires the SQLite index-job queue and canonical-event
+revision fence to Chroma through the same projection-worker contract. Its
+`KOGWISTAR_EMBEDDING_WORKER_INLINE` setting enables bounded projection batches;
+`KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` enables periodic repair from
+canonical SQLite events. The Chroma collection remains a derived projection,
+not a transaction participant or authority. The generic contract does not
+fence an older in-flight projection against a newer write from another worker
+for the same entity. This is an explicit limitation, not a requirement to
+reproduce PostgreSQL transactions in Chroma: overlapping writers may
+temporarily leave a stale physical projection, and only the canonical revision
+may be served. The eventual-repair contract requires reconciliation to restore
+the canonical projection after writes quiesce; it does not promise ordering or
+atomicity while distinct revisions race. Evidence includes
+`sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`,
+which injects Chroma and acknowledgement failures, reopens the service, and
+verifies durable retry and idempotent projection reuse. During Python/Rust
+shadow or canary migration, retain ADR-015's single-writer operational
+restriction. Replaying the same accepted action is idempotent, but idempotency
+alone does not establish ordering between distinct revisions.
 
 | Backend | Current boundary | Required handoff |
 | --- | --- | --- |
