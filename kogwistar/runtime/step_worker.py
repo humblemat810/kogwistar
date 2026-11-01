@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Protocol, TypeAlias, cast
 
-from kogwistar.json_types import JsonValue
+from kogwistar._rust_bridge import capture_rust_bridge_calls
+from kogwistar.json_types import JsonObject, JsonValue
 
 from .models import (
     RunFailure,
@@ -118,6 +119,7 @@ class SyncStepWorker:
         thread = threading.current_thread()
         previous_name = thread.name
         context: StepContext | None = None
+        bridge_summary: JsonObject | None = None
         try:
             thread.name = (
                 f"rt-wf-{self.workflow_id}-wf-{self.run_id}-step-{step_seq}-{node_id}"
@@ -200,12 +202,18 @@ class SyncStepWorker:
                                 f"resolver cannot verify frozen version {op_version!r} "
                                 f"for op={op!r}"
                             )
-                        with (
-                            self.runtime.conversation_engine.uow()
-                            if self.runtime._should_step_uow(op, state)
-                            else nullcontext()
-                        ):
-                            result = step_fn(context)
+                        with capture_rust_bridge_calls() as bridge_trace:
+                            try:
+                                with (
+                                    self.runtime.conversation_engine.uow()
+                                    if self.runtime._should_step_uow(op, state)
+                                    else nullcontext()
+                                ):
+                                    result = step_fn(context)
+                            finally:
+                                snapshot = bridge_trace.snapshot()
+                                if snapshot["ffi_calls"]:
+                                    bridge_summary = snapshot
                         if result.status == "suspended":
                             status = "suspended"
                         elif result.status == "failure":
@@ -263,6 +271,11 @@ class SyncStepWorker:
                         context.trace_ctx,
                         status=str(status),
                         duration_ms=max(0, completed_at - started_at),
+                        extra=(
+                            {"rust_bridge": bridge_summary}
+                            if bridge_summary is not None
+                            else None
+                        ),
                     )
                 except Exception:
                     status = "status_report_error"

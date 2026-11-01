@@ -144,6 +144,7 @@ class _TraceEmitter:
         payload = dict(ctx.as_fields())
         payload["status"] = status
         payload["duration_ms"] = duration_ms
+        payload.update(extra or {})
         self.emitted.append(("completed", payload))
 
 
@@ -402,7 +403,7 @@ def _normalize_trace_payloads(emitted: list[tuple[str, dict[str, object]]]) -> d
     kinds = [kind for kind, _payload in emitted]
     started = emitted[0][1]
     completed = emitted[1][1]
-    return {
+    normalized = {
         "kinds": kinds,
         "node_id": started["node_id"],
         "trace_id_matches_run": started["trace_id"] == started["run_id"],
@@ -410,6 +411,9 @@ def _normalize_trace_payloads(emitted: list[tuple[str, dict[str, object]]]) -> d
         "completed_status": completed["status"],
         "duration_non_negative": int(completed["duration_ms"]) >= 0,
     }
+    if "rust_bridge" in completed:
+        normalized["rust_bridge"] = completed["rust_bridge"]
+    return normalized
 
 
 def _run_sync_join_bridge() -> dict:
@@ -560,7 +564,7 @@ def _run_async_join_bridge(monkeypatch) -> dict:
     return _normalize_join_bridge_state(dict(out.final_state or {}))
 
 
-def _run_sync_trace_bridge() -> tuple[dict, dict]:
+def _run_sync_trace_bridge(*, bridge_probe: bool = False) -> tuple[dict, dict]:
     workflow_id = "wf_trace_bridge_sync"
     nodes, edges = _seed_trace_bridge_graph(workflow_id)
     engine = _JoinWorkflowEngine(nodes, edges)
@@ -569,6 +573,10 @@ def _run_sync_trace_bridge() -> tuple[dict, dict]:
 
     @resolver.register("start")
     def _start(_ctx):
+        if bridge_probe:
+            from kogwistar._rust_bridge import api_health
+
+            api_health(payload={"probe": True}, python_value={"ok": False})
         return RunSuccess(
             conversation_node_id=None, state_update=[("u", {"path": "trace"})]
         )
@@ -590,7 +598,9 @@ def _run_sync_trace_bridge() -> tuple[dict, dict]:
     return dict(out.final_state or {}), _normalize_trace_payloads(emitter.emitted)
 
 
-def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
+def _run_async_trace_bridge(
+    monkeypatch, *, bridge_probe: bool = False
+) -> tuple[dict, dict]:
     emitted: list[tuple[str, dict[str, object]]] = []
 
     class _FakeWorkflowRuntime:
@@ -632,6 +642,7 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
             payload = dict(ctx.as_fields())
             payload["status"] = status
             payload["duration_ms"] = duration_ms
+            payload.update(extra or {})
             emitted.append(("completed", payload))
 
     class _Node:
@@ -655,6 +666,10 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
 
     @resolver.register("start")
     async def _start(_ctx):
+        if bridge_probe:
+            from kogwistar._rust_bridge import api_health
+
+            api_health(payload={"probe": True}, python_value={"ok": False})
         return RunSuccess(
             conversation_node_id=None, state_update=[("u", {"path": "trace"})]
         )
@@ -677,6 +692,50 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
         )
     )
     return dict(out.final_state or {}), _normalize_trace_payloads(emitted)
+
+
+def test_runtime_step_trace_correlates_actual_rust_bridge_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Extension:
+        def api_health(self, _payload: str) -> str:
+            return json.dumps({"ok": True})
+
+    monkeypatch.setattr("kogwistar._rust_bridge.import_module", lambda _name: _Extension())
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    _sync_state, sync_trace = _run_sync_trace_bridge(bridge_probe=True)
+    _async_state, async_trace = _run_async_trace_bridge(
+        monkeypatch, bridge_probe=True
+    )
+    _plain_state, plain_trace = _run_sync_trace_bridge()
+
+    assert sync_trace["rust_bridge"] == async_trace["rust_bridge"]
+    bridge = sync_trace["rust_bridge"]
+    assert bridge["ffi_calls"] == 1
+    assert bridge["calls_by_method"] == {"api_health": 1}
+    assert "probe" not in repr(bridge)
+    assert "rust_bridge" not in plain_trace
+
+
+@pytest.mark.ci_full
+def test_runtime_step_trace_correlates_installed_rust_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    _sync_state, sync_trace = _run_sync_trace_bridge(bridge_probe=True)
+    _async_state, async_trace = _run_async_trace_bridge(
+        monkeypatch, bridge_probe=True
+    )
+
+    for trace in (sync_trace, async_trace):
+        bridge = trace["rust_bridge"]
+        assert bridge["ffi_calls"] == 1
+        assert bridge["calls_by_method"] == {"api_health": 1}
+        assert "probe" not in repr(bridge)
+    assert sync_trace["rust_bridge"] == async_trace["rust_bridge"]
 
 
 def test_runtime_parity_bridge_join_barrier_waits_for_all_arrivals(monkeypatch):

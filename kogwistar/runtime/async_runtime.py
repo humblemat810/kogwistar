@@ -19,6 +19,7 @@ from typing import (
 )
 
 from kogwistar.engine_core.sqlite_context import sqlite_execution_bound
+from kogwistar._rust_bridge import capture_rust_bridge_calls
 from kogwistar.id_provider import stable_id
 from kogwistar.implementation_selection import (
     ImplementationSelectionSnapshot,
@@ -941,6 +942,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 errors=["step execution did not return a result"],
                 state_update=[],
             )
+            bridge_summary: JsonObject | None = None
             if trace_emitter is not None:
                 step_started = getattr(trace_emitter, "step_started", None)
                 if callable(step_started):
@@ -950,8 +952,14 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                         pass
             async with sem:
                 try:
-                    with uow_ctx:
-                        out = await fn(ctx)
+                    with capture_rust_bridge_calls() as bridge_trace:
+                        try:
+                            with uow_ctx:
+                                out = await fn(ctx)
+                        finally:
+                            snapshot = bridge_trace.snapshot()
+                            if snapshot["ffi_calls"]:
+                                bridge_summary = snapshot
                 except Exception as exc:
                     trace_status = "failure"
                     out = RunFailure(
@@ -974,6 +982,11 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                                     duration_ms=max(
                                         0,
                                         int((time.perf_counter() - started_at) * 1000),
+                                    ),
+                                    extra=(
+                                        {"rust_bridge": bridge_summary}
+                                        if bridge_summary is not None
+                                        else None
                                     ),
                                 )
                             except Exception:
