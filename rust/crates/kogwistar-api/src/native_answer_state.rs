@@ -803,31 +803,25 @@ mod tests {
     #[test]
     fn debug_rag_native_steps_match_python_state_and_answer_shape() {
         let registry = crate::native_answer_persist::registry().unwrap();
-        let mut select = request(json!({
-            "question": "where?",
-            "max_used": 1,
-            "candidates": [
-                {"id":"node-1","label":"Title","summary":"Summary here","doc":"body"},
-                {"id":"node-2","label":"Ignored","summary":"later","doc":"body"}
-            ],
-            "op_log": ["aa_retrieve_candidates:2"]
-        }));
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/debug-rag-state-v1.json"
+        ))
+        .unwrap();
+        let mut select = request(fixture["state"].clone());
         select.operation = "aa_debug_select_top_candidates".to_owned();
         let selected = execute_native_step_with_registry(&select, &registry)
             .unwrap()
             .result
             .unwrap()["final_state"]
             .clone();
-        assert_eq!(selected["selection"]["strategy"], "top_candidates_debug");
-        assert_eq!(selected["used_node_ids"], json!(["node-1"]));
-        assert_eq!(selected["selected_candidates"].as_array().unwrap().len(), 1);
+        let expected = &fixture["expected"];
+        assert_eq!(selected["selection"], expected["selection"]);
+        assert_eq!(selected["used_node_ids"], expected["used_node_ids"]);
         assert_eq!(
-            selected["op_log"],
-            json!([
-                "aa_retrieve_candidates:2",
-                "aa_debug_select_top_candidates:1"
-            ])
+            selected["selected_candidates"],
+            expected["selected_candidates"]
         );
+        assert_eq!(selected["op_log"], expected["selected_op_log"]);
 
         let mut answer = request(selected);
         answer.operation = "aa_debug_answer_from_nodes".to_owned();
@@ -836,17 +830,9 @@ mod tests {
             .result
             .unwrap()["final_state"]
             .clone();
-        assert_eq!(
-            final_state["answer"]["text"],
-            "Debug RAG response\n\nQuestion: where?\n\nRetrieved nodes:\n1. Title [node-1]\n   Summary here"
-        );
-        assert_eq!(final_state["answer"]["mode"], "debug_rag");
-        assert_eq!(
-            final_state["answer"]["selected_node_ids"],
-            json!(["node-1"])
-        );
-        assert_eq!(final_state["evaluation"]["is_sufficient"], true);
-        assert_eq!(final_state["evaluation"]["needs_more_info"], false);
+        assert_eq!(final_state["answer"], expected["answer"]);
+        assert_eq!(final_state["evaluation"], expected["evaluation"]);
+        assert_eq!(final_state["op_log"], expected["final_op_log"]);
     }
 
     #[test]

@@ -521,6 +521,34 @@ def test_aa_prepare_sets_run_identity():
     assert state.get("run_node_id")
 
 
+def test_debug_rag_steps_match_shared_rust_contract_fixture():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "debug-rag-state-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    state = dict(fixture["state"])
+    agent = _StubAgent()
+    agent.config.max_used = state["max_used"]
+    state["_deps"] = {"agent": agent}
+
+    select_result = _run_op("aa_debug_select_top_candidates", state)
+    assert isinstance(select_result, RunSuccess)
+    expected = fixture["expected"]
+    assert state["selection"] == expected["selection"]
+    assert state["used_node_ids"] == expected["used_node_ids"]
+    assert state["selected_candidates"] == expected["selected_candidates"]
+    assert state["op_log"] == expected["selected_op_log"]
+
+    answer_result = _run_op("aa_debug_answer_from_nodes", state)
+    assert isinstance(answer_result, RunSuccess)
+    assert state["answer"] == expected["answer"]
+    assert state["evaluation"] == expected["evaluation"]
+    assert state["op_log"] == expected["final_op_log"]
+
+
 @pytest.mark.parametrize(
     ("backend_collection_name", "backend_embedding_dim", "expected_dim"),
     [("gke_nodes", 3, 3), ("nodes", None, 3), ("gke_nodes", 2, None)],
