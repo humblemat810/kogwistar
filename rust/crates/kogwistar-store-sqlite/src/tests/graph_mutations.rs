@@ -178,6 +178,66 @@ fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
 }
 
 #[test]
+fn canonical_graph_batch_rolls_back_when_explicit_index_intent_fails() {
+    let (store, path) = store("canonical-graph-explicit-job-failure");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_explicit_index_intent
+             BEFORE INSERT ON index_jobs
+             WHEN NEW.job_id = 'explicit-job'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected explicit index-intent failure');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = SqliteStore::open(&path).unwrap();
+    let result = store.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: vec![mutation("event-node-1", "node-1")],
+        index_jobs: vec![NewIndexJob {
+            job_id: "explicit-job".to_owned(),
+            namespace: "conversation".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "node-1".to_owned(),
+            index_kind: "sidecar_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: Some("{}".to_owned()),
+            max_retries: 3,
+        }],
+    });
+
+    assert!(result.is_err());
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty(),
+        "canonical events must roll back when a later explicit intent fails"
+    );
+    assert!(
+        store
+            .list_index_jobs(Some("conversation"), None, None, None, None, 10)
+            .unwrap()
+            .is_empty(),
+        "canonical and explicit index intents must roll back together"
+    );
+    assert!(
+        store
+            .list_stage1_node_projections("conversation")
+            .unwrap()
+            .is_empty(),
+        "the derived Stage-1 projection must roll back with the event"
+    );
+
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn invalid_replayed_event_rolls_back_the_entire_canonical_batch() {
     let (store, path) = store("canonical-graph-batch-rollback");
     let result = store.immediate_transaction(|uow| {
