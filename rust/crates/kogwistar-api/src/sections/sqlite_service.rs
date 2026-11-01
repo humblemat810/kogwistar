@@ -680,7 +680,15 @@ impl SqliteRunApplicationService {
         records: &mut Vec<GraphRecord>,
         limit: usize,
     ) -> Result<(), String> {
+        let remaining = limit.saturating_sub(records.len());
+        if remaining == 0 {
+            return Ok(());
+        }
         let prefix = format!("{entity_kind}:");
+        let existing_ids = records
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<std::collections::HashSet<_>>();
         let rows = self
             .store
             .list_stage1_node_projections(namespace)
@@ -696,11 +704,14 @@ impl SqliteRunApplicationService {
             if !filter.matches(metadata) {
                 continue;
             }
-            if !records.iter().any(|record| record.id == entity_id) && records.len() >= limit {
+            if existing_ids.contains(entity_id) {
                 continue;
             }
             let entity_id = entity_id.to_owned();
             candidates.push((row, entity_id));
+            if candidates.len() >= remaining {
+                break;
+            }
         }
         let ids = candidates
             .iter()
@@ -767,9 +778,7 @@ impl SqliteRunApplicationService {
         }
 
         for staged in stage1 {
-            if let Some(existing) = records.iter_mut().find(|record| record.id == staged.id) {
-                *existing = staged;
-            } else if records.len() < limit {
+            if records.len() < limit {
                 records.push(staged);
             }
         }
