@@ -2592,7 +2592,10 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 #[tokio::test]
 async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use kogwistar_store::{
+            GraphMutation, GraphMutationBatch, GraphRecord, GraphScope, NamedProjectionWrite,
+            WorkflowDesignSnapshotWrite,
+        };
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -2633,12 +2636,67 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                     .next()
                     .unwrap_or_default()
                     .to_owned();
-                let _body: Value = serde_json::from_slice(
+                let body: Value = serde_json::from_slice(
                     &bytes[header_end + 4..header_end + 4 + content_length],
                 )
                 .unwrap();
                 let response = if request_line.contains("/collections HTTP") {
                     json!({"id":"collection-id", "metadata":{"hnsw:space":"cosine"}})
+                } else if request_line.contains("/query HTTP") {
+                    json!({
+                        "ids": [["knowledge-node"]],
+                        "documents": [["The runtime persists workflow state in the graph."]],
+                        "metadatas": [[{
+                            "namespace":"conversation",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation",
+                            "entity_type":"node",
+                            "level_from_root":0,
+                            "lifecycle_status":"active",
+                            "_kogwistar_stage2_ready":true,
+                            "_kogwistar_source_revision":1,
+                            "_class_name":"Node"
+                        }]],
+                        "embeddings": [[[0.6, 0.8]]],
+                        "distances": [[0.0]]
+                    })
+                } else if request_line.contains("/get HTTP")
+                    && body.to_string().contains("acl_record")
+                {
+                    json!({
+                        "ids": ["knowledge-node-acl"],
+                        "documents": ["{}"],
+                        "metadatas": [{
+                            "namespace":"conversation",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation",
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"knowledge-node",
+                            "acl_target_grain":"node",
+                            "acl_version":1,
+                            "acl_mode":"public",
+                            "_kogwistar_stage2_ready":true,
+                            "_kogwistar_source_revision":2,
+                            "_class_name":"Node"
+                        }]
+                    })
+                } else if request_line.contains("/get HTTP") {
+                    json!({
+                        "ids": ["knowledge-node"],
+                        "documents": ["The runtime persists workflow state in the graph."],
+                        "metadatas": [{
+                            "namespace":"conversation",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation",
+                            "entity_type":"node",
+                            "level_from_root":0,
+                            "lifecycle_status":"active",
+                            "_kogwistar_stage2_ready":true,
+                            "_kogwistar_source_revision":1,
+                            "_class_name":"Node"
+                        }]
+                    })
                 } else {
                     if request_line.contains("/upsert") || request_line.contains("/delete") {
                         projection_requests.push(request_line);
@@ -2728,6 +2786,67 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .with_embedding_provider(embedding_provider)
             .with_owner_auth_config(&owner_auth)
             .await
+            .unwrap();
+
+        let mut knowledge_payload: Value = serde_json::from_str::<Value>(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+            )),
+        )
+        .unwrap()["cases"][0]["payload"]
+            .clone();
+        knowledge_payload["id"] = json!("knowledge-node");
+        knowledge_payload["label"] = json!("Workflow runtime state");
+        knowledge_payload["summary"] = json!("The runtime persists workflow state in the graph.");
+        knowledge_payload["doc_id"] = json!("doc:runtime-state");
+        knowledge_payload["embedding"] = Value::Null;
+        knowledge_payload["metadata"]["workspace_id"] = json!("workspace-a");
+        knowledge_payload["metadata"]["graph_space"] = json!("conversation");
+        knowledge_payload["metadata"]["level_from_root"] = json!(0);
+        let mut acl_payload = knowledge_payload.clone();
+        acl_payload["id"] = json!("knowledge-node-acl");
+        acl_payload["label"] = json!("ACL for knowledge-node");
+        acl_payload["summary"] = json!("Public node access");
+        acl_payload["metadata"]["entity_type"] = json!("acl_record");
+        acl_payload["metadata"]["acl_truth_graph"] = json!("knowledge");
+        acl_payload["metadata"]["acl_target_entity_id"] = json!("knowledge-node");
+        acl_payload["metadata"]["acl_target_grain"] = json!("node");
+        acl_payload["metadata"]["acl_version"] = json!(1);
+        acl_payload["metadata"]["acl_mode"] = json!("public");
+        let graph_scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let mutation = |event_id: &str, payload: Value| {
+            let id = payload["id"].as_str().unwrap().to_owned();
+            let metadata = payload["metadata"].as_object().unwrap().clone();
+            GraphMutation {
+                scope: graph_scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: event_id.to_owned(),
+                op: "ADD".to_owned(),
+                payload: payload.clone(),
+                record: GraphRecord {
+                    id,
+                    document: Some(payload.to_string()),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 2,
+            }
+        };
+        service
+            .store
+            .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: vec![
+                    mutation("knowledge-node-event", knowledge_payload),
+                    mutation("knowledge-node-acl-event", acl_payload),
+                ],
+                index_jobs: Vec::new(),
+            })
             .unwrap();
 
         let workflow_contract: Value = serde_json::from_str(include_str!(concat!(
@@ -2952,6 +3071,19 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .expect("successful run has durable runtime state");
         assert_eq!(runtime.state["done"], true);
         assert_eq!(runtime.state["answer"]["mode"], "debug_rag");
+        assert_eq!(runtime.state["used_node_ids"], json!(["knowledge-node"]));
+        assert!(runtime.state["answer"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("knowledge-node")));
+        let projected_pointer = runtime.state["projected_pointer_ids"][0]
+            .as_str()
+            .expect("selected evidence receives a durable conversation pointer")
+            .to_owned();
+        assert!(service
+            .store
+            .latest_entity_events("conversation", "node", &[projected_pointer.clone()])
+            .unwrap()
+            .contains_key(&projected_pointer));
         let assistant_id = runtime.state["agentic_answering_result"]["assistant_turn_node_id"]
             .as_str()
             .expect("answer workflow records the assistant turn")

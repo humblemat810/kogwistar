@@ -315,10 +315,14 @@ integration `sqlite_chroma_native_answer_snapshots_before_provider_and_persists_
 verifies snapshot-before-provider ordering, successful structured output,
 durable provider events, and queued index jobs. That provider test is
 executor-level evidence. The deterministic `debug.rag.v1` native run now
-verifies user submission through terminal success, authorized pointer
-projection, assistant persistence,
-and the canonical `next_turn` edge in SQLite events; the `sqlite_chroma` API
-subset passed (**14 passed, 1 ignored**). This does not prove provider-backed
+verifies a data-bearing retrieval: the fake Chroma vector query and scoped
+snapshot return the same current source-grounded knowledge node, host ACL
+projection authorizes it, and the run persists its evidence pointer, assistant
+turn, and canonical `next_turn` edge as SQLite events. The regression
+`sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic`
+asserts the selected node ID, answer context, durable pointer event, and
+assistant turn; the full `kogwistar-api` library suite passed (**222 passed,
+22 ignored**). This does not prove provider-backed
 `agentic_answering.v2` or Python-worker completion. Candidate retrieval
 now uses an additive typed numeric-LTE vector query so `level_from_root` is
 applied before top-N, then fences stale/deleted projections and checks bounded
