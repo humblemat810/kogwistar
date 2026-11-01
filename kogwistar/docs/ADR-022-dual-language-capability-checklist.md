@@ -240,8 +240,9 @@ the eventual projection. It verifies one durable graph event, pending
 canonical commit. The `link_assistant_turn` worker-effect path now derives
 both endpoint IDs from workflow state instead of reading deferred turns from
 the process-local graph; `test_link_assistant_turn_returns_rust_edge_effect_and_runs_edge_hooks`
-verifies the effect is prepared when neither endpoint exists locally, while
-the non-worker regression continues to exercise persisted-node lookup. The
+and `test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write`
+verify their edge effects are prepared when endpoints are absent locally, while
+the non-worker regressions continue to exercise persisted-node lookup. The
 existing Rust projection test separately verifies
 failure/restart recovery and eventual application. The Rust SQLite+Chroma test
 subset passed (**11 passed, 1 ignored**), including

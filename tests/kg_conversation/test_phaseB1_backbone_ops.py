@@ -354,7 +354,7 @@ def test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write
     from kogwistar._rust_bridge import validate_graph_model_family
     from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
     from kogwistar.engine_core.utils.refs import edge_doc_and_meta
-    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.engine_core.models import Span
     from kogwistar.runtime.rust_worker import RustStepResolverAdapter
 
     class WorkerWrite(_WriteShim):
@@ -390,27 +390,8 @@ def test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write
                     ),
                 },
             )()
-            for node_id, turn_index in (("prev", 0), ("curr", 1)):
-                self.nodes[node_id] = ConversationNode(
-                    id=node_id,
-                    label=node_id,
-                    type="entity",
-                    summary=node_id,
-                    doc_id=f"conv:c1#{node_id}",
-                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                    metadata={
-                        "entity_type": "conversation_turn",
-                        "conversation_id": "c1",
-                        "user_id": "u1",
-                        "level_from_root": 0,
-                    },
-                    role="user",
-                    turn_index=turn_index,
-                    conversation_id="c1",
-                    user_id="u1",
-                    properties=None,
-                    embedding=[0.0, 0.1],
-                )
+            # Prior/current turn graph effects are not projected into this
+            # worker's local graph before the edge effect is prepared.
 
         def _iterative_defensive_emb(self, _text: str):
             return [0.0, 0.1]
@@ -420,9 +401,6 @@ def test_link_prev_turn_returns_idempotent_rust_edge_effect_without_direct_write
         default_resolver,
         dependency_provider=lambda _work: {
             "conversation_engine": engine,
-            "add_link_to_new_turn": lambda *_args, **_kwargs: pytest.fail(
-                "Rust worker resolver must not call the Python graph writer"
-            ),
         },
     )
     span = Span.from_dummy_for_conversation()

@@ -768,8 +768,9 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     """Link prev tail turn -> current turn via next_turn edge."""
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
+    rust_worker_effects = deps.get("_rust_worker_effects") is True
     add_link_to_new_turn = deps.get("add_link_to_new_turn")
-    if not callable(add_link_to_new_turn):
+    if not rust_worker_effects and not callable(add_link_to_new_turn):
         raise RuntimeError(
             "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
         )
@@ -795,8 +796,14 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
     from .models import ConversationEdge
 
-    prev_node = ce.read.get_nodes([str(prev_turn_id)])[0]
-    turn_node = ce.read.get_nodes([turn_node_id])[0]
+    if rust_worker_effects:
+        prev_turn_ref = str(prev_turn_id)
+        turn_node_ref = turn_node_id
+    else:
+        prev_node = ce.read.get_nodes([str(prev_turn_id)])[0]
+        turn_node = ce.read.get_nodes([turn_node_id])[0]
+        prev_turn_ref = str(prev_node.id)
+        turn_node_ref = str(turn_node.id)
 
     edge_id = get_id_for_conversation_turn_edge(
         ConversationEdge.id_kind,
@@ -804,22 +811,22 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
         conversation_id,
         "next_turn",
         turn_index,
-        [prev_node.id],
-        [turn_node.id],
+        [prev_turn_ref],
+        [turn_node_ref],
         [],
         [],
         "conversation_edge",
     )
 
     worker_effect_batch: dict[str, JsonValue] | None = None
-    if deps.get("_rust_worker_effects") is True:
+    if rust_worker_effects:
         from kogwistar.engine_core.models import Grounding, Span
 
         provenance_span = span or Span.from_dummy_for_conversation()
         edge = ConversationEdge(
             id=edge_id,
-            source_ids=[prev_node.id],
-            target_ids=[turn_node.id],
+            source_ids=[prev_turn_ref],
+            target_ids=[turn_node_ref],
             relation="next_turn",
             label="next_turn",
             type="relationship",
@@ -832,7 +839,7 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
             embedding=None,
             metadata={
                 "relation": "next_turn",
-                "target_id": turn_node.id,
+                "target_id": turn_node_ref,
                 "char_distance_from_last_summary": (
                     mts.prev_node_char_distance_from_last_summary
                 ),
@@ -870,6 +877,10 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
             )
     else:
         worker_effect_batch = None
+        if not callable(add_link_to_new_turn):
+            raise RuntimeError(
+                "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
+            )
         add_link_to_new_turn(
             edge_id,
             turn_node,
