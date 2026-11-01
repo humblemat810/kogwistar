@@ -1109,6 +1109,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         rust_pure_seed_id = f"{id_prefix}-rust-pure-wisdom-seed"
         rust_pure_related_id = f"{id_prefix}-rust-pure-wisdom-related"
         rust_private_node_id = f"{id_prefix}-rust-private-wisdom-node"
+        rust_shared_node_id = f"{id_prefix}-rust-shared-wisdom-node"
         rust_pure_edge_id = f"{id_prefix}-rust-pure-wisdom-edge"
         rust_wisdom_write = rust_mcp_tool(
             "wisdom.kg_upsert_graph",
@@ -1135,6 +1136,16 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                             "type": "entity",
                             "summary": "Private node written by the Rust Wisdom API.",
                             "metadata": {"visibility": "private"},
+                        },
+                        {
+                            "id": rust_shared_node_id,
+                            "label": "Rust persisted shared Wisdom node",
+                            "type": "entity",
+                            "summary": "Shared node written by the Rust Wisdom API.",
+                            "metadata": {
+                                "visibility": "shared",
+                                "shared_with_agents": ["wisdom-reader"],
+                            },
                         },
                     ],
                     "edges": [
@@ -1168,6 +1179,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             rust_pure_seed_id,
             rust_pure_related_id,
             rust_private_node_id,
+            rust_shared_node_id,
         ]
         assert rust_wisdom_write.get("edge_ids") == [rust_pure_edge_id]
 
@@ -1176,6 +1188,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             rust_written_node = wisdom_engine.read.get_nodes(ids=[rust_pure_seed_id])
             rust_written_edge = wisdom_engine.read.get_edges(ids=[rust_pure_edge_id])
             hidden_rust_node = wisdom_engine.read.get_nodes(ids=[rust_private_node_id])
+            shared_rust_node = wisdom_engine.read.get_nodes(ids=[rust_shared_node_id])
         finally:
             claims_ctx.reset(rust_pure_read_token)
         assert len(rust_written_node) == 1
@@ -1185,6 +1198,14 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         assert rust_written_edge[0].source_ids == [rust_pure_seed_id]
         assert rust_written_edge[0].target_ids == [rust_pure_related_id]
         assert hidden_rust_node == [], "Python public reader must honor Rust ACL graph"
+        assert len(shared_rust_node) == 1
+        assert isinstance(shared_rust_node[0], PureChromaNode)
+        intruder_token = claims_ctx.set({**wisdom_reader_claims, "sub": "unrelated-reader"})
+        try:
+            hidden_shared_node = wisdom_engine.read.get_nodes(ids=[rust_shared_node_id])
+        finally:
+            claims_ctx.reset(intruder_token)
+        assert hidden_shared_node == [], "shared ACL must not leak to unrelated readers"
         rust_owner_token = claims_ctx.set(
             {
                 **wisdom_reader_claims,
