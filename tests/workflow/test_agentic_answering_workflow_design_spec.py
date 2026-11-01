@@ -92,7 +92,18 @@ def test_answer_designs_match_shared_runtime_admission_contract():
             workflows[workflow_id]["python_op_version"]
         }
         assert all("wf_version" not in edge.metadata for edge in design.edges)
-        assert set(workflows[workflow_id]["python_executor_ops"]) == expected
+        python_executor_ops = set(workflows[workflow_id]["python_executor_ops"])
+        assert python_executor_ops == expected
+        python_op_version = workflows[workflow_id]["python_op_version"]
+        unregistered_python_ops = sorted(
+            op
+            for op in python_executor_ops
+            if not default_resolver.supports_version(op, python_op_version)
+        )
+        assert not unregistered_python_ops, (
+            f"{workflow_id} advertises Python worker operations that are not "
+            f"registered at {python_op_version}: {unregistered_python_ops}"
+        )
         assert sorted(workflows[workflow_id]["required_fanout_ops"]) == sorted(
             actual_fanout_ops
         )

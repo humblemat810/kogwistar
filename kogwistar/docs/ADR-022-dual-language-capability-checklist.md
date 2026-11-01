@@ -227,6 +227,10 @@ DL-16BQ current verified scope: configured SQLite+Chroma admits an
 authoritative `debug.rag.v1` plan only when the existing validator accepts its
 complete plan and compatible executors; `sqlite_chroma_admits_valid_python_answer_workflow_plan`
 verifies admission and the initial `start` claim by the Python worker. The
+Python contract test `test_answer_designs_match_shared_runtime_admission_contract`
+also verifies every advertised Python executor operation is registered at the
+fixture's declared version, preventing Rust admission metadata from drifting
+away from the Python worker's actual resolver. The
 seam-free PostgreSQL path has stronger live evidence:
 `postgres_agentic_answer_workflow_executes_durably_without_python_worker`
 passed (**1 passed**) against the local pgvector container. It launches the
