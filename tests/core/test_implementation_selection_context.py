@@ -1084,6 +1084,14 @@ def test_raw_sqlalchemy_transaction_cannot_nest_inside_rust_owner() -> None:
     engine = sa.create_engine("sqlite://")
     EnginePostgresMetaStore(engine=engine)
     try:
+        with callback_execution_scope():
+            with pytest.raises(
+                RuntimeError,
+                match="transaction authority cannot be opened from a worker callback",
+            ):
+                with engine.begin():
+                    pytest.fail("raw SQLAlchemy transaction began inside callback")
+
         with transaction_authority_scope("rust"):
             with pytest.raises(RuntimeError, match="Rust owns the active unit"):
                 with engine.begin():
