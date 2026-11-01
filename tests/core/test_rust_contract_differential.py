@@ -293,6 +293,24 @@ def test_native_graph_capabilities_match_python_model_inheritance() -> None:
                 f"{edge_class} must retain {node_class}.{capability}"
             )
 
+        edge_model_mixins = {
+            base.__name__
+            for base in python_models[edge_class].__mro__
+            if base.__name__.endswith("Mixin")
+        }
+        node_model_mixins = {
+            base.__name__
+            for base in python_models[node_class].__mro__
+            if base.__name__.endswith("Mixin")
+        }
+        node_only_mixins = (
+            {"ConversationRoleMixin"} if node_class == "conversation_node" else set()
+        )
+        inherited_mixins = node_model_mixins - node_only_mixins
+        assert inherited_mixins <= edge_model_mixins, edge_class
+        assert len(edge_model_mixins) > len(inherited_mixins), edge_class
+        assert "EdgeMixin" in edge_model_mixins - inherited_mixins, edge_class
+
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
 def test_canonical_json_matches_python_golden(monkeypatch, mode: str) -> None:

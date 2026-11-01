@@ -509,6 +509,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server,full]"
 
+      - name: Verify Rust graph capabilities extend paired Python Nodes
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+        run: >-
+          python -m pytest
+          tests/core/test_rust_contract_differential.py::test_native_graph_capabilities_match_python_model_inheritance
+          tests/core/test_graph_model_adapter.py::test_graph_model_capability_contract_matches_shared_fixture
+          -q -p no:cacheprovider
+
       - name: Round-trip shared Python Node/Edge payloads through Rust PostgreSQL
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
