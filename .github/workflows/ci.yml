@@ -325,6 +325,22 @@ jobs:
         working-directory: .
         run: python -m pip install -e ".[test,server,chroma,pgvector]"
 
+      - name: Verify PostgreSQL facade and transaction ownership contracts
+        working-directory: .
+        env:
+          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+          KOGWISTAR_TEST_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+          ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+        run: |
+          python -m pytest tests/core/test_rust_postgres_session_facade.py \
+            -m "ci and core" -q -p no:cacheprovider
+          python -m pytest \
+            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_session_commit_rollback_and_fail_closed \
+            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_session_reconnects_after_backend_termination \
+            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_sessions_are_isolated_by_schema \
+            -m ci_full -q -p no:cacheprovider
+
       - name: Verify sequential Python-Rust backend handoffs
         working-directory: .
         shell: bash
