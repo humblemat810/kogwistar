@@ -126,7 +126,7 @@ impl ChromaGraphStore {
             .await
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
-        decode_records(&payload, false)
+        decode_records(&payload, false, namespace)
     }
 }
 
@@ -149,7 +149,9 @@ impl GraphReadStore for ChromaGraphStore {
             .await
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
-        Ok(decode_records(&payload, false)?.into_iter().next())
+        Ok(decode_records(&payload, false, namespace)?
+            .into_iter()
+            .next())
     }
 
     async fn graph_record_of_kind(
@@ -175,7 +177,9 @@ impl GraphReadStore for ChromaGraphStore {
             .await
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
-        Ok(decode_records(&payload, false)?.into_iter().next())
+        Ok(decode_records(&payload, false, namespace)?
+            .into_iter()
+            .next())
     }
 
     async fn graph_records_by_ids_of_kind(
@@ -316,7 +320,7 @@ impl ChromaGraphStore {
             .await
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
-        let mut records = decode_records(&payload, false)?
+        let mut records = decode_records(&payload, false, namespace)?
             .into_iter()
             .map(|record| (record.id.clone(), record))
             .collect::<std::collections::BTreeMap<_, _>>();
@@ -422,7 +426,7 @@ impl ChromaGraphStore {
             .await
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
-        let mut matches = decode_matches(&payload)?;
+        let mut matches = decode_matches(&payload, namespace)?;
         for item in &mut matches {
             item.distance = normalize_chroma_distance(query.metric, item.distance);
         }
@@ -518,7 +522,7 @@ impl ChromaGraphStore {
             .await
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
-        let before = !decode_records(&payload, false)?.is_empty();
+        let before = !decode_records(&payload, false, namespace)?.is_empty();
         if !before {
             return Ok(false);
         }
@@ -537,7 +541,7 @@ impl ChromaGraphStore {
     }
 }
 
-fn decode_records(payload: &Value, nested: bool) -> StoreResult<Vec<GraphRecord>> {
+fn decode_records(payload: &Value, nested: bool, namespace: &str) -> StoreResult<Vec<GraphRecord>> {
     let ids = field_array(payload, "ids", nested);
     let documents = field_array(payload, "documents", nested);
     let metadatas = field_array(payload, "metadatas", nested);
@@ -556,6 +560,8 @@ fn decode_records(payload: &Value, nested: bool) -> StoreResult<Vec<GraphRecord>
                 .get(index)
                 .filter(|value| !value.is_null())
                 .cloned();
+            records::validate_response_namespace(metadata.as_ref(), namespace)
+                .map_err(ChromaGraphStore::backend_error)?;
             let embedding = embeddings
                 .get(index)
                 .and_then(Value::as_array)
@@ -577,8 +583,8 @@ fn decode_records(payload: &Value, nested: bool) -> StoreResult<Vec<GraphRecord>
         .collect()
 }
 
-fn decode_matches(payload: &Value) -> StoreResult<Vec<VectorMatch>> {
-    let records = decode_records(payload, true)?;
+fn decode_matches(payload: &Value, namespace: &str) -> StoreResult<Vec<VectorMatch>> {
+    let records = decode_records(payload, true, namespace)?;
     let distances = field_array(payload, "distances", true);
     records
         .into_iter()

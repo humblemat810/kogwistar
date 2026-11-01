@@ -115,6 +115,35 @@ pub(crate) fn restore_record(
     })
 }
 
+pub(crate) fn validate_response_namespace(
+    metadata: Option<&Value>,
+    expected_namespace: &str,
+) -> Result<(), StoreError> {
+    let metadata = metadata
+        .and_then(Value::as_object)
+        .ok_or_else(|| StoreError::Backend {
+            backend: "chroma".to_owned(),
+            message: "returned record has no namespace metadata".to_owned(),
+        })?;
+    let reserved = metadata.get(NAMESPACE_KEY);
+    let legacy = metadata.get("namespace");
+    if reserved.is_none() && legacy.is_none() {
+        return Err(StoreError::Backend {
+            backend: "chroma".to_owned(),
+            message: "returned record has no namespace metadata".to_owned(),
+        });
+    }
+    for value in [reserved, legacy].into_iter().flatten() {
+        if value.as_str() != Some(expected_namespace) {
+            return Err(StoreError::Backend {
+                backend: "chroma".to_owned(),
+                message: "Chroma returned a record outside the requested namespace".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn chroma_filter_value(value: &Value) -> Value {
     if value.is_null() || value.is_array() || value.is_object() {
         Value::String(value.to_string())
@@ -188,15 +217,37 @@ mod tests {
     }
 
     #[test]
+    fn response_namespace_validation_accepts_rust_and_python_metadata() {
+        assert!(
+            validate_response_namespace(Some(&json!({NAMESPACE_KEY:"workspace-a"})), "workspace-a")
+                .is_ok()
+        );
+        assert!(
+            validate_response_namespace(Some(&json!({"namespace":"workspace-a"})), "workspace-a")
+                .is_ok()
+        );
+        assert!(
+            validate_response_namespace(
+                Some(&json!({NAMESPACE_KEY:"workspace-a","namespace":"workspace-b"})),
+                "workspace-a"
+            )
+            .is_err()
+        );
+        assert!(
+            validate_response_namespace(Some(&json!({NAMESPACE_KEY:"workspace-b"})), "workspace-a")
+                .is_err()
+        );
+        assert!(validate_response_namespace(Some(&json!({})), "workspace-a").is_err());
+        assert!(validate_response_namespace(None, "workspace-a").is_err());
+    }
+
+    #[test]
     fn numeric_lte_vector_filter_is_combined_with_namespace_and_exact_filters() {
         let filter = kogwistar_store::MetadataFilter {
             equals: [("kind".to_owned(), json!("node"))].into(),
         };
-        let query = query_where_with_numeric_lte(
-            "workspace-a",
-            &filter,
-            Some(("level_from_root", 2.0)),
-        );
+        let query =
+            query_where_with_numeric_lte("workspace-a", &filter, Some(("level_from_root", 2.0)));
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
         assert_eq!(query["$and"][2]["level_from_root"]["$lte"], 2.0);
     }

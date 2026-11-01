@@ -3126,7 +3126,7 @@
                     json!({
                         "ids":body["ids"],
                         "documents":[null],
-                        "metadatas":[{}]
+                        "metadatas":[{"_kogwistar_namespace":"fenced-tenant"}]
                     })
                     .to_string()
                 } else {
