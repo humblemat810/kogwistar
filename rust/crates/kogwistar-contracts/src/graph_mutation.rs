@@ -418,6 +418,7 @@ mod tests {
             "conversation",
             "workflow",
             "wisdom",
+            "acl",
             "custom:research",
         ] {
             let mut scoped = batch.clone();

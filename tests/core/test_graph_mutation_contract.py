@@ -125,6 +125,7 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
         "conversation",
         "workflow",
         "wisdom",
+        "acl",
         "custom:research",
     ]:
         payload["default_acl"]["truth_graph"] = truth_graph
@@ -134,6 +135,10 @@ def test_python_acl_aware_graph_batch_v2_matches_rust_fixture() -> None:
         assert scoped_batch.mutations[0].table == "gke_nodes"
         assert scoped_batch.mutations[0].scope.namespace == "tenant-a"
         assert scoped_batch.mutations[0].scope.workspace_id == "ws"
+
+        # Typed graph-family models remain substitutable through the base API.
+        assert issubclass(default_node_type_for_graph_kind(truth_graph), Node)
+        assert issubclass(default_edge_type_for_graph_kind(truth_graph), Edge)
         assert scoped_batch.mutations[0].scope.graph_space == "facts"
 
     assert default_node_type_for_graph_kind("custom:research") is Node
