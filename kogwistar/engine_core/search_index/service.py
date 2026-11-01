@@ -8,6 +8,7 @@ from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
 from ...cdc.change_event import EntityRefModel
+from ...implementation_selection import assert_callback_side_effect_allowed
 from ..subsystems.base import NamespaceProxy
 from .models import (
     IndexingItem,
@@ -51,7 +52,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             conn.close()
 
     def upsert_entries(self, items: list[IndexingItem]) -> None:
-
+        assert_callback_side_effect_allowed("Search index mutation")
         conn = self._connect()
         cur = conn.cursor()
         try:

@@ -10,10 +10,12 @@ import pytest
 
 from kogwistar.cdc.change_event import ChangeEvent
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.search_index.models import (
     IndexingItem,
     make_index_key_for_item,
 )
+from kogwistar.implementation_selection import callback_execution_scope
 
 pytestmark = pytest.mark.ci_full
 
@@ -83,6 +85,39 @@ def test_search_index_cdc_and_event_sourcing(temp_engine_dir):
                 found = True
                 break
     assert found, "Event not found in meta event log"
+
+
+def test_search_index_mutation_is_rejected_inside_worker_callback(temp_engine_dir):
+    engine = GraphKnowledgeEngine(
+        persist_directory=temp_engine_dir,
+        backend_factory=build_in_memory_backend,
+    )
+    item = IndexingItem(
+        node_id="callback-node",
+        canonical_title="Callback Index Entry",
+        keywords=["callback"],
+        aliases=[],
+        provision="test",
+    )
+
+    with callback_execution_scope():
+        with pytest.raises(RuntimeError, match="Search index mutation.*worker callback"):
+            engine.search_index.upsert_entries([item])
+
+    connection = engine.search_index._connect()
+    try:
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM semantic_index"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert row_count == 0
+    assert engine.backend.node_index.count() == 0
+    assert not any(
+        kind == "search_index" and op == "search_index.upsert"
+        for _, kind, _, op, _ in _read_entity_events(engine)
+    )
 
 
 def test_search_index_replay(temp_engine_dir):
