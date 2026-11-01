@@ -672,6 +672,110 @@ impl SqliteRunApplicationService {
         Ok(())
     }
 
+    fn merge_current_stage1_records(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        filter: &MetadataFilter,
+        records: &mut Vec<GraphRecord>,
+        limit: usize,
+    ) -> Result<(), String> {
+        let prefix = format!("{entity_kind}:");
+        let rows = self
+            .store
+            .list_stage1_node_projections(namespace)
+            .map_err(|error| error.to_string())?;
+        let mut candidates = Vec::new();
+        for row in rows {
+            let Some(entity_id) = row.key.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some(metadata) = row.payload.get("metadata").and_then(Value::as_object) else {
+                continue;
+            };
+            if !filter.matches(metadata) {
+                continue;
+            }
+            if !records.iter().any(|record| record.id == entity_id) && records.len() >= limit {
+                continue;
+            }
+            let entity_id = entity_id.to_owned();
+            candidates.push((row, entity_id));
+        }
+        let ids = candidates
+            .iter()
+            .map(|(_, entity_id)| entity_id.clone())
+            .collect::<Vec<_>>();
+        let latest_events = self
+            .store
+            .latest_entity_events(namespace, entity_kind, &ids)
+            .map_err(|error| error.to_string())?;
+        let mut stage1 = Vec::new();
+        for (row, entity_id) in candidates {
+            if row.materialization_status != "pending" {
+                continue;
+            }
+            let Some(event) = latest_events.get(&entity_id) else {
+                continue;
+            };
+            let payload = serde_json::from_str::<Value>(&event.payload_json)
+                .map_err(|error| error.to_string())?;
+            let canonical = read_canonical_entity_revision(
+                &[EntityEvent {
+                    namespace: event.namespace.clone(),
+                    seq: event.seq,
+                    event_id: event.event_id.clone(),
+                    entity_kind: event.entity_kind.clone(),
+                    entity_id: event.entity_id.clone(),
+                    op: event.op.clone(),
+                    payload,
+                }],
+                namespace,
+                entity_kind,
+                &entity_id,
+            )
+            .map_err(|error| error.to_string())?;
+            let Some(canonical) = canonical.filter(|revision| {
+                !revision.is_deleted() && revision.revision == row.last_authoritative_seq
+            }) else {
+                continue;
+            };
+            let expected_fingerprint = RevisionFencedChromaProjectionStore::canonical_fingerprint(
+                &canonical,
+            )
+            .map_err(|error| error.to_string())?;
+            if row
+                .payload
+                .get("source_fingerprint")
+                .and_then(Value::as_str)
+                != Some(expected_fingerprint.as_str())
+            {
+                continue;
+            }
+            let Some(document) = row.payload.get("document").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(metadata) = row.payload.get("metadata").and_then(Value::as_object) else {
+                continue;
+            };
+            stage1.push(GraphRecord {
+                id: entity_id,
+                document: Some(document.to_owned()),
+                metadata: metadata.clone(),
+                embedding: None,
+            });
+        }
+
+        for staged in stage1 {
+            if let Some(existing) = records.iter_mut().find(|record| record.id == staged.id) {
+                *existing = staged;
+            } else if records.len() < limit {
+                records.push(staged);
+            }
+        }
+        Ok(())
+    }
+
     fn design_events(&self, workflow_id: &str) -> Result<Vec<EntityEvent>, String> {
         let namespace = format!("wf_design:{workflow_id}");
         self.store
@@ -1992,6 +2096,21 @@ impl SqliteRunApplicationService {
                 "KOGWISTAR_STORE_ERROR",
                 error,
             ));
+        }
+        for (entity_kind, records) in [("node", &mut nodes), ("edge", &mut edges)] {
+            if let Err(error) = self.merge_current_stage1_records(
+                namespace,
+                entity_kind,
+                &filter,
+                records,
+                MAX_GRAPH_SNAPSHOT_RECORDS,
+            ) {
+                return Err(effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                ));
+            }
         }
         let principal = graph_acl_principal_from_claims(
             &request.principal,

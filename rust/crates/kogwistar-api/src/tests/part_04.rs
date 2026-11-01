@@ -2478,6 +2478,126 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[test]
+    fn sqlite_chroma_snapshot_merges_only_current_scoped_stage1_records() {
+        use kogwistar_store::MetadataFilter;
+        use kogwistar_store_sqlite::NewRawEntityEvent;
+
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-stage1-snapshot-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let namespace = "snapshot-tenant";
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let mut payload = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .unwrap()["payload"]
+            .clone();
+        payload["id"] = json!("stage1-visible");
+        payload["metadata"]["workspace_id"] = json!("workspace-a");
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                NewRawEntityEvent {
+                    event_id: "stage1-visible-add".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "stage1-visible".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: payload.to_string(),
+                },
+            )
+            .unwrap();
+        let canonical = sqlite_canonical_entity_revision(
+            &service.store,
+            namespace,
+            "node",
+            "stage1-visible",
+        )
+        .unwrap()
+        .unwrap();
+        let fingerprint = RevisionFencedChromaProjectionStore::canonical_fingerprint(&canonical)
+            .unwrap();
+        let stage1 = RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
+            &canonical,
+            &fingerprint,
+        )
+        .unwrap();
+        service
+            .store
+            .replace_stage1_node_projection(namespace, "node:stage1-visible", stage1)
+            .unwrap();
+
+        let mut records = Vec::new();
+        service
+            .merge_current_stage1_records(
+                namespace,
+                "node",
+                &MetadataFilter {
+                    equals: [("workspace_id".to_owned(), json!("workspace-a"))]
+                        .into_iter()
+                        .collect(),
+                },
+                &mut records,
+                10,
+            )
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "stage1-visible");
+        assert_eq!(records[0].metadata["workspace_id"], "workspace-a");
+
+        let mut wrong_scope = Vec::new();
+        service
+            .merge_current_stage1_records(
+                namespace,
+                "node",
+                &MetadataFilter {
+                    equals: [("workspace_id".to_owned(), json!("workspace-b"))]
+                        .into_iter()
+                        .collect(),
+                },
+                &mut wrong_scope,
+                10,
+            )
+            .unwrap();
+        assert!(wrong_scope.is_empty());
+
+        service
+            .store
+            .append_raw_entity_event(
+                namespace,
+                NewRawEntityEvent {
+                    event_id: "stage1-visible-tombstone".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "stage1-visible".to_owned(),
+                    op: "TOMBSTONE".to_owned(),
+                    payload_json: json!({"id":"stage1-visible"}).to_string(),
+                },
+            )
+            .unwrap();
+        let mut deleted = Vec::new();
+        service
+            .merge_current_stage1_records(
+                namespace,
+                "node",
+                &MetadataFilter::default(),
+                &mut deleted,
+                10,
+            )
+            .unwrap();
+        assert!(deleted.is_empty(), "a stale Stage-1 row must not revive a tombstone");
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn sqlite_chroma_reconciliation_removes_orphaned_tombstone_projection() {
         use kogwistar_store::NamedProjectionWrite;

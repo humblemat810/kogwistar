@@ -247,6 +247,12 @@ existing Rust projection test separately verifies
 failure/restart recovery and eventual application. The Rust SQLite+Chroma test
 subset passed (**11 passed, 1 ignored**), including
 `sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`.
+Bounded Rust SQLite+Chroma graph snapshots now read through pending SQLite
+Stage-1 records, matching Python's direct-get visibility without admitting
+unembedded rows to vector search. `sqlite_chroma_snapshot_merges_only_current_scoped_stage1_records`
+verifies workspace filtering, current-revision visibility, and that a later
+tombstone fences the pending row; the broader `sqlite_chroma` API subset passed
+(**13 passed, 1 ignored**).
 The first SQLite+Chroma native answer host step now revalidates the durable
 run owner for `read_graph`, obtains the ACL-filtered conversation projection,
 and rejects a missing, wrong-conversation, non-user, or tombstoned turn;
