@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
@@ -1233,6 +1234,88 @@ async def test_postgres_two_stage_async_rust_authority_promotes_edge(
             engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1)
         )
         assert any(event[2] == edge_id and event[3] == "ADD" for event in events)
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+async def test_postgres_two_stage_async_rust_edge_endpoint_failure_rolls_back_promotion(
+    async_pg_backend, monkeypatch
+) -> None:
+    """Endpoint projection failure cannot expose a partially promoted edge."""
+    edge_id = "async-rust-edge-promotion-endpoint-failure"
+    schema = async_pg_backend.schema
+    endpoint_table = async_pg_backend.edge_endpoints.name
+    function_name = "fail_rust_edge_endpoint_projection"
+    trigger_name = "fail_rust_edge_endpoint_projection"
+    # Install fault injection while Python is still the selected authority;
+    # Rust-selected mode intentionally makes SQLAlchemy transactions read-only.
+    async with async_pg_backend.engine.begin() as connection:
+        await connection.execute(
+            sa.text(
+                f'CREATE FUNCTION "{schema}"."{function_name}"() '
+                "RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+                f"IF NEW.metadata ->> 'edge_id' = '{edge_id}' THEN "
+                "RAISE EXCEPTION 'injected endpoint projection failure'; "
+                "END IF; RETURN NEW; END $$"
+            )
+        )
+        await connection.execute(
+            sa.text(
+                f'CREATE TRIGGER "{trigger_name}" BEFORE INSERT ON '
+                f'"{schema}"."{endpoint_table}" FOR EACH ROW EXECUTE FUNCTION '
+                f'"{schema}"."{function_name}"()'
+            )
+        )
+
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "rust")
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    try:
+        for node_id in ("promotion-failure-source", "promotion-failure-target"):
+            await engine.async_add_node(
+                build_entity_node(
+                    node_id=node_id,
+                    doc_id="promotion-failure-doc",
+                    embedding=None,
+                )
+            )
+        await engine.async_add_edge(
+            build_relationship_edge(
+                edge_id=edge_id,
+                src="promotion-failure-source",
+                tgt="promotion-failure-target",
+                doc_id="promotion-failure-doc",
+                embedding=None,
+            )
+        )
+
+        metrics = await AsyncIndexJobWorker(
+            engine=engine, batch_size=8, max_jobs_per_tick=8
+        ).tick()
+        assert metrics.retried == 1
+        edge = await async_pg_backend.edge_get(
+            ids=[edge_id], include=["embeddings", "metadatas"]
+        )
+        assert edge["ids"] == [edge_id]
+        assert edge["embeddings"] == [None]
+        assert edge["metadatas"][0].get("_kogwistar_stage2_ready") is not True
+        endpoints = await async_pg_backend.edge_endpoints_get(
+            where={"edge_id": edge_id}, include=["metadatas"]
+        )
+        assert endpoints["ids"] == []
+        jobs = engine.meta_sqlite.list_index_jobs(
+            namespace="default", entity_kind="edge", entity_id=edge_id
+        )
+        assert len(jobs) == 1 and jobs[0].status == "PENDING"
     finally:
         engine.close()
 
