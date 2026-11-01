@@ -626,7 +626,8 @@ pub fn graph_records_visible_by_acl_with_index(
     principal: &GraphAclPrincipal,
 ) -> (Vec<GraphRecord>, Vec<GraphRecord>) {
     let visible = |record: &GraphRecord, grain: &str| {
-        if is_acl_record(record) {
+        // Python's default graph reads resolve entities with `active_only`.
+        if is_acl_record(record) || is_tombstoned(&record.metadata) {
             return false;
         }
         indexed_acl_visible(index, grain, &record.id, None, principal)
@@ -4518,6 +4519,56 @@ mod tests {
             visible_edges.is_empty(),
             "malformed edge-reference metadata must fail closed"
         );
+    }
+
+    #[test]
+    fn graph_acl_projection_excludes_tombstoned_entities_and_their_edges() {
+        let acl_record = |id: &str, grain: &str| {
+            let mut record = GraphRecord::new(format!("acl-{id}-{grain}"));
+            record.metadata.extend(
+                serde_json::json!({
+                    "entity_type": "acl_record",
+                    "acl_truth_graph": "knowledge",
+                    "acl_target_entity_id": id,
+                    "acl_target_grain": grain,
+                    "acl_version": 1,
+                    "acl_mode": "public"
+                })
+                .as_object()
+                .expect("ACL metadata is an object")
+                .clone(),
+            );
+            record
+        };
+        let mut tombstoned_node = GraphRecord::new("node-deleted");
+        tombstoned_node
+            .metadata
+            .insert("lifecycle_status".into(), "tombstoned".into());
+        let mut edge = GraphRecord::new("edge-to-deleted-node");
+        edge.metadata
+            .insert("source_ids".into(), serde_json::json!(["node-active"]));
+        edge.metadata
+            .insert("target_ids".into(), serde_json::json!(["node-deleted"]));
+        let nodes = vec![
+            acl_record("node-active", "node"),
+            acl_record("node-deleted", "node"),
+            acl_record("edge-to-deleted-node", "edge"),
+            GraphRecord::new("node-active"),
+            tombstoned_node,
+        ];
+        let principal = GraphAclPrincipal::default();
+
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &[edge], "knowledge", &principal);
+
+        assert_eq!(
+            visible_nodes
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["node-active"]
+        );
+        assert!(visible_edges.is_empty());
     }
 
     #[test]
