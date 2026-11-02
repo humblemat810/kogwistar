@@ -3770,6 +3770,174 @@ mod tests {
         }
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_hyperedges_match_python_contract; python=kogwistar/visualization/graph_viz.py#to_d3_force; fixture=contracts/golden/visualization-hyperedge-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_hyperedges_match_python_contract; python_test=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract
+    #[test]
+    fn graph_visualization_hyperedges_match_python_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-hyperedge-v1.json"
+        )))
+        .expect("visualization hyperedge contract is valid JSON");
+        let records = |field: &str| {
+            fixture[field]
+                .as_array()
+                .expect("fixture graph records")
+                .iter()
+                .map(|payload| GraphRecord {
+                    id: payload["id"].as_str().expect("record ID").to_owned(),
+                    document: Some(payload.to_string()),
+                    metadata: Map::new(),
+                    embedding: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let nodes = records("nodes");
+        let edges = records("edges");
+        let expected = &fixture["expected"];
+
+        let d3 = graph_viz_d3_from_records(&nodes, &edges, None, "reify", None);
+        let actual_node_ids = d3["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        let expected_node_ids = fixture["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(fixture["edges"].as_array().unwrap())
+            .map(|record| record["id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_node_ids, expected_node_ids);
+        let actual_reified_links = d3["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| {
+                (
+                    link["source"].as_str().unwrap(),
+                    link["target"].as_str().unwrap(),
+                    link["role"].as_str().unwrap(),
+                    link["relation"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_reified_links = expected["reified_d3_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| {
+                (
+                    link["source"].as_str().unwrap(),
+                    link["target"].as_str().unwrap(),
+                    link["role"].as_str().unwrap(),
+                    link["relation"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_reified_links, expected_reified_links);
+
+        let classic_d3 = graph_viz_d3_from_records(&nodes, &edges, None, "classic", None);
+        let actual_classic_links = classic_d3["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| {
+                (
+                    link["source"].as_str().unwrap(),
+                    link["target"].as_str().unwrap(),
+                    link["relation"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_classic_links = expected["classic_d3_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|link| {
+                (
+                    link["source"].as_str().unwrap(),
+                    link["target"].as_str().unwrap(),
+                    link["relation"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual_classic_links, expected_classic_links);
+
+        let cytoscape_links =
+            |mode: &str| graph_viz_cytoscape_from_records(&nodes, &edges, None, mode, None);
+        let reified_cytoscape = cytoscape_links("reify");
+        let actual_reified_cytoscape_links = reified_cytoscape["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|element| matches!(element["classes"].as_str(), Some("src" | "tgt")))
+            .map(|element| {
+                (
+                    element["data"]["id"].as_str().unwrap(),
+                    element["data"]["source"].as_str().unwrap(),
+                    element["data"]["target"].as_str().unwrap(),
+                    element["data"]["label"].as_str().unwrap(),
+                    element["classes"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_reified_cytoscape_links = expected["reified_cytoscape_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| {
+                (
+                    element["id"].as_str().unwrap(),
+                    element["source"].as_str().unwrap(),
+                    element["target"].as_str().unwrap(),
+                    element["label"].as_str().unwrap(),
+                    element["class"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual_reified_cytoscape_links,
+            expected_reified_cytoscape_links
+        );
+
+        let classic_cytoscape = cytoscape_links("classic");
+        let actual_classic_cytoscape_links = classic_cytoscape["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|element| element["data"].get("source").is_some())
+            .map(|element| {
+                (
+                    element["data"]["id"].as_str().unwrap(),
+                    element["data"]["source"].as_str().unwrap(),
+                    element["data"]["target"].as_str().unwrap(),
+                    element["data"]["label"].as_str().unwrap(),
+                    element["classes"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_classic_cytoscape_links = expected["classic_cytoscape_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| {
+                (
+                    element["id"].as_str().unwrap(),
+                    element["source"].as_str().unwrap(),
+                    element["target"].as_str().unwrap(),
+                    element["label"].as_str().unwrap(),
+                    element["class"].as_str().unwrap(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual_classic_cytoscape_links,
+            expected_classic_cytoscape_links
+        );
+    }
+
     #[test]
     fn document_authority_capability_is_explicit_and_fail_closed() {
         assert_eq!(

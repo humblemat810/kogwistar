@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {"id": "n-alpha", "doc_id": "doc-hyper", "label": "Alpha"},
+    {"id": "n-beta", "doc_id": "doc-hyper", "label": "Beta"}
+  ],
+  "edges": [
+    {
+      "id": "e-base",
+      "doc_id": "doc-hyper",
+      "relation": "supports",
+      "source_ids": ["n-alpha"],
+      "target_ids": ["n-beta"],
+      "source_edge_ids": [],
+      "target_edge_ids": [],
+      "properties": {"weight": 1}
+    },
+    {
+      "id": "e-hyper",
+      "doc_id": "doc-hyper",
+      "relation": "qualifies",
+      "source_ids": ["n-alpha"],
+      "target_ids": ["n-beta"],
+      "source_edge_ids": ["e-base"],
+      "target_edge_ids": ["e-terminal"],
+      "properties": {"weight": 2}
+    },
+    {
+      "id": "e-terminal",
+      "doc_id": "doc-hyper",
+      "relation": "terminal",
+      "source_ids": [],
+      "target_ids": [],
+      "source_edge_ids": [],
+      "target_edge_ids": [],
+      "properties": {}
+    }
+  ],
+  "expected": {
+    "reified_d3_links": [
+      {"source": "n-alpha", "target": "e-base", "role": "src", "relation": "supports"},
+      {"source": "e-base", "target": "n-beta", "role": "tgt", "relation": "supports"},
+      {"source": "n-alpha", "target": "e-hyper", "role": "src", "relation": "qualifies"},
+      {"source": "e-base", "target": "e-hyper", "role": "src", "relation": "qualifies"},
+      {"source": "e-hyper", "target": "n-beta", "role": "tgt", "relation": "qualifies"},
+      {"source": "e-hyper", "target": "e-terminal", "role": "tgt", "relation": "qualifies"}
+    ],
+    "classic_d3_links": [
+      {"source": "n-alpha", "target": "n-beta", "relation": "supports"},
+      {"source": "n-alpha", "target": "n-beta", "relation": "qualifies"}
+    ],
+    "reified_cytoscape_links": [
+      {"id": "e-base::src::n-alpha", "source": "n-alpha", "target": "e-base", "label": "supports", "class": "src"},
+      {"id": "e-base::tgt::n-beta", "source": "e-base", "target": "n-beta", "label": "supports", "class": "tgt"},
+      {"id": "e-hyper::src::n-alpha", "source": "n-alpha", "target": "e-hyper", "label": "qualifies", "class": "src"},
+      {"id": "e-hyper::srcE::e-base", "source": "e-base", "target": "e-hyper", "label": "qualifies", "class": "src"},
+      {"id": "e-hyper::tgt::n-beta", "source": "e-hyper", "target": "n-beta", "label": "qualifies", "class": "tgt"},
+      {"id": "e-hyper::tgtE::e-terminal", "source": "e-hyper", "target": "e-terminal", "label": "qualifies", "class": "tgt"}
+    ],
+    "classic_cytoscape_links": [
+      {"id": "e-base::n-alpha->n-beta", "source": "n-alpha", "target": "n-beta", "label": "supports", "class": ""},
+      {"id": "e-hyper::n-alpha->n-beta", "source": "n-alpha", "target": "n-beta", "label": "qualifies", "class": ""}
+    ]
+  }
+}

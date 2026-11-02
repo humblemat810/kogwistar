@@ -444,6 +444,128 @@ def test_visualization_empty_doc_id_matches_python_route_selection_contract() ->
 
 
 @pytest.mark.ci
+def test_hyperedge_visualization_matches_shared_python_contract() -> None:
+    fixture = json.loads(
+        (ROOT / "contracts/golden/visualization-hyperedge-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model_fixture = json.loads(
+        (ROOT / "contracts/golden/python-graph-model-payloads-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    node_template = next(
+        case["payload"] for case in model_fixture["cases"] if case["kind"] == "node"
+    )
+    edge_template = next(
+        case["payload"] for case in model_fixture["cases"] if case["kind"] == "edge"
+    )
+    nodes = [
+        Node.model_validate({**node_template, **node}) for node in fixture["nodes"]
+    ]
+    edges = [
+        Edge.model_validate(
+            {
+                **edge_template,
+                **edge,
+                "label": edge["relation"],
+            }
+        )
+        for edge in fixture["edges"]
+    ]
+    node_map = {node.id: node for node in nodes}
+    edge_map = {edge.id: edge for edge in edges}
+    backend = SimpleNamespace(
+        node_get=lambda: {"ids": list(node_map)},
+        edge_get=lambda: {"ids": list(edge_map)},
+    )
+    read = SimpleNamespace(
+        load_node_map=lambda ids, **_kwargs: {
+            identifier: node_map[identifier]
+            for identifier in ids
+            if identifier in node_map
+        },
+        load_edge_map=lambda ids, **_kwargs: {
+            identifier: edge_map[identifier]
+            for identifier in ids
+            if identifier in edge_map
+        },
+    )
+    engine = SimpleNamespace(
+        kg_graph_type="knowledge", backend=backend, read=read
+    )
+
+    d3 = to_d3_force(engine, mode="reify")
+    assert {node["id"] for node in d3["nodes"]} == {
+        node["id"] for node in fixture["nodes"]
+    } | {edge["id"] for edge in fixture["edges"]}
+    actual_reified_links = {
+        (link["source"], link["target"], link["role"], link["relation"])
+        for link in d3["links"]
+    }
+    expected_reified_links = {
+        (link["source"], link["target"], link["role"], link["relation"])
+        for link in fixture["expected"]["reified_d3_links"]
+    }
+    assert actual_reified_links == expected_reified_links
+
+    classic_d3 = to_d3_force(engine, mode="classic")
+    assert {
+        (link["source"], link["target"], link["relation"])
+        for link in classic_d3["links"]
+    } == {
+        (link["source"], link["target"], link["relation"])
+        for link in fixture["expected"]["classic_d3_links"]
+    }
+
+    reified_cytoscape = to_cytoscape(engine, mode="reify")
+    actual_reified_cytoscape_links = {
+        (
+            element["data"]["id"],
+            element["data"].get("source"),
+            element["data"].get("target"),
+            element["data"].get("label"),
+            element["classes"],
+        )
+        for element in reified_cytoscape["elements"]
+        if element["classes"] in {"src", "tgt"}
+    }
+    assert actual_reified_cytoscape_links == {
+        (
+            element["id"],
+            element["source"],
+            element["target"],
+            element["label"],
+            element["class"],
+        )
+        for element in fixture["expected"]["reified_cytoscape_links"]
+    }
+
+    classic_cytoscape = to_cytoscape(engine, mode="classic")
+    assert {
+        (
+            element["data"]["id"],
+            element["data"]["source"],
+            element["data"]["target"],
+            element["data"]["label"],
+            element["classes"],
+        )
+        for element in classic_cytoscape["elements"]
+        if "source" in element["data"]
+    } == {
+        (
+            element["id"],
+            element["source"],
+            element["target"],
+            element["label"],
+            element["class"],
+        )
+        for element in fixture["expected"]["classic_cytoscape_links"]
+    }
+
+
+@pytest.mark.ci
 def test_pretty_print_graph():
     doc_id = "doc::test::pretty_print_graph"
     engine = GraphKnowledgeEngine(
