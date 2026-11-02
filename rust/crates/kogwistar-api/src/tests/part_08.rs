@@ -1790,6 +1790,9 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
                 metadata.insert("source_ids".to_owned(), spec["source_ids"].clone());
                 metadata.insert("target_ids".to_owned(), spec["target_ids"].clone());
             }
+            if let Some(lifecycle_status) = spec["lifecycle_status"].as_str() {
+                metadata.insert("lifecycle_status".to_owned(), json!(lifecycle_status));
+            }
             mutations.push(json!({
                 "scope": scope,
                 "table": table,
