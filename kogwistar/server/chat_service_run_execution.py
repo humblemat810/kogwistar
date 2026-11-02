@@ -14,6 +14,7 @@ from kogwistar.conversation.models import (
     MetaFromLastSummary,
 )
 from kogwistar.id_provider import new_id_str
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject
 from kogwistar.runtime.replay import load_checkpoint
 from kogwistar.runtime.contract import WorkflowEdgeInfo
@@ -35,6 +36,7 @@ from .run_registry import RunRegistryLaneMessageEventSink, RunRegistryTraceBridg
 class _RunExecutionService(_BaseComponent):
     """Owns answer/workflow submission and run lifecycle operations."""
 
+    @implementation_selection_bound
     def submit_turn_for_answer(
         self,
         *,
@@ -137,6 +139,7 @@ class _RunExecutionService(_BaseComponent):
         safe = _RunExecutionService._json_safe(value)
         return cast(JsonObject, safe) if isinstance(safe, dict) else {}
 
+    @implementation_selection_bound
     def _run_answer(self, req: AnswerRunRequest) -> None:
         with bind_auth_claims(req.auth_claims):
             self._run_answer_bound(req)
@@ -251,6 +254,7 @@ class _RunExecutionService(_BaseComponent):
             cancel_requested=lambda rid: req.is_cancel_requested(),
         )
 
+    @implementation_selection_bound
     def submit_workflow_run(
         self,
         *,
@@ -346,6 +350,7 @@ class _RunExecutionService(_BaseComponent):
             **({"reason": sched["reason"]} if "reason" in sched else {}),
         }
 
+    @implementation_selection_bound
     def _run_workflow(self, req: RuntimeRunRequest) -> None:
         with bind_auth_claims(req.auth_claims):
             self._run_workflow_bound(req)
@@ -637,12 +642,14 @@ class _RunExecutionService(_BaseComponent):
             "budget": final_state.get("budget", budget_state),
         }
 
+    @implementation_selection_bound
     def get_run(self, run_id: str) -> JsonObject:
         run = self.run_registry.get_run(run_id)
         if run is None:
             raise KeyError(f"Unknown run_id: {run_id}")
         return run
 
+    @implementation_selection_bound
     def list_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[JsonObject]:
@@ -652,6 +659,7 @@ class _RunExecutionService(_BaseComponent):
             run_id, after_seq=after_seq, limit=limit
         )
 
+    @implementation_selection_bound
     def cancel_run(self, run_id: str) -> JsonObject:
         run = self.run_registry.get_run(run_id)
         if run is None:

@@ -308,6 +308,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.ingest import IngestSubsystem
     from kogwistar.messaging.service import LaneMessagingService
     from kogwistar.engine_core.jobs import JobQueueSubsystem
+    from kogwistar.server.chat_service_run_execution import _RunExecutionService
 
     unbound: list[str] = []
     for subsystem in (
@@ -441,6 +442,25 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
+    server_run_entrypoints = (
+        "submit_turn_for_answer",
+        "_run_answer",
+        "submit_workflow_run",
+        "_run_workflow",
+        "get_run",
+        "list_run_events",
+        "cancel_run",
+    )
+    unbound.extend(
+        f"_RunExecutionService.{name}"
+        for name in server_run_entrypoints
+        if not getattr(
+            getattr(_RunExecutionService, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
     assert unbound == []
 
 
@@ -494,6 +514,72 @@ def test_job_queue_operations_keep_engine_selection_snapshot(
 
     assert engine.jobs.claim(namespace="jobs:selection") == []
     assert observed_authorities == ["python"]
+
+
+def test_server_background_run_keeps_conversation_engine_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.server.chat_service_run_execution import _RunExecutionService
+    from kogwistar.server.chat_service_shared import AnswerRunRequest
+    from kogwistar.server.run_registry import RunRegistry
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_in_memory_backend,
+    )
+    registry = RunRegistry(engine.metadata)
+    run_id = "run-selection-snapshot"
+    registry.create_run(
+        run_id=run_id,
+        conversation_id="conversation-selection-snapshot",
+        workflow_id="answer.v1",
+        user_id="user-1",
+        user_turn_node_id="turn-1",
+    )
+    observed_authorities: list[str] = []
+
+    def answer_runner(_request: AnswerRunRequest) -> dict[str, JsonValue]:
+        observed_authorities.append(selected_transaction_authority())
+        return {
+            "assistant_text": "answer",
+            "assistant_turn_node_id": "assistant-turn-1",
+            "workflow_status": "succeeded",
+        }
+
+    owner = SimpleNamespace(
+        _conversation_engine=lambda: engine,
+        run_registry=registry,
+        answer_runner=answer_runner,
+        _publish=lambda rid, event_type, payload=None: registry.append_event(
+            rid, event_type, payload
+        ),
+    )
+    execution = _RunExecutionService(owner)
+    request = AnswerRunRequest(
+        run_id=run_id,
+        conversation_id="conversation-selection-snapshot",
+        user_id="user-1",
+        user_text="hello",
+        user_turn_node_id="turn-1",
+        workflow_id="answer.v1",
+        knowledge_engine=engine,
+        conversation_engine=engine,
+        workflow_engine=engine,
+        prev_turn_meta_summary=SimpleNamespace(),
+        registry=registry,
+        publish=lambda event_type, payload=None: registry.append_event(
+            run_id, event_type, payload
+        ),
+        is_cancel_requested=lambda: False,
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+
+    execution._run_answer(request)
+
+    assert observed_authorities == ["python"]
+    assert registry.get_run(run_id)["status"] == "succeeded"
 
 
 def test_recovery_inspection_keeps_one_selector_snapshot(
