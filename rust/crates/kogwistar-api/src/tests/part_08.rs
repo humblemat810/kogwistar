@@ -1986,6 +1986,211 @@ async fn postgres_graph_mutation_batch_uses_configured_graph_type_store() {
 }
 
 #[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses disposable PostgreSQL schemas"]
+async fn postgres_embedding_worker_uses_configured_graph_type_store() {
+    struct FixedEmbeddingProvider {
+        profile: kogwistar_engine::embedding::EmbeddingProfile,
+        inputs: Arc<Mutex<Vec<String>>>,
+    }
+    impl kogwistar_engine::embedding::EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            &self.profile
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move {
+                self.inputs.lock().unwrap().extend(texts.iter().cloned());
+                Ok(texts.iter().map(|_| vec![0.6, 0.8]).collect())
+            })
+        }
+    }
+
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let base = format!("rust_graph_role_worker_{}", uuid::Uuid::new_v4().simple());
+    let schemas = [
+        format!("{base}_knowledge"),
+        format!("{base}_conversation"),
+        format!("{base}_workflow"),
+        format!("{base}_wisdom"),
+    ];
+    let inputs = Arc::new(Mutex::new(Vec::new()));
+    let profile = kogwistar_engine::embedding::EmbeddingProfile {
+        provider: "test".to_owned(),
+        model: "graph-role-worker-test".to_owned(),
+        dimension: 2,
+        similarity_metric: "cosine".to_owned(),
+        endpoint_fingerprint: None,
+        max_sequence_length: None,
+        crop_token_budget: None,
+        tokenizer_fingerprint: None,
+        crop_policy: None,
+        embedding_kind: Some("single_vector".to_owned()),
+        model_revision: None,
+        preprocessing_fingerprint: None,
+        max_image_patches: None,
+    };
+    let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+        &dsn,
+        &schemas[0],
+        &schemas[1],
+        &schemas[2],
+        &schemas[3],
+    )
+    .unwrap()
+    .with_graph_role("conversation")
+    .unwrap()
+    .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
+        profile,
+        inputs: inputs.clone(),
+    }));
+    service.ensure_graph_type_schemas().await.unwrap();
+    for store in [
+        &service.store,
+        &service.conversation_store,
+        &service.workflow_store,
+        &service.wisdom_store,
+    ] {
+        store
+            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+    }
+
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let applied = service
+        .conversation_store
+        .apply_graph_mutations_atomic(vec![GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "conversation-embedding-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"conversation-embedding-node","label":"Conversation source"}),
+            record: GraphRecord {
+                id: "conversation-embedding-node".to_owned(),
+                document: Some("Conversation embedding source".to_owned()),
+                metadata: serde_json::Map::from_iter([
+                    ("namespace".to_owned(), json!("tenant-a")),
+                    ("workspace_id".to_owned(), json!("workspace-a")),
+                    ("graph_space".to_owned(), json!("conversation")),
+                ]),
+                embedding: None,
+            },
+            embedding_dim: 2,
+        }])
+        .await
+        .unwrap();
+    let revision = kogwistar_engine::canonical_revision::read_canonical_entity_revision(
+        &[applied[0].event.clone()],
+        "tenant-a",
+        "node",
+        "conversation-embedding-node",
+    )
+    .unwrap()
+    .unwrap();
+    service
+        .conversation_store
+        .enqueue_index_job(NewIndexJob {
+            job_id: "conversation-embedding-job".to_owned(),
+            namespace: "tenant-a".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "conversation-embedding-node".to_owned(),
+            index_kind: "node_embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: Some(
+                kogwistar_engine::canonical_revision::canonical_revision_job_payload(&revision),
+            ),
+            max_retries: 3,
+        })
+        .await
+        .unwrap();
+
+    let summary = service
+        .run_embedding_projection_jobs_once(10, 30, Some("tenant-a"))
+        .await
+        .unwrap();
+    let job = service
+        .conversation_store
+        .list_index_jobs(
+            Some("tenant-a"),
+            None,
+            Some("node"),
+            Some("conversation-embedding-node"),
+            Some("node_embedding"),
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(summary.claimed, 1);
+    assert_eq!(
+        summary.projected, 1,
+        "projection summary: {summary:?}; jobs: {job:#?}"
+    );
+    assert_eq!(summary.retried, 0);
+    assert_eq!(
+        inputs.lock().unwrap().as_slice(),
+        ["Conversation embedding source"]
+    );
+    assert_eq!(job.len(), 1);
+    assert_eq!(job[0].status, "DONE");
+    let promoted = service
+        .conversation_store
+        .graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["conversation-embedding-node".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(promoted.len(), 1);
+    assert_eq!(
+        promoted[0].embedding.as_deref(),
+        Some([0.6_f32, 0.8].as_slice())
+    );
+    let knowledge_jobs = service
+        .store
+        .list_index_jobs(
+            Some("tenant-a"),
+            None,
+            Some("node"),
+            Some("conversation-embedding-node"),
+            Some("node_embedding"),
+            10,
+        )
+        .await
+        .unwrap();
+    assert!(knowledge_jobs.is_empty());
+
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(
+            &schemas
+                .iter()
+                .map(|schema| format!("DROP SCHEMA \"{schema}\" CASCADE"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .await
+        .unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn in_memory_mcp_traversal_matches_shared_python_contract() {
     let fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

@@ -86,10 +86,22 @@ impl PostgresUnitOfWork<'_> {
                     "embedding promotion requires a non-empty vector".to_owned(),
                 )
             })?;
+        let scope_value = |key: &str| -> PostgresStoreResult<Option<String>> {
+            match candidate.metadata.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+                _ => Err(StoreError::InvalidEntityEventPayload {
+                    message: format!(
+                        "embedding promotion metadata {key:?} must be a non-empty string or null"
+                    ),
+                }
+                .into()),
+            }
+        };
         let scope = GraphScope {
             namespace: namespace.to_owned(),
-            workspace_id: None,
-            graph_space: None,
+            workspace_id: scope_value("workspace_id")?,
+            graph_space: scope_value("graph_space")?,
         };
         let stage1_marker_names = [
             "_kogwistar_stage1_source_fingerprint",
