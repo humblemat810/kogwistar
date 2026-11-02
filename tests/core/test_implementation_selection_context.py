@@ -306,6 +306,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
     from kogwistar.engine_core.subsystems.acl import ACLAwareWriteSubsystem
     from kogwistar.engine_core.subsystems.ingest import IngestSubsystem
+    from kogwistar.engine_core.search_index.service import SearchIndexService
     from kogwistar.messaging.service import LaneMessagingService
     from kogwistar.engine_core.jobs import JobQueueSubsystem
     from kogwistar.server.chat_service_run_execution import _RunExecutionService
@@ -320,6 +321,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         RollbackSubsystem,
         ACLAwareReadSubsystem,
         IngestSubsystem,
+        SearchIndexService,
     ):
         unbound.extend(
             f"{subsystem.__name__}.{name}"

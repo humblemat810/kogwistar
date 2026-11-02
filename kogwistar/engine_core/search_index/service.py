@@ -8,7 +8,10 @@ from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
 from ...cdc.change_event import EntityRefModel
-from ...implementation_selection import assert_callback_side_effect_allowed
+from ...implementation_selection import (
+    assert_callback_side_effect_allowed,
+    implementation_selection_bound,
+)
 from ..subsystems.base import NamespaceProxy
 from .models import (
     IndexingItem,
@@ -44,6 +47,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             pass
         return conn
 
+    @implementation_selection_bound
     def ensure_initialized(self) -> None:
         conn = self._connect()
         try:
@@ -51,6 +55,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
         finally:
             conn.close()
 
+    @implementation_selection_bound
     def upsert_entries(self, items: list[IndexingItem]) -> None:
         assert_callback_side_effect_allowed("Search index mutation")
         conn = self._connect()
@@ -133,6 +138,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             cur.close()
             conn.close()
 
+    @implementation_selection_bound
     def search_hybrid(
         self, q: str, limit: int = 10, resolve_node: bool = False
     ) -> dict[str, Any]:
