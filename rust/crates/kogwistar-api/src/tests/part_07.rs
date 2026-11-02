@@ -262,6 +262,11 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
             .await
             .unwrap();
     }
+    let principal = json!({
+        "sub":"alice", "role":"ro", "ns":["workflow"],
+        "storage_ns":"workflow", "security_scope":"team-a",
+        "capabilities":["project_view"]
+    });
     let response = service
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -269,11 +274,7 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
             path_and_query: "/api/workflow/operator/inbox?inbox_id=ops&status=pending&limit=10"
                 .to_owned(),
             body: Vec::new(),
-            principal: json!({
-                "sub":"alice", "role":"ro", "ns":["workflow"],
-                "storage_ns":"workflow", "security_scope":"team-a",
-                "capabilities":["project_view"]
-            }),
+            principal: principal.clone(),
         })
         .await;
     assert_eq!(response.status, StatusCode::OK.as_u16());
@@ -283,6 +284,20 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
     assert_eq!(messages[0]["message_id"], "visible-message");
     assert_eq!(messages[0]["message_security_scope"], "team-a");
     assert!(!response.body.windows(12).any(|window| window == b"not-returned"));
+
+    let dashboard = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/dashboard?limit=10".to_owned(),
+            body: Vec::new(),
+            principal,
+        })
+        .await;
+    assert_eq!(dashboard.status, StatusCode::OK.as_u16());
+    let dashboard: Value = serde_json::from_slice(&dashboard.body).unwrap();
+    assert_eq!(dashboard["operator_inbox"].as_array().unwrap().len(), 1);
+    assert_eq!(dashboard["operator_inbox"][0]["message_id"], "visible-message");
 }
 
 #[tokio::test]
@@ -382,6 +397,12 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
             error_json: None,
         })
         .unwrap();
+    let principal = json!({
+        "sub":"alice", "role":"ro", "ns":["workflow"],
+        "storage_ns":"workflow", "workspace_id":"workspace-a",
+        "graph_space":"conversation", "security_scope":"team-a",
+        "capabilities":["project_view"]
+    });
     let response = service
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -389,12 +410,7 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
             path_and_query: "/api/workflow/operator/inbox?inbox_id=ops&status=pending&limit=10"
                 .to_owned(),
             body: Vec::new(),
-            principal: json!({
-                "sub":"alice", "role":"ro", "ns":["workflow"],
-                "storage_ns":"workflow", "workspace_id":"workspace-a",
-                "graph_space":"conversation", "security_scope":"team-a",
-                "capabilities":["project_view"]
-            }),
+            principal: principal.clone(),
         })
         .await;
     assert_eq!(response.status, StatusCode::OK.as_u16());
@@ -404,6 +420,63 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
     assert_eq!(messages[0]["message_id"], "sqlite-visible-message");
     assert_eq!(messages[0]["message_security_scope"], "team-a");
     assert!(!response.body.windows(12).any(|window| window == b"not-returned"));
+
+    let dashboard = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/dashboard?limit=10".to_owned(),
+            body: Vec::new(),
+            principal,
+        })
+        .await;
+    assert_eq!(dashboard.status, StatusCode::OK.as_u16());
+    let dashboard: Value = serde_json::from_slice(&dashboard.body).unwrap();
+    assert_eq!(dashboard["operator_inbox"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        dashboard["operator_inbox"][0]["message_id"],
+        "sqlite-visible-message"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_runs_from_inbox() {
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-operator-dashboard-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "dashboard-blocked-run".to_owned(),
+            conversation_id: "dashboard-conversation".to_owned(),
+            workflow_id: "dashboard-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "dashboard-turn".to_owned(),
+            status: "suspended".to_owned(),
+        })
+        .unwrap();
+    let request = |capabilities: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "GET".to_owned(),
+        path_and_query: "/api/workflow/operator/dashboard?limit=10".to_owned(),
+        body: Vec::new(),
+        principal: json!({
+            "sub":"alice", "role":"ro", "ns":["workflow"],
+            "capabilities":capabilities
+        }),
+    };
+    let denied = service
+        .execute(request(json!(["workflow.run.read"])))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+    let allowed = service.execute(request(json!(["project_view"]))).await;
+    assert_eq!(allowed.status, StatusCode::OK.as_u16());
+    let dashboard: Value = serde_json::from_slice(&allowed.body).unwrap();
+    assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 1);
+    assert_eq!(dashboard["operator_inbox"], json!([]));
 }
 
 #[tokio::test]

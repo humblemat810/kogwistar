@@ -2325,7 +2325,7 @@ fn operational_effect(
                 StatusCode::OK,
                 json!({
                     "process_table": process_table,
-                    "operator_inbox": blocked_runs.clone(),
+                    "operator_inbox": [],
                     "blocked_runs": blocked_runs.clone(),
                     "blocked_flow_graph": {"nodes": blocked_runs.clone(), "edges": [], "blocked_count": blocked_runs.len()},
                     "message_queue": {"total": lanes.len(), "by_status": lane_counts, "by_inbox": {}, "failed": []},
@@ -2337,6 +2337,21 @@ fn operational_effect(
         }
         _ => unreachable!("unsupported operational path"),
     }
+}
+
+fn operator_dashboard_with_inbox(
+    mut dashboard: ApiEffectResponse,
+    messages: Vec<Value>,
+) -> ApiEffectResponse {
+    let Ok(mut value) = serde_json::from_slice::<Value>(&dashboard.body) else {
+        return dashboard;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return dashboard;
+    };
+    object.insert("operator_inbox".to_owned(), json!(messages));
+    dashboard.body = serde_json::to_vec(&value).expect("JSON value always serializes");
+    dashboard
 }
 
 fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {

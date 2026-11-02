@@ -1764,6 +1764,42 @@ impl ApplicationService for SqliteRunApplicationService {
             }
             if request.method == "GET"
                 && request.path_and_query.split('?').next()
+                    == Some("/api/workflow/operator/dashboard")
+            {
+                if let Some(error) = operator_inbox_authorization_error(&request, &self.capabilities) {
+                    return error;
+                }
+                let dashboard = self.execute_sync(request.clone());
+                if dashboard.status != StatusCode::OK.as_u16() || self.chroma_graph.is_none() {
+                    return dashboard;
+                }
+                let scope = security_scope_value(&request.principal);
+                let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
+                let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some(namespace.to_owned()),
+                    limit: 10_000,
+                    ..LaneMessageFilter::default()
+                }) {
+                    Ok(lanes) => lanes,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let graph = match self.chroma_graph_snapshot(&request, "conversation").await {
+                    Ok(graph) => graph,
+                    Err(error) => return error,
+                };
+                let inbox = operator_inbox_effect(&request, &lanes, graph.nodes());
+                let inbox: Value = serde_json::from_slice(&inbox.body).unwrap_or_else(|_| json!({}));
+                let messages = inbox["messages"].as_array().cloned().unwrap_or_default();
+                return operator_dashboard_with_inbox(dashboard, messages);
+            }
+            if request.method == "GET"
+                && request.path_and_query.split('?').next()
                     == Some("/api/workflow/operator/inbox")
             {
                 if self.chroma_graph.is_none() {

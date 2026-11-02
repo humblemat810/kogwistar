@@ -6249,6 +6249,11 @@ impl PostgresRunApplicationService {
         {
             let process_table = path == "/api/workflow/process-table";
             let process_listing = process_table || path == "/api/workflow/blocked-runs";
+            if path == "/api/workflow/operator/dashboard"
+                && let Some(error) = operator_inbox_authorization_error(&request, &self.capabilities)
+            {
+                return error;
+            }
             if process_listing
                 && !capability_any_allowed(
                     &request,
@@ -6302,6 +6307,23 @@ impl PostgresRunApplicationService {
                         error.to_string(),
                     );
                 }
+            };
+            let dashboard_inbox = if path == "/api/workflow/operator/dashboard" {
+                let nodes = match self.authorized_conversation_nodes(&request.principal).await {
+                    Ok(nodes) => nodes,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error,
+                        );
+                    }
+                };
+                let inbox = operator_inbox_effect(&request, &lanes, &nodes);
+                let inbox: Value = serde_json::from_slice(&inbox.body).unwrap_or_else(|_| json!({}));
+                inbox["messages"].as_array().cloned().unwrap_or_default()
+            } else {
+                Vec::new()
             };
             let mut events = Vec::new();
             for run in &runs {
@@ -6361,7 +6383,12 @@ impl PostgresRunApplicationService {
             } else {
                 Vec::new()
             };
-            return operational_effect(&request, path, runs, lanes, events, services, service_event_rows);
+            let response =
+                operational_effect(&request, path, runs, lanes, events, services, service_event_rows);
+            if path == "/api/workflow/operator/dashboard" {
+                return operator_dashboard_with_inbox(response, dashboard_inbox);
+            }
+            return response;
         }
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);
