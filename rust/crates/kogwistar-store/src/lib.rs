@@ -958,6 +958,7 @@ pub fn graph_neighbors_from_records(
 /// advances through explicit edge IDs one layer at a time. Keeping the mode
 /// in the storage kernel prevents a native caller from silently changing the
 /// graph distance semantics.
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_neighbors_from_records_with_jump; python=kogwistar/graph_query.py#GraphQuery.neighbors; fixture=contracts/golden/graph-neighbors-cross-kind-id-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_neighbors_preserve_cross_kind_same_id_from_shared_fixture; python_test=tests/core/test_edge_endpoint_rows.py#test_graph_query_sync_endpoint_merge_preserves_cross_kind_same_id
 pub fn graph_neighbors_from_records_with_jump(
     rid: &str,
     nodes: &[GraphRecord],
@@ -4061,6 +4062,43 @@ mod tests {
                 edges: BTreeSet::from(["e0".to_owned(), "e2".to_owned()]),
             }
         );
+    }
+
+    #[test]
+    fn graph_neighbors_preserve_cross_kind_same_id_from_shared_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-neighbors-cross-kind-id-v1.json"
+        )))
+        .expect("cross-kind graph-neighbor fixture is valid JSON");
+        let shared_id = fixture["expected"]["node_ids"][0]
+            .as_str()
+            .expect("expected shared node ID");
+        let parent_edge = &fixture["parent_edge"];
+        let nodes = vec![node_record(shared_id)];
+        let edges = vec![
+            edge_record(parent_edge["id"].as_str().unwrap(), parent_edge.clone()),
+            edge_record(shared_id, json!({"source_ids": [], "target_ids": []})),
+        ];
+
+        let actual =
+            graph_neighbors_from_records(fixture["rid"].as_str().unwrap(), &nodes, &edges, None);
+        let expected = GraphNeighbors {
+            nodes: fixture["expected"]["node_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+                .collect(),
+            edges: fixture["expected"]["edge_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+                .collect(),
+        };
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

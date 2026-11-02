@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "rid": "parent-edge",
+  "node_ids": ["shared-id"],
+  "edge_ids": ["parent-edge", "shared-id"],
+  "parent_edge": {
+    "id": "parent-edge",
+    "source_ids": ["shared-id"],
+    "target_ids": [],
+    "source_edge_ids": ["shared-id"],
+    "target_edge_ids": [],
+    "doc_id": "doc-1",
+    "relation": "references"
+  },
+  "expected": {
+    "node_ids": ["shared-id"],
+    "edge_ids": ["shared-id"]
+  }
+}
