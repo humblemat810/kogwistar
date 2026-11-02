@@ -206,13 +206,13 @@
       "method": "GET",
       "path": "/api/viz/cytoscape.json",
       "python": "openapi",
-      "rust": "application-route-in-cutover-inventory"
+      "rust": "transport-owned"
     },
     {
       "method": "GET",
       "path": "/api/viz/d3.json",
       "python": "openapi",
-      "rust": "application-route-in-cutover-inventory"
+      "rust": "transport-owned"
     },
     {
       "method": "GET",
@@ -512,7 +512,7 @@
       "method": "GET",
       "path": "/viz/d3.bundle",
       "python": "openapi",
-      "rust": "application-route-in-cutover-inventory"
+      "rust": "transport-owned"
     },
     {
       "method": "GET",
