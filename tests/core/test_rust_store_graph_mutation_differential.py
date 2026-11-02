@@ -777,10 +777,10 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
 
 
 def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
-    pg_dsn: str | None, pg_container: Any
+    pg_dsn: str | None,
 ) -> None:
-    if pg_dsn is None or pg_container is None:
-        pytest.skip("fresh disposable PostgreSQL database requires the local test container")
+    if pg_dsn is None:
+        pytest.skip("fresh disposable PostgreSQL database requires a configured DSN")
 
     database_name = f"gke_bootstrap_{uuid.uuid4().hex[:16]}"
     python_schema = f"gke_python_{uuid.uuid4().hex[:16]}"
