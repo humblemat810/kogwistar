@@ -44,6 +44,7 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
         "workflow.blocked_runs",
         &authorized,
     ));
+    assert!(!service.supports_mcp_tool("workflow", "workflow.operator_inbox"));
     for (surface, principal) in [
         ("root", authorized.clone()),
         (
@@ -148,6 +149,140 @@ fn postgres_workflow_monitor_tools_require_workflow_scope_and_read_capability() 
             &json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
         ));
     }
+    let operator_inbox = "workflow.operator_inbox";
+    assert!(!service.supports_mcp_tool_for_principal(
+        "workflow",
+        operator_inbox,
+        &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.read"]}),
+    ));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        operator_inbox,
+        &json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+    ));
+    assert!(!service.supports_mcp_tool_for_principal(
+        "root",
+        operator_inbox,
+        &json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+    ));
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses disposable PostgreSQL schemas"]
+async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filters_security_scope() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_operator_inbox_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+    service
+        .conversation_store
+        .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+        .await
+        .unwrap();
+    let scope = GraphScope {
+        namespace: "workflow".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    for (message_id, target_scope, acl_mode, owner) in [
+        ("visible-message", "team-a", "public", None),
+        ("hidden-by-scope", "team-b", "public", None),
+        ("hidden-by-acl", "team-a", "private", Some("bob")),
+    ] {
+        let metadata = Map::from_iter([
+            ("entity_type".to_owned(), json!("lane_message")),
+            ("conversation_id".to_owned(), json!("inbox-conversation")),
+            ("security_scope".to_owned(), json!(target_scope)),
+            ("shared_scope".to_owned(), json!(false)),
+            ("shared_inbox".to_owned(), json!(false)),
+            ("visibility".to_owned(), json!("private")),
+        ]);
+        service
+            .conversation_store
+            .upsert_graph_projection(PostgresGraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: message_id.to_owned(),
+                    document: None,
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        let mut acl_metadata = Map::from_iter([
+            ("entity_type".to_owned(), json!("acl_record")),
+            ("acl_truth_graph".to_owned(), json!("conversation")),
+            ("acl_target_grain".to_owned(), json!("node")),
+            ("acl_target_entity_id".to_owned(), json!(message_id)),
+            ("acl_version".to_owned(), json!(1)),
+            ("acl_mode".to_owned(), json!(acl_mode)),
+        ]);
+        if let Some(owner) = owner {
+            acl_metadata.insert("acl_owner_id".to_owned(), json!(owner));
+        }
+        service
+            .conversation_store
+            .upsert_graph_projection(PostgresGraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: format!("acl:{message_id}"),
+                    document: None,
+                    metadata: acl_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        service
+            .store
+            .project_lane_message(NewProjectedLaneMessage {
+                message_id: message_id.to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "operator".to_owned(),
+                inbox_id: "ops".to_owned(),
+                conversation_id: "inbox-conversation".to_owned(),
+                recipient_id: "operator".to_owned(),
+                sender_id: "worker".to_owned(),
+                msg_type: "maintenance.result".to_owned(),
+                status: "pending".to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: None,
+                step_id: None,
+                correlation_id: None,
+                payload_json: Some("not-returned".to_owned()),
+                error_json: None,
+            })
+            .await
+            .unwrap();
+    }
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/inbox?inbox_id=ops&status=pending&limit=10"
+                .to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "role":"ro", "ns":["workflow"],
+                "storage_ns":"workflow", "security_scope":"team-a",
+                "capabilities":["project_view"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let result: Value = serde_json::from_slice(&response.body).unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["message_id"], "visible-message");
+    assert_eq!(messages[0]["message_security_scope"], "team-a");
+    assert!(!response.body.windows(12).any(|window| window == b"not-returned"));
 }
 
 #[tokio::test]

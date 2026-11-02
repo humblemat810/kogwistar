@@ -163,6 +163,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
                 | "workflow.design_undo"
                 | "workflow.message_orphans_repair"
                 | "workflow.operator_dashboard"
+                | "workflow.operator_inbox"
                 | "workflow.process_table"
                 | "workflow.process_timeline"
                 | "workflow.run_cancel"

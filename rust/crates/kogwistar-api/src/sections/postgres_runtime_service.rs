@@ -6040,6 +6040,41 @@ impl PostgresRunApplicationService {
             );
         }
         if request.method == "GET"
+            && request.path_and_query.split('?').next()
+                == Some("/api/workflow/operator/inbox")
+        {
+            if let Some(error) = operator_inbox_authorization_error(&request, &self.capabilities) {
+                return error;
+            }
+            let scope = security_scope_value(&request.principal);
+            let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
+            let inbox_id = decoded_query_string(&request.path_and_query, "inbox_id");
+            let status = decoded_query_string(&request.path_and_query, "status");
+            let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some(namespace.to_owned()),
+                inbox_id,
+                status,
+                limit: 10_000,
+                ..LaneMessageFilter::default()
+            }).await {
+                Ok(lanes) => lanes,
+                Err(error) => return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            };
+            let nodes = match self.authorized_conversation_nodes(&request.principal).await {
+                Ok(nodes) => nodes,
+                Err(error) => return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                ),
+            };
+            return operator_inbox_effect(&request, &lanes, &nodes);
+        }
+        if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {
             return self.tool_audit_effect(&request).await;

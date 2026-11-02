@@ -1633,6 +1633,7 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
     matches!(
         path,
         "/api/workflow/operator/dashboard"
+            | "/api/workflow/operator/inbox"
             | "/api/workflow/process-table"
             | "/api/workflow/blocked-runs"
             | "/api/workflow/lane/progress"
@@ -1644,6 +1645,123 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
             | "/api/workflow/catalog/ops"
     )
     .then_some(path)
+}
+
+fn operator_inbox_effect(
+    request: &ApiEffectRequest,
+    lanes: &[ProjectedLaneMessage],
+    visible_nodes: &[GraphRecord],
+) -> ApiEffectResponse {
+    let query_value = |name: &str| {
+        let query = request
+            .path_and_query
+            .split_once('?')
+            .map(|(_, query)| query)
+            .unwrap_or_default();
+        url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == name && !value.is_empty()).then(|| value.into_owned()))
+    };
+    let inbox_id = query_value("inbox_id");
+    let status = query_value("status");
+    let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 10_000) as usize;
+    let scope = security_scope_value(&request.principal);
+    let actual_scope = scope["security_scope"]
+        .as_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let visible = visible_nodes
+        .iter()
+        .map(|record| (record.id.as_str(), &record.metadata))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut messages = Vec::new();
+    for lane in lanes {
+        if inbox_id.as_deref().is_some_and(|value| value != lane.inbox_id)
+            || status.as_deref().is_some_and(|value| value != lane.status)
+        {
+            continue;
+        }
+        let Some(metadata) = visible.get(lane.message_id.as_str()) else {
+            continue;
+        };
+        let message_scope = metadata
+            .get("security_scope")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let normalized_message_scope = message_scope.trim().to_ascii_lowercase();
+        let shared = metadata.get("shared_scope").and_then(Value::as_bool) == Some(true)
+            || metadata.get("shared_inbox").and_then(Value::as_bool) == Some(true);
+        if !shared
+            && !normalized_message_scope.is_empty()
+            && normalized_message_scope != "*"
+            && normalized_message_scope != actual_scope
+        {
+            continue;
+        }
+        messages.push(json!({
+            "message_id": lane.message_id,
+            "inbox_id": lane.inbox_id,
+            "conversation_id": lane.conversation_id,
+            "recipient_id": lane.recipient_id,
+            "sender_id": lane.sender_id,
+            "msg_type": lane.msg_type,
+            "status": lane.status,
+            "seq": lane.seq,
+            "conversation_seq": lane.conversation_seq,
+            "claimed_by": lane.claimed_by,
+            "lease_until": lane.lease_until,
+            "retry_count": lane.retry_count,
+            "created_at": lane.created_at,
+            "available_at": lane.available_at,
+            "run_id": lane.run_id,
+            "step_id": lane.step_id,
+            "correlation_id": lane.correlation_id,
+            "message_security_scope": message_scope,
+            "visibility": metadata.get("visibility").and_then(Value::as_str).unwrap_or("private"),
+            "storage_namespace": scope["storage_namespace"],
+            "execution_namespace": scope["execution_namespace"],
+            "security_scope": scope["security_scope"],
+        }));
+        if messages.len() >= limit {
+            break;
+        }
+    }
+    json_effect(StatusCode::OK, json!({"messages": messages}))
+}
+
+fn operator_inbox_authorization_error(
+    request: &ApiEffectRequest,
+    capabilities: &SharedCapabilityState,
+) -> Option<ApiEffectResponse> {
+    if !matches!(principal_role(&request.principal).as_str(), "ro" | "rw") {
+        return Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_ROLE_FORBIDDEN",
+            "Operator inbox reads require a read-capable workflow role",
+        ));
+    }
+    if !principal_strings(&request.principal, "ns")
+        .iter()
+        .any(|namespace| namespace == "workflow" || namespace == "*")
+    {
+        return Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            "Operator inbox reads require workflow namespace",
+        ));
+    }
+    (!capability_allowed(
+        request,
+        capabilities,
+        "project_view",
+        &["project_view"],
+    ))
+    .then(|| {
+        effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Reading operator inbox requires project_view capability",
+        )
+    })
 }
 
 fn lane_progress_value(lane: &ProjectedLaneMessage) -> Value {

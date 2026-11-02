@@ -242,6 +242,7 @@
                             | "workflow.process_timeline"
                             | "workflow.process_table"
                             | "workflow.blocked_runs"
+                            | "workflow.operator_inbox"
                     )
             }
 
@@ -327,6 +328,28 @@
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);
         assert!(request.body.is_empty());
+
+        let response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"workflow.operator_inbox","arguments":{"inbox_id":"ops & triage","status":"pending","limit":12}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"]["method"], "GET");
+        assert_eq!(
+            value["result"]["path_and_query"],
+            "/api/workflow/operator/inbox?limit=12&inbox_id=ops+%26+triage&status=pending"
+        );
 
         let response = make_app()
             .oneshot(
@@ -450,6 +473,144 @@
         assert_eq!(processes[1]["event_count"], 1);
         assert_eq!(processes[1]["last_event_type"], "run.completed");
         assert_eq!(processes[1]["terminal"], true);
+    }
+
+    #[test]
+    fn operator_inbox_filters_graph_visibility_and_security_scope_before_limit() {
+        let request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/inbox?inbox_id=ops&limit=1".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice",
+                "ns":["workflow"],
+                "storage_ns":"tenant-a",
+                "execution_ns":"workflow",
+                "security_scope":"team-a",
+            }),
+        };
+        let lane = |message_id: &str, seq: i64| ProjectedLaneMessage {
+            message_id: message_id.to_owned(),
+            namespace: "tenant-a".to_owned(),
+            purpose: "operator".to_owned(),
+            inbox_id: "ops".to_owned(),
+            conversation_id: "conversation-1".to_owned(),
+            recipient_id: "operator".to_owned(),
+            sender_id: "worker".to_owned(),
+            msg_type: "maintenance.result".to_owned(),
+            status: "pending".to_owned(),
+            seq,
+            conversation_seq: seq,
+            claimed_by: None,
+            lease_until: None,
+            retry_count: 0,
+            created_at: seq,
+            available_at: seq,
+            run_id: None,
+            step_id: None,
+            correlation_id: None,
+            payload_json: None,
+            error_json: None,
+            prev_message_id: None,
+            next_message_id: None,
+            inbox_tail_message_id: None,
+            conversation_tail_message_id: None,
+        };
+        let node = |id: &str, security_scope: &str, shared: bool| GraphRecord {
+            id: id.to_owned(),
+            document: None,
+            metadata: serde_json::Map::from_iter([
+                ("security_scope".to_owned(), json!(security_scope)),
+                ("shared_inbox".to_owned(), json!(shared)),
+                ("visibility".to_owned(), json!(if shared { "shared" } else { "private" })),
+            ]),
+            embedding: None,
+        };
+        let response = operator_inbox_effect(
+            &request,
+            &[lane("hidden-by-scope", 1), lane("shared-visible", 2), lane("private-visible", 3)],
+            &[
+                node("hidden-by-scope", "team-b", false),
+                node("shared-visible", "team-b", true),
+                node("private-visible", "team-a", false),
+            ],
+        );
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let value: Value = serde_json::from_slice(&response.body).unwrap();
+        let messages = value["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["message_id"], "shared-visible");
+        assert_eq!(messages[0]["visibility"], "shared");
+        assert_eq!(messages[0]["storage_namespace"], "tenant-a");
+    }
+
+    #[test]
+    fn operator_inbox_omits_missing_acl_visible_graph_nodes() {
+        let request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/inbox".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["workflow"], "security_scope":"team-a"}),
+        };
+        let lane = ProjectedLaneMessage {
+            message_id: "orphaned-projection".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "operator".to_owned(),
+            inbox_id: "ops".to_owned(),
+            conversation_id: "conversation-1".to_owned(),
+            recipient_id: "operator".to_owned(),
+            sender_id: "worker".to_owned(),
+            msg_type: "maintenance.result".to_owned(),
+            status: "pending".to_owned(),
+            seq: 1,
+            conversation_seq: 1,
+            claimed_by: None,
+            lease_until: None,
+            retry_count: 0,
+            created_at: 1,
+            available_at: 1,
+            run_id: None,
+            step_id: None,
+            correlation_id: None,
+            payload_json: Some("must-not-leak".to_owned()),
+            error_json: None,
+            prev_message_id: None,
+            next_message_id: None,
+            inbox_tail_message_id: None,
+            conversation_tail_message_id: None,
+        };
+        let response = operator_inbox_effect(&request, &[lane], &[]);
+        let value: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(value["messages"], json!([]));
+        assert!(!response.body.windows(14).any(|window| window == b"must-not-leak"));
+    }
+
+    #[test]
+    fn operator_inbox_requires_workflow_scope_read_role_and_project_view() {
+        let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
+        let request = |principal| ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/inbox".to_owned(),
+            body: Vec::new(),
+            principal,
+        };
+        assert!(operator_inbox_authorization_error(
+            &request(json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]})),
+            &capabilities,
+        ).is_none());
+        let wrong_namespace = operator_inbox_authorization_error(
+            &request(json!({"role":"ro", "ns":["knowledge"], "capabilities":["project_view"]})),
+            &capabilities,
+        ).unwrap();
+        assert_eq!(wrong_namespace.status, StatusCode::FORBIDDEN.as_u16());
+        let missing_capability = operator_inbox_authorization_error(
+            &request(json!({"role":"ro", "ns":["workflow"], "capabilities":["read_graph"]})),
+            &capabilities,
+        ).unwrap();
+        assert_eq!(missing_capability.status, StatusCode::FORBIDDEN.as_u16());
     }
 
     #[tokio::test]

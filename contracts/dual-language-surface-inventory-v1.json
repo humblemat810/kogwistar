@@ -12,7 +12,7 @@
     "http_operations": 84,
     "mcp_operations": 62,
     "pending_http_operations": 3,
-    "allowlisted_mcp_operations": 57,
+    "allowlisted_mcp_operations": 58,
     "pending_syscalls": 4
   },
   "http_operations": [
@@ -736,7 +736,7 @@
       "surface": "workflow",
       "name": "workflow.operator_inbox",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "workflow",

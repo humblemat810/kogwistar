@@ -881,6 +881,22 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "workflow.operator_inbox" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
         if matches!(name, "workflow.process_table" | "workflow.blocked_runs") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1250,6 +1266,9 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        if name == "workflow.operator_inbox" && self.chroma_graph.is_none() {
+            return false;
+        }
         if surface == "root" {
             return self.chroma_graph.is_some()
                 && (matches!(
@@ -1296,6 +1315,22 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "workflow.operator_inbox" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
         if matches!(name, "workflow.process_table" | "workflow.blocked_runs") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1726,6 +1761,44 @@ impl ApplicationService for SqliteRunApplicationService {
                         "user_turn_node_id":turn_node_id,
                     }),
                 );
+            }
+            if request.method == "GET"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/workflow/operator/inbox")
+            {
+                if self.chroma_graph.is_none() {
+                    return effect_error(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                        "Operator inbox requires a configured conversation graph projection",
+                    );
+                }
+                if let Some(error) = operator_inbox_authorization_error(&request, &self.capabilities) {
+                    return error;
+                }
+                let scope = security_scope_value(&request.principal);
+                let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
+                let lanes = match self.store.list_projected_lane_messages(LaneMessageFilter {
+                    namespace: Some(namespace.to_owned()),
+                    inbox_id: decoded_query_string(&request.path_and_query, "inbox_id"),
+                    status: decoded_query_string(&request.path_and_query, "status"),
+                    limit: 10_000,
+                    ..LaneMessageFilter::default()
+                }) {
+                    Ok(lanes) => lanes,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let graph = match self.chroma_graph_snapshot(&request, "conversation").await {
+                    Ok(graph) => graph,
+                    Err(error) => return error,
+                };
+                return operator_inbox_effect(&request, &lanes, graph.nodes());
             }
             self.execute_sync(request)
         })
