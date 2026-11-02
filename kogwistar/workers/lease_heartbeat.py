@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import copy_context
 import inspect
 import threading
 from collections.abc import Callable, Iterable
@@ -28,7 +29,10 @@ class SyncLeaseHeartbeat:
 
     def __enter__(self) -> SyncLeaseHeartbeat:
         if callable(self._renew) and self._claims:
-            self._thread = threading.Thread(target=self._run, daemon=True)
+            context = copy_context()
+            self._thread = threading.Thread(
+                target=context.run, args=(self._run,), daemon=True
+            )
             self._thread.start()
         return self
 

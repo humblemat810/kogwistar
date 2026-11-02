@@ -11,6 +11,11 @@ from types import SimpleNamespace
 import pytest
 
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.implementation_selection import (
+    capture_implementation_selection,
+    implementation_selection_scope,
+    selected_transaction_authority,
+)
 from kogwistar.workers.async_index_job_worker import AsyncIndexJobWorker
 from kogwistar.workers.index_job_worker import IndexJobWorker
 from kogwistar.workers.lease_heartbeat import AsyncLeaseHeartbeat, SyncLeaseHeartbeat
@@ -331,6 +336,31 @@ def test_sync_heartbeat_fails_closed_on_invalid_renewal_result() -> None:
     with SyncLeaseHeartbeat(InvalidRenewal(), [("job-1", "claim-1")], 1) as heartbeat:
         time.sleep(0.4)
         assert not heartbeat.owns("job-1")
+
+
+def test_sync_heartbeat_thread_inherits_frozen_engine_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_authorities: list[str] = []
+    renewed = threading.Event()
+
+    class RecordingRenewal:
+        def renew_index_job_lease(self, *_: object, **__: object) -> bool:
+            observed_authorities.append(selected_transaction_authority())
+            renewed.set()
+            return True
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    snapshot = capture_implementation_selection()
+    with implementation_selection_scope(snapshot):
+        heartbeat = SyncLeaseHeartbeat(
+            RecordingRenewal(), [("job-1", "claim-1")], 1
+        )
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+        with heartbeat:
+            assert renewed.wait(2)
+
+    assert observed_authorities == ["python"]
 
 
 @pytest.mark.asyncio
