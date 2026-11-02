@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING, Protocol, cast
 from pydantic import BaseModel, Field
 
 from kogwistar.engine_core.models import Grounding, JsonPrimitive, Node, Span
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from kogwistar.json_types import JsonValue
 
 if TYPE_CHECKING:
@@ -170,6 +174,14 @@ class ServiceSupervisor:
     spawn_workflow_run: WorkflowRunSpawner
     scope_snapshot: Callable[[], dict[str, str]]
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Use the workflow engine snapshot for the service registry authority."""
+        return getattr(
+            self.get_workflow_engine(), "_implementation_selection_snapshot", None
+        )
+
+    @implementation_selection_bound
     def bootstrap(self) -> None:
         self._ensure_all_projections()
         for row in self.list_services(limit=10_000):
@@ -191,6 +203,7 @@ class ServiceSupervisor:
             )
         self.tick()
 
+    @implementation_selection_bound
     def declare_service(
         self,
         *,
@@ -237,6 +250,7 @@ class ServiceSupervisor:
         self.tick()
         return self.get_service(service_id)
 
+    @implementation_selection_bound
     def get_service(self, service_id: str) -> JsonObject:
         projection = self._projection(service_id)
         if projection is None:
@@ -246,6 +260,7 @@ class ServiceSupervisor:
             raise KeyError(f"Unknown service_id: {service_id}")
         return _json_object(projection.get("payload"))
 
+    @implementation_selection_bound
     def list_services(self, *, limit: int = 200) -> list[JsonObject]:
         self._ensure_all_projections()
         meta = self._workflow_engine().meta_sqlite
@@ -254,12 +269,15 @@ class ServiceSupervisor:
         items.sort(key=lambda item: str(item.get("service_id") or ""))
         return items
 
+    @implementation_selection_bound
     def enable_service(self, service_id: str) -> JsonObject:
         return self._set_enabled(service_id, True)
 
+    @implementation_selection_bound
     def disable_service(self, service_id: str) -> JsonObject:
         return self._set_enabled(service_id, False)
 
+    @implementation_selection_bound
     def record_service_heartbeat(
         self,
         service_id: str,
@@ -306,6 +324,7 @@ class ServiceSupervisor:
         self._store_projection_payload(service_id, projection_payload)
         return self.get_service(service_id)
 
+    @implementation_selection_bound
     def trigger_service(
         self,
         service_id: str,
@@ -324,6 +343,7 @@ class ServiceSupervisor:
             enforce_authenticated_owner=enforce_authenticated_owner,
         )
 
+    @implementation_selection_bound
     def health_snapshot(self, service_id: str) -> JsonObject:
         row = ServiceProjectionRow.model_validate(self.get_service(service_id))
         return ServiceHealthSnapshot(
@@ -339,6 +359,7 @@ class ServiceSupervisor:
             last_triggered_at_ms=row.last_triggered_at_ms,
         ).model_dump(mode="python")
 
+    @implementation_selection_bound
     def list_service_events(
         self, service_id: str, *, limit: int = 500
     ) -> list[JsonObject]:
@@ -367,6 +388,7 @@ class ServiceSupervisor:
         out.sort(key=lambda item: _int_value(item["ts_ms"]))
         return out
 
+    @implementation_selection_bound
     def tick(self) -> None:
         self._ensure_all_projections()
         meta = self._workflow_engine().meta_sqlite

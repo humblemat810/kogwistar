@@ -315,6 +315,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.server.chat_service_conversation_queries import (
         _ConversationQueryService,
     )
+    from kogwistar.server.service_daemon import ServiceSupervisor
 
     unbound: list[str] = []
     for subsystem in (
@@ -527,6 +528,29 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
+    supervisor_entrypoints = (
+        "bootstrap",
+        "declare_service",
+        "get_service",
+        "list_services",
+        "enable_service",
+        "disable_service",
+        "record_service_heartbeat",
+        "trigger_service",
+        "health_snapshot",
+        "list_service_events",
+        "tick",
+    )
+    unbound.extend(
+        f"ServiceSupervisor.{name}"
+        for name in supervisor_entrypoints
+        if not getattr(
+            getattr(ServiceSupervisor, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
     assert unbound == []
 
 
@@ -672,6 +696,43 @@ def test_conversation_query_uses_conversation_engine_selection(
     assert result["tail_node_id"] == "tail"
     assert result["turn_count"] == 0
     assert observed == ["python", "python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_service_supervisor_uses_workflow_engine_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.server.service_daemon import ServiceSupervisor
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    workflow_engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    conversation_engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    supervisor = ServiceSupervisor(
+        get_workflow_engine=lambda: workflow_engine,
+        get_conversation_engine=lambda: conversation_engine,
+        run_registry=SimpleNamespace(),
+        spawn_workflow_run=lambda **_kwargs: {},
+        scope_snapshot=lambda: {},
+    )
+    observed: list[str] = []
+
+    def trigger_service(**_kwargs: object) -> dict[str, object]:
+        observed.append(runtime_implementation_mode())
+        return {"service_id": "service-selector-test"}
+
+    monkeypatch.setattr(supervisor, "_trigger_service", trigger_service)
+
+    result = supervisor.trigger_service(
+        "service-selector-test", trigger_type="external event"
+    )
+
+    assert result["service_id"] == "service-selector-test"
+    assert observed == ["python"]
     assert runtime_implementation_mode() == "rust"
 
 

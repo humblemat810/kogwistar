@@ -57,7 +57,22 @@ def engine_triplet():
 
 
 @contextmanager
-def _service_claims():
+def _service_claims(*, read_security_scope: bool = False):
+    capabilities = [
+        "service.manage",
+        "service.inspect",
+        "service.heartbeat",
+        "project_view",
+        "spawn_process",
+        "workflow.run.read",
+        "workflow.run.write",
+        "workflow.design.write",
+        "workflow.design.inspect",
+        "read_graph",
+        "write_graph",
+    ]
+    if read_security_scope:
+        capabilities.append("read_security_scope")
     token = claims_ctx.set(
         {
             "ns": "workflow",
@@ -65,19 +80,7 @@ def _service_claims():
             "storage_ns": "default",
             "execution_ns": "default",
             "security_scope": "tenant/demo",
-            "capabilities": [
-                "service.manage",
-                "service.inspect",
-                "service.heartbeat",
-                "project_view",
-                "spawn_process",
-                "workflow.run.read",
-                "workflow.run.write",
-                "workflow.design.write",
-                "workflow.design.inspect",
-                "read_graph",
-                "write_graph",
-            ],
+            "capabilities": capabilities,
             "sub": "svc-tester",
         }
     )
@@ -743,7 +746,7 @@ def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):
     _build_minimal_workflow(service, workflow_id="wf.service.dashboard")
     _attach_fake_service_spawn(service, statuses=["succeeded"])
 
-    with _service_claims():
+    with _service_claims(read_security_scope=True):
         service.declare_service(
             service_id="svc.dashboard.demo",
             service_kind="daemon",
