@@ -1824,7 +1824,7 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
-    let schema = format!("provider_event_causal_{}", uuid::Uuid::new_v4().simple());
+    let schema = format!("pec_{}", uuid::Uuid::new_v4().simple());
     let auth_path = std::env::temp_dir().join(format!(
         "kogwistar-provider-event-causal-auth-{}.sqlite",
         uuid::Uuid::new_v4().simple()
@@ -1913,12 +1913,18 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         .await
         .unwrap()
         .with_chat_completion_provider(provider);
-    service.ensure_schema().await.unwrap();
-    service
-        .store
-        .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
-        .await
-        .unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+    for store in [
+        &service.store,
+        &service.conversation_store,
+        &service.workflow_store,
+        &service.wisdom_store,
+    ] {
+        store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+    }
 
     let run_id = "provider-event-causal-run";
     let workflow_id = "provider-event-causal-workflow";
@@ -2282,7 +2288,7 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         graph_space: Some("conversation".to_owned()),
     };
     let causal_edges = service
-        .store
+        .conversation_store
         .graph_projection_records(GraphProjectionRead {
             scope: scope.clone(),
             table: "gke_edges".to_owned(),
@@ -2347,7 +2353,7 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         "an exact post-commit retry must not append another completion or handled event"
     );
     let committed_edges = service
-        .store
+        .conversation_store
         .graph_projection_records(GraphProjectionRead {
             scope,
             table: "gke_edges".to_owned(),
@@ -2394,7 +2400,12 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         .unwrap();
     let cleanup_task = tokio::spawn(connection);
     cleanup
-        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE"
+        ))
         .await
         .unwrap();
     drop(cleanup);

@@ -12,6 +12,52 @@ async fn resolve_default_acl_graph_effects(
     security_scope: Option<&str>,
     effect_id: &str,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
+    resolve_default_acl_graph_effects_with_schema(
+        uow,
+        None,
+        scope,
+        mutations,
+        truth_graph,
+        owner_id,
+        security_scope,
+        effect_id,
+    )
+    .await
+}
+
+async fn resolve_default_acl_graph_effects_in_schema(
+    uow: &PostgresUnitOfWork<'_>,
+    schema: &str,
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    truth_graph: &str,
+    owner_id: &str,
+    security_scope: Option<&str>,
+    effect_id: &str,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
+    resolve_default_acl_graph_effects_with_schema(
+        uow,
+        Some(schema),
+        scope,
+        mutations,
+        truth_graph,
+        owner_id,
+        security_scope,
+        effect_id,
+    )
+    .await
+}
+
+async fn resolve_default_acl_graph_effects_with_schema(
+    uow: &PostgresUnitOfWork<'_>,
+    schema: Option<&str>,
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    truth_graph: &str,
+    owner_id: &str,
+    security_scope: Option<&str>,
+    effect_id: &str,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
     let (targets, lock_targets) = acl_targets_for_graph_mutations(mutations);
 
     for (kind, entity_id) in &lock_targets {
@@ -27,9 +73,21 @@ async fn resolve_default_acl_graph_effects(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    let existing = uow
-        .graph_acl_records_for_entities(scope, truth_graph, &target_entity_ids)
-        .await?;
+    let existing = match schema {
+        Some(schema) => {
+            uow.graph_acl_records_for_entities_in_schema(
+                schema,
+                scope,
+                truth_graph,
+                &target_entity_ids,
+            )
+            .await?
+        }
+        None => {
+            uow.graph_acl_records_for_entities(scope, truth_graph, &target_entity_ids)
+                .await?
+        }
+    };
     derive_default_acl_graph_effects_from_records(
         scope,
         mutations,

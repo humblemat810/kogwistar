@@ -6516,6 +6516,10 @@
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN").unwrap();
         let schema = format!("rust_answer_e2e_{}", uuid::Uuid::new_v4().simple());
+        let knowledge_schema = format!("{schema}_knowledge");
+        let conversation_schema = format!("{schema}_conversation");
+        let workflow_schema = format!("{schema}_workflow");
+        let wisdom_schema = format!("{schema}_wisdom");
         let auth_path = std::env::temp_dir().join(format!(
             "kogwistar-answer-e2e-auth-{}.sqlite",
             uuid::Uuid::new_v4().simple()
@@ -6552,7 +6556,8 @@
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let chat_address = listener.local_addr().unwrap();
         let snapshot_dsn = dsn.clone();
-        let snapshot_schema = schema.clone();
+        let snapshot_schema = knowledge_schema.clone();
+        let conversation_graph_schema = conversation_schema.clone();
         let chat_server = tokio::spawn(async move {
             let (mut stream, _) =
                 tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
@@ -6589,7 +6594,9 @@
             assert_eq!(request["stream"], true);
             let snapshot_reader =
                 PostgresStore::from_dsn(&snapshot_dsn, &snapshot_schema).unwrap();
-            let snapshots = snapshot_reader
+            let conversation_reader =
+                PostgresStore::from_dsn(&snapshot_dsn, &conversation_graph_schema).unwrap();
+            let snapshots = conversation_reader
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -6667,7 +6674,7 @@
                 .as_str()
                 .unwrap()
                 .contains("Bob-private reference"));
-            let dependency_edges = snapshot_reader
+            let dependency_edges = conversation_reader
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -6769,7 +6776,7 @@
                                 })
                                 .await
                                 .unwrap();
-                            let event_nodes = snapshot_reader
+                            let event_nodes = conversation_reader
                                 .graph_projection_records(GraphProjectionRead {
                                     scope: GraphScope {
                                         namespace: "alpha".to_owned(),
@@ -6799,7 +6806,7 @@
                                 .iter()
                                 .map(|node| node.id.clone())
                                 .collect::<Vec<_>>();
-                            let event_acl = snapshot_reader
+                            let event_acl = conversation_reader
                                 .graph_acl_records_for_entities(
                                     &GraphScope {
                                         namespace: "alpha".to_owned(),
@@ -6849,7 +6856,7 @@
                             })
                             .await
                             .unwrap();
-                        let event_nodes = snapshot_reader
+                        let event_nodes = conversation_reader
                             .graph_projection_records(GraphProjectionRead {
                                 scope: GraphScope {
                                     namespace: "alpha".to_owned(),
@@ -6872,7 +6879,7 @@
                             .iter()
                             .map(|node| node.id.clone())
                             .collect::<Vec<_>>();
-                        let event_acl = snapshot_reader
+                        let event_acl = conversation_reader
                             .graph_acl_records_for_entities(
                                 &GraphScope {
                                     namespace: "alpha".to_owned(),
@@ -6890,6 +6897,32 @@
                             event_acl.iter().map(|acl| &acl.metadata).collect::<Vec<_>>()
                         );
                     }
+                    let misplaced_event_nodes = snapshot_reader
+                        .graph_projection_records(GraphProjectionRead {
+                            scope: GraphScope {
+                                namespace: "alpha".to_owned(),
+                                workspace_id: None,
+                                graph_space: Some("conversation".to_owned()),
+                            },
+                            table: "gke_nodes".to_owned(),
+                            ids: None,
+                            metadata: MetadataFilter {
+                                equals: BTreeMap::from([
+                                    ("msg_type".to_owned(), json!("agent.provider_event")),
+                                    (
+                                        "conversation_id".to_owned(),
+                                        json!("answer-e2e-conversation"),
+                                    ),
+                                ]),
+                            },
+                            limit: 100,
+                        })
+                        .await
+                        .unwrap();
+                    assert!(
+                        misplaced_event_nodes.is_empty(),
+                        "conversation provider-event graph nodes must not leak into the knowledge schema"
+                    );
                 }
             }
             stream.write_all(b"data: [DONE]\r\n\r\n").await.unwrap();
@@ -6938,7 +6971,13 @@
         )
         .unwrap()
         .with_streaming(true);
-        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+        let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+            &dsn,
+            &knowledge_schema,
+            &conversation_schema,
+            &workflow_schema,
+            &wisdom_schema,
+        )
             .unwrap()
             .with_native_operations(crate::native_answer_persist::registry().unwrap())
             .with_owner_auth_config(&auth_config)
@@ -6965,12 +7004,18 @@
                 fail: None,
             }))
             .with_chat_completion_provider(chat_provider);
-        service.ensure_schema().await.unwrap();
-        service
-            .store
-            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
-            .await
-            .unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
+        for store in [
+            &service.store,
+            &service.conversation_store,
+            &service.workflow_store,
+            &service.wisdom_store,
+        ] {
+            store
+                .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+                .await
+                .unwrap();
+        }
 
         let service_declaration = service
             .execute(ApiEffectRequest {
@@ -7409,7 +7454,33 @@
                 "public",
             ),
         ] {
-            service.store.apply_graph_mutation(mutation).await.unwrap();
+            let graph_type = mutation
+                .record
+                .metadata
+                .get("acl_truth_graph")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    mutation
+                        .record
+                        .metadata
+                        .get("entity_type")
+                        .and_then(Value::as_str)
+                        .filter(|entity_type| entity_type.starts_with("conversation_"))
+                        .map(|_| "conversation")
+                })
+                .or_else(|| {
+                    mutation
+                        .record
+                        .metadata
+                        .contains_key("conversation_id")
+                        .then_some("conversation")
+                })
+                .unwrap_or("knowledge");
+            let store = match graph_type {
+                "conversation" => &service.conversation_store,
+                _ => &service.store,
+            };
+            store.apply_graph_mutation(mutation).await.unwrap();
         }
 
         let direct_vector_hits = service
@@ -7685,7 +7756,7 @@
         assert_eq!(created["tail_node_id"], "rust-only-rest-create-start");
         assert_eq!(created["turn_count"], 0);
         let created_record = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "conversation".to_owned(),
@@ -7748,7 +7819,7 @@
         let answer_run_id = answer["run_id"].as_str().unwrap();
         let answer_turn_id = answer["user_turn_node_id"].as_str().unwrap();
         let answer_turn = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "conversation".to_owned(),
@@ -7780,7 +7851,7 @@
         };
         let acl_target_id = answer_turn_id.to_owned();
         let conversation_acl_records = service
-            .store
+            .conversation_store
             .transaction(move |uow| {
                 Box::pin(async move {
                     uow.graph_acl_records_for_entities(
@@ -7862,7 +7933,7 @@
             "completed run registry should expose the durable assistant turn ID"
         );
         let assistant_turn = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "conversation".to_owned(),
@@ -8040,7 +8111,7 @@
             .expect("persist response state contains its assistant turn ID")
             .to_owned();
         let assistant = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -8098,7 +8169,7 @@
             Some("assistant")
         );
         let edges = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -8581,7 +8652,12 @@
             .unwrap();
         let task = tokio::spawn(connection);
         cleanup
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{knowledge_schema}\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{conversation_schema}\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{workflow_schema}\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{wisdom_schema}\" CASCADE"
+            ))
             .await
             .unwrap();
         drop(cleanup);

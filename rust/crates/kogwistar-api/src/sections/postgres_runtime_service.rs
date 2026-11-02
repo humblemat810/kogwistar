@@ -829,7 +829,7 @@ impl PostgresRunApplicationService {
             graph_acl_principal_from_claims(&principal, scope_claims["security_scope"].as_str());
         let conversation_id = request.conversation_id.clone();
         let turn_id = turn_id.to_owned();
-        self.store
+        self.conversation_store
             .transaction(move |uow| {
                 Box::pin(async move {
                     let mut metadata = BTreeMap::new();
@@ -1249,8 +1249,10 @@ impl PostgresRunApplicationService {
         let acl_principal =
             graph_acl_principal_from_claims(&principal, scope_claims["security_scope"].as_str());
         let conversation_id = conversation_id.to_owned();
+        let conversation_schema = self.conversation_store.schema().to_owned();
         let result = self.store
-            .transaction(move |uow| {
+            .transaction_with_graph_schemas(&[conversation_schema.as_str()], |uow| {
+                let conversation_schema = conversation_schema.clone();
                 Box::pin(async move {
                     let read = |table: &str, ids: &[String]| GraphProjectionRead {
                         scope: scope.clone(),
@@ -1265,12 +1267,19 @@ impl PostgresRunApplicationService {
                         uow.graph_projection_records(read("gke_nodes", &used_ids)).await?
                     };
                     let conversation_nodes = uow
-                        .graph_projection_records(read("gke_nodes", &conversation_node_ids))
+                        .graph_projection_records_in_schema(
+                            &conversation_schema,
+                            read("gke_nodes", &conversation_node_ids),
+                        )
                         .await?;
                     let conversation_edges = if edge_ids.is_empty() {
                         Vec::new()
                     } else {
-                        uow.graph_projection_records(read("gke_edges", &edge_ids)).await?
+                        uow.graph_projection_records_in_schema(
+                            &conversation_schema,
+                            read("gke_edges", &edge_ids),
+                        )
+                        .await?
                     };
                     let knowledge_ids = knowledge_nodes
                         .iter()
@@ -1285,7 +1294,8 @@ impl PostgresRunApplicationService {
                         .graph_acl_records_for_entities(&scope, "knowledge", &knowledge_ids)
                         .await?;
                     let conversation_acl = uow
-                        .graph_acl_records_for_entities(
+                        .graph_acl_records_for_entities_in_schema(
+                            &conversation_schema,
                             &scope,
                             "conversation",
                             &conversation_entity_ids,
@@ -2053,8 +2063,9 @@ impl PostgresRunApplicationService {
             request.run_id, request.step_seq, request.token_id
         );
         let commit_capabilities = self.capabilities.clone();
+        let conversation_schema = self.conversation_store.schema().to_owned();
         self.store
-            .transaction(move |uow| {
+            .transaction_with_graph_schemas(&[conversation_schema.as_str()], |uow| {
                 let mutations = mutations.clone();
                 let index_jobs = index_jobs.clone();
                 let principal = principal.clone();
@@ -2063,6 +2074,7 @@ impl PostgresRunApplicationService {
                 let owner_id = owner_id.clone();
                 let acl_scope = acl_scope.clone();
                 let effect_id = effect_id.clone();
+                let conversation_schema = conversation_schema.clone();
                 let commit_capabilities = commit_capabilities.clone();
                 Box::pin(async move {
                     let run = uow.get_server_run(&run_id).await?;
@@ -2099,8 +2111,9 @@ impl PostgresRunApplicationService {
                             "native context snapshot has no graph mutation".to_owned(),
                         )
                     })?;
-                    let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                    let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects_in_schema(
                         uow,
+                        &conversation_schema,
                         &scope,
                         &mutations,
                         "conversation",
@@ -2110,13 +2123,16 @@ impl PostgresRunApplicationService {
                     )
                     .await?;
                     for mutation in mutations {
-                        uow.apply_graph_mutation(mutation).await?;
+                        uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                            .await?;
                     }
                     for mutation in acl_mutations {
-                        uow.apply_graph_mutation(mutation).await?;
+                        uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                            .await?;
                     }
                     for job in index_jobs.into_iter().chain(acl_jobs) {
-                        uow.enqueue_index_job(job).await?;
+                        uow.enqueue_index_job_in_schema(&conversation_schema, job)
+                            .await?;
                     }
                     Ok(())
                 })
@@ -2690,7 +2706,7 @@ impl PostgresRunApplicationService {
         let response_conversation_id = conversation_id.clone();
         let response_start_id = start_id.clone();
         let transaction = self
-            .store
+            .conversation_store
             .transaction(|uow| {
                 Box::pin(async move {
                     uow.lock_entity_identity(&scope.namespace, "conversation", &conversation_id)
@@ -3631,9 +3647,11 @@ impl PostgresRunApplicationService {
         let admission_actor_user_id = conversation_admission
             .as_ref()
             .map(|admission| admission.actor_user_id.clone());
+        let conversation_schema = self.conversation_store.schema().to_owned();
         let outcome = self
             .store
-            .transaction(|uow| {
+            .transaction_with_graph_schemas(&[&conversation_schema], |uow| {
+                let conversation_schema = conversation_schema.clone();
                 Box::pin(async move {
                     uow.lock_runtime_queue_admission().await?;
                     let pending = uow
@@ -3665,7 +3683,9 @@ impl PostgresRunApplicationService {
                         )
                         .await?;
                         let current_nodes = uow
-                            .graph_projection_records_for_update(GraphProjectionRead {
+                            .graph_projection_records_for_update_in_schema(
+                                &conversation_schema,
+                                GraphProjectionRead {
                                 scope: admission.scope.clone(),
                                 table: "gke_nodes".to_owned(),
                                 ids: None,
@@ -3676,10 +3696,13 @@ impl PostgresRunApplicationService {
                                     )]),
                                 },
                                 limit: 10_000,
-                            })
+                                },
+                            )
                             .await?;
                         let acl_nodes = uow
-                            .graph_projection_records(GraphProjectionRead {
+                            .graph_projection_records_in_schema(
+                                &conversation_schema,
+                                GraphProjectionRead {
                                 scope: admission.scope.clone(),
                                 table: "gke_nodes".to_owned(),
                                 ids: None,
@@ -3690,7 +3713,8 @@ impl PostgresRunApplicationService {
                                     )]),
                                 },
                                 limit: 10_000,
-                            })
+                                },
+                            )
                             .await?;
                         let mut acl_input = current_nodes;
                         acl_input.extend(acl_nodes);
@@ -3750,8 +3774,9 @@ impl PostgresRunApplicationService {
                             .map(|(mutation, _)| mutation.clone())
                             .collect::<Vec<_>>();
                         let (acl_mutations, acl_index_jobs) =
-                            resolve_default_acl_graph_effects(
+                            resolve_default_acl_graph_effects_in_schema(
                                 uow,
+                                &conversation_schema,
                                 &admission.scope,
                                 &graph_mutations,
                                 "conversation",
@@ -3762,17 +3787,23 @@ impl PostgresRunApplicationService {
                             .await?;
                         for (mutation, envelope) in &admission.mutations {
                             kogwistar_store::validate_typed_graph_mutation(mutation, envelope)?;
-                            uow.apply_graph_mutation(mutation.clone()).await?;
+                            uow.apply_graph_mutation_in_schema(
+                                &conversation_schema,
+                                mutation.clone(),
+                            )
+                            .await?;
                         }
                         for mutation in acl_mutations {
-                            uow.apply_graph_mutation(mutation).await?;
+                            uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                                .await?;
                         }
                         for job in admission
                             .index_jobs
                             .iter()
                             .chain(acl_index_jobs.iter())
                         {
-                            uow.enqueue_index_job(job.clone()).await?;
+                            uow.enqueue_index_job_in_schema(&conversation_schema, job.clone())
+                                .await?;
                         }
                     }
                     let mut created_payload = json!({
@@ -4384,11 +4415,26 @@ impl PostgresRunApplicationService {
         };
         let commit_capabilities = self.capabilities.clone();
         let expected_executor_target = executor_target.to_owned();
+        let conversation_schema = self.conversation_store.schema().to_owned();
+        let workflow_schema = self.workflow_store.schema().to_owned();
+        let wisdom_schema = self.wisdom_store.schema().to_owned();
+        let knowledge_schema = self.store.schema().to_owned();
+        let graph_role = self.graph_role.clone();
+        let graph_schemas = [
+            conversation_schema.as_str(),
+            workflow_schema.as_str(),
+            wisdom_schema.as_str(),
+        ];
         let outcome = self
             .store
-            .transaction(|uow| {
+            .transaction_with_graph_schemas(&graph_schemas, |uow| {
                 let provider_event_ack_scope = provider_event_ack_scope.clone();
                 let commit_capabilities = commit_capabilities.clone();
+                let conversation_schema = conversation_schema.clone();
+                let workflow_schema = workflow_schema.clone();
+                let wisdom_schema = wisdom_schema.clone();
+                let knowledge_schema = knowledge_schema.clone();
+                let graph_role = graph_role.clone();
                 Box::pin(async move {
                     let lane = uow
                         .get_projected_lane_message(&input.handoff.message_id)
@@ -4442,6 +4488,26 @@ impl PostgresRunApplicationService {
                     }
                     if let Some((mutations, mut index_jobs, default_acl_truth_graph, _, principal, _, effect_id)) = graph_effects {
                         let mut mutations = mutations;
+                        let graph_type = default_acl_truth_graph
+                            .as_deref()
+                            .or_else(|| mutations.first().and_then(|mutation| mutation.scope.graph_space.as_deref()))
+                            .unwrap_or(&graph_role)
+                            .to_owned();
+                        if mutations.iter().any(|mutation| {
+                            mutation.scope.graph_space.as_deref().is_some_and(|scope_type| {
+                                scope_type != graph_type
+                            })
+                        }) {
+                            return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                "one worker graph batch cannot span graph types".to_owned(),
+                            ));
+                        }
+                        let graph_schema = match graph_type.as_str() {
+                            "conversation" => &conversation_schema,
+                            "workflow" => &workflow_schema,
+                            "wisdom" => &wisdom_schema,
+                            _ => &knowledge_schema,
+                        };
                         if let Some(truth_graph) = default_acl_truth_graph {
                             let scope = mutations.first().map(|mutation| mutation.scope.clone()).ok_or_else(|| {
                                 kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
@@ -4454,8 +4520,9 @@ impl PostgresRunApplicationService {
                                 )
                             })?.to_ascii_lowercase();
                             let security_scope = principal.get("security_scope").and_then(Value::as_str).map(str::trim).filter(|value| !value.is_empty()).map(str::to_ascii_lowercase);
-                            let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                            let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects_in_schema(
                                 uow,
+                                graph_schema,
                                 &scope,
                                 &mutations,
                                 &truth_graph,
@@ -4467,10 +4534,10 @@ impl PostgresRunApplicationService {
                             index_jobs.extend(acl_jobs);
                         }
                         for mutation in mutations {
-                            uow.apply_graph_mutation(mutation).await?;
+                            uow.apply_graph_mutation_in_schema(graph_schema, mutation).await?;
                         }
                         for index_job in index_jobs {
-                            uow.enqueue_index_job(index_job).await?;
+                            uow.enqueue_index_job_in_schema(graph_schema, index_job).await?;
                         }
                     }
                     for publication in &provider_event_publications {
@@ -4760,8 +4827,9 @@ impl PostgresRunApplicationService {
                                 mutation.entity_kind != "node"
                                     || linked_step_nodes.insert(mutation.record.id.clone())
                             });
-                            let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                            let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects_in_schema(
                                 uow,
+                                &conversation_schema,
                                 &graph_scope,
                                 &causal_mutations,
                                 "conversation",
@@ -4771,13 +4839,16 @@ impl PostgresRunApplicationService {
                             )
                             .await?;
                             for mutation in causal_mutations {
-                                uow.apply_graph_mutation(mutation).await?;
+                                uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                                    .await?;
                             }
                             for mutation in acl_mutations {
-                                uow.apply_graph_mutation(mutation).await?;
+                                uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                                    .await?;
                             }
                             for job in acl_jobs {
-                                uow.enqueue_index_job(job).await?;
+                                uow.enqueue_index_job_in_schema(&conversation_schema, job)
+                                    .await?;
                             }
                             uow.ack_claimed_projected_lane_message(
                                 &acknowledgement.message_id,

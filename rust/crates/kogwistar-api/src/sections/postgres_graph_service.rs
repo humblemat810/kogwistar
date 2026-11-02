@@ -283,7 +283,7 @@ impl PostgresRunApplicationService {
     ) -> Result<Vec<GraphRecord>, String> {
         let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(request_principal);
         let records = graph_projection_records_all(
-            &self.store,
+            self.graph_store_for_type("conversation"),
             GraphProjectionRead {
                 scope,
                 table: "gke_nodes".to_owned(),
@@ -318,7 +318,7 @@ impl PostgresRunApplicationService {
             }
             candidates.extend(
                 graph_projection_records_all(
-                    &self.store,
+                    self.graph_store_for_type("conversation"),
                     GraphProjectionRead {
                         scope: scope.clone(),
                         table: "gke_nodes".to_owned(),
@@ -332,7 +332,7 @@ impl PostgresRunApplicationService {
             );
         }
         let acl_records = graph_projection_records_all(
-            &self.store,
+            self.graph_store_for_type("conversation"),
             GraphProjectionRead {
                 scope,
                 table: "gke_nodes".to_owned(),
@@ -684,7 +684,7 @@ impl PostgresRunApplicationService {
         let mut acl_index = GraphAclIndex::default();
         let mut candidates = Vec::new();
         let read_result = for_each_graph_projection_page(
-            &self.store,
+            self.graph_store_for_type("conversation"),
             GraphProjectionRead {
                 scope,
                 table: "gke_nodes".to_owned(),

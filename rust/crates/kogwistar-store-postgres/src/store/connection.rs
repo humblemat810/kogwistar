@@ -101,15 +101,37 @@ impl PostgresStore {
     where
         F: for<'a> FnOnce(&'a mut PostgresUnitOfWork) -> BoxFuture<'a, PostgresStoreResult<T>>,
     {
+        self.transaction_with_graph_schemas(&[], operation).await
+    }
+
+    /// Run runtime and graph work in one PostgreSQL transaction while allowing
+    /// graph projections to target other schemas in the same database.
+    /// The additional names are schema-qualified graph targets only; all
+    /// transaction/event ownership remains with this store.
+    pub async fn transaction_with_graph_schemas<T, F>(
+        &self,
+        graph_schemas: &[&str],
+        operation: F,
+    ) -> PostgresStoreResult<T>
+    where
+        F: for<'a> FnOnce(&'a mut PostgresUnitOfWork) -> BoxFuture<'a, PostgresStoreResult<T>>,
+    {
         let mut pooled_client = self.client().await?;
         // `deadpool_postgres::Object::transaction` returns deadpool's wrapper.
         // Bind its underlying tokio client first, so UoW owns the native RAII
         // `tokio_postgres::Transaction`, not a pool wrapper or raw SQL.
         let client: &mut tokio_postgres::Client = &mut pooled_client;
         let transaction = client.transaction().await.map_err(backend)?;
+        let mut graph_tables_by_schema = std::collections::HashMap::new();
+        graph_tables_by_schema.insert(self.tables.schema.clone(), self.tables.clone());
+        for schema in graph_schemas {
+            let tables = Tables::new(schema)?;
+            graph_tables_by_schema.insert(tables.schema.clone(), tables);
+        }
         let mut uow = PostgresUnitOfWork {
             transaction,
             tables: self.tables.clone(),
+            graph_tables_by_schema,
         };
         match operation(&mut uow).await {
             Ok(value) => {

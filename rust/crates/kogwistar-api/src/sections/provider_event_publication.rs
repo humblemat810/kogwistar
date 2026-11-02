@@ -720,8 +720,11 @@ impl PostgresRunApplicationService {
         let conversation_id = request.conversation_id.clone();
         let run_id = request.run_id.clone();
         let claim_owner = format!("rust-native-agent-event:{}", uuid::Uuid::new_v4());
+        let conversation_schema = self.conversation_store.schema().to_owned();
+        let conversation_schema_for_claim = conversation_schema.clone();
         self.store
-            .transaction(move |uow| {
+            .transaction_with_graph_schemas(&[conversation_schema.as_str()], move |uow| {
+                let conversation_schema = conversation_schema_for_claim.clone();
                 Box::pin(async move {
                     let metadata = BTreeMap::from([
                         ("conversation_id".to_owned(), json!(conversation_id)),
@@ -731,13 +734,16 @@ impl PostgresRunApplicationService {
                         ("run_id".to_owned(), json!(run_id)),
                     ]);
                     let event_nodes = uow
-                        .graph_projection_records(GraphProjectionRead {
-                            scope: scope.clone(),
-                            table: "gke_nodes".to_owned(),
-                            ids: None,
-                            metadata: MetadataFilter { equals: metadata },
-                            limit: 20_001,
-                        })
+                        .graph_projection_records_for_update_in_schema(
+                            &conversation_schema,
+                            GraphProjectionRead {
+                                scope: scope.clone(),
+                                table: "gke_nodes".to_owned(),
+                                ids: None,
+                                metadata: MetadataFilter { equals: metadata },
+                                limit: 20_001,
+                            },
+                        )
                         .await?;
                     if event_nodes.len() > 20_000 {
                         return Err(
@@ -757,7 +763,8 @@ impl PostgresRunApplicationService {
                     let mut acl_index = GraphAclIndex::default();
                     for ids in event_ids.chunks(10_000) {
                         let acl_records = uow
-                            .graph_acl_records_for_entities_for_update(
+                            .graph_acl_records_for_entities_for_update_in_schema(
+                                &conversation_schema,
                                 &scope,
                                 "conversation",
                                 ids,
@@ -936,8 +943,10 @@ impl PostgresRunApplicationService {
         })?;
         let publication_for_commit = publication.clone();
         let commit_owner_id = owner_id.clone();
+        let conversation_schema = self.conversation_store.schema().to_owned();
+        let conversation_schema_for_commit = conversation_schema.clone();
         self.store
-            .transaction(move |uow| {
+            .transaction_with_graph_schemas(&[conversation_schema.as_str()], move |uow| {
                 let mutations = mutations.clone();
                 let publication = publication_for_commit.clone();
                 let run_id = run_id.clone();
@@ -951,6 +960,7 @@ impl PostgresRunApplicationService {
                 let event_payload = event_payload.clone();
                 let event_type = event_type.clone();
                 let run_event_payload = run_event_payload.clone();
+                let conversation_schema = conversation_schema_for_commit.clone();
                 Box::pin(async move {
                     uow.lock_entity_identity(&scope.namespace, "node", &message_id)
                         .await?;
@@ -1049,8 +1059,9 @@ impl PostgresRunApplicationService {
                         .ok_or_else(|| kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
                             "provider event message node is missing".to_owned(),
                         ))?;
-                    let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects(
+                    let (acl_mutations, acl_jobs) = resolve_default_acl_graph_effects_in_schema(
                         uow,
+                        &conversation_schema,
                         &scope,
                         std::slice::from_ref(&message_mutation),
                         "conversation",
@@ -1060,13 +1071,16 @@ impl PostgresRunApplicationService {
                     )
                     .await?;
                     for mutation in mutations {
-                        uow.apply_graph_mutation(mutation).await?;
+                        uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                            .await?;
                     }
                     for mutation in acl_mutations {
-                        uow.apply_graph_mutation(mutation).await?;
+                        uow.apply_graph_mutation_in_schema(&conversation_schema, mutation)
+                            .await?;
                     }
                     for job in acl_jobs {
-                        uow.enqueue_index_job(job).await?;
+                        uow.enqueue_index_job_in_schema(&conversation_schema, job)
+                            .await?;
                     }
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)

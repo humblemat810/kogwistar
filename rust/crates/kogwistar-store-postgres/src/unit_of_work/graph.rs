@@ -1,6 +1,14 @@
 use super::*;
 
 impl PostgresUnitOfWork<'_> {
+    fn graph_tables_for_schema(&self, schema: &str) -> PostgresStoreResult<&Tables> {
+        self.graph_tables_by_schema.get(schema).ok_or_else(|| {
+            PostgresStoreError::Backend(format!(
+                "graph schema {schema:?} was not registered for this transaction"
+            ))
+        })
+    }
+
     pub async fn lock_entity_identity(
         &self,
         namespace: &str,
@@ -36,6 +44,19 @@ impl PostgresUnitOfWork<'_> {
     ) -> PostgresStoreResult<AppliedGraphMutation> {
         validate_graph_mutation(&mutation)?;
         apply_graph_mutation(&self.transaction, &self.tables, mutation).await
+    }
+
+    /// Apply graph authority effects to another registered schema using this
+    /// UOW's transaction. Runtime records and graph records therefore commit
+    /// or roll back together without opening a second connection.
+    pub async fn apply_graph_mutation_in_schema(
+        &mut self,
+        schema: &str,
+        mutation: GraphMutation,
+    ) -> PostgresStoreResult<AppliedGraphMutation> {
+        validate_graph_mutation(&mutation)?;
+        let tables = self.graph_tables_for_schema(schema)?;
+        apply_graph_mutation(&self.transaction, tables, mutation).await
     }
 
     pub async fn apply_graph_metadata_patch_mutation(
@@ -298,6 +319,24 @@ impl PostgresUnitOfWork<'_> {
             .await
     }
 
+    pub async fn graph_projection_records_in_schema(
+        &self,
+        schema: &str,
+        read: GraphProjectionRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        let tables = self.graph_tables_for_schema(schema)?;
+        graph_projection_records(&self.transaction, tables, read, None, false).await
+    }
+
+    pub async fn graph_projection_records_for_update_in_schema(
+        &self,
+        schema: &str,
+        read: GraphProjectionRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        let tables = self.graph_tables_for_schema(schema)?;
+        graph_projection_records_with_lock(&self.transaction, tables, read, None, false, true).await
+    }
+
     /// Read ACL truth through this unit of work's transaction. Callers that
     /// derive graph effects from ACL state must not use the store-level read
     /// helper, which may observe a different committed snapshot.
@@ -317,6 +356,24 @@ impl PostgresUnitOfWork<'_> {
         .await
     }
 
+    pub async fn graph_acl_records_for_entities_in_schema(
+        &self,
+        schema: &str,
+        scope: &GraphScope,
+        truth_graph: &str,
+        entity_ids: &[String],
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        let tables = self.graph_tables_for_schema(schema)?;
+        graph_acl_records_for_entities(
+            &self.transaction,
+            tables,
+            scope,
+            truth_graph,
+            entity_ids,
+        )
+        .await
+    }
+
     /// Read and share-lock ACL records through this unit of work. Hold these
     /// locks until related authorization-sensitive queue claims commit so a
     /// concurrent ACL revocation cannot race the decision.
@@ -329,6 +386,24 @@ impl PostgresUnitOfWork<'_> {
         graph_acl_records_for_entities_for_update(
             &self.transaction,
             &self.tables,
+            scope,
+            truth_graph,
+            entity_ids,
+        )
+        .await
+    }
+
+    pub async fn graph_acl_records_for_entities_for_update_in_schema(
+        &self,
+        schema: &str,
+        scope: &GraphScope,
+        truth_graph: &str,
+        entity_ids: &[String],
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        let tables = self.graph_tables_for_schema(schema)?;
+        graph_acl_records_for_entities_for_update(
+            &self.transaction,
+            tables,
             scope,
             truth_graph,
             entity_ids,

@@ -4,6 +4,7 @@ use super::*;
 pub struct PostgresUnitOfWork<'transaction> {
     pub(super) transaction: Transaction<'transaction>,
     pub(super) tables: Tables,
+    pub(super) graph_tables_by_schema: std::collections::HashMap<String, Tables>,
 }
 
 mod events_recovery;

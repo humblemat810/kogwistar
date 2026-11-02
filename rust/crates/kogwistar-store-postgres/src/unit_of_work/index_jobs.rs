@@ -15,6 +15,30 @@ impl PostgresUnitOfWork<'_> {
         .await?;
         enqueue_index_job(&self.transaction, &self.tables, job).await
     }
+
+    pub async fn enqueue_index_job_in_schema(
+        &mut self,
+        schema: &str,
+        job: NewIndexJob,
+    ) -> PostgresStoreResult<String> {
+        require_namespace(&job.namespace)?;
+        let tables = self.graph_tables_by_schema.get(schema).ok_or_else(|| {
+            PostgresStoreError::Backend(format!(
+                "graph schema {schema:?} was not registered for this transaction"
+            ))
+        })?;
+        advisory_lock(
+            &self.transaction,
+            &format!(
+                "index-job\u{1f}{}\u{1f}{}",
+                job.namespace,
+                job.coalesce_key()
+            ),
+            2,
+        )
+        .await?;
+        enqueue_index_job(&self.transaction, tables, job).await
+    }
     pub async fn claim_index_jobs(
         &mut self,
         limit: usize,
