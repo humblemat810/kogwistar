@@ -13,6 +13,7 @@ from ...implementation_selection import (
     implementation_selection_bound,
 )
 from ..subsystems.base import NamespaceProxy
+from ...utils.embedding_vectors import normalize_embedding_rows
 from .models import (
     IndexingItem,
     build_embedding_text,
@@ -55,6 +56,16 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
         finally:
             conn.close()
 
+    def _embed_one(self, text: str) -> list[float]:
+        rows = normalize_embedding_rows(
+            self._e.embedding_function([text]),
+            allow_empty=False,
+            allow_none_rows=False,
+        )
+        if len(rows) != 1 or rows[0] is None:
+            raise ValueError("embedding function must return exactly one vector")
+        return rows[0]
+
     @implementation_selection_bound
     def upsert_entries(self, items: list[IndexingItem]) -> None:
         assert_callback_side_effect_allowed("Search index mutation")
@@ -65,6 +76,8 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
                 kw = " ".join(item.keywords) if item.keywords else ""
                 al = " ".join(item.aliases) if item.aliases else ""
                 index_key = make_index_key_for_item(item)
+                embedding_text = build_embedding_text(item)
+                embedding = self._embed_one(embedding_text)
 
                 cur.execute(
                     """
@@ -104,7 +117,8 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
                             "doc_id": item.doc_id,
                         }
                     ],
-                    documents=[build_embedding_text(item)],
+                    documents=[embedding_text],
+                    embeddings=[embedding],
                 )
 
                 payload = {
@@ -166,9 +180,10 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             fts_rows = cur.fetchall()
 
+            query_embedding = self._embed_one(q)
             vector_results = _result_mapping(
                 self._e.backend.node_index_query(
-                    query_texts=[q],
+                    query_embeddings=[query_embedding],
                     n_results=limit,
                 )
             )

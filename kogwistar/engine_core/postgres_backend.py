@@ -377,6 +377,7 @@ class PgVectorConfig:
     stage1_table: str = "gke_stage1_projections"
     documents_table: str = "gke_documents"
     domains_table: str = "gke_domains"
+    node_index_table: str = "gke_node_index"
     edge_endpoints_table: str = "gke_edge_endpoints"
     edge_refs_table: str = "gke_edge_refs"
     node_docs_table: str = "gke_node_docs"
@@ -853,6 +854,7 @@ class PgVectorBackend:
         stage1_table: str = "gke_stage1_projections",
         documents_table: str = "gke_documents",
         domains_table: str = "gke_domains",
+        node_index_table: str = "gke_node_index",
         edge_endpoints_table: str = "gke_edge_endpoints",
         edge_refs_table: str = "gke_edge_refs",
         node_docs_table: str = "gke_node_docs",
@@ -988,6 +990,30 @@ class PgVectorBackend:
 
         self.domains = sa.Table(
             domains_table,
+            md,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("document", sa.Text, nullable=True),
+            sa.Column(
+                "metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+            ),
+            sa.Column("embedding", Vector(self.embedding_dim), nullable=True),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                onupdate=sa.func.now(),
+                nullable=False,
+            ),
+        )
+
+        self.node_index = sa.Table(
+            node_index_table,
             md,
             sa.Column("id", sa.String, primary_key=True),
             sa.Column("document", sa.Text, nullable=True),
@@ -1544,6 +1570,7 @@ class PgVectorBackend:
             (self.edges.name, "edges"),
             (self.documents.name, "documents"),
             (self.domains.name, "domains"),
+            (self.node_index.name, "node_index"),
         ):
             idx = f"idx_{name}_embedding_hnsw"
             conn.execute(
@@ -1567,6 +1594,7 @@ class PgVectorBackend:
             self.edges.name,
             self.documents.name,
             self.domains.name,
+            self.node_index.name,
         )
         rows = (
             conn.execute(
@@ -2280,6 +2308,9 @@ class PgVectorBackend:
         self._domains_c = PgCollectionFacade(
             self, self.domains, CollectionSpec(vector=True)
         )
+        self._node_index_c = PgCollectionFacade(
+            self, self.node_index, CollectionSpec(vector=True)
+        )
 
         # Non-vector collections (materialized/index tables)
         nv = CollectionSpec(vector=False, ignore_embeddings=True)
@@ -2342,6 +2373,12 @@ class PgVectorBackend:
             "domain_delete",
             "domain_query",
             "domain_update",
+            "node_index_add",
+            "node_index_upsert",
+            "node_index_get",
+            "node_index_delete",
+            "node_index_query",
+            "node_index_update",
             "edge_endpoints_add",
             "edge_endpoints_upsert",
             "edge_endpoints_get",
@@ -2714,6 +2751,74 @@ class PgVectorBackend:
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
+    def node_index_add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
+        return self._node_index_c.add(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+
+    def node_index_upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
+        return self._node_index_c.upsert(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+
+    def node_index_get(
+        self,
+        *,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
+        limit: int = 200,
+    ) -> dict[str, JsonValue]:
+        return self._node_index_c.get(
+            ids=ids, where=where, include=include, limit=limit
+        )
+
+    def node_index_delete(
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
+    ) -> None:
+        return self._node_index_c.delete(ids=ids, where=where)
+
+    def node_index_query(
+        self,
+        *,
+        query_embeddings: Sequence[Sequence[float]],
+        n_results: int = 10,
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
+        return self._node_index_c.query(
+            query_embeddings=query_embeddings,
+            n_results=n_results,
+            where=where,
+            include=include,
+        )
+
+    def node_index_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
+        return self._node_index_c.update(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+
     # ----------------------------
     # Edge endpoints
     # ----------------------------
@@ -3008,6 +3113,7 @@ def build_postgres_backend(
         stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
+        node_index_table=cfg.node_index_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
         edge_refs_table=cfg.edge_refs_table,
         node_docs_table=cfg.node_docs_table,
@@ -3042,6 +3148,7 @@ def build_async_postgres_backend(
         stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
+        node_index_table=cfg.node_index_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
         edge_refs_table=cfg.edge_refs_table,
         node_docs_table=cfg.node_docs_table,
