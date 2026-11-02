@@ -1579,6 +1579,38 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
         },
         Arc::new(service.clone()),
     );
+    for case in isolation["cases"].as_array().unwrap() {
+        let graph_type = case["truth_graph"].as_str().unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/viz/d3.json?graph_type={graph_type}"))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{graph_type}");
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+        let visible = payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == isolation_id);
+        assert_eq!(
+            visible,
+            case["expected_visible"].as_bool().unwrap(),
+            "authenticated HTTP graph type {graph_type} must select its own ACL policy"
+        );
+    }
+
     let query = format!(
         "doc_id={}&mode=reify&insertion_method={}&graph_type=knowledge",
         fixture["doc_id"].as_str().unwrap(),
