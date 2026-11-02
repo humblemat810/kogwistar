@@ -452,12 +452,20 @@ jobs:
 
   sqlite-architectural-invariants:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
-    name: SQLite context invariants (CPython ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: SQLite context invariants (${{ matrix.os }} / CPython ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13", "3.14"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.12"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.13"
     steps:
       - name: Checkout
         uses: actions/checkout@v7

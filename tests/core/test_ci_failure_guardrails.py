@@ -55,6 +55,20 @@ def test_sqlite_differential_gate_selects_only_sqlite_cases() -> None:
     assert "-m \"ci and core and not requires_pgvector\"" in gate
 
 
+def test_sqlite_architectural_gate_covers_linux_and_macos() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    gate = _between(
+        workflow,
+        "  sqlite-architectural-invariants:",
+        "  pypy-beta-best-effort:",
+    )
+
+    assert "runs-on: ${{ matrix.os }}" in gate
+    assert "os: ubuntu-latest" in gate
+    assert "os: macos-latest" in gate
+    assert 'python-version: "3.13"' in gate
+
+
 def test_pypy_ci_excludes_native_extension_tests() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     pypy_tests = _between(
