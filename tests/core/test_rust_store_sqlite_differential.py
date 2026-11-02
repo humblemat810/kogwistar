@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +123,7 @@ def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path
     db = EngineSQLite(tmp_path)
     db.ensure_initialized()
     path = db.db_path
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         assert conn.execute("PRAGMA user_version").fetchone() == (1,)
     assert _rust(path, {"kind": "open_init"}) == {"initialized": True}
 
@@ -212,7 +213,7 @@ def test_python_rejects_newer_sqlite_schema_without_mutating_database(
     tmp_path: Path,
 ) -> None:
     db = EngineSQLite(tmp_path)
-    with sqlite3.connect(db.db_path) as conn:
+    with closing(sqlite3.connect(db.db_path)) as conn, conn:
         conn.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
         conn.execute("INSERT INTO sentinel VALUES ('preserve')")
         conn.execute("PRAGMA user_version = 2")
@@ -220,7 +221,7 @@ def test_python_rejects_newer_sqlite_schema_without_mutating_database(
     with pytest.raises(RuntimeError, match="unsupported SQLite metadata schema version 2"):
         db.ensure_initialized()
 
-    with sqlite3.connect(db.db_path) as conn:
+    with closing(sqlite3.connect(db.db_path)) as conn, conn:
         assert conn.execute("PRAGMA user_version").fetchone() == (2,)
         assert conn.execute("SELECT value FROM sentinel").fetchone() == ("preserve",)
         assert conn.execute(
@@ -262,7 +263,7 @@ def test_python_and_rust_migrate_legacy_sqlite_queue_schema_equivalently(
                   'PENDING', 1, 1, 10, 10, '{"legacy":true}');
     """
     for path in (python_path, rust_path):
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.executescript(legacy_schema)
 
     python = EngineSQLite(tmp_path, filename="python-legacy.db")
@@ -271,7 +272,7 @@ def test_python_and_rust_migrate_legacy_sqlite_queue_schema_equivalently(
     assert _rust(rust_path, {"kind": "close"}) is None
 
     def schema_signature(path: Path) -> dict[str, object]:
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             table_names = [
                 row[0]
                 for row in conn.execute(
@@ -315,7 +316,7 @@ def test_python_and_rust_migrate_legacy_sqlite_queue_schema_equivalently(
 
     assert schema_signature(python_path) == schema_signature(rust_path)
     for path in (python_path, rust_path):
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             assert conn.execute("PRAGMA user_version").fetchone() == (1,)
             assert conn.execute(
                 "SELECT job_id, namespace, coalesce_key, max_retries, payload_json "

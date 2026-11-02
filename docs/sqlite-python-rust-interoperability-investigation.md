@@ -11,10 +11,13 @@ SQLite error, WAL/SHM snapshots, and the shared-versus-bundled experiments.
 ## Architectural contract
 
 Both Python `sqlite3` and Rust `rusqlite` may be loaded in one process. Each
-execution context selects exactly one implementation (`python` or `rust`) and
-cannot switch until it ends. Different implementations cannot hold overlapping
-connections to the same database in one process. Unused imports are allowed;
-this contract does not require shared-library linking.
+framework-managed execution context selects exactly one implementation
+(`python` or `rust`) and cannot switch until it ends. Kogwistar-mediated
+connections are leased so different implementations cannot hold overlapping
+connections to the same database. Direct connections opened outside Kogwistar
+are not visible to that lease mechanism and must be closed before switching
+implementations. Unused imports are allowed; this contract does not require
+shared-library linking.
 
 ## Original CI failures
 
@@ -47,30 +50,32 @@ and database sidecar state; no payload data was logged.
 
 The instrumented bundled build reports Rust SQLite `3.50.2`, source ID
 `2025-06-28 14:00:48 2af157d77fb1304a74176eaee7fbc7c7e932d946bf25325e9c26c91db19e3079`,
-while Python reports `3.46.1`. Thus the system-linked experiment matched the
-Python runtime version, while the bundled experiment used a different version
-and a distinct SQLite library instance. Existing evidence cannot distinguish
-which difference was causal by itself.
+while Python reports `3.46.1`. This version difference initially appeared
+causal, but a later test-level diagnosis supersedes that hypothesis.
 
-After adding context ownership and deterministic handle cleanup, the same
-CPython 3.12 Linux environment passed 31 context/interoperability tests with
-both libraries still distinct (`3.46.1` / `3.50.2`). Instrumentation observed
-Python close/checkpoint sidecar transitions and Rust opens/closes without any
-`SQLITE_IOERR_SHORT_READ`. This validates the repair direction for that test
-set; CPython 3.13 and 3.14 remain mandatory CI matrix checks.
+## Current diagnosis
 
-These observations establish an architectural hole: before the repair,
-supported paths did not enforce execution-context binding or arbitrate every
-cross-implementation handle lifetime for a database. They also establish that
-the reproduced failure involved a WAL database, separate SQLite builds, and
-different SQLite versions. They do **not** prove which individual connection
-close/overlap triggered each historical short read; the baseline did not record
-enough per-handle events to isolate that low-level trigger. The original disk
-I/O failures are therefore consistent with the unsafe WAL/SHM lifecycle, but
-must not be attributed solely to bundled SQLite, library version, or cleanup
-without that missing baseline evidence. The repair rejects overlapping
-cross-implementation handles and allows sequential handoff while retaining
-distinct SQLite builds.
+The CI failure was reproduced on Linux CPython 3.12 with the current bundled
+Rust SQLite build. The failing differential tests opened a raw connection via
+`with sqlite3.connect(...) as conn` and then proceeded to Rust operations. The
+SQLite connection context manager commits or rolls back; it does not close the
+connection. The Python connection therefore remained open while Rust opened
+the same database, and because it was not created through `EngineSQLite`, it
+did not participate in Kogwistar's lease or emit ownership events. This was an
+invalid test of the supported sequential-handoff contract.
+
+The differential tests now explicitly close those raw handles while retaining
+their transaction semantics. With the bundled Rust SQLite 3.50.2 and Python
+SQLite 3.46.1 still distinct, the SQLite-filtered differential suites passed
+on Linux CPython 3.12 and Windows CPython 3.13.3 (**21 passed, 9 deselected on
+each**). Ruff passes. The captured failing database copy passes
+`PRAGMA integrity_check` and contains both expected events, further indicating
+that the failure was tied to overlapping live handles rather than corrupt
+persisted data. The system-linked result is not evidence that matching SQLite
+versions are required.
+
+This closes the reproduced test failure, not the entire DL-07 gate. Native
+PyPy handoff and the required hosted platform/interpreter matrix remain open.
 
 ## Code-level lifecycle findings
 

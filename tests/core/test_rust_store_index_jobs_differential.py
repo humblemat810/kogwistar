@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from pathlib import Path
@@ -395,7 +396,7 @@ def test_python_worker_replays_rust_admitted_projection_after_lease_expiry(
     assert accepted["status"] == "accepted"
 
     # Simulate Rust persisting the action and crashing before Chroma apply/ack.
-    with sqlite3.connect(python.db_path) as conn:
+    with closing(sqlite3.connect(python.db_path)) as conn, conn:
         conn.execute(
             "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
             (claim.job_id,),
@@ -489,7 +490,7 @@ def test_async_python_worker_replays_rust_admitted_projection_after_lease_expiry
     )
     assert accepted["status"] == "accepted"
 
-    with sqlite3.connect(python.db_path) as conn:
+    with closing(sqlite3.connect(python.db_path)) as conn, conn:
         conn.execute(
             "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
             (claim.job_id,),
@@ -568,7 +569,7 @@ def test_sqlite_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
     assert admitted["status"] == "accepted"
 
     # Model a worker crash after durable result admission but before its ack.
-    with sqlite3.connect(python.db_path) as conn:
+    with closing(sqlite3.connect(python.db_path)) as conn, conn:
         conn.execute(
             "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
             (claim.job_id,),
@@ -624,7 +625,7 @@ def test_sqlite_retry_terminal_unknown_fields_and_raw_durable_effect(tmp_path: P
     final_claim = _sqlite(path, {"kind": "claim_index_jobs", "namespace": "ns", "limit": 10, "lease_seconds": 30})
     final = next(item for item in final_claim if item["job_id"] == "final")
     assert _sqlite(path, {"kind": "mark_index_job_failed", "job_id": "final", "error": "final-error", "final": True, "claim_token": final["claim_token"]}) is None
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         raw = conn.execute("SELECT status, last_error, claim_token FROM index_jobs WHERE job_id='final'").fetchone()
         columns = {row[1] for row in conn.execute("PRAGMA table_info(index_jobs)")}
     assert raw == ("FAILED", "final-error", None)
