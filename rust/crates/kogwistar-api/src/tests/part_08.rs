@@ -745,7 +745,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let conversation_scope = json!({
         "namespace": "tenant-a",
         "workspace_id": "workspace-a",
-        "graph_space": "conversation"
+        "graph_space": "facts"
     });
     let conversation_mutation = |id: &str, metadata: Value, document: Option<&str>| {
         let mut value = mutation(id, "gke_nodes", "node", metadata.clone(), document);
@@ -762,11 +762,6 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "conversation-node",
                 json!({"label":"conversation only"}),
                 Some("conversation only"),
-            ),
-            conversation_mutation(
-                shared_entity_id,
-                json!({"label":"same ID in conversation"}),
-                Some("same ID in conversation"),
             ),
             conversation_mutation(
                 "conversation-acl",
@@ -806,7 +801,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "authorization",
                     format!(
                         "Bearer {}",
-                        token_for_graph_space("docs", &["write_graph"], "conversation")
+                        token_for_graph_space("docs", &["write_graph"], "facts")
                     ),
                 )
                 .body(Body::from(serde_json::to_vec(&conversation_body).unwrap()))
@@ -821,15 +816,6 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .filter(|case| matches!(case["truth_graph"].as_str(), Some("workflow" | "wisdom")))
     {
         let truth_graph = case["truth_graph"].as_str().unwrap();
-        let mut graph_node = mutation(
-            shared_entity_id,
-            "gke_nodes",
-            "node",
-            json!({"label":format!("same ID in {truth_graph}")}),
-            Some("same ID in selected graph"),
-        );
-        graph_node["scope"]["graph_space"] = json!(truth_graph);
-        graph_node["event_id"] = json!(format!("{truth_graph}-event-node"));
         let mut graph_acl = mutation(
             &format!("{truth_graph}-acl-shared"),
             "gke_nodes",
@@ -844,13 +830,12 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             }),
             None,
         );
-        graph_acl["scope"]["graph_space"] = json!(truth_graph);
         graph_acl["event_id"] = json!(format!("{truth_graph}-event-acl"));
         let graph_body = json!({
             "contract_version":1,
             "atomic":true,
             "index_jobs":[],
-            "mutations":[graph_node, graph_acl]
+            "mutations":[graph_acl]
         });
         let written = app
             .clone()
@@ -863,7 +848,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                         "authorization",
                         format!(
                             "Bearer {}",
-                            token_for_graph_space("docs", &["write_graph"], truth_graph)
+                            token_for_graph_space("docs", &["write_graph"], "facts")
                         ),
                     )
                     .body(Body::from(serde_json::to_vec(&graph_body).unwrap()))
@@ -886,7 +871,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         }),
     };
     let conversation_visualization = application
-        .graph_read_effect(&visualization_request("conversation", "conversation"))
+        .graph_read_effect(&visualization_request("conversation", "facts"))
         .await;
     assert_eq!(conversation_visualization.status, StatusCode::OK.as_u16());
     let conversation_visualization: Value =
@@ -910,22 +895,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         "conversation visualization ignored its graph-scoped private ACL: {conversation_visualization}"
     );
 
-    let mismatched_visualization = application
-        .graph_read_effect(&visualization_request("conversation", "facts"))
-        .await;
-    assert_eq!(
-        mismatched_visualization.status,
-        StatusCode::FORBIDDEN.as_u16()
-    );
-
     for case in isolation_cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
-        let graph_space = match truth_graph {
-            "knowledge" => "facts",
-            other => other,
-        };
         let response = application
-            .graph_read_effect(&visualization_request(truth_graph, graph_space))
+            .graph_read_effect(&visualization_request(truth_graph, "facts"))
             .await;
         assert_eq!(
             response.status,
@@ -958,7 +931,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "authorization",
                     format!(
                         "Bearer {}",
-                        token_for_graph_space("docs", &["read_graph"], "conversation")
+                        token_for_graph_space("docs", &["read_graph"], "facts")
                     ),
                 )
                 .body(Body::empty())

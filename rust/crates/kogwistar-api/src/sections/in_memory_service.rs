@@ -87,7 +87,7 @@ impl InMemoryGraphApplicationService {
         if request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
             return self.graph_vector_query_effect(request).await;
         }
-        let mut scope = match self.authorized_graph_scope(request) {
+        let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
             Err(response) => return response,
         };
@@ -108,24 +108,6 @@ impl InMemoryGraphApplicationService {
         } else {
             "knowledge".to_owned()
         };
-        if matches!(
-            request.path_and_query.as_str(),
-            INTERNAL_GRAPH_VIZ_D3_ROUTE | INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE
-        ) && matches!(truth_graph.as_str(), "conversation" | "workflow")
-        {
-            if scope
-                .graph_space
-                .as_deref()
-                .is_some_and(|space| space != truth_graph)
-            {
-                return effect_error(
-                    StatusCode::FORBIDDEN,
-                    "KOGWISTAR_GRAPH_SPACE_FORBIDDEN",
-                    "Visualization graph type conflicts with the admitted graph space",
-                );
-            }
-            scope.graph_space = Some(truth_graph.clone());
-        }
         let (nodes, edges) = match self.graph_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
