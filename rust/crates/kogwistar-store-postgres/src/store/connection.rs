@@ -57,6 +57,7 @@ impl PostgresStore {
             .batch_execute(&schema_sql(&self.tables))
             .await
             .map_err(backend)?;
+        ensure_graph_scope_identity_indexes(&transaction, &self.tables).await?;
         transaction.commit().await.map_err(backend)
     }
 

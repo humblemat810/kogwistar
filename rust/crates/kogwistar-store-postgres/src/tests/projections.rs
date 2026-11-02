@@ -3,6 +3,114 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn rust_bootstrap_adds_scope_arbiter_without_changing_python_id_primary_key()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("python_graph_scope_index");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    let nodes = qualified(&tables.quoted_schema, "gke_nodes")?;
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!(
+            "CREATE EXTENSION IF NOT EXISTS vector; \
+             CREATE SCHEMA IF NOT EXISTS {}; \
+             CREATE TABLE {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector(3) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+            tables.quoted_schema, nodes
+        ))
+        .await
+        .map_err(backend)?;
+    drop(client);
+
+    // Match Python's ordinary graph-table bootstrap: id remains the primary key.
+    store.ensure_schema().await?;
+    let client = store.client().await?;
+    let has_id_primary_key: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass($1) AND contype = 'p' AND pg_get_constraintdef(oid) = 'PRIMARY KEY (id)')",
+            &[&nodes],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)?;
+    let has_scope_index: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'uq_graph_scope_identity_0')",
+            &[&schema],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)?;
+    assert!(has_id_primary_key);
+    assert!(has_scope_index);
+    drop(client);
+
+    let scope = GraphScope {
+        namespace: "python-schema".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            record: GraphRecord {
+                id: "shared-id".to_owned(),
+                document: Some("{\"id\":\"shared-id\",\"label\":\"original\"}".to_owned()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    let conflicting_scope = GraphScope {
+        namespace: "other-namespace".to_owned(),
+        ..scope.clone()
+    };
+    assert!(
+        store
+            .upsert_graph_projection(GraphProjectionUpsert {
+                scope: conflicting_scope,
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "shared-id".to_owned(),
+                    document: Some(
+                        "{\"id\":\"shared-id\",\"label\":\"must-not-overwrite\"}".to_owned()
+                    ),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .is_err()
+    );
+    let rows = store
+        .graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["shared-id".to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].document.as_deref().unwrap().contains("original"));
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn document_projection_upsert_reopens_and_retries_idempotently_when_dsn_available()
 -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")

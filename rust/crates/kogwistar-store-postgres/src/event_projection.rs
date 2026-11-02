@@ -341,6 +341,54 @@ pub(super) fn graph_table(tables: &Tables, table: &str) -> PostgresStoreResult<S
     qualified(&tables.quoted_schema, table)
 }
 
+pub(super) async fn ensure_graph_scope_identity_indexes<C>(
+    client: &C,
+    tables: &Tables,
+) -> PostgresStoreResult<()>
+where
+    C: GenericClient + Sync,
+{
+    // Python owns graph-table creation. Add only Rust's conflict arbiters when
+    // those Python-compatible tables already exist; never alter their id PK.
+    let graph_tables = [
+        "gke_nodes",
+        "gke_edges",
+        "gke_documents",
+        "gke_domains",
+        EDGE_ENDPOINTS_TABLE,
+        NODE_DOCS_TABLE,
+        NODE_REFS_TABLE,
+        EDGE_REFS_TABLE,
+    ];
+    for (index, name) in graph_tables.into_iter().enumerate() {
+        let relation = qualified(&tables.quoted_schema, name)?;
+        let exists: bool = client
+            .query_one("SELECT to_regclass($1) IS NOT NULL", &[&relation])
+            .await
+            .map_err(backend)?
+            .try_get(0)
+            .map_err(backend)?;
+        if !exists {
+            continue;
+        }
+        let index_name = quote_identifier(&format!("uq_graph_scope_identity_{index}"))?;
+        client
+            .batch_execute(&format!(
+                "CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {relation} \
+                 (id, (COALESCE(metadata->>'namespace', 'default')), \
+                 (COALESCE(metadata->>'workspace_id', '')), \
+                 (COALESCE(metadata->>'graph_space', '')))"
+            ))
+            .await
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!(
+                    "graph scope conflict index creation failed for {relation}: {error:?}"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 pub(super) async fn create_graph_schema<C>(
     client: &C,
     tables: &Tables,
