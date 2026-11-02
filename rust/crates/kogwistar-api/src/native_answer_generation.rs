@@ -1515,7 +1515,6 @@ fn restore_answer_aliases(
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct AnswerWithCitations {
     text: String,
     reasoning: String,
@@ -1524,7 +1523,6 @@ struct AnswerWithCitations {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct ClaimWithCitations {
     claim: String,
     #[serde(default)]
@@ -1532,7 +1530,6 @@ struct ClaimWithCitations {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 struct SpanRef {
     source_node_id: String,
     mention_index: usize,
@@ -1819,12 +1816,37 @@ mod tests {
         let mut unknown = answer;
         unknown.claims[0].citations[0].source_node_id = "N99".to_owned();
         assert!(restore_answer_aliases(unknown, &aliases, &allowed).is_err());
-        assert!(
-            serde_json::from_value::<AnswerWithCitations>(json!({
-                "text": "x", "reasoning": "y", "claims": [], "extra": true
-            }))
-            .is_err()
-        );
+        let compatible: AnswerWithCitations = serde_json::from_value(json!({
+            "text": "x",
+            "reasoning": "y",
+            "extra": true,
+            "claims": [{
+                "claim": "fact",
+                "claim_extra": "ignored",
+                "citations": [{
+                    "source_node_id": "canonical-node",
+                    "mention_index": 0,
+                    "span_index": 0,
+                    "citation_extra": "ignored"
+                }]
+            }]
+        }))
+        .unwrap();
+        assert_eq!(compatible.claims[0].claim, "fact");
+        assert_eq!(compatible.claims[0].citations[0].source_node_id, "canonical-node");
+    }
+
+    #[test]
+    fn answer_provider_extra_fields_match_python_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-provider-extra-fields-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["contract_version"], 1);
+
+        let answer: AnswerWithCitations =
+            serde_json::from_value(fixture["input"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(answer).unwrap(), fixture["expected"]);
     }
 
     #[test]
