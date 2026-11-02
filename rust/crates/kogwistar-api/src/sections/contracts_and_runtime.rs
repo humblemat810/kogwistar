@@ -332,7 +332,10 @@ mod server_backend_tests {
 
     #[test]
     fn server_backend_config_accepts_only_implemented_compositions() {
-        assert_eq!(ServerBackend::from_config("pg").unwrap(), ServerBackend::Postgres);
+        assert_eq!(
+            ServerBackend::from_config("pg").unwrap(),
+            ServerBackend::Postgres
+        );
         assert_eq!(
             ServerBackend::from_config(" SQLITE ").unwrap(),
             ServerBackend::Sqlite
@@ -383,9 +386,13 @@ fn embedding_provider_from_settings(
     let model = model
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "KOGWISTAR_EMBEDDING_MODEL is required when embedding is enabled".to_owned())?;
+        .ok_or_else(|| {
+            "KOGWISTAR_EMBEDDING_MODEL is required when embedding is enabled".to_owned()
+        })?;
     let dimension = dimension
-        .ok_or_else(|| "KOGWISTAR_EMBEDDING_DIMENSION is required when embedding is enabled".to_owned())?
+        .ok_or_else(|| {
+            "KOGWISTAR_EMBEDDING_DIMENSION is required when embedding is enabled".to_owned()
+        })?
         .parse::<usize>()
         .map_err(|_| "KOGWISTAR_EMBEDDING_DIMENSION must be a positive integer".to_owned())?;
     if dimension == 0 {
@@ -419,8 +426,8 @@ fn embedding_provider_from_settings(
     Ok(Some(Arc::new(provider)))
 }
 
-fn chat_completion_provider_from_environment(
-) -> Result<Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>, String> {
+fn chat_completion_provider_from_environment()
+-> Result<Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>, String> {
     let endpoint = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -476,9 +483,7 @@ fn boolean_environment(name: &str) -> Result<bool, std::io::Error> {
     }
 }
 
-fn parse_projection_reconcile_interval(
-    raw: Option<&str>,
-) -> Result<std::time::Duration, String> {
+fn parse_projection_reconcile_interval(raw: Option<&str>) -> Result<std::time::Duration, String> {
     let Some(raw) = raw else {
         return Ok(std::time::Duration::ZERO);
     };
@@ -524,8 +529,8 @@ fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std:
         )
     })?;
     let namespace = std::env::var("KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE").ok();
-    let namespace = parse_projection_reconcile_namespace(interval, namespace)
-        .map_err(std::io::Error::other)?;
+    let namespace =
+        parse_projection_reconcile_namespace(interval, namespace).map_err(std::io::Error::other)?;
     Ok((interval, namespace))
 }
 
@@ -586,113 +591,123 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         let dsn = backend_setting
             .clone()
             .expect("PostgreSQL backend requires its DSN");
-                let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
-                let wisdom_schema = configured_wisdom_schema(
-                    &schema_base,
-                    std::env::var("KOGWISTAR_WISDOM_SCHEMA").ok().as_deref(),
-                )
-                .map_err(std::io::Error::other)?;
-                let mut service = PostgresRunApplicationService::from_dsn_with_wisdom_schema(
-                    &dsn,
-                    &schema_base,
-                    &wisdom_schema,
-                )
-                .map_err(std::io::Error::other)?;
-                service = service
-                    .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
-                    .map_err(std::io::Error::other)?;
-                if let Some(provider) = chat_completion_provider_from_environment()
-                    .map_err(std::io::Error::other)?
-                {
-                    service = service.with_chat_completion_provider(provider);
-                }
-                service = service
-                    .with_owner_auth_config(&state.auth)
-                    .await
-                    .map_err(std::io::Error::other)?;
-                let embedding_provider = embedding_provider_from_settings(
-                    std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
-                    std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
-                    std::env::var("KOGWISTAR_EMBEDDING_DIMENSION").ok().as_deref(),
-                    std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT").ok().as_deref(),
-                )
-                .map_err(std::io::Error::other)?;
-                if let Some(provider) = embedding_provider {
-                    service = service.with_embedding_provider(provider);
-                    embedding_worker_available = true;
-                }
-                service
-                    .ensure_schema()
-                    .await
-                    .map_err(std::io::Error::other)?;
-                Arc::new(service)
+        let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
+        let wisdom_schema = configured_wisdom_schema(
+            &schema_base,
+            std::env::var("KOGWISTAR_WISDOM_SCHEMA").ok().as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        let knowledge_schema = format!("{schema_base}_knowledge");
+        let conversation_schema = format!("{schema_base}_conversation");
+        let workflow_schema = format!("{schema_base}_workflow");
+        let mut service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+            &dsn,
+            &knowledge_schema,
+            &conversation_schema,
+            &workflow_schema,
+            &wisdom_schema,
+        )
+        .map_err(std::io::Error::other)?;
+        service = service
+            .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
+            .map_err(std::io::Error::other)?;
+        if let Some(provider) =
+            chat_completion_provider_from_environment().map_err(std::io::Error::other)?
+        {
+            service = service.with_chat_completion_provider(provider);
+        }
+        service = service
+            .with_owner_auth_config(&state.auth)
+            .await
+            .map_err(std::io::Error::other)?;
+        let embedding_provider = embedding_provider_from_settings(
+            std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_DIMENSION")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT")
+                .ok()
+                .as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        if let Some(provider) = embedding_provider {
+            service = service.with_embedding_provider(provider);
+            embedding_worker_available = true;
+        }
+        service
+            .ensure_schema()
+            .await
+            .map_err(std::io::Error::other)?;
+        Arc::new(service)
     } else if backend == ServerBackend::Sqlite {
-        let path = backend_setting
-            .expect("SQLite backend requires its database path");
-                let chroma = match std::env::var("KOGWISTAR_CHROMA_ENDPOINT") {
-                    Ok(endpoint) if !endpoint.trim().is_empty() => {
-                        let metric = match environment("KOGWISTAR_CHROMA_METRIC", "cosine")
-                            .trim()
-                            .to_ascii_lowercase()
-                            .as_str()
-                        {
-                            "cosine" => DistanceMetric::Cosine,
-                            "l2" | "squared_l2" => DistanceMetric::L2,
-                            "inner_product" | "ip" => DistanceMetric::InnerProduct,
-                            _ => {
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidInput,
-                                    "KOGWISTAR_CHROMA_METRIC must be cosine, l2, or inner_product",
-                                )
-                                .into());
-                            }
-                        };
-                        Some(SqliteChromaGraphConfig {
-                            endpoint,
-                            metric,
-                            node_collection: environment(
-                                "KOGWISTAR_CHROMA_NODE_COLLECTION",
-                                "nodes",
-                            ),
-                            edge_collection: environment(
-                                "KOGWISTAR_CHROMA_EDGE_COLLECTION",
-                                "edges",
-                            ),
-                        })
+        let path = backend_setting.expect("SQLite backend requires its database path");
+        let chroma = match std::env::var("KOGWISTAR_CHROMA_ENDPOINT") {
+            Ok(endpoint) if !endpoint.trim().is_empty() => {
+                let metric = match environment("KOGWISTAR_CHROMA_METRIC", "cosine")
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "cosine" => DistanceMetric::Cosine,
+                    "l2" | "squared_l2" => DistanceMetric::L2,
+                    "inner_product" | "ip" => DistanceMetric::InnerProduct,
+                    _ => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "KOGWISTAR_CHROMA_METRIC must be cosine, l2, or inner_product",
+                        )
+                        .into());
                     }
-                    _ => None,
                 };
-                let chroma_configured = chroma.is_some();
-                projection_reconciliation_available = chroma_configured;
-                let mut service = open_sqlite_application_service(path, chroma)
-                    .await
-                    .map_err(std::io::Error::other)?;
-                service = service
-                    .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
-                    .map_err(std::io::Error::other)?;
-                service = service
-                    .with_owner_auth_config(&state.auth)
-                    .await
-                    .map_err(std::io::Error::other)?;
-                if chroma_configured {
-                    if let Some(provider) = chat_completion_provider_from_environment()
-                        .map_err(std::io::Error::other)?
-                    {
-                        service = service.with_chat_completion_provider(provider);
-                    }
-                    let embedding_provider = embedding_provider_from_settings(
-                        std::env::var("KOGWISTAR_EMBEDDING_PROVIDER").ok().as_deref(),
-                        std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
-                        std::env::var("KOGWISTAR_EMBEDDING_DIMENSION").ok().as_deref(),
-                        std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT").ok().as_deref(),
-                    )
-                    .map_err(std::io::Error::other)?;
-                    if let Some(provider) = embedding_provider {
-                        service = service.with_embedding_provider(provider);
-                        embedding_worker_available = true;
-                    }
-                }
-                Arc::new(service)
+                Some(SqliteChromaGraphConfig {
+                    endpoint,
+                    metric,
+                    node_collection: environment("KOGWISTAR_CHROMA_NODE_COLLECTION", "nodes"),
+                    edge_collection: environment("KOGWISTAR_CHROMA_EDGE_COLLECTION", "edges"),
+                })
+            }
+            _ => None,
+        };
+        let chroma_configured = chroma.is_some();
+        projection_reconciliation_available = chroma_configured;
+        let mut service = open_sqlite_application_service(path, chroma)
+            .await
+            .map_err(std::io::Error::other)?;
+        service = service
+            .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
+            .map_err(std::io::Error::other)?;
+        service = service
+            .with_owner_auth_config(&state.auth)
+            .await
+            .map_err(std::io::Error::other)?;
+        if chroma_configured {
+            if let Some(provider) =
+                chat_completion_provider_from_environment().map_err(std::io::Error::other)?
+            {
+                service = service.with_chat_completion_provider(provider);
+            }
+            let embedding_provider = embedding_provider_from_settings(
+                std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
+                    .ok()
+                    .as_deref(),
+                std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+                std::env::var("KOGWISTAR_EMBEDDING_DIMENSION")
+                    .ok()
+                    .as_deref(),
+                std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT")
+                    .ok()
+                    .as_deref(),
+            )
+            .map_err(std::io::Error::other)?;
+            if let Some(provider) = embedding_provider {
+                service = service.with_embedding_provider(provider);
+                embedding_worker_available = true;
+            }
+        }
+        Arc::new(service)
     } else {
         Arc::new(InMemoryGraphApplicationService::default())
     };
@@ -715,10 +730,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         let application = Arc::clone(&application);
         Some((
             shutdown,
-            tokio::spawn(supervise_inline_native_worker(
-                application,
-                shutdown_rx,
-            )),
+            tokio::spawn(supervise_inline_native_worker(application, shutdown_rx)),
         ))
     } else {
         None
@@ -846,7 +858,6 @@ pub trait ApplicationService: Send + Sync + 'static {
         &self,
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>>;
-
 }
 
 async fn run_one_inline_native_worker_iteration(
@@ -1015,7 +1026,13 @@ fn native_result_for_claimed_work(
 
 fn native_request_for_claimed_work(
     work: &RuntimeClaimedWork,
-) -> Result<(RecordedWorkerHandoff, kogwistar_runtime::RuntimeNativeStepRequest), String> {
+) -> Result<
+    (
+        RecordedWorkerHandoff,
+        kogwistar_runtime::RuntimeNativeStepRequest,
+    ),
+    String,
+> {
     let handoff = RecordedWorkerHandoff {
         message_id: work.message_id.clone(),
         claimed_by: work.claimed_by.clone(),
@@ -1042,8 +1059,9 @@ fn native_result_from_request(
     native_request: kogwistar_runtime::RuntimeNativeStepRequest,
     registry: &kogwistar_runtime::NativeOperationRegistry,
 ) -> Result<RuntimeWorkerResultRequest, String> {
-    let mut effect = kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
-        .map_err(|error| format!("native execution rejected: {error}"))?;
+    let mut effect =
+        kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
+            .map_err(|error| format!("native execution rejected: {error}"))?;
     if let Some(events) = native_request
         .ephemeral_context
         .get("_provider_event_trace_summaries")
@@ -1071,7 +1089,9 @@ fn native_result_from_request(
                 "provider_event": summary,
             });
             if let Some(fields) = trace.as_object_mut() {
-                fields.extend(kogwistar_runtime::native_trace_context_fields(&native_request));
+                fields.extend(kogwistar_runtime::native_trace_context_fields(
+                    &native_request,
+                ));
             }
             attach_rust_native_seam_attestation(&mut trace);
             effect.trace_events.push(trace);
@@ -1086,7 +1106,9 @@ fn native_result_from_request(
                 "omitted_count": events.len() - MAX_PROVIDER_EVENT_TRACES,
             });
             if let Some(fields) = trace.as_object_mut() {
-                fields.extend(kogwistar_runtime::native_trace_context_fields(&native_request));
+                fields.extend(kogwistar_runtime::native_trace_context_fields(
+                    &native_request,
+                ));
             }
             attach_rust_native_seam_attestation(&mut trace);
             effect.trace_events.push(trace);
@@ -1159,7 +1181,10 @@ mod provider_event_trace_tests {
             "openai_compatible_chat_completions"
         );
         assert_eq!(provider_trace["step_seq"], 3);
-        assert_eq!(provider_trace["provider_event"]["kind"], "response_completed");
+        assert_eq!(
+            provider_trace["provider_event"]["kind"],
+            "response_completed"
+        );
     }
 
     #[test]
@@ -1195,13 +1220,12 @@ mod provider_event_trace_tests {
         request
             .ephemeral_context
             .insert("authorized_provider_event".to_owned(), event.clone());
-        request.ephemeral_context.insert(
-            "authorized_provider_event_claim".to_owned(),
-            claim.clone(),
-        );
+        request
+            .ephemeral_context
+            .insert("authorized_provider_event_claim".to_owned(), claim.clone());
         let registry = kogwistar_runtime::NativeOperationRegistry::default();
-        let received = kogwistar_runtime::execute_native_step_with_registry(&request, &registry)
-            .unwrap();
+        let received =
+            kogwistar_runtime::execute_native_step_with_registry(&request, &registry).unwrap();
         request.operation = "agent.event.ack".to_owned();
         request.node_id = "ack-event".to_owned();
         request.state = kogwistar_contracts::apply_state_update_pairs(
@@ -1234,10 +1258,7 @@ mod provider_event_trace_tests {
         .unwrap();
 
         assert_eq!(
-            result
-                .effect
-                .unwrap()
-                .provider_event_acknowledgements,
+            result.effect.unwrap().provider_event_acknowledgements,
             vec![kogwistar_runtime::ProviderEventAcknowledgementV1 {
                 message_id: format!("msg:{event_id}"),
                 claimed_by: "event-worker#attempt-1".to_owned(),
@@ -1426,7 +1447,10 @@ fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectio
             let payload: Value = serde_json::from_str(&event.payload_json).ok()?;
             let trace = payload.get("trace")?;
             let trace_event = trace.get("event")?.as_str()?;
-            if !matches!(trace_event, "runtime.native.step.completed" | "step_attempt_completed") {
+            if !matches!(
+                trace_event,
+                "runtime.native.step.completed" | "step_attempt_completed"
+            ) {
                 return None;
             }
             let step_seq = trace.get("step_seq")?.as_i64()?;
@@ -1476,8 +1500,8 @@ fn runtime_inspection_effect(
     match tail {
         ["steps"] => {
             let steps = if query_parameter_present(&request.path_and_query, "limit") {
-                let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000)
-                    as usize;
+                let limit =
+                    query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000) as usize;
                 steps.into_iter().take(limit).collect::<Vec<_>>()
             } else {
                 steps
@@ -1820,8 +1844,7 @@ fn answer_workflow_plan_is_executable(
             .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
         {
             kogwistar_runtime::PYTHON_EXECUTOR_TARGET => {
-                python_executor_ops.contains(op.as_str())
-                    && Some(version) == python_op_version
+                python_executor_ops.contains(op.as_str()) && Some(version) == python_op_version
             }
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET => {
                 native_operations.supports(op, version)
@@ -2176,9 +2199,9 @@ fn validate_python_worker_submission_trace_binding(
             || event
                 .get("executor_target")
                 .is_some_and(|value| value.as_str() != Some("python-worker"))
-            || event.get("identity_source").is_some_and(|value| {
-                value.as_str() != Some("worker_configuration")
-            })
+            || event
+                .get("identity_source")
+                .is_some_and(|value| value.as_str() != Some("worker_configuration"))
             || event
                 .get("worker_id")
                 .and_then(Value::as_str)
@@ -2518,7 +2541,10 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         .iter()
         .map(|node| node["id"].as_str().map(str::to_owned))
         .collect::<Option<Vec<_>>>()?;
-    let node_id_set = node_ids.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    let node_id_set = node_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
     if node_id_set.len() != node_ids.len() {
         return None;
     }
@@ -2761,8 +2787,7 @@ fn exact_runtime_graph_plan(
     if !matches!(
         projection.materialization_status.as_str(),
         "ready" | "rust_event_only"
-    )
-        || projection.payload["current_version"].as_i64()? != snapshot.version
+    ) || projection.payload["current_version"].as_i64()? != snapshot.version
         || projection.payload["snapshot_schema_version"]
             .as_i64()
             .is_some_and(|version| version != snapshot.schema_version)

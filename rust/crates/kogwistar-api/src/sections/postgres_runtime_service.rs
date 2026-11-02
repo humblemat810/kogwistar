@@ -42,16 +42,18 @@ fn validate_provider_event_publications(
         }
         let matching_nodes = mutations
             .iter()
-            .filter(|mutation| {
-                mutation.entity_kind == "node" && mutation.record.id == message_id
-            })
+            .filter(|mutation| mutation.entity_kind == "node" && mutation.record.id == message_id)
             .collect::<Vec<_>>();
         if matching_nodes.len() != 1 {
-            return Err("provider event must have exactly one matching graph message node".to_owned());
+            return Err(
+                "provider event must have exactly one matching graph message node".to_owned(),
+            );
         }
         let node = matching_nodes[0];
         if node.scope.graph_space.as_deref() != Some("conversation") {
-            return Err("provider event graph node must use the conversation graph space".to_owned());
+            return Err(
+                "provider event graph node must use the conversation graph space".to_owned(),
+            );
         }
         if node.scope.namespace != publication.namespace {
             return Err("provider event namespace must match its graph mutation scope".to_owned());
@@ -83,7 +85,9 @@ fn validate_provider_event_publications(
             || metadata.get("shared_scope").and_then(Value::as_bool) != Some(false)
             || graph_payload.as_ref() != Some(&expected_payload)
         {
-            return Err("provider event graph node does not match its durable publication".to_owned());
+            return Err(
+                "provider event graph node does not match its durable publication".to_owned(),
+            );
         }
         let has_conversation_edge = mutations.iter().any(|mutation| {
             mutation.entity_kind == "edge"
@@ -103,24 +107,36 @@ fn validate_provider_event_publications(
                     .get("target_ids")
                     .and_then(Value::as_array)
                     .is_some_and(|ids| ids.len() == 1)
-                && mutation.record.metadata.get("conversation_id").and_then(Value::as_str)
+                && mutation
+                    .record
+                    .metadata
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
                     == Some(publication.conversation_id.as_str())
         });
         if !has_conversation_edge {
-            return Err("provider event graph batch must link the event into its conversation".to_owned());
+            return Err(
+                "provider event graph batch must link the event into its conversation".to_owned(),
+            );
         }
     }
     let graph_event_ids = mutations
         .iter()
         .filter(|mutation| {
             mutation.entity_kind == "node"
-                && mutation.record.metadata.get("msg_type").and_then(Value::as_str)
+                && mutation
+                    .record
+                    .metadata
+                    .get("msg_type")
+                    .and_then(Value::as_str)
                     == Some("agent.provider_event")
         })
         .map(|mutation| mutation.record.id.clone())
         .collect::<BTreeSet<_>>();
     if graph_event_ids != published_ids {
-        return Err("provider event graph nodes and lane publications must match exactly".to_owned());
+        return Err(
+            "provider event graph nodes and lane publications must match exactly".to_owned(),
+        );
     }
     Ok(())
 }
@@ -283,8 +299,7 @@ fn rust_pgvector_embedding_scope(
         #[cfg(unix)]
         Some(tokio_postgres::config::Host::Unix(_)) => {
             return Err(
-                "embedding profile binding does not support Unix-socket PostgreSQL DSNs"
-                    .to_owned(),
+                "embedding profile binding does not support Unix-socket PostgreSQL DSNs".to_owned(),
             );
         }
         None => "localhost".to_owned(),
@@ -292,7 +307,8 @@ fn rust_pgvector_embedding_scope(
     let port = config.get_ports().first().copied().unwrap_or(5432);
     let database = config.get_dbname().unwrap_or_default().trim();
     let tables = "gke_nodes:gke_edges:gke_documents:gke_domains";
-    let canonical = format!("host={host}|port={port}|database={database}|schema={schema}|tables={tables}");
+    let canonical =
+        format!("host={host}|port={port}|database={database}|schema={schema}|tables={tables}");
     let digest = Sha256::digest(canonical.as_bytes());
     let fingerprint = digest
         .iter()
@@ -325,9 +341,9 @@ fn validate_embedding_profile_projection(
             .ok_or_else(|| "embedding profile registry payload is missing".to_owned())?,
     )
     .map_err(|_| "embedding profile registry payload is corrupt".to_owned())?;
-    registered.validate().map_err(|_| {
-        format!("embedding profile registry record is invalid for {storage_scope}")
-    })?;
+    registered
+        .validate()
+        .map_err(|_| format!("embedding profile registry record is invalid for {storage_scope}"))?;
     if registered.fingerprint() != configured.fingerprint() {
         return Err(format!(
             "embedding profile mismatch for {storage_scope}: configured {}/{}/{}D, registered {}/{}/{}D",
@@ -403,22 +419,17 @@ async fn ensure_embedding_profile_binding_for_store(
 }
 
 fn conversation_record_value(record: &GraphRecord, field: &str) -> Option<Value> {
-    record
-        .metadata
-        .get(field)
-        .cloned()
-        .or_else(|| {
-            record
-                .document
-                .as_deref()
-                .and_then(|document| serde_json::from_str::<Value>(document).ok())
-                .and_then(|document| document.get(field).cloned())
-        })
+    record.metadata.get(field).cloned().or_else(|| {
+        record
+            .document
+            .as_deref()
+            .and_then(|document| serde_json::from_str::<Value>(document).ok())
+            .and_then(|document| document.get(field).cloned())
+    })
 }
 
 fn conversation_record_string(record: &GraphRecord, field: &str) -> Option<String> {
-    conversation_record_value(record, field)
-        .and_then(|value| value.as_str().map(str::to_owned))
+    conversation_record_value(record, field).and_then(|value| value.as_str().map(str::to_owned))
 }
 
 fn conversation_record_i64(record: &GraphRecord, field: &str) -> Option<i64> {
@@ -478,29 +489,22 @@ fn conversation_next_turn_distances(
     text: &str,
     turn_index: i64,
 ) -> (i64, i64, i64) {
-    let previous_char_distance = conversation_record_i64(
-        previous,
-        "char_distance_from_last_summary",
-    )
-    .unwrap_or(0)
-        + previous
-            .document
-            .as_deref()
-            .and_then(|document| serde_json::from_str::<Value>(document).ok())
-            .and_then(|document| {
-                document
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .map(|summary| summary.chars().count() as i64)
-            })
-            .unwrap_or(0);
+    let previous_char_distance =
+        conversation_record_i64(previous, "char_distance_from_last_summary").unwrap_or(0)
+            + previous
+                .document
+                .as_deref()
+                .and_then(|document| serde_json::from_str::<Value>(document).ok())
+                .and_then(|document| {
+                    document
+                        .get("summary")
+                        .and_then(Value::as_str)
+                        .map(|summary| summary.chars().count() as i64)
+                })
+                .unwrap_or(0);
     let char_distance = previous_char_distance + text.chars().count() as i64;
-    let turn_distance = conversation_record_i64(
-        previous,
-        "turn_distance_from_last_summary",
-    )
-    .unwrap_or(-1)
-        + 2;
+    let turn_distance =
+        conversation_record_i64(previous, "turn_distance_from_last_summary").unwrap_or(-1) + 2;
     (char_distance, turn_distance, turn_index)
 }
 
@@ -515,6 +519,24 @@ impl PostgresRunApplicationService {
         schema: &str,
         wisdom_schema: &str,
     ) -> Result<Self, String> {
+        let conversation_schema = format!("{schema}_conversation");
+        let workflow_schema = format!("{schema}_workflow");
+        Self::from_dsn_with_graph_schemas(
+            dsn,
+            schema,
+            &conversation_schema,
+            &workflow_schema,
+            wisdom_schema,
+        )
+    }
+
+    pub fn from_dsn_with_graph_schemas(
+        dsn: &str,
+        knowledge_schema: &str,
+        conversation_schema: &str,
+        workflow_schema: &str,
+        wisdom_schema: &str,
+    ) -> Result<Self, String> {
         let dsn = dsn
             .strip_prefix("postgresql+psycopg://")
             .map(|rest| format!("postgresql://{rest}"))
@@ -526,28 +548,35 @@ impl PostgresRunApplicationService {
         let config = dsn
             .parse::<tokio_postgres::Config>()
             .map_err(|_| "invalid PostgreSQL DSN".to_owned())?;
-        let embedding_storage_scope = rust_pgvector_embedding_scope(&config, schema);
-        let native_operations = crate::native_answer_persist::registry()
-            .map_err(|error| format!("could not register native conversation operations: {error}"))?;
+        let embedding_storage_scope = rust_pgvector_embedding_scope(&config, knowledge_schema);
+        let native_operations = crate::native_answer_persist::registry().map_err(|error| {
+            format!("could not register native conversation operations: {error}")
+        })?;
         let wisdom_embedding_storage_scope = rust_pgvector_embedding_scope(&config, wisdom_schema);
-        let store = PostgresStore::from_config(config.clone(), schema)
+        let store = PostgresStore::from_config(config.clone(), knowledge_schema)
             .map_err(|error| error.to_string())?;
-        let wisdom_store = PostgresStore::from_config(config, wisdom_schema)
+        let conversation_store = PostgresStore::from_config(config.clone(), conversation_schema)
             .map_err(|error| error.to_string())?;
+        let workflow_store = PostgresStore::from_config(config.clone(), workflow_schema)
+            .map_err(|error| error.to_string())?;
+        let wisdom_store =
+            PostgresStore::from_config(config, wisdom_schema).map_err(|error| error.to_string())?;
         Ok(Self {
-                store,
-                wisdom_store,
-                graph_role: "knowledge".to_owned(),
-                max_queue: runtime_max_queue(),
-                capabilities: Arc::new(Mutex::new(CapabilityState::default())),
-                native_operations,
-                owner_auth_store: None,
-                embedding_provider: None,
-                embedding_storage_scope,
-                wisdom_embedding_storage_scope,
-                chat_completion_provider: None,
-                transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
-            })
+            store,
+            conversation_store,
+            workflow_store,
+            wisdom_store,
+            graph_role: "knowledge".to_owned(),
+            max_queue: runtime_max_queue(),
+            capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+            native_operations,
+            owner_auth_store: None,
+            embedding_provider: None,
+            embedding_storage_scope,
+            wisdom_embedding_storage_scope,
+            chat_completion_provider: None,
+            transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
+        })
     }
 
     pub async fn ensure_schema(&self) -> Result<(), String> {
@@ -560,7 +589,8 @@ impl PostgresRunApplicationService {
             .await
             .map_err(|error| error.to_string())?;
         if let Some(provider) = &self.embedding_provider {
-            self.ensure_embedding_profile_binding(provider.profile()).await?;
+            self.ensure_embedding_profile_binding(provider.profile())
+                .await?;
         }
         Ok(())
     }
@@ -576,7 +606,10 @@ impl PostgresRunApplicationService {
         &self,
         configured: &kogwistar_engine::embedding::EmbeddingProfile,
     ) -> Result<(), String> {
-        let storage_scope = self.embedding_storage_scope.as_ref().map_err(Clone::clone)?;
+        let storage_scope = self
+            .embedding_storage_scope
+            .as_ref()
+            .map_err(Clone::clone)?;
         ensure_embedding_profile_binding_for_store(&self.store, configured, storage_scope).await?;
         let wisdom_scope = self
             .wisdom_embedding_storage_scope
@@ -596,10 +629,7 @@ impl PostgresRunApplicationService {
         self
     }
 
-    pub async fn with_owner_auth_config(
-        mut self,
-        config: &AuthConfig,
-    ) -> Result<Self, String> {
+    pub async fn with_owner_auth_config(mut self, config: &AuthConfig) -> Result<Self, String> {
         self.owner_auth_store = Some(Arc::new(AuthStore::from_config(config).await?));
         Ok(self)
     }
@@ -614,12 +644,18 @@ impl PostgresRunApplicationService {
             .server_run(run_id)
             .await
             .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned())
+            })?;
         let owner_id = run
             .user_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no authenticated owner".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run has no authenticated owner".to_owned(),
+                )
+            })?;
         let created = self
             .store
             .server_run_events(run_id, 0, 1)
@@ -627,29 +663,47 @@ impl PostgresRunApplicationService {
             .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
             .into_iter()
             .find(|event| event.event_type == "run.created")
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no admission event".to_owned()))?;
-        let created_payload: Value = serde_json::from_str(&created.payload_json)
-            .map_err(|_| InlineOwnerPrincipalError::Denied("native worker admission event is invalid".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run has no admission event".to_owned(),
+                )
+            })?;
+        let created_payload: Value = serde_json::from_str(&created.payload_json).map_err(|_| {
+            InlineOwnerPrincipalError::Denied("native worker admission event is invalid".to_owned())
+        })?;
         let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
             created_payload
                 .get("runtime_owner_binding")
                 .cloned()
-                .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no trusted owner binding".to_owned()))?,
+                .ok_or_else(|| {
+                    InlineOwnerPrincipalError::Denied(
+                        "native worker run has no trusted owner binding".to_owned(),
+                    )
+                })?,
         )
-        .map_err(|_| InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned()))?;
+        .map_err(|_| {
+            InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned())
+        })?;
         if binding.user_id != owner_id {
-            return Err(InlineOwnerPrincipalError::Denied("native worker owner binding does not match the durable run owner".to_owned()));
+            return Err(InlineOwnerPrincipalError::Denied(
+                "native worker owner binding does not match the durable run owner".to_owned(),
+            ));
         }
-        let auth_store = self
-            .owner_auth_store
-            .as_ref()
-            .ok_or_else(|| InlineOwnerPrincipalError::Unavailable("native worker owner revalidation is not configured".to_owned()))?;
+        let auth_store = self.owner_auth_store.as_ref().ok_or_else(|| {
+            InlineOwnerPrincipalError::Unavailable(
+                "native worker owner revalidation is not configured".to_owned(),
+            )
+        })?;
         let user = auth_store
             .auth_user(owner_id)
             .await
             .map_err(InlineOwnerPrincipalError::Unavailable)?
             .filter(|user| user.is_active)
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run owner is missing or inactive".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run owner is missing or inactive".to_owned(),
+                )
+            })?;
         revalidated_runtime_owner_principal(
             &binding,
             &user,
@@ -729,10 +783,8 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let acl_principal = graph_acl_principal_from_claims(
-            &principal,
-            scope_claims["security_scope"].as_str(),
-        );
+        let acl_principal =
+            graph_acl_principal_from_claims(&principal, scope_claims["security_scope"].as_str());
         let conversation_id = request.conversation_id.clone();
         let turn_id = turn_id.to_owned();
         self.store
@@ -791,9 +843,9 @@ impl PostgresRunApplicationService {
                                     document
                                         .get("conversation_id")
                                         .or_else(|| {
-                                            document
-                                                .get("metadata")
-                                                .and_then(|metadata| metadata.get("conversation_id"))
+                                            document.get("metadata").and_then(|metadata| {
+                                                metadata.get("conversation_id")
+                                            })
                                         })
                                         .and_then(Value::as_str)
                                         .map(|value| value == conversation_id)
@@ -860,7 +912,9 @@ impl PostgresRunApplicationService {
             .await
             .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?
             .map_err(|error| match error {
-                NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
+                NativeEvidenceRecordError::Rejected => {
+                    NativeEvidenceContextError::GraphReadRejected
+                }
                 NativeEvidenceRecordError::Unavailable => {
                     NativeEvidenceContextError::GraphReadUnavailable
                 }
@@ -973,12 +1027,11 @@ impl PostgresRunApplicationService {
                 .map(|matched| matched.record.clone())
                 .collect::<Vec<_>>(),
         ];
-        let acl_principal = graph_acl_principal_from_claims(
-            &principal,
-            scope_value["security_scope"].as_str(),
-        );
+        let acl_principal =
+            graph_acl_principal_from_claims(&principal, scope_value["security_scope"].as_str());
         let visible_ids = self
             .authorized_vector_candidate_ids(
+                &self.store,
                 &scope,
                 "knowledge",
                 "node",
@@ -1151,10 +1204,8 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let acl_principal = graph_acl_principal_from_claims(
-            &principal,
-            scope_claims["security_scope"].as_str(),
-        );
+        let acl_principal =
+            graph_acl_principal_from_claims(&principal, scope_claims["security_scope"].as_str());
         let conversation_id = conversation_id.to_owned();
         let result = self.store
             .transaction(move |uow| {
@@ -1281,9 +1332,11 @@ impl PostgresRunApplicationService {
             .await
             .map_err(|_| NativeEvidenceContextError::GraphReadUnavailable)?;
         result.map_err(|error| match error {
-                NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
-                NativeEvidenceRecordError::Unavailable => NativeEvidenceContextError::GraphReadUnavailable,
-            })
+            NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
+            NativeEvidenceRecordError::Unavailable => {
+                NativeEvidenceContextError::GraphReadUnavailable
+            }
+        })
     }
 
     async fn native_turn_link_context(
@@ -1340,8 +1393,12 @@ impl PostgresRunApplicationService {
             )
             .await
             .map_err(|error| match error {
-                NativeEvidenceRecordError::Rejected => NativeEvidenceContextError::GraphReadRejected,
-                NativeEvidenceRecordError::Unavailable => NativeEvidenceContextError::GraphReadUnavailable,
+                NativeEvidenceRecordError::Rejected => {
+                    NativeEvidenceContextError::GraphReadRejected
+                }
+                NativeEvidenceRecordError::Unavailable => {
+                    NativeEvidenceContextError::GraphReadUnavailable
+                }
             })?;
         let nodes = records
             .get("nodes")
@@ -1367,8 +1424,7 @@ impl PostgresRunApplicationService {
                 || (expected_type == "assistant_turn" && actual_type == Some("conversation_turn"));
             if record.get("id").and_then(Value::as_str) != Some(expected_id)
                 || !valid_type
-                || metadata.get("conversation_id").and_then(Value::as_str)
-                    != Some(conversation_id)
+                || metadata.get("conversation_id").and_then(Value::as_str) != Some(conversation_id)
                 || matches!(
                     metadata.get("lifecycle_status").and_then(Value::as_str),
                     Some("tombstoned" | "deleted")
@@ -1425,16 +1481,31 @@ impl PostgresRunApplicationService {
             turn_id: request
                 .turn_node_id
                 .clone()
-                .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str).map(str::to_owned))
+                .or_else(|| {
+                    request
+                        .state
+                        .get("turn_node_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
                 .unwrap_or_default(),
             workflow_node_id: request.node_id.clone(),
             step_id: request.step_seq.to_string(),
             attempt,
             producer_step_seq: Some(request.step_seq),
             producer_attempt: Some(attempt),
-            trace_id: trace_context.get("trace_id").and_then(Value::as_str).map(str::to_owned),
-            span_id: trace_context.get("span_id").and_then(Value::as_str).map(str::to_owned),
-            parent_span_id: trace_context.get("parent_span_id").and_then(Value::as_str).map(str::to_owned),
+            trace_id: trace_context
+                .get("trace_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            span_id: trace_context
+                .get("span_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            parent_span_id: trace_context
+                .get("parent_span_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             provider_id: provider_id.to_owned(),
             provider_response_id: event_value
                 .get("response_id")
@@ -1486,9 +1557,11 @@ impl PostgresRunApplicationService {
             ));
         };
         let provider_request: kogwistar_contracts::ProviderRequestV1 = serde_json::from_value(
-            request.state.get("provider_request").cloned().ok_or_else(|| {
-                "agent.event.request requires provider_request state".to_owned()
-            })?,
+            request
+                .state
+                .get("provider_request")
+                .cloned()
+                .ok_or_else(|| "agent.event.request requires provider_request state".to_owned())?,
         )
         .map_err(|_| "provider_request does not match the v1 contract".to_owned())?;
         provider_request
@@ -1509,7 +1582,10 @@ impl PostgresRunApplicationService {
             .iter()
             .any(|capability| capability == "write_graph")
         {
-            return Err("provider-event request requires current run-owner write_graph authority".to_owned());
+            return Err(
+                "provider-event request requires current run-owner write_graph authority"
+                    .to_owned(),
+            );
         }
         if !self
             .store
@@ -1558,24 +1634,43 @@ impl PostgresRunApplicationService {
                 async move {
                     if let kogwistar_contracts::ProviderEventV1::TextDelta { delta, .. } = &event {
                         if delta.chars().count() > 4096 {
-                            return Err("transient text delta exceeds the configured size limit".to_owned());
+                            return Err(
+                                "transient text delta exceeds the configured size limit".to_owned()
+                            );
                         }
-                        let sequence = client_sequence.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-                        let _ = service.transient_run_deltas.publish(&request.run_id, sequence, delta);
+                        let sequence = client_sequence
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1);
+                        let _ =
+                            service
+                                .transient_run_deltas
+                                .publish(&request.run_id, sequence, delta);
                         return Ok(());
                     }
                     let event_value = serde_json::to_value(&event)
                         .map_err(|_| "provider event could not be encoded".to_owned())?;
                     provider_sequence.fetch_max(
-                        event_value.get("provider_sequence").and_then(Value::as_i64).unwrap_or(0),
+                        event_value
+                            .get("provider_sequence")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
                         Ordering::Relaxed,
                     );
-                    if matches!(event, kogwistar_contracts::ProviderEventV1::ResponseFailed { .. }) {
+                    if matches!(
+                        event,
+                        kogwistar_contracts::ProviderEventV1::ResponseFailed { .. }
+                    ) {
                         saw_failure.store(true, Ordering::Relaxed);
                     }
                     let sequence = client_sequence.load(Ordering::Relaxed);
                     match service
-                        .persist_native_stream_semantic_event(&request, event, provider_id, &model, sequence)
+                        .persist_native_stream_semantic_event(
+                            &request,
+                            event,
+                            provider_id,
+                            &model,
+                            sequence,
+                        )
                         .await
                     {
                         Ok(summary) => {
@@ -1624,7 +1719,10 @@ impl PostgresRunApplicationService {
                 )
                 .await?;
             semantic_count.fetch_add(1, Ordering::Relaxed);
-            summaries.lock().map_err(|_| "provider trace summary is unavailable".to_owned())?.push(summary);
+            summaries
+                .lock()
+                .map_err(|_| "provider trace summary is unavailable".to_owned())?
+                .push(summary);
         }
         request.ephemeral_context.insert(
             "provider_event_request_result".to_owned(),
@@ -1636,9 +1734,16 @@ impl PostgresRunApplicationService {
         );
         request.ephemeral_context.insert(
             "_provider_event_trace_summaries".to_owned(),
-            Value::Array(summaries.lock().map_err(|_| "provider trace summary is unavailable".to_owned())?.clone()),
+            Value::Array(
+                summaries
+                    .lock()
+                    .map_err(|_| "provider trace summary is unavailable".to_owned())?
+                    .clone(),
+            ),
         );
-        request.ephemeral_context.insert("provider_model".to_owned(), json!(model));
+        request
+            .ephemeral_context
+            .insert("provider_model".to_owned(), json!(model));
         native_result_from_request(handoff, request, &self.native_operations)
     }
 
@@ -1655,9 +1760,9 @@ impl PostgresRunApplicationService {
             .get("_rt")
             .and_then(Value::as_object)
             .ok_or_else(|| "native answer generation requires runtime context".to_owned())?;
-        let evidence_pack = runtime
-            .get("evidence_pack")
-            .ok_or_else(|| "native answer generation requires a materialized evidence pack".to_owned())?;
+        let evidence_pack = runtime.get("evidence_pack").ok_or_else(|| {
+            "native answer generation requires a materialized evidence pack".to_owned()
+        })?;
         let question = request
             .state
             .get("question")
@@ -1691,7 +1796,13 @@ impl PostgresRunApplicationService {
         let turn_node_id = request
             .turn_node_id
             .clone()
-            .or_else(|| request.state.get("turn_node_id").and_then(Value::as_str).map(str::to_owned))
+            .or_else(|| {
+                request
+                    .state
+                    .get("turn_node_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .ok_or_else(|| "native answer generation requires a turn node ID".to_owned())?;
         let trace_context = kogwistar_runtime::native_trace_context_fields(request);
         let model = provider.model().to_owned();
@@ -1713,9 +1824,8 @@ impl PostgresRunApplicationService {
                     let trace_context = trace_context.clone();
                     let model = model.clone();
                     async move {
-                        if let kogwistar_contracts::ProviderEventV1::TextDelta {
-                            delta, ..
-                        } = &event
+                        if let kogwistar_contracts::ProviderEventV1::TextDelta { delta, .. } =
+                            &event
                         {
                             if delta.chars().count() > 4096 {
                                 return Err(
@@ -1724,9 +1834,7 @@ impl PostgresRunApplicationService {
                                 );
                             }
                             // Client delivery is observational; bounded-buffer failure must not fail the workflow.
-                            let _ = service
-                                .transient_run_deltas
-                                .publish_next(&run_id, delta);
+                            let _ = service.transient_run_deltas.publish_next(&run_id, delta);
                             return Ok(());
                         }
                         let Some(provider_event) =
@@ -1740,9 +1848,8 @@ impl PostgresRunApplicationService {
                             .get("response_id")
                             .and_then(Value::as_str)
                             .map(str::to_owned);
-                        let provider_sequence = event_value
-                            .get("provider_sequence")
-                            .and_then(Value::as_i64);
+                        let provider_sequence =
+                            event_value.get("provider_sequence").and_then(Value::as_i64);
                         let client_sse_sequence = service
                             .transient_run_deltas
                             .last_sequence(&run_id)
@@ -1780,10 +1887,8 @@ impl PostgresRunApplicationService {
                             provider_sequence,
                             client_sse_sequence: Some(client_sse_sequence),
                         };
-                        let event_id = kogwistar_contracts::durable_provider_event_id(
-                            &event_trace,
-                            &event,
-                        );
+                        let event_id =
+                            kogwistar_contracts::durable_provider_event_id(&event_trace, &event);
                         let durable_event = kogwistar_contracts::DurableProviderEventV1 {
                             event_id,
                             trace: event_trace,
@@ -1809,13 +1914,8 @@ impl PostgresRunApplicationService {
                             fields.extend(trace_context);
                         }
                         service
-                            .persist_native_provider_event(
-                                durable_event,
-                                conversation_id,
-                                payload,
-                            )
-                            .await
-                            ?;
+                            .persist_native_provider_event(durable_event, conversation_id, payload)
+                            .await?;
                         Ok(())
                     }
                 },
@@ -1833,8 +1933,10 @@ impl PostgresRunApplicationService {
             .ok_or_else(|| "Rust-native structured-answer provider is not configured".to_owned())?
             .model()
             .to_owned();
-        let batch = crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
-        self.persist_native_context_snapshot_batch(request, batch).await
+        let batch =
+            crate::native_answer_generation::answer_context_snapshot_batch(request, &model)?;
+        self.persist_native_context_snapshot_batch(request, batch)
+            .await
     }
 
     async fn persist_native_selection_context_snapshot(
@@ -1842,9 +1944,12 @@ impl PostgresRunApplicationService {
         request: &kogwistar_runtime::RuntimeNativeStepRequest,
     ) -> Result<(), String> {
         kogwistar_runtime::validate_native_step_registration(request, &self.native_operations)
-            .map_err(|_| "native evidence selection is not registered for this operation version".to_owned())?;
+            .map_err(|_| {
+                "native evidence selection is not registered for this operation version".to_owned()
+            })?;
         let batch = crate::native_answer_generation::selection_context_snapshot_batch(request)?;
-        self.persist_native_context_snapshot_batch(request, batch).await
+        self.persist_native_context_snapshot_batch(request, batch)
+            .await
     }
 
     async fn persist_native_context_snapshot_batch(
@@ -1864,7 +1969,10 @@ impl PostgresRunApplicationService {
             .iter()
             .any(|capability| capability == "write_graph")
         {
-            return Err("native context snapshot requires the run owner's current write_graph capability".to_owned());
+            return Err(
+                "native context snapshot requires the run owner's current write_graph capability"
+                    .to_owned(),
+            );
         }
         if !self
             .store
@@ -1876,14 +1984,20 @@ impl PostgresRunApplicationService {
         let (mutations, index_jobs) = graph_mutation_batch_v2_value(batch)
             .map_err(|_| "native context snapshot graph mutation is invalid".to_owned())?;
         let security_scope = security_scope_value(&principal);
-        if mutations.iter().any(|mutation| {
-            !graph_mutation_scope_allowed(&mutation.scope, &security_scope)
-        }) {
-            return Err("native context snapshot scope is outside the run owner's admitted scope".to_owned());
+        if mutations
+            .iter()
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+        {
+            return Err(
+                "native context snapshot scope is outside the run owner's admitted scope"
+                    .to_owned(),
+            );
         }
         let run_id = request.run_id.clone();
         let expected_owner = authenticated_run_owner_id(&principal)
-            .ok_or_else(|| "native context snapshot requires an authenticated run owner".to_owned())?
+            .ok_or_else(|| {
+                "native context snapshot requires an authenticated run owner".to_owned()
+            })?
             .to_owned();
         let owner_id = expected_owner.to_ascii_lowercase();
         let acl_scope = principal
@@ -1974,11 +2088,8 @@ impl PostgresRunApplicationService {
         handoff: RecordedWorkerHandoff,
         mut request: kogwistar_runtime::RuntimeNativeStepRequest,
     ) -> Result<RuntimeWorkerResultRequest, String> {
-        kogwistar_runtime::validate_native_step_registration(
-            &request,
-            &self.native_operations,
-        )
-        .map_err(|error| format!("native execution rejected: {error}"))?;
+        kogwistar_runtime::validate_native_step_registration(&request, &self.native_operations)
+            .map_err(|error| format!("native execution rejected: {error}"))?;
         if self.chat_completion_provider.is_none() {
             return Ok(failed_native_result(
                 handoff,
@@ -1987,7 +2098,8 @@ impl PostgresRunApplicationService {
                 "Rust-native answer generation requires a configured structured chat provider",
             ));
         }
-        self.persist_native_answer_context_snapshot(&request).await?;
+        self.persist_native_answer_context_snapshot(&request)
+            .await?;
         let (answer, provider_event_traces) = self.native_generate_answer(&request).await?;
         request
             .ephemeral_context
@@ -1998,11 +2110,12 @@ impl PostgresRunApplicationService {
         );
         request.ephemeral_context.insert(
             "provider_model".to_owned(),
-            json!(self
-                .chat_completion_provider
-                .as_ref()
-                .expect("provider availability checked above")
-                .model()),
+            json!(
+                self.chat_completion_provider
+                    .as_ref()
+                    .expect("provider availability checked above")
+                    .model()
+            ),
         );
         native_result_from_request(handoff, request, &self.native_operations)
     }
@@ -2014,9 +2127,7 @@ impl PostgresRunApplicationService {
     ) -> Result<RuntimeWorkerResultRequest, String> {
         let needs_repair = crate::native_answer_generation::answer_needs_citation_repair(&request)
             .map_err(|_| "native answer citations could not be validated".to_owned())?;
-        if needs_repair
-            && let Some(provider) = self.chat_completion_provider.as_ref()
-        {
+        if needs_repair && let Some(provider) = self.chat_completion_provider.as_ref() {
             let runtime = request
                 .state
                 .get("_rt")
@@ -2052,15 +2163,20 @@ impl PostgresRunApplicationService {
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let repaired = provider
-                .repair(system_prompt, question, evidence_pack, &used_node_ids, answer)
+                .repair(
+                    system_prompt,
+                    question,
+                    evidence_pack,
+                    &used_node_ids,
+                    answer,
+                )
                 .await?;
             request
                 .ephemeral_context
                 .insert("repaired_answer".to_owned(), repaired);
-            request.ephemeral_context.insert(
-                "provider_model".to_owned(),
-                json!(provider.model()),
-            );
+            request
+                .ephemeral_context
+                .insert("provider_model".to_owned(), json!(provider.model()));
         }
         native_result_from_request(handoff, request, &self.native_operations)
     }
@@ -2554,9 +2670,11 @@ impl PostgresRunApplicationService {
                         record.metadata.get("entity_type").and_then(Value::as_str)
                             == Some("conversation_start")
                     }) {
-                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
-                            "conversation_id already exists".to_owned(),
-                        ));
+                        return Err(
+                            kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                "conversation_id already exists".to_owned(),
+                            ),
+                        );
                     }
                     uow.lock_entity_identity(&scope.namespace, "node", &start_id)
                         .await?;
@@ -2570,9 +2688,11 @@ impl PostgresRunApplicationService {
                         })
                         .await?;
                     if !node_collision.is_empty() {
-                        return Err(kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
-                            "start_node_id already exists".to_owned(),
-                        ));
+                        return Err(
+                            kogwistar_store_postgres::PostgresStoreError::RecordedRuntimeConflict(
+                                "start_node_id already exists".to_owned(),
+                            ),
+                        );
                     }
                     let (acl_mutations, index_jobs) = resolve_default_acl_graph_effects(
                         uow,
@@ -2624,7 +2744,9 @@ impl PostgresRunApplicationService {
         request: &ApiEffectRequest,
         input: &SyscallInput,
     ) -> ApiEffectResponse {
-        let conversation_id = input.args.get("conversation_id")
+        let conversation_id = input
+            .args
+            .get("conversation_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -2635,7 +2757,9 @@ impl PostgresRunApplicationService {
                 "conversation_id is required",
             );
         };
-        let text = input.args.get("text")
+        let text = input
+            .args
+            .get("text")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -2651,8 +2775,7 @@ impl PostgresRunApplicationService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("agentic_answering.v2");
-        let (scope, acl_principal) =
-            conversation_graph_scope_and_acl_principal(&request.principal);
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
         let nodes = match self.authorized_conversation_nodes(&request.principal).await {
             Ok(nodes) => nodes,
             Err(error) => {
@@ -2696,8 +2819,8 @@ impl PostgresRunApplicationService {
                 "conversation must have exactly one visible conversation_start node",
             );
         }
-        let Some(owner_id) = conversation_record_string(start, "user_id")
-            .filter(|value| !value.trim().is_empty())
+        let Some(owner_id) =
+            conversation_record_string(start, "user_id").filter(|value| !value.trim().is_empty())
         else {
             return effect_error(
                 StatusCode::CONFLICT,
@@ -2717,9 +2840,8 @@ impl PostgresRunApplicationService {
                 );
             }
         };
-        let effective_user_id = requested_user_id.or_else(|| {
-            authenticated_run_owner_id(&request.principal)
-        });
+        let effective_user_id =
+            requested_user_id.or_else(|| authenticated_run_owner_id(&request.principal));
         if effective_user_id != Some(owner_id.as_str()) {
             return effect_error(
                 StatusCode::FORBIDDEN,
@@ -2819,7 +2941,12 @@ impl PostgresRunApplicationService {
             .filter(|record| {
                 matches!(
                     conversation_record_string(record, "entity_type").as_deref(),
-                    Some("conversation_start" | "conversation_turn" | "conversation_summary" | "assistant_turn")
+                    Some(
+                        "conversation_start"
+                            | "conversation_turn"
+                            | "conversation_summary"
+                            | "assistant_turn"
+                    )
                 ) && conversation_record_value(record, "in_conversation_chain")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(true)
@@ -2895,11 +3022,17 @@ impl PostgresRunApplicationService {
         let mut node_metadata_projection = node_metadata.as_object().unwrap().clone();
         node_metadata_projection.extend([
             ("doc_id".to_owned(), json!(turn_id)),
-            ("label".to_owned(), json!(format!("Turn {turn_index} (user)"))),
+            (
+                "label".to_owned(),
+                json!(format!("Turn {turn_index} (user)")),
+            ),
             ("type".to_owned(), json!("entity")),
             ("summary".to_owned(), json!(text)),
             ("properties".to_owned(), json!("{}")),
-            ("mentions".to_owned(), json!(serde_json::to_string(&node_mentions).unwrap())),
+            (
+                "mentions".to_owned(),
+                json!(serde_json::to_string(&node_mentions).unwrap()),
+            ),
         ]);
         if let Some(graph_space) = &scope.graph_space {
             node_metadata_projection.insert("graph_space".to_owned(), json!(graph_space));
@@ -2983,8 +3116,8 @@ impl PostgresRunApplicationService {
                     error.to_string(),
                 );
             }
-            let edge_document = serde_json::to_string(&edge_payload)
-                .expect("conversation edge payload serializes");
+            let edge_document =
+                serde_json::to_string(&edge_payload).expect("conversation edge payload serializes");
             edge_payload_and_document = Some((edge_payload, edge_document, edge_id));
         }
         let embedding_texts = edge_payload_and_document
@@ -3049,8 +3182,8 @@ impl PostgresRunApplicationService {
                 .expect("edge target-edge IDs serialize");
             let properties = serde_json::to_string(&edge_payload["properties"])
                 .expect("edge properties serialize");
-            let mentions = serde_json::to_string(&edge_payload["mentions"])
-                .expect("edge mentions serialize");
+            let mentions =
+                serde_json::to_string(&edge_payload["mentions"]).expect("edge mentions serialize");
             let mut metadata = edge_metadata;
             metadata.extend([
                 ("doc_id".to_owned(), edge_payload["doc_id"].clone()),
@@ -3101,9 +3234,11 @@ impl PostgresRunApplicationService {
                     "conversation edge index contract is unavailable",
                 );
             };
-            index_jobs.extend(edge_index_kinds.iter().map(|kind| {
-                conversation_index_job(&scope.namespace, "edge", &edge_id, kind)
-            }));
+            index_jobs.extend(
+                edge_index_kinds
+                    .iter()
+                    .map(|kind| conversation_index_job(&scope.namespace, "edge", &edge_id, kind)),
+            );
         }
         let prepared = PreparedConversationAdmission {
             conversation_id: conversation_id.to_owned(),
@@ -3173,13 +3308,9 @@ impl PostgresRunApplicationService {
             );
         }
         let authenticated_owner = authenticated_run_owner_id(&request.principal);
-        if input
-            .user_id
-            .as_deref()
-            .is_some_and(|requested| {
-                authenticated_owner.is_none_or(|owner| owner != requested.trim())
-            })
-        {
+        if input.user_id.as_deref().is_some_and(|requested| {
+            authenticated_owner.is_none_or(|owner| owner != requested.trim())
+        }) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",
@@ -3874,11 +4005,10 @@ impl PostgresRunApplicationService {
             );
         }
         if let Some(effect) = input.effect.as_ref()
-            && let Err(message) =
-                validate_python_worker_submission_trace_binding(
-                    &effect.trace_events,
-                    &input.handoff,
-                )
+            && let Err(message) = validate_python_worker_submission_trace_binding(
+                &effect.trace_events,
+                &input.handoff,
+            )
         {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -3900,17 +4030,23 @@ impl PostgresRunApplicationService {
                 "provider event publications require an ACL-aware conversation graph batch",
             );
         }
-        let effect_batch: Option<Result<(RuntimeGraphMutationBatch<'_>, Option<&str>), String>> = input.effect.as_ref().and_then(|effect| {
-            match (
-                effect.graph_mutation_batch.as_ref(),
-                effect.graph_mutation_batch_v2.as_ref(),
-            ) {
-                (Some(_), Some(_)) => Some(Err("worker effect cannot carry both graph batch versions".to_owned())),
-                (Some(v1), None) => Some(Ok((RuntimeGraphMutationBatch::V1(v1), None))),
-                (None, Some(v2)) => Some(Ok((RuntimeGraphMutationBatch::V2(v2), Some(v2.default_acl.truth_graph.as_str())))),
-                (None, None) => None,
-            }
-        });
+        let effect_batch: Option<Result<(RuntimeGraphMutationBatch<'_>, Option<&str>), String>> =
+            input.effect.as_ref().and_then(|effect| {
+                match (
+                    effect.graph_mutation_batch.as_ref(),
+                    effect.graph_mutation_batch_v2.as_ref(),
+                ) {
+                    (Some(_), Some(_)) => Some(Err(
+                        "worker effect cannot carry both graph batch versions".to_owned(),
+                    )),
+                    (Some(v1), None) => Some(Ok((RuntimeGraphMutationBatch::V1(v1), None))),
+                    (None, Some(v2)) => Some(Ok((
+                        RuntimeGraphMutationBatch::V2(v2),
+                        Some(v2.default_acl.truth_graph.as_str()),
+                    ))),
+                    (None, None) => None,
+                }
+            });
         let graph_effects = if let Some(batch_result) = effect_batch {
             let (batch, default_acl_truth_graph) = match batch_result {
                 Ok(value) => value,
@@ -3948,8 +4084,7 @@ impl PostgresRunApplicationService {
                 &self.capabilities,
                 "write_graph",
                 &["write_graph"],
-            )
-            {
+            ) {
                 return effect_error(
                     StatusCode::FORBIDDEN,
                     "KOGWISTAR_CAPABILITY_FORBIDDEN",
@@ -3986,36 +4121,60 @@ impl PostgresRunApplicationService {
                     let input = batch.clone();
                     let mutations = match graph_mutation_batch_value(input.clone()) {
                         Ok(value) => value,
-                        Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
-                    };
-                    if let Err(error) = validate_graph_mutation_envelopes(&input, &mutations) {
-                        return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error);
-                    }
-                    let index_jobs = match graph_index_jobs_value(&input, &mutations) {
-                        Ok(value) => value,
-                        Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
-                    };
-                    (mutations, index_jobs)
-                }
-                RuntimeGraphMutationBatch::V2(batch) => match graph_mutation_batch_v2_value((*batch).clone()) {
-                    Ok(value) => {
-                        if let Some(effect) = input.effect.as_ref()
-                            && let Err(error) = validate_provider_event_publications(
-                                &effect.provider_event_publications,
-                                &value.0,
-                                &input.handoff.run_id,
-                            )
-                        {
+                        Err(error) => {
                             return effect_error(
                                 StatusCode::UNPROCESSABLE_ENTITY,
                                 "KOGWISTAR_INVALID_REQUEST",
                                 error,
                             );
                         }
-                        value
+                    };
+                    if let Err(error) = validate_graph_mutation_envelopes(&input, &mutations) {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
+                            error,
+                        );
                     }
-                    Err(error) => return effect_error(StatusCode::UNPROCESSABLE_ENTITY, "KOGWISTAR_INVALID_REQUEST", error),
-                },
+                    let index_jobs = match graph_index_jobs_value(&input, &mutations) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_REQUEST",
+                                error,
+                            );
+                        }
+                    };
+                    (mutations, index_jobs)
+                }
+                RuntimeGraphMutationBatch::V2(batch) => {
+                    match graph_mutation_batch_v2_value((*batch).clone()) {
+                        Ok(value) => {
+                            if let Some(effect) = input.effect.as_ref()
+                                && let Err(error) = validate_provider_event_publications(
+                                    &effect.provider_event_publications,
+                                    &value.0,
+                                    &input.handoff.run_id,
+                                )
+                            {
+                                return effect_error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "KOGWISTAR_INVALID_REQUEST",
+                                    error,
+                                );
+                            }
+                            value
+                        }
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::UNPROCESSABLE_ENTITY,
+                                "KOGWISTAR_INVALID_REQUEST",
+                                error,
+                            );
+                        }
+                    }
+                }
             };
             if let Err(error) = validate_runtime_graph_mutations(&mutations) {
                 return effect_error(
@@ -4042,7 +4201,11 @@ impl PostgresRunApplicationService {
                 run_owner_id.to_owned(),
                 principal.clone(),
                 inline_principal.is_some(),
-                input.effect.as_ref().map(|effect| effect.effect_id.clone()).unwrap_or_default(),
+                input
+                    .effect
+                    .as_ref()
+                    .map(|effect| effect.effect_id.clone())
+                    .unwrap_or_default(),
             ))
         } else {
             None
@@ -4133,8 +4296,14 @@ impl PostgresRunApplicationService {
                     );
                 }
             };
-            let admission = match self.store.list_server_run_events(&runtime_run_id, 0, 1).await {
-                Ok(events) => events.into_iter().find(|event| event.event_type == "run.created"),
+            let admission = match self
+                .store
+                .list_server_run_events(&runtime_run_id, 0, 1)
+                .await
+            {
+                Ok(events) => events
+                    .into_iter()
+                    .find(|event| event.event_type == "run.created"),
                 Err(_) => {
                     return effect_error(
                         StatusCode::SERVICE_UNAVAILABLE,
@@ -4877,11 +5046,7 @@ impl PostgresRunApplicationService {
             );
         }
         if let Err(error) = self.embed_missing_graph_vectors(&mut input).await {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                error,
-            );
+            return effect_error(StatusCode::BAD_GATEWAY, "KOGWISTAR_EMBEDDING_FAILED", error);
         }
         let mutations = match graph_mutation_batch_value(input.clone()) {
             Ok(value) => value,
@@ -4969,7 +5134,11 @@ impl PostgresRunApplicationService {
         for (position, mutation) in input.mutations.iter_mut().enumerate() {
             if !matches!(mutation.op.as_str(), "ADD" | "REPLACE")
                 || mutation.record.embedding.is_some()
-                || mutation.record.metadata.get("entity_type").and_then(Value::as_str)
+                || mutation
+                    .record
+                    .metadata
+                    .get("entity_type")
+                    .and_then(Value::as_str)
                     == Some("acl_record")
             {
                 continue;
@@ -5000,7 +5169,10 @@ impl PostgresRunApplicationService {
             if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
                 return Err("embedding provider returned an invalid vector".to_owned());
             }
-            let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+            let vector = vector
+                .into_iter()
+                .map(|value| value as f32)
+                .collect::<Vec<_>>();
             if vector.iter().any(|value| !value.is_finite()) {
                 return Err("embedding provider vector exceeds graph storage range".to_owned());
             }
@@ -5036,8 +5208,13 @@ impl PostgresRunApplicationService {
     }
 
     async fn public_graph_upsert_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        if !self.store.graph_authority_capability().supports_atomic_index_jobs()
-            || !self.document_authority_capability().supports_projection_upsert()
+        if !self
+            .store
+            .graph_authority_capability()
+            .supports_atomic_index_jobs()
+            || !self
+                .document_authority_capability()
+                .supports_projection_upsert()
         {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
@@ -5111,7 +5288,11 @@ impl PostgresRunApplicationService {
             if pending_edge_ids.is_empty() {
                 break;
             }
-            if endpoint_node_ids.len().saturating_add(endpoint_edge_ids.len()) > 10_000 {
+            if endpoint_node_ids
+                .len()
+                .saturating_add(endpoint_edge_ids.len())
+                > 10_000
+            {
                 return effect_error(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "KOGWISTAR_GRAPH_ENDPOINT_LIMIT",
@@ -5159,7 +5340,11 @@ impl PostgresRunApplicationService {
                 endpoint_edges.insert(record.id.clone(), record);
             }
         }
-        if endpoint_node_ids.len().saturating_add(endpoint_edge_ids.len()) > 10_000 {
+        if endpoint_node_ids
+            .len()
+            .saturating_add(endpoint_edge_ids.len())
+            > 10_000
+        {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_GRAPH_ENDPOINT_LIMIT",
@@ -5213,14 +5398,13 @@ impl PostgresRunApplicationService {
                 .as_ref()
                 .and_then(|record| record.document.as_deref()),
         );
-        let (batch, node_ids, edge_ids) =
-            match graph_upsert_mutation_batch(
-                &input,
-                &source_text,
-                &security_scope,
-                &external_endpoints,
-                &self.graph_role,
-            ) {
+        let (batch, node_ids, edge_ids) = match graph_upsert_mutation_batch(
+            &input,
+            &source_text,
+            &security_scope,
+            &external_endpoints,
+            &self.graph_role,
+        ) {
             Ok(batch) => batch,
             Err(error) => {
                 return effect_error(
@@ -5235,16 +5419,20 @@ impl PostgresRunApplicationService {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("doc_type".to_owned(), json!(input.doc_type));
                 metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-                if let Err(error) = self.store.upsert_document_projection(DocumentProjectionUpsert {
-                    scope: document_scope,
-                    record: GraphRecord {
-                        id: input.doc_id.clone(),
-                        document: Some(source_text),
-                        metadata,
-                        embedding: None,
-                    },
-                    embedding_dim: 0,
-                }).await {
+                if let Err(error) = self
+                    .store
+                    .upsert_document_projection(DocumentProjectionUpsert {
+                        scope: document_scope,
+                        record: GraphRecord {
+                            id: input.doc_id.clone(),
+                            document: Some(source_text),
+                            metadata,
+                            embedding: None,
+                        },
+                        embedding_dim: 0,
+                    })
+                    .await
+                {
                     return effect_error(
                         StatusCode::CONFLICT,
                         "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
@@ -5293,18 +5481,16 @@ impl PostgresRunApplicationService {
         let mut document_metadata = serde_json::Map::new();
         document_metadata.insert("doc_type".to_owned(), json!(input.doc_type));
         document_metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-        let document_write = should_write_document.then(|| {
-            PostgresGraphProjectionUpsert {
-                scope: document_scope.clone(),
-                table: "gke_documents".to_owned(),
-                record: GraphRecord {
-                    id: input.doc_id.clone(),
-                    document: Some(source_text.clone()),
-                    metadata: document_metadata,
-                    embedding: None,
-                },
-                embedding_dim: 0,
-            }
+        let document_write = should_write_document.then(|| PostgresGraphProjectionUpsert {
+            scope: document_scope.clone(),
+            table: "gke_documents".to_owned(),
+            record: GraphRecord {
+                id: input.doc_id.clone(),
+                document: Some(source_text.clone()),
+                metadata: document_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
         });
         let locked_document_read = GraphProjectionRead {
             scope: document_scope.clone(),
@@ -5387,13 +5573,12 @@ impl PostgresRunApplicationService {
                                 limit: endpoint_edge_ids.len(),
                             })
                             .await?;
-                        if !graph_upsert_endpoint_snapshot_matches(
-                            &nodes,
-                            &expected_endpoint_nodes,
-                        ) || !graph_upsert_endpoint_snapshot_matches(
-                            &edges,
-                            &expected_endpoint_edges,
-                        ) {
+                        if !graph_upsert_endpoint_snapshot_matches(&nodes, &expected_endpoint_nodes)
+                            || !graph_upsert_endpoint_snapshot_matches(
+                                &edges,
+                                &expected_endpoint_edges,
+                            )
+                        {
                             return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
                                 "graph endpoint closure changed during authorization".to_owned(),
                             ));
@@ -5405,14 +5590,13 @@ impl PostgresRunApplicationService {
                                 graph_record_string_ids(edge, field)
                                     .iter()
                                     .any(|id| !node_id_set.contains(id))
-                            }) || ["source_edge_ids", "target_edge_ids"]
-                                .into_iter()
-                                .any(|field| {
+                            }) || ["source_edge_ids", "target_edge_ids"].into_iter().any(
+                                |field| {
                                     graph_record_string_ids(edge, field)
                                         .iter()
                                         .any(|id| !edge_id_set.contains(id))
-                                })
-                            {
+                                },
+                            ) {
                                 return Err(kogwistar_store_postgres::PostgresStoreError::Backend(
                                     "external graph endpoint closure is incomplete".to_owned(),
                                 ));
@@ -5429,12 +5613,13 @@ impl PostgresRunApplicationService {
                             .await?;
                         let mut acl_index = GraphAclIndex::default();
                         acl_index.extend_from_records(&acl_records, &graph_role);
-                        let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
-                            &nodes,
-                            &edges,
-                            &acl_index,
-                            &acl_principal,
-                        );
+                        let (visible_nodes, visible_edges) =
+                            graph_records_visible_by_acl_with_index(
+                                &nodes,
+                                &edges,
+                                &acl_index,
+                                &acl_principal,
+                            );
                         let mut visible_ids = visible_nodes
                             .iter()
                             .filter(|record| {
@@ -5442,7 +5627,9 @@ impl PostgresRunApplicationService {
                                     .metadata
                                     .get("lifecycle_status")
                                     .and_then(Value::as_str)
-                                    .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                                    .is_some_and(|status| {
+                                        matches!(status, "tombstoned" | "deleted")
+                                    })
                             })
                             .map(|record| record.id.clone())
                             .collect::<BTreeSet<_>>();
@@ -5518,8 +5705,13 @@ impl PostgresRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !self.store.graph_authority_capability().supports_atomic_index_jobs()
-            || !self.document_authority_capability().supports_projection_upsert()
+        if !self
+            .store
+            .graph_authority_capability()
+            .supports_atomic_index_jobs()
+            || !self
+                .document_authority_capability()
+                .supports_projection_upsert()
         {
             return effect_error(
                 StatusCode::NOT_IMPLEMENTED,
@@ -5597,7 +5789,8 @@ impl PostgresRunApplicationService {
                     );
                 }
             };
-            let mut args = serde_json::Map::from_iter([("user_id".to_owned(), json!(input.user_id))]);
+            let mut args =
+                serde_json::Map::from_iter([("user_id".to_owned(), json!(input.user_id))]);
             if let Some(conversation_id) = input.conversation_id {
                 args.insert("conversation_id".to_owned(), json!(conversation_id));
             }
@@ -5642,101 +5835,101 @@ impl PostgresRunApplicationService {
             };
         }
         if request.method == "POST"
-            && let Some(conversation_id) = conversation_answer_id(&request.path_and_query) {
-                let input: SubmitConversationAnswerHttpInput =
-                    match serde_json::from_slice(&request.body) {
-                        Ok(input) => input,
-                        Err(error) => {
-                            return effect_error(
-                                StatusCode::UNPROCESSABLE_ENTITY,
-                                "KOGWISTAR_INVALID_REQUEST",
-                                error.to_string(),
-                            );
-                        }
-                    };
-                if input.text.is_empty() {
-                    return effect_error(
-                        StatusCode::UNPROCESSABLE_ENTITY,
-                        "KOGWISTAR_INVALID_REQUEST",
-                        "text must contain at least one character",
-                    );
-                }
-                // Match the Python route: an authenticated identity takes precedence
-                // over the optional compatibility field in the request body.
-                let effective_user_id = authenticated_run_owner_id(&request.principal)
-                    .map(str::to_owned)
-                    .or(input.user_id);
-                let mut args = serde_json::Map::from_iter([
-                    ("conversation_id".to_owned(), json!(conversation_id)),
-                    ("text".to_owned(), json!(input.text)),
-                    ("workflow_id".to_owned(), json!(input.workflow_id)),
-                ]);
-                if let Some(user_id) = effective_user_id {
-                    args.insert("user_id".to_owned(), json!(user_id));
-                }
-                let syscall_request = ApiEffectRequest {
-                    contract_version: request.contract_version,
-                    method: "POST".to_owned(),
-                    path_and_query: "/api/syscall/v1/send_message".to_owned(),
-                    body: serde_json::to_vec(&json!({
-                        "version":"v1",
-                        "op":"send_message",
-                        "args":args,
-                    }))
-                    .expect("typed answer-submission input serializes"),
-                    principal: request.principal,
-                };
-                let response = self.syscall_effect(&syscall_request, "send_message").await;
-                if !(200..300).contains(&response.status) {
-                    return response;
-                }
-                let envelope: Value = match serde_json::from_slice(&response.body) {
-                    Ok(envelope) => envelope,
+            && let Some(conversation_id) = conversation_answer_id(&request.path_and_query)
+        {
+            let input: SubmitConversationAnswerHttpInput =
+                match serde_json::from_slice(&request.body) {
+                    Ok(input) => input,
                     Err(error) => {
                         return effect_error(
-                            StatusCode::BAD_GATEWAY,
-                            "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
                             error.to_string(),
                         );
                     }
                 };
-                let Some(result) = envelope.get("result") else {
-                    return effect_error(
-                        StatusCode::BAD_GATEWAY,
-                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
-                        "send-message syscall returned no result",
-                    );
-                };
-                let Some(run_id) = result.get("run_id").and_then(Value::as_str) else {
-                    return effect_error(
-                        StatusCode::BAD_GATEWAY,
-                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
-                        "send-message syscall result omitted run_id",
-                    );
-                };
-                let Some(turn_node_id) = result.get("turn_node_id").and_then(Value::as_str)
-                else {
-                    return effect_error(
-                        StatusCode::BAD_GATEWAY,
-                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
-                        "send-message syscall result omitted turn_node_id",
-                    );
-                };
-                let workflow_id = result
-                    .get("workflow_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("debug.rag.v1");
-                return json_effect(
-                    StatusCode::ACCEPTED,
-                    json!({
-                        "run_id": run_id,
-                        "conversation_id": conversation_id,
-                        "workflow_id": workflow_id,
-                        "status": "queued",
-                        "user_turn_node_id": turn_node_id,
-                    }),
+            if input.text.is_empty() {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "text must contain at least one character",
                 );
             }
+            // Match the Python route: an authenticated identity takes precedence
+            // over the optional compatibility field in the request body.
+            let effective_user_id = authenticated_run_owner_id(&request.principal)
+                .map(str::to_owned)
+                .or(input.user_id);
+            let mut args = serde_json::Map::from_iter([
+                ("conversation_id".to_owned(), json!(conversation_id)),
+                ("text".to_owned(), json!(input.text)),
+                ("workflow_id".to_owned(), json!(input.workflow_id)),
+            ]);
+            if let Some(user_id) = effective_user_id {
+                args.insert("user_id".to_owned(), json!(user_id));
+            }
+            let syscall_request = ApiEffectRequest {
+                contract_version: request.contract_version,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"send_message",
+                    "args":args,
+                }))
+                .expect("typed answer-submission input serializes"),
+                principal: request.principal,
+            };
+            let response = self.syscall_effect(&syscall_request, "send_message").await;
+            if !(200..300).contains(&response.status) {
+                return response;
+            }
+            let envelope: Value = match serde_json::from_slice(&response.body) {
+                Ok(envelope) => envelope,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::BAD_GATEWAY,
+                        "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                        error.to_string(),
+                    );
+                }
+            };
+            let Some(result) = envelope.get("result") else {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                    "send-message syscall returned no result",
+                );
+            };
+            let Some(run_id) = result.get("run_id").and_then(Value::as_str) else {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                    "send-message syscall result omitted run_id",
+                );
+            };
+            let Some(turn_node_id) = result.get("turn_node_id").and_then(Value::as_str) else {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_INVALID_SYSCALL_RESPONSE",
+                    "send-message syscall result omitted turn_node_id",
+                );
+            };
+            let workflow_id = result
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .unwrap_or("debug.rag.v1");
+            return json_effect(
+                StatusCode::ACCEPTED,
+                json!({
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "workflow_id": workflow_id,
+                    "status": "queued",
+                    "user_turn_node_id": turn_node_id,
+                }),
+            );
+        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/workflow/tools/audit")
         {
@@ -5758,8 +5951,8 @@ impl PostgresRunApplicationService {
             return self.latest_snapshot_effect(&request).await;
         }
         if is_document_projection_route(&request.method, &request.path_and_query) {
-            let public_upsert = request.path_and_query.split('?').next()
-                == Some(PUBLIC_DOCUMENT_UPSERT_ROUTE);
+            let public_upsert =
+                request.path_and_query.split('?').next() == Some(PUBLIC_DOCUMENT_UPSERT_ROUTE);
             let response = self.document_projection_effect(&request).await;
             if public_upsert && response.status == StatusCode::OK {
                 return json_effect(StatusCode::OK, json!({"status": "ok"}));
@@ -5775,14 +5968,10 @@ impl PostgresRunApplicationService {
         if is_public_wisdom_graph_upsert_route(&request.method, &request.path_and_query) {
             return self.public_wisdom_graph_upsert_effect(&request).await;
         }
-        if request.method == "POST"
-            && request.path_and_query == WISDOM_SEMANTIC_SEED_EXPAND_ROUTE
-        {
+        if request.method == "POST" && request.path_and_query == WISDOM_SEMANTIC_SEED_EXPAND_ROUTE {
             return self.wisdom_semantic_seed_expand_effect(&request).await;
         }
-        if request.method == "POST"
-            && request.path_and_query == GRAPH_SEMANTIC_SEED_EXPAND_ROUTE
-        {
+        if request.method == "POST" && request.path_and_query == GRAPH_SEMANTIC_SEED_EXPAND_ROUTE {
             return self.graph_semantic_seed_expand_effect(&request).await;
         }
         if let Some(response) = visualization_shell_effect(&request) {
@@ -5892,7 +6081,8 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_FIND_EDGES_ROUTE {
             return self.graph_find_edges_effect(&request).await;
         }
-        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_SHORTEST_PATH_ROUTE {
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_SHORTEST_PATH_ROUTE
+        {
             return self.graph_shortest_path_effect(&request).await;
         }
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_K_HOP_ROUTE {
@@ -5901,8 +6091,7 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_VIZ_D3_ROUTE {
             return self.graph_visualization_effect(&request, false).await;
         }
-        if request.method == "POST"
-            && request.path_and_query == INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE
+        if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE
         {
             return self.graph_visualization_effect(&request, true).await;
         }
@@ -6178,8 +6367,8 @@ impl PostgresRunApplicationService {
                     }
                     break;
                 }
-                let workflow_id = conversation_record_string(record, "workflow_id")
-                    .unwrap_or_default();
+                let workflow_id =
+                    conversation_record_string(record, "workflow_id").unwrap_or_default();
                 if let Some(user_id) = user_id
                     && !workflow_id.is_empty()
                 {
@@ -6224,8 +6413,8 @@ impl PostgresRunApplicationService {
                     .unwrap_or_default();
             }
             if query_parameter_present(&request.path_and_query, "limit") {
-                let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000)
-                    as usize;
+                let limit =
+                    query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000) as usize;
                 let truncated = lineage.len() > limit;
                 lineage.truncate(limit);
                 return json_effect(
@@ -6233,7 +6422,10 @@ impl PostgresRunApplicationService {
                     json!({"run_id": run_id, "lineage": lineage, "truncated": truncated}),
                 );
             }
-            return json_effect(StatusCode::OK, json!({"run_id": run_id, "lineage": lineage}));
+            return json_effect(
+                StatusCode::OK,
+                json!({"run_id": run_id, "lineage": lineage}),
+            );
         }
         if request.method == "GET" && tail == ["evidence"] {
             let authorization = ContextSnapshotAuthorization {
@@ -6254,10 +6446,7 @@ impl PostgresRunApplicationService {
                 Ok(snapshot) => snapshot,
                 Err(response) => return response,
             };
-            return json_effect(
-                StatusCode::OK,
-                public_run_evidence_value(&run_id, snapshot),
-            );
+            return json_effect(StatusCode::OK, public_run_evidence_value(&run_id, snapshot));
         }
         if request.method == "GET" && is_runtime_inspection_tail(&tail) {
             return match self.store.list_server_run_events(&run_id, 0, 200_000).await {
@@ -6284,7 +6473,8 @@ impl PostgresRunApplicationService {
                             "run_id": run_id,
                             "events": events.into_iter().map(server_run_event_value).collect::<Vec<_>>(),
                         });
-                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence")
+                        {
                             let caller_id = authenticated_run_owner_id(&request.principal);
                             if caller_id.is_none() || run.user_id.as_deref() != caller_id {
                                 return effect_error(
@@ -6293,12 +6483,9 @@ impl PostgresRunApplicationService {
                                     "transient run deltas are visible only to the run owner",
                                 );
                             }
-                            let after_client_sequence = query_integer(
-                                &request.path_and_query,
-                                "after_client_sequence",
-                                0,
-                            )
-                            .max(0);
+                            let after_client_sequence =
+                                query_integer(&request.path_and_query, "after_client_sequence", 0)
+                                    .max(0);
                             let client_deltas = match self.transient_run_deltas.list(
                                 &run_id,
                                 after_client_sequence,
@@ -6354,7 +6541,8 @@ impl PostgresRunApplicationService {
                                 Some(&event.seq.to_string()),
                             ));
                         }
-                        if query_parameter_present(&request.path_and_query, "after_client_sequence") {
+                        if query_parameter_present(&request.path_and_query, "after_client_sequence")
+                        {
                             let caller_id = authenticated_run_owner_id(&request.principal);
                             if caller_id.is_none() || run.user_id.as_deref() != caller_id {
                                 return effect_error(
@@ -6363,12 +6551,9 @@ impl PostgresRunApplicationService {
                                     "transient run deltas are visible only to the run owner",
                                 );
                             }
-                            let after_client_sequence = query_integer(
-                                &request.path_and_query,
-                                "after_client_sequence",
-                                0,
-                            )
-                            .max(0);
+                            let after_client_sequence =
+                                query_integer(&request.path_and_query, "after_client_sequence", 0)
+                                    .max(0);
                             let deltas = match self.transient_run_deltas.list(
                                 &run_id,
                                 after_client_sequence,
@@ -6388,7 +6573,8 @@ impl PostgresRunApplicationService {
                                     .as_str()
                                     .unwrap_or("response.text.delta")
                                     .to_owned();
-                                let sequence = delta["client_sse_sequence"].as_i64().unwrap_or_default();
+                                let sequence =
+                                    delta["client_sse_sequence"].as_i64().unwrap_or_default();
                                 delta["run_id"] = json!(run_id);
                                 let event_id = format!("delta-{sequence}");
                                 body.push_str(&sse_frame(&event_type, &delta, Some(&event_id)));

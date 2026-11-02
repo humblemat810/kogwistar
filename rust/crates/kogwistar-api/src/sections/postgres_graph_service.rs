@@ -28,6 +28,15 @@ enum NativeEvidenceRecordError {
 }
 
 impl PostgresRunApplicationService {
+    fn graph_store_for_type(&self, graph_type: &str) -> &PostgresStore {
+        match graph_type.to_ascii_lowercase().as_str() {
+            "conversation" => &self.conversation_store,
+            "workflow" => &self.workflow_store,
+            "wisdom" => &self.wisdom_store,
+            _ => &self.store,
+        }
+    }
+
     async fn authorized_evidence_records(
         &self,
         principal: &Value,
@@ -59,7 +68,7 @@ impl PostgresRunApplicationService {
         let truth_graph = truth_graph.to_owned();
         let node_ids = node_ids.to_vec();
         let edge_ids = edge_ids.to_vec();
-        self.store
+        self.graph_store_for_type(&truth_graph)
             .transaction(move |uow| {
                 Box::pin(async move {
                     let read = |table: &str, ids: &[String]| GraphProjectionRead {
@@ -191,9 +200,11 @@ impl PostgresRunApplicationService {
 
     async fn graph_records_snapshot(
         &self,
+        graph_type: &str,
         scope: GraphScope,
     ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), String> {
-        self.graph_records_snapshot_from(&self.store, scope).await
+        self.graph_records_snapshot_from(self.graph_store_for_type(graph_type), scope)
+            .await
     }
 
     async fn graph_records_snapshot_from(
@@ -875,7 +886,7 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
+        let (nodes, edges) = match self.graph_records_snapshot(&input.truth_graph, scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -903,6 +914,7 @@ impl PostgresRunApplicationService {
 
     async fn authorized_vector_candidate_ids(
         &self,
+        store: &PostgresStore,
         scope: &GraphScope,
         truth_graph: &str,
         entity_kind: &str,
@@ -946,7 +958,7 @@ impl PostgresRunApplicationService {
                     return Err("edge ACL dependency closure exceeds 10000 records".to_owned());
                 }
                 let referenced = graph_projection_records_all(
-                    &self.store,
+                    store,
                     GraphProjectionRead {
                         scope: scope.clone(),
                         table: "gke_edges".to_owned(),
@@ -978,7 +990,7 @@ impl PostgresRunApplicationService {
                 Vec::new()
             } else {
                 graph_projection_records_all(
-                    &self.store,
+                    store,
                     GraphProjectionRead {
                         scope: scope.clone(),
                         table: "gke_nodes".to_owned(),
@@ -997,8 +1009,7 @@ impl PostgresRunApplicationService {
             .chain(edges.iter())
             .map(|record| record.id.clone())
             .collect::<BTreeSet<_>>();
-        let acl_records = self
-            .store
+        let acl_records = store
             .graph_acl_records_for_entities(
                 scope,
                 truth_graph,
@@ -1084,8 +1095,8 @@ impl PostgresRunApplicationService {
                 embedding_dim: embedding.len(),
             })
             .collect();
-        let matches_by_query = match self
-            .store
+        let graph_store = self.graph_store_for_type(&input.truth_graph);
+        let matches_by_query = match graph_store
             .graph_projection_vector_query_batch_excluding_metadata(
                 queries,
                 BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
@@ -1112,6 +1123,7 @@ impl PostgresRunApplicationService {
             .collect::<Vec<_>>();
         let visible_ids = match self
             .authorized_vector_candidate_ids(
+                graph_store,
                 &scope,
                 &input.truth_graph,
                 &input.entity_kind,
@@ -1237,7 +1249,7 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
+        let (nodes, edges) = match self.graph_records_snapshot("knowledge", scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1310,7 +1322,7 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
+        let (nodes, edges) = match self.graph_records_snapshot("knowledge", scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1389,7 +1401,7 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
+        let (nodes, edges) = match self.graph_records_snapshot("knowledge", scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1449,7 +1461,7 @@ impl PostgresRunApplicationService {
             }
         };
         let scope_value = security_scope_value(&request.principal);
-        let mut scope = GraphScope {
+        let scope = GraphScope {
             namespace: scope_value["storage_namespace"]
                 .as_str()
                 .unwrap_or("default")
@@ -1467,25 +1479,7 @@ impl PostgresRunApplicationService {
                 .map(str::to_owned),
         };
         let truth_graph = input.truth_graph();
-        let store = if truth_graph == "wisdom" {
-            &self.wisdom_store
-        } else {
-            &self.store
-        };
-        if matches!(truth_graph, "conversation" | "workflow") {
-            if scope
-                .graph_space
-                .as_deref()
-                .is_some_and(|space| space != truth_graph)
-            {
-                return effect_error(
-                    StatusCode::FORBIDDEN,
-                    "KOGWISTAR_GRAPH_SPACE_FORBIDDEN",
-                    "Visualization graph type conflicts with the admitted graph space",
-                );
-            }
-            scope.graph_space = Some(truth_graph.to_owned());
-        }
+        let store = self.graph_store_for_type(truth_graph);
         let (nodes, edges) = match self.graph_records_snapshot_from(store, scope).await {
             Ok(records) => records,
             Err(error) => {

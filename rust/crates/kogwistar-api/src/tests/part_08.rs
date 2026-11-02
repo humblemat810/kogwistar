@@ -816,9 +816,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     assert_eq!(conversation_written.status(), StatusCode::OK);
 
-    for case in isolation_cases.iter().filter(|case| {
-        matches!(case["truth_graph"].as_str(), Some("workflow" | "wisdom"))
-    }) {
+    for case in isolation_cases
+        .iter()
+        .filter(|case| matches!(case["truth_graph"].as_str(), Some("workflow" | "wisdom")))
+    {
         let truth_graph = case["truth_graph"].as_str().unwrap();
         let mut graph_node = mutation(
             shared_entity_id,
@@ -926,7 +927,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         let response = application
             .graph_read_effect(&visualization_request(truth_graph, graph_space))
             .await;
-        assert_eq!(response.status, StatusCode::OK.as_u16(), "graph={truth_graph}");
+        assert_eq!(
+            response.status,
+            StatusCode::OK.as_u16(),
+            "graph={truth_graph}"
+        );
         let payload: Value = serde_json::from_slice(&response.body).unwrap();
         let rendered_nodes = payload["nodes"].to_string();
         let expected_visible = case["expected_visible"].as_bool().unwrap();
@@ -937,8 +942,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         );
         if truth_graph == "workflow" || truth_graph == "wisdom" {
             assert!(
-                !rendered_nodes.contains("n1")
-                    && !rendered_nodes.contains("conversation-node"),
+                !rendered_nodes.contains("n1") && !rendered_nodes.contains("conversation-node"),
                 "selected graph={truth_graph} leaked records from another graph: {payload}"
             );
         }
@@ -1224,13 +1228,30 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = format!("rust_viz_{}", uuid::Uuid::new_v4().simple());
-    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    let knowledge_schema = format!("{schema}_knowledge");
+    let conversation_schema = format!("{schema}_conversation");
+    let workflow_schema = format!("{schema}_workflow");
+    let wisdom_schema = format!("{schema}_wisdom");
+    let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+        &dsn,
+        &knowledge_schema,
+        &conversation_schema,
+        &workflow_schema,
+        &wisdom_schema,
+    )
+    .unwrap();
     service.ensure_schema().await.unwrap();
-    service
-        .store
-        .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
-        .await
-        .unwrap();
+    for store in [
+        &service.store,
+        &service.conversation_store,
+        &service.workflow_store,
+        &service.wisdom_store,
+    ] {
+        store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+    }
 
     let fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1314,6 +1335,80 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
             .await
             .unwrap();
     }
+
+    service
+        .conversation_store
+        .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            record: GraphRecord {
+                id: "conversation-only-node".to_owned(),
+                document: Some(
+                    json!({"id":"conversation-only-node","label":"conversation-only-node"})
+                        .to_string(),
+                ),
+                metadata: Map::from_iter([
+                    ("entity_type".to_owned(), json!("node")),
+                    ("lifecycle_status".to_owned(), json!("active")),
+                ]),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await
+        .unwrap();
+    service
+        .conversation_store
+        .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            record: GraphRecord {
+                id: "acl|conversation-only-node".to_owned(),
+                document: Some("{}".to_owned()),
+                metadata: Map::from_iter([
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!("conversation")),
+                    ("acl_target_grain".to_owned(), json!("node")),
+                    (
+                        "acl_target_entity_id".to_owned(),
+                        json!("conversation-only-node"),
+                    ),
+                    ("acl_mode".to_owned(), json!("public")),
+                    ("acl_version".to_owned(), json!(1)),
+                    ("tombstoned".to_owned(), json!(false)),
+                ]),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await
+        .unwrap();
+
+    let conversation_result = ApplicationService::execute(
+        &service,
+        ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"graph_type":"conversation"})).unwrap(),
+            principal: json!({
+                "sub": "alice",
+                "user_id": "alice",
+                "storage_ns": "viz-test",
+                "ns": ["viz-test"],
+                "capabilities": ["read_graph"]
+            }),
+        },
+    )
+    .await;
+    assert_eq!(conversation_result.status, StatusCode::OK.as_u16());
+    let conversation_payload: Value = serde_json::from_slice(&conversation_result.body).unwrap();
+    assert!(
+        conversation_payload["nodes"]
+            .to_string()
+            .contains("conversation-only-node")
+    );
+    assert!(!conversation_payload["nodes"].to_string().contains("n1"));
 
     let response = ApplicationService::execute(
         &service,
@@ -1516,7 +1611,12 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
         .unwrap();
     let cleanup_task = tokio::spawn(connection);
     cleanup
-        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .batch_execute(&format!(
+            "DROP SCHEMA \"{knowledge_schema}\" CASCADE; \
+             DROP SCHEMA \"{conversation_schema}\" CASCADE; \
+             DROP SCHEMA \"{workflow_schema}\" CASCADE; \
+             DROP SCHEMA \"{wisdom_schema}\" CASCADE"
+        ))
         .await
         .unwrap();
     drop(cleanup);
@@ -1720,6 +1820,50 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             }
         }
     }
+}
+
+#[test]
+fn postgres_graph_type_stores_follow_python_schema_partitioning() {
+    let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+        "postgresql://user:password@localhost/kogwistar",
+        "kg_knowledge",
+        "kg_conversation",
+        "kg_workflow",
+        "kg_wisdom",
+    )
+    .expect("valid PostgreSQL configuration should construct graph stores without connecting");
+
+    assert_eq!(
+        service.graph_store_for_type("knowledge").schema(),
+        "kg_knowledge"
+    );
+    assert_eq!(
+        service.graph_store_for_type("conversation").schema(),
+        "kg_conversation"
+    );
+    assert_eq!(
+        service.graph_store_for_type("workflow").schema(),
+        "kg_workflow"
+    );
+    assert_eq!(service.graph_store_for_type("wisdom").schema(), "kg_wisdom");
+    assert_eq!(
+        service.graph_store_for_type("CONVERSATION").schema(),
+        "kg_conversation"
+    );
+
+    let legacy = PostgresRunApplicationService::from_dsn_with_wisdom_schema(
+        "postgresql://user:password@localhost/kogwistar",
+        "legacy_graph",
+        "legacy_wisdom",
+    )
+    .expect("legacy constructor remains supported");
+    assert_eq!(legacy.store.schema(), "legacy_graph");
+    assert_eq!(
+        legacy.conversation_store.schema(),
+        "legacy_graph_conversation"
+    );
+    assert_eq!(legacy.workflow_store.schema(), "legacy_graph_workflow");
+    assert_eq!(legacy.wisdom_store.schema(), "legacy_wisdom");
 }
 
 #[tokio::test]

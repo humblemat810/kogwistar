@@ -1,6 +1,8 @@
 #[derive(Clone)]
 pub struct PostgresRunApplicationService {
     store: PostgresStore,
+    conversation_store: PostgresStore,
+    workflow_store: PostgresStore,
     wisdom_store: PostgresStore,
     graph_role: String,
     max_queue: usize,
