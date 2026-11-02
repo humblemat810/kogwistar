@@ -963,6 +963,15 @@ fn capability_effect(
     match (request.method.as_str(), path) {
         ("GET", "/api/workflow/visibility") => {
             let mapping = security_scope_value(&request.principal);
+            let storage_security_mapping = json!({
+                "storage_namespace": mapping["storage_namespace"],
+                "execution_namespace": mapping["execution_namespace"],
+                "security_scope": mapping["security_scope"],
+                "security_scope_path": mapping["security_scope_path"],
+                "tenant": mapping["tenant"],
+                "workspace": mapping["workspace"],
+                "project": mapping["project"],
+            });
             Some(json_effect(
                 StatusCode::OK,
                 json!({
@@ -974,7 +983,7 @@ fn capability_effect(
                         "execution_namespace": mapping["execution_namespace"],
                     },
                     "security_scope": mapping["security_scope"],
-                    "storage_security_mapping": mapping,
+                    "storage_security_mapping": storage_security_mapping,
                     "can_access_public": true,
                 }),
             ))

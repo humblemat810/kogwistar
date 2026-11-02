@@ -73,8 +73,16 @@
         assert_eq!(visibility["namespaces"]["execution_namespace"], "workflow");
         assert_eq!(visibility["security_scope"], "tenant-a");
         assert_eq!(
-            visibility["storage_security_mapping"]["security_scope_path"],
-            "tenant-a/workspace-b/project-c"
+            visibility["storage_security_mapping"],
+            json!({
+                "storage_namespace":"workflow",
+                "execution_namespace":"workflow",
+                "security_scope":"tenant-a",
+                "security_scope_path":"tenant-a/workspace-b/project-c",
+                "tenant":"tenant-a",
+                "workspace":"workspace-b",
+                "project":"project-c"
+            })
         );
 
         let denied_token = token(json!({
