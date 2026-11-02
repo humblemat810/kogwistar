@@ -442,6 +442,13 @@ fn record_field(record: &GraphRecord, field: &str) -> Option<Value> {
     document.get(field).cloned()
 }
 
+fn graph_visualization_edge_relation(record: &GraphRecord) -> Option<Value> {
+    ["relation", "label"]
+        .into_iter()
+        .filter_map(|field| record_field(record, field))
+        .find(|value| value.as_str().is_some_and(|text| !text.is_empty()))
+}
+
 fn value_string(record: &GraphRecord, field: &str) -> Option<String> {
     record_field(record, field).and_then(|value| value.as_str().map(str::to_owned))
 }
@@ -1341,9 +1348,9 @@ pub fn graph_viz_d3_from_records(
     let mut links = Vec::new();
 
     for edge in &visible_edges {
-        let relation = record_field(edge, "relation")
-            .or_else(|| record_field(edge, "label"))
-            .filter(|value| !value.is_null())
+        let relation = graph_visualization_edge_relation(edge);
+        let edge_label = relation
+            .clone()
             .unwrap_or_else(|| Value::String("edge".to_owned()));
         let properties = record_field(edge, "properties")
             .filter(Value::is_object)
@@ -1360,7 +1367,7 @@ pub fn graph_viz_d3_from_records(
                     .unwrap_or_else(|| Value::Object(Map::new()));
                 let object = edge_node.as_object_mut().expect("object was checked");
                 object.insert("id".to_owned(), Value::String(edge.id.clone()));
-                object.insert("label".to_owned(), relation.clone());
+                object.insert("label".to_owned(), edge_label);
                 object.insert("type".to_owned(), Value::String("edge-node".to_owned()));
                 object.insert(
                     "summary".to_owned(),
@@ -1465,9 +1472,7 @@ pub fn graph_viz_cytoscape_from_records(
             .iter()
             .filter(|edge| visible_edge_ids.contains(&edge.id))
         {
-            let relation = record_field(edge, "relation")
-                .or_else(|| record_field(edge, "label"))
-                .filter(|value| !value.is_null());
+            let relation = graph_visualization_edge_relation(edge);
             for source in graph_record_string_list(edge, "source_ids")
                 .iter()
                 .filter(|id| visible_node_ids.contains(*id))
@@ -3572,6 +3577,94 @@ mod tests {
             incomplete_cytoscape["elements"].as_array().unwrap().len(),
             1
         );
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_edge_label_fallback_matches_python_contract; python=kogwistar/visualization/graph_viz.py#to_d3_force; fixture=contracts/golden/visualization-label-fallback-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_edge_label_fallback_matches_python_contract; python_test=tests/test_visualization.py#test_visualization_edge_label_fallback_matches_shared_contract
+    #[test]
+    fn graph_visualization_edge_label_fallback_matches_python_contract() {
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-label-fallback-v1.json"
+        )))
+        .expect("visualization label fallback contract is valid JSON");
+        let model_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("Python graph model fixture is valid JSON");
+        let model_payload = |kind: &str| {
+            model_fixture["cases"]
+                .as_array()
+                .expect("model fixture cases")
+                .iter()
+                .find(|case| case["kind"] == kind)
+                .expect("graph model fixture case")["payload"]
+                .clone()
+        };
+        let record = |payload: &Value| GraphRecord {
+            id: payload["id"].as_str().expect("record ID").to_owned(),
+            document: Some(payload.to_string()),
+            metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+            embedding: None,
+        };
+        let source = model_payload("node");
+        let mut target = source.clone();
+        target["id"] = json!("target");
+        let nodes = vec![record(&source), record(&target)];
+        for case in contract["cases"].as_array().expect("contract cases") {
+            let mut edge = model_payload("edge");
+            edge["id"] = case["name"].clone();
+            edge["relation"] = case["relation"].clone();
+            edge["label"] = case["label"].clone();
+            edge["source_ids"] = json!([source["id"]]);
+            edge["target_ids"] = json!([target["id"]]);
+            let edges = vec![record(&edge)];
+            let expected_label = &case["expected"];
+
+            let d3 = graph_viz_d3_from_records(&nodes, &edges, None, "reify", None);
+            assert!(
+                d3["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|node| { node["id"] == edge["id"] && &node["label"] == expected_label })
+            );
+            assert!(
+                d3["links"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|link| { &link["relation"] == expected_label })
+            );
+
+            let classic = graph_viz_d3_from_records(&nodes, &edges, None, "classic", None);
+            assert_eq!(classic["links"][0]["relation"], *expected_label);
+
+            let reified_cytoscape =
+                graph_viz_cytoscape_from_records(&nodes, &edges, None, "reify", None);
+            assert!(
+                reified_cytoscape["elements"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|element| {
+                        element["data"]["source"] == edge["id"]
+                            || element["data"]["target"] == edge["id"]
+                    })
+                    .all(|element| &element["data"]["label"] == expected_label)
+            );
+
+            let classic_cytoscape =
+                graph_viz_cytoscape_from_records(&nodes, &edges, None, "classic", None);
+            assert!(
+                classic_cytoscape["elements"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|element| element["data"]["source"] == source["id"])
+                    .all(|element| &element["data"]["label"] == expected_label)
+            );
+        }
     }
 
     #[test]

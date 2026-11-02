@@ -288,6 +288,72 @@ def test_graph_visualization_payloads_match_shared_python_model_fixture() -> Non
 
 
 @pytest.mark.ci
+def test_visualization_edge_label_fallback_matches_shared_contract() -> None:
+    contract = json.loads(
+        (ROOT / "contracts/golden/visualization-label-fallback-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model_fixture = json.loads(
+        (ROOT / "contracts/golden/python-graph-model-payloads-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    node_payload = next(
+        case["payload"] for case in model_fixture["cases"] if case["kind"] == "node"
+    )
+    edge_template = next(
+        case["payload"] for case in model_fixture["cases"] if case["kind"] == "edge"
+    )
+    source = Node.model_validate({**node_payload, "id": "source"})
+    target = Node.model_validate({**node_payload, "id": "target"})
+    for case in contract["cases"]:
+        edge_payload = {
+            **edge_template,
+            "id": case["name"],
+            "label": case["label"],
+            "relation": case["relation"],
+            "source_ids": [source.id],
+            "target_ids": [target.id],
+        }
+        edge = Edge.model_validate(edge_payload)
+        expected_label = case["expected"]
+        assert (edge.relation or edge.label or "edge") == expected_label
+
+        read = SimpleNamespace(
+            load_node_map=lambda ids, **_kwargs: {
+                node.id: node for node in (source, target) if node.id in ids
+            },
+            load_edge_map=lambda ids, **_kwargs: {edge.id: edge} if edge.id in ids else {},
+        )
+        backend = SimpleNamespace(
+            node_get=lambda: {"ids": [source.id, target.id]},
+            edge_get=lambda: {"ids": [edge.id]},
+        )
+        engine = SimpleNamespace(kg_graph_type="knowledge", backend=backend, read=read)
+        d3 = to_d3_force(engine)
+        edge_node = next(node for node in d3["nodes"] if node["id"] == edge.id)
+        assert edge_node["label"] == expected_label
+        assert all(link["relation"] == expected_label for link in d3["links"])
+        classic_d3 = to_d3_force(engine, mode="classic")
+        assert all(link["relation"] == expected_label for link in classic_d3["links"])
+
+        reified_cytoscape = to_cytoscape(engine)
+        assert all(
+            element["data"].get("label") == expected_label
+            for element in reified_cytoscape["elements"]
+            if element["data"].get("source") == edge.id
+            or element["data"].get("target") == edge.id
+        )
+        classic_cytoscape = to_cytoscape(engine, mode="classic")
+        assert all(
+            element["data"]["label"] == expected_label
+            for element in classic_cytoscape["elements"]
+            if element["data"].get("source") == source.id
+        )
+
+
+@pytest.mark.ci
 def test_pretty_print_graph():
     doc_id = "doc::test::pretty_print_graph"
     engine = GraphKnowledgeEngine(
