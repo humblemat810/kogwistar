@@ -777,11 +777,8 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
-@pytest.mark.parametrize(
-    "python_async", [False, True], ids=["python-sync", "python-async"]
-)
 def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
-    pg_dsn: str | None, pg_container: Any, python_async: bool
+    pg_dsn: str | None, pg_container: Any
 ) -> None:
     if pg_dsn is None or pg_container is None:
         pytest.skip(
@@ -789,7 +786,8 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
         )
 
     database_name = f"gke_bootstrap_{uuid.uuid4().hex[:16]}"
-    python_schema = f"gke_python_{uuid.uuid4().hex[:16]}"
+    python_sync_schema = f"gke_python_sync_{uuid.uuid4().hex[:12]}"
+    python_async_schema = f"gke_python_async_{uuid.uuid4().hex[:12]}"
     rust_schema = f"gke_rust_{uuid.uuid4().hex[:16]}"
     admin_url = sa.engine.make_url(pg_dsn).set(database="postgres")
     admin_engine = sa.create_engine(admin_url)
@@ -806,8 +804,8 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
         start = Event()
         target_engine = sa.create_engine(target_dsn)
 
-        def bootstrap_python() -> None:
-            if python_async:
+        def bootstrap_python(schema: str, *, use_async_engine: bool) -> None:
+            if use_async_engine:
                 from sqlalchemy.ext.asyncio import create_async_engine
 
                 engine = create_async_engine(
@@ -819,12 +817,12 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                 engine = sa.create_engine(target_dsn)
             try:
                 backend = PgVectorBackend(
-                    engine=engine, embedding_dim=3, schema=python_schema
+                    engine=engine, embedding_dim=3, schema=schema
                 )
                 assert start.wait(timeout=10)
                 backend.ensure_schema()
             finally:
-                if python_async:
+                if use_async_engine:
                     import asyncio
 
                     asyncio.run(engine.dispose())
@@ -854,8 +852,13 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                         "WHERE datname = current_database()"
                     )
                 )
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    python_future = executor.submit(bootstrap_python)
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    python_sync_future = executor.submit(
+                        bootstrap_python, python_sync_schema, use_async_engine=False
+                    )
+                    python_async_future = executor.submit(
+                        bootstrap_python, python_async_schema, use_async_engine=True
+                    )
                     rust_future = executor.submit(bootstrap_rust)
                     start.set()
                     deadline = monotonic() + 10
@@ -870,17 +873,25 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                                 ),
                                 {"database_oid": database_oid},
                             )
-                            if waiting_sessions >= 2:
+                            if waiting_sessions >= 3:
                                 break
-                            if python_future.done() or rust_future.done():
+                            if any(
+                                future.done()
+                                for future in (
+                                    python_sync_future,
+                                    python_async_future,
+                                    rust_future,
+                                )
+                            ):
                                 break
                             sleep(0.05)
                     finally:
                         lock_transaction.commit()
-                    python_future.result(timeout=60)
+                    python_sync_future.result(timeout=60)
+                    python_async_future.result(timeout=60)
                     assert rust_future.result(timeout=60) == {"initialized": True}
-                assert waiting_sessions >= 2, (
-                    "both implementations must block on the shared PostgreSQL "
+                assert waiting_sessions >= 3, (
+                    "all three implementations must block on the shared PostgreSQL "
                     "extension-creation lock before it is released"
                 )
 
@@ -891,7 +902,7 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                     )
                     == 1
                 )
-                for schema in (python_schema, rust_schema):
+                for schema in (python_sync_schema, python_async_schema, rust_schema):
                     table_name = f"{schema}.gke_nodes"
                     assert connection.scalar(
                         sa.text(
