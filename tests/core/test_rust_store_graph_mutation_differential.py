@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 import pytest
@@ -797,7 +798,8 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
         target_dsn = admin_url.set(database=database_name).render_as_string(
             hide_password=False
         )
-        start = Barrier(2)
+        start = Event()
+        target_engine = sa.create_engine(target_dsn)
 
         def bootstrap_python() -> None:
             engine = sa.create_engine(target_dsn)
@@ -805,27 +807,64 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                 backend = PgVectorBackend(
                     engine=engine, embedding_dim=3, schema=python_schema
                 )
-                start.wait(timeout=10)
+                assert start.wait(timeout=10)
                 backend.ensure_schema()
             finally:
                 engine.dispose()
 
         def bootstrap_rust() -> Any:
-            start.wait(timeout=10)
+            assert start.wait(timeout=10)
             return _rust(
                 target_dsn,
                 rust_schema,
                 {"kind": "create_graph_schema", "embedding_dim": 3},
             )
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            python_future = executor.submit(bootstrap_python)
-            rust_future = executor.submit(bootstrap_rust)
-            python_future.result(timeout=60)
-            assert rust_future.result(timeout=60) == {"initialized": True}
-
-        target_engine = sa.create_engine(target_dsn)
         try:
+            with target_engine.connect() as lock_connection:
+                lock_transaction = lock_connection.begin()
+                lock_connection.execute(
+                    sa.text(
+                        "SELECT pg_advisory_xact_lock("
+                        "hashtext('kogwistar.pgvector.extension'))"
+                    )
+                )
+                database_oid = lock_connection.scalar(
+                    sa.text(
+                        "SELECT oid FROM pg_database "
+                        "WHERE datname = current_database()"
+                    )
+                )
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    python_future = executor.submit(bootstrap_python)
+                    rust_future = executor.submit(bootstrap_rust)
+                    start.set()
+                    deadline = monotonic() + 10
+                    waiting_sessions = 0
+                    try:
+                        while monotonic() < deadline:
+                            waiting_sessions = lock_connection.scalar(
+                                sa.text(
+                                    "SELECT count(*) FROM pg_locks "
+                                    "WHERE locktype = 'advisory' AND NOT granted "
+                                    "AND database = :database_oid"
+                                ),
+                                {"database_oid": database_oid},
+                            )
+                            if waiting_sessions >= 2:
+                                break
+                            if python_future.done() or rust_future.done():
+                                break
+                            sleep(0.05)
+                    finally:
+                        lock_transaction.commit()
+                    python_future.result(timeout=60)
+                    assert rust_future.result(timeout=60) == {"initialized": True}
+                assert waiting_sessions >= 2, (
+                    "both implementations must block on the shared PostgreSQL "
+                    "extension-creation lock before it is released"
+                )
+
             with target_engine.connect() as connection:
                 assert connection.scalar(
                     sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
