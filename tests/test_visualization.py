@@ -110,6 +110,49 @@ def test_visualization_route_graph_type_selection_matches_shared_rust_fixture(
 
 
 @pytest.mark.ci
+def test_visualization_public_routes_forward_shared_fixture_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    fixture_path = ROOT / "contracts/golden/visualization-insertion-filter-v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine = object()
+    calls: list[tuple[str, object, dict[str, object]]] = []
+    d3_payload = {"nodes": [{"id": "n1"}, {"id": "e1"}], "links": []}
+    cytoscape_payload = {"elements": [{"data": {"id": "n1"}}]}
+
+    def record_d3(selected_engine: object, **kwargs: object) -> dict[str, object]:
+        calls.append(("d3", selected_engine, kwargs))
+        return d3_payload
+
+    def record_cytoscape(
+        selected_engine: object, **kwargs: object
+    ) -> dict[str, object]:
+        calls.append(("cytoscape", selected_engine, kwargs))
+        return cytoscape_payload
+
+    monkeypatch.setattr(server, "engine", engine)
+    monkeypatch.setattr(server, "to_d3_force", record_d3)
+    monkeypatch.setattr(server, "to_cytoscape", record_cytoscape)
+
+    options = {
+        "doc_id": fixture["doc_id"],
+        "mode": "reify",
+        "insertion_method": fixture["insertion_method"],
+    }
+    d3_response = server.api_viz_d3(**options, graph_type="knowledge")
+    cytoscape_response = server.api_viz_cytoscape(**options, graph_type="knowledge")
+
+    assert json.loads(d3_response.body) == d3_payload
+    assert json.loads(cytoscape_response.body) == cytoscape_payload
+    assert calls == [
+        ("d3", engine, options),
+        ("cytoscape", engine, options),
+    ]
+
+
+@pytest.mark.ci
 def test_graph_visualization_payloads_match_shared_python_model_fixture() -> None:
     fixture_path = ROOT / "contracts/golden/python-graph-model-payloads-v1.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))

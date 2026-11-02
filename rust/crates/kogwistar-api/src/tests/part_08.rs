@@ -695,10 +695,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     );
 
     for (path, element_path) in [
-        (
-            "/api/viz/d3.json?graph_type=knowledge&mode=reify",
-            "nodes",
-        ),
+        ("/api/viz/d3.json?graph_type=knowledge&mode=reify", "nodes"),
         (
             "/api/viz/cytoscape.json?graph_type=knowledge&mode=reify",
             "elements",
@@ -720,10 +717,8 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "route {path}");
-        let visualization: Value = serde_json::from_slice(
-            &to_bytes(response.into_body(), 65_536).await.unwrap(),
-        )
-        .unwrap();
+        let visualization: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
         let ids = visualization[element_path]
             .as_array()
             .unwrap()
@@ -761,10 +756,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .await
         .unwrap();
     assert_eq!(bundle.status(), StatusCode::OK);
-    assert_eq!(
-        bundle.headers()["content-type"],
-        "text/html; charset=utf-8"
-    );
+    assert_eq!(bundle.headers()["content-type"], "text/html; charset=utf-8");
     let bundle = String::from_utf8(
         to_bytes(bundle.into_body(), 1_048_576)
             .await
@@ -937,10 +929,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert!(vector_query.get("documents").is_none());
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/visualization/graph_viz.py#_filter_by_insertion_method; fixture=contracts/golden/visualization-insertion-filter-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_insertion_method_filter_matches_shared_rust_fixture
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/visualization-insertion-filter-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_public_routes_forward_shared_fixture_options
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = format!("rust_viz_{}", uuid::Uuid::new_v4().simple());
@@ -1076,6 +1073,159 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
             .map(|id| id.as_str().unwrap())
             .collect::<Vec<_>>()
     );
+
+    let secret = "postgres-visualization-public-route-test-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "rw",
+                "ns": ["viz-test"],
+                "storage_ns": "viz-test",
+                "capabilities": capabilities,
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec![],
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service.clone()),
+    );
+    let query = format!(
+        "doc_id={}&mode=reify&insertion_method={}&graph_type=knowledge",
+        fixture["doc_id"].as_str().unwrap(),
+        fixture["insertion_method"].as_str().unwrap()
+    );
+    let mut expected_node_ids = fixture["expected_matches_by_kind"]["node"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    expected_node_ids.sort_unstable();
+    for (path, result_key) in [
+        ("/api/viz/d3.json", "nodes"),
+        ("/api/viz/cytoscape.json", "elements"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("{path}?{query}"))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+        let ids = payload[result_key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| {
+                item.get("id")
+                    .and_then(Value::as_str)
+                    .or_else(|| item.get("data").and_then(|data| data["id"].as_str()))
+            })
+            .collect::<Vec<_>>();
+        let mut returned_node_ids = ids
+            .iter()
+            .copied()
+            .filter(|id| id.starts_with('n'))
+            .collect::<Vec<_>>();
+        returned_node_ids.sort_unstable();
+        assert_eq!(returned_node_ids, expected_node_ids, "{path}");
+        assert!(!ids.contains(&"n-private"), "{path}: {ids:?}");
+    }
+
+    let bundle = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/viz/d3.bundle?{query}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token(&["read_graph"])),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bundle.status(), StatusCode::OK);
+    assert_eq!(bundle.headers()["content-type"], "text/html; charset=utf-8");
+    let bundle = String::from_utf8(
+        to_bytes(bundle.into_body(), 1_048_576)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let embedded = bundle
+        .split_once("window.__EMBEDDED_DATA__ = ")
+        .and_then(|(_, rest)| rest.split_once(';'))
+        .map(|(payload, _)| serde_json::from_str::<Value>(payload).unwrap())
+        .expect("public bundle contains serialized graph data");
+    let bundle_ids = embedded["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect::<Vec<_>>();
+    let mut returned_bundle_node_ids = bundle_ids
+        .iter()
+        .copied()
+        .filter(|id| id.starts_with('n'))
+        .collect::<Vec<_>>();
+    returned_bundle_node_ids.sort_unstable();
+    assert_eq!(returned_bundle_node_ids, expected_node_ids);
+    assert!(!bundle_ids.contains(&"n-private"));
+
+    for path in [
+        format!("/api/viz/d3.json?{query}"),
+        format!("/api/viz/cytoscape.json?{query}"),
+        format!("/viz/d3.bundle?{query}"),
+    ] {
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
 
     drop(service);
     let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
