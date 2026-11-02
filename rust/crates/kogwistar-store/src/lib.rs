@@ -1255,6 +1255,49 @@ fn graph_viz_selected_records<'a>(
     if matching.is_empty() { base } else { matching }
 }
 
+fn graph_viz_endpoint_complete_edges<'a>(
+    nodes: &[GraphRecord],
+    edges: &'a [GraphRecord],
+    doc_id: Option<&str>,
+    insertion_method: Option<&str>,
+) -> Vec<&'a GraphRecord> {
+    let node_ids = graph_viz_selected_records(nodes, doc_id, insertion_method)
+        .into_iter()
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let candidates = graph_viz_selected_records(edges, doc_id, insertion_method);
+    let mut visible_edge_ids = candidates
+        .iter()
+        .map(|edge| edge.id.as_str())
+        .collect::<BTreeSet<_>>();
+
+    loop {
+        let next = candidates
+            .iter()
+            .filter(|edge| {
+                ["source_ids", "target_ids"]
+                    .into_iter()
+                    .flat_map(|field| graph_record_string_list(edge, field))
+                    .all(|endpoint_id| node_ids.contains(endpoint_id.as_str()))
+                    && ["source_edge_ids", "target_edge_ids"]
+                        .into_iter()
+                        .flat_map(|field| graph_record_string_list(edge, field))
+                        .all(|endpoint_id| visible_edge_ids.contains(endpoint_id.as_str()))
+            })
+            .map(|edge| edge.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if next == visible_edge_ids {
+            break;
+        }
+        visible_edge_ids = next;
+    }
+
+    candidates
+        .into_iter()
+        .filter(|edge| visible_edge_ids.contains(edge.id.as_str()))
+        .collect()
+}
+
 pub fn graph_viz_d3_from_records(
     nodes: &[GraphRecord],
     edges: &[GraphRecord],
@@ -1289,7 +1332,7 @@ pub fn graph_viz_d3_from_records(
         node_values.insert(node.id.clone(), value);
     }
     let node_ids = node_values.keys().cloned().collect::<BTreeSet<_>>();
-    let visible_edges = graph_viz_selected_records(edges, doc_id, insertion_method);
+    let visible_edges = graph_viz_endpoint_complete_edges(nodes, edges, doc_id, insertion_method);
     let edge_ids = visible_edges
         .iter()
         .map(|record| record.id.clone())
@@ -1312,16 +1355,19 @@ pub fn graph_viz_d3_from_records(
 
         if reify {
             if !node_values.contains_key(&edge.id) {
-                node_values.insert(
-                    edge.id.clone(),
-                    json!({
-                        "id": edge.id,
-                        "label": relation,
-                        "type": "edge-node",
-                        "summary": record_field(edge, "summary"),
-                        "properties": properties,
-                    }),
+                let mut edge_node = record_json(edge)
+                    .filter(Value::is_object)
+                    .unwrap_or_else(|| Value::Object(Map::new()));
+                let object = edge_node.as_object_mut().expect("object was checked");
+                object.insert("id".to_owned(), Value::String(edge.id.clone()));
+                object.insert("label".to_owned(), relation.clone());
+                object.insert("type".to_owned(), Value::String("edge-node".to_owned()));
+                object.insert(
+                    "summary".to_owned(),
+                    record_field(edge, "summary").unwrap_or(Value::Null),
                 );
+                object.insert("properties".to_owned(), properties.clone());
+                node_values.insert(edge.id.clone(), edge_node);
             }
             for source in sources.iter().filter(|id| node_ids.contains(*id)) {
                 links.push(json!({"source": source, "target": edge.id, "relation": relation, "role": "src", "properties": properties}));
@@ -1368,7 +1414,7 @@ pub fn graph_viz_cytoscape_from_records(
         .filter(|node| node["type"] == "entity")
         .filter_map(|node| node["id"].as_str().map(str::to_owned))
         .collect::<BTreeSet<_>>();
-    let selected_edges = graph_viz_selected_records(edges, doc_id, insertion_method);
+    let selected_edges = graph_viz_endpoint_complete_edges(nodes, edges, doc_id, insertion_method);
     let visible_edge_ids = selected_edges
         .iter()
         .map(|edge| edge.id.clone())
@@ -3368,6 +3414,102 @@ mod tests {
         GraphRecord::new(id)
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_viz_d3_from_records; python=kogwistar/visualization/graph_viz.py#to_d3_force; fixture=contracts/golden/python-graph-model-payloads-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_model_payloads_match_python_fixture; python_test=tests/test_visualization.py#test_graph_visualization_payloads_match_shared_python_model_fixture
+    #[test]
+    fn graph_visualization_model_payloads_match_python_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("Python graph-model fixture is valid JSON");
+        let payload = |kind: &str| {
+            fixture["cases"]
+                .as_array()
+                .expect("fixture cases")
+                .iter()
+                .find(|case| case["kind"] == kind)
+                .expect("fixture graph model")["payload"]
+                .clone()
+        };
+        let source = payload("node");
+        let mut target = source.clone();
+        target["id"] = json!("parity-target");
+        target["label"] = json!("Target node");
+        let mut edge = payload("edge");
+        edge["source_ids"] = json!([source["id"]]);
+        edge["target_ids"] = json!([target["id"]]);
+
+        let record = |payload: &Value| GraphRecord {
+            id: payload["id"].as_str().expect("model ID").to_owned(),
+            document: Some(payload.to_string()),
+            metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+            embedding: None,
+        };
+        let nodes = vec![record(&source), record(&target)];
+        let edges = vec![record(&edge)];
+        let d3 = graph_viz_d3_from_records(&nodes, &edges, None, "reify", None);
+
+        let mut expected_nodes = vec![source.clone(), target.clone(), edge.clone()];
+        for node in &mut expected_nodes[..2] {
+            node["type"] = json!("entity");
+            node["properties"] = node["properties"]
+                .as_object()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or_else(|| json!({}));
+        }
+        expected_nodes[2]["type"] = json!("edge-node");
+        expected_nodes[2]["label"] = edge["relation"].clone();
+        expected_nodes.sort_by_key(|node| node["id"].as_str().unwrap_or_default().to_owned());
+        let mut actual_nodes = d3["nodes"].as_array().unwrap().clone();
+        actual_nodes.sort_by_key(|node| node["id"].as_str().unwrap_or_default().to_owned());
+        assert_eq!(actual_nodes, expected_nodes);
+
+        let mut actual_links = d3["links"].as_array().unwrap().clone();
+        actual_links.sort_by_key(|link| {
+            (
+                link["source"].as_str().unwrap_or_default().to_owned(),
+                link["target"].as_str().unwrap_or_default().to_owned(),
+            )
+        });
+        let mut expected_links = vec![
+            json!({"source":source["id"],"target":edge["id"],"relation":edge["relation"],"role":"src","properties":edge["properties"]}),
+            json!({"source":edge["id"],"target":target["id"],"relation":edge["relation"],"role":"tgt","properties":edge["properties"]}),
+        ];
+        expected_links.sort_by_key(|link| {
+            (
+                link["source"].as_str().unwrap_or_default().to_owned(),
+                link["target"].as_str().unwrap_or_default().to_owned(),
+            )
+        });
+        assert_eq!(actual_links, expected_links);
+
+        let cytoscape = graph_viz_cytoscape_from_records(&nodes, &edges, None, "reify", None);
+        let mut expected_elements = vec![
+            json!({"data":{"id":source["id"],"label":source["label"],"type":"entity"},"classes":""}),
+            json!({"data":{"id":target["id"],"label":target["label"],"type":"entity"},"classes":""}),
+            json!({"data":{"id":edge["id"],"label":edge["relation"],"type":"edge-node"},"classes":"edge-node"}),
+            json!({"data":{"id":format!("{}::src::{}",edge["id"].as_str().unwrap(),source["id"].as_str().unwrap()),"source":source["id"],"target":edge["id"],"label":edge["relation"]},"classes":"src"}),
+            json!({"data":{"id":format!("{}::tgt::{}",edge["id"].as_str().unwrap(),target["id"].as_str().unwrap()),"source":edge["id"],"target":target["id"],"label":edge["relation"]},"classes":"tgt"}),
+        ];
+        expected_elements.sort_by_key(|element| {
+            element["data"]["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        });
+        let mut actual_elements = cytoscape["elements"].as_array().unwrap().clone();
+        actual_elements.sort_by_key(|element| {
+            element["data"]["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        });
+        assert_eq!(actual_elements, expected_elements);
+        assert_eq!(cytoscape["mode"], "reify");
+        assert!(cytoscape["doc_id"].is_null());
+    }
+
     #[test]
     fn document_authority_capability_is_explicit_and_fail_closed() {
         assert_eq!(
@@ -3455,21 +3597,28 @@ mod tests {
         let edges = vec![visible_edge.clone(), unrelated_edge, tombstoned];
 
         let d3 = graph_viz_d3_from_records(&nodes[..2], &edges, Some("d1"), "reify", None);
-        assert_eq!(d3["nodes"].as_array().unwrap().len(), 3);
-        assert_eq!(d3["links"].as_array().unwrap().len(), 2);
+        assert_eq!(d3["nodes"].as_array().unwrap().len(), 2);
+        assert!(d3["links"].as_array().unwrap().is_empty());
         assert!(!d3.to_string().contains("private-node"));
         assert!(!d3.to_string().contains("e2"));
         assert!(!d3.to_string().contains("e3"));
 
         let cy = graph_viz_cytoscape_from_records(&nodes[..2], &edges, Some("d1"), "classic", None);
         let elements = cy["elements"].as_array().unwrap();
-        assert_eq!(elements.len(), 3);
-        assert_eq!(elements[2]["data"]["source"], "n1");
-        assert_eq!(elements[2]["data"]["target"], "n2");
-        assert_eq!(elements[2]["data"]["id"], "e1::n1->n2");
+        assert_eq!(elements.len(), 2);
         assert_eq!(cy["mode"], "classic");
         assert_eq!(cy["doc_id"], "d1");
 
+        let complete_edge = edge_record(
+            "e1",
+            json!({
+                "relation":"connects",
+                "doc_id":"d1",
+                "source_ids":["n1"],
+                "target_ids":["n2"],
+                "properties":{"weight":2}
+            }),
+        );
         let source_edge = edge_record(
             "e4",
             json!({
@@ -3482,7 +3631,7 @@ mod tests {
         let target_edge = edge_record("e5", json!({"relation":"terminal","doc_id":"d1"}));
         let reified = graph_viz_cytoscape_from_records(
             &nodes[..2],
-            &[visible_edge, source_edge, target_edge],
+            &[complete_edge, source_edge, target_edge],
             Some("d1"),
             "reify",
             None,
@@ -3551,16 +3700,26 @@ mod tests {
         let doc_id = fixture["doc_id"].as_str();
         let insertion_method = fixture["insertion_method"].as_str();
 
-        let filtered = graph_viz_d3_from_records(&nodes, &edges, doc_id, "reify", insertion_method);
-        let filtered_ids = filtered["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|node| node["id"].as_str())
+        let filtered_node_ids = graph_viz_selected_records(&nodes, doc_id, insertion_method)
+            .into_iter()
+            .map(|node| node.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let filtered_edge_ids = graph_viz_selected_records(&edges, doc_id, insertion_method)
+            .into_iter()
+            .map(|edge| edge.id.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(
-            filtered_ids,
-            fixture["expected_matches"]
+            filtered_node_ids,
+            fixture["expected_matches_by_kind"]["node"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(
+            filtered_edge_ids,
+            fixture["expected_matches_by_kind"]["edge"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -3568,14 +3727,16 @@ mod tests {
                 .collect::<BTreeSet<_>>()
         );
 
-        let fallback =
-            graph_viz_d3_from_records(&nodes, &edges, doc_id, "reify", Some("missing-method"));
-        let fallback_ids = fallback["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|node| node["id"].as_str())
-            .collect::<BTreeSet<_>>();
+        let mut fallback_ids = graph_viz_selected_records(&nodes, doc_id, Some("missing-method"))
+            .into_iter()
+            .chain(graph_viz_selected_records(
+                &edges,
+                doc_id,
+                Some("missing-method"),
+            ))
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        fallback_ids.sort_unstable();
         assert_eq!(
             fallback_ids,
             fixture["expected_empty_match_fallback"]
@@ -3583,7 +3744,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|id| id.as_str().unwrap())
-                .collect::<BTreeSet<_>>()
+                .collect::<Vec<_>>()
         );
     }
 

@@ -14,7 +14,11 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.utils.kge_debug_dump import dump_d3_bundle
-from kogwistar.visualization.graph_viz import _filter_by_insertion_method
+from kogwistar.visualization.graph_viz import (
+    _filter_by_insertion_method,
+    to_cytoscape,
+    to_d3_force,
+)
 from kogwistar.visualization.basic_visualization import Visualizer
 from tests._helpers.fake_backend import build_fake_backend
 
@@ -96,6 +100,110 @@ def test_visualization_route_graph_type_selection_matches_shared_rust_fixture(
         response = server.api_viz_cytoscape(graph_type=case["input"])
         assert response.body == b'{"ok":true}'
         assert selected.pop() is engines[case["expected"]]
+
+
+@pytest.mark.ci
+def test_graph_visualization_payloads_match_shared_python_model_fixture() -> None:
+    fixture_path = ROOT / "contracts/golden/python-graph-model-payloads-v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    node_payload = next(case["payload"] for case in fixture["cases"] if case["kind"] == "node")
+    edge_payload = next(case["payload"] for case in fixture["cases"] if case["kind"] == "edge")
+
+    source = Node.model_validate(node_payload)
+    target_payload = {**node_payload, "id": "parity-target", "label": "Target node"}
+    target = Node.model_validate(target_payload)
+    edge_payload = {
+        **edge_payload,
+        "source_ids": [source.id],
+        "target_ids": [target.id],
+    }
+    edge = Edge.model_validate(edge_payload)
+
+    class Backend:
+        def node_get(self) -> dict[str, list[str]]:
+            return {"ids": [source.id, target.id]}
+
+        def edge_get(self) -> dict[str, list[str]]:
+            return {"ids": [edge.id]}
+
+    read = SimpleNamespace(
+        load_node_map=lambda ids, **_kwargs: {
+            node.id: node for node in (source, target) if node.id in ids
+        },
+        load_edge_map=lambda ids, **_kwargs: {edge.id: edge} if edge.id in ids else {},
+    )
+    engine = SimpleNamespace(kg_graph_type="knowledge", backend=Backend(), read=read)
+
+    d3 = to_d3_force(engine)
+    expected_nodes = []
+    for model, entity_type, label in (
+        (source, "entity", source.label),
+        (target, "entity", target.label),
+        (edge, "edge-node", edge.relation or edge.label or "edge"),
+    ):
+        value = model.model_dump()
+        value.update(
+            {
+                "id": model.id,
+                "label": label,
+                "type": entity_type,
+                "summary": model.summary,
+                "properties": model.properties or {},
+            }
+        )
+        expected_nodes.append(value)
+    assert sorted(d3["nodes"], key=lambda item: item["id"]) == sorted(
+        expected_nodes, key=lambda item: item["id"]
+    )
+    assert sorted(
+        (link["source"], link["target"], link["role"], link["relation"], link["properties"])
+        for link in d3["links"]
+    ) == sorted(
+        [
+            (source.id, edge.id, "src", edge.relation, edge.properties),
+            (edge.id, target.id, "tgt", edge.relation, edge.properties),
+        ]
+    )
+    assert d3["mode"] == "reify" and d3["doc_id"] is None
+
+    cytoscape = to_cytoscape(engine)
+    expected_elements = [
+        {
+            "data": {"id": model.id, "label": label, "type": entity_type},
+            "classes": css_class,
+        }
+        for model, entity_type, label, css_class in (
+            (source, "entity", source.label, ""),
+            (target, "entity", target.label, ""),
+            (edge, "edge-node", edge.relation or edge.label or "edge", "edge-node"),
+        )
+    ]
+    expected_elements.extend(
+        [
+            {
+                "data": {
+                    "id": f"{edge.id}::src::{source.id}",
+                    "source": source.id,
+                    "target": edge.id,
+                    "label": edge.relation or edge.label,
+                },
+                "classes": "src",
+            },
+            {
+                "data": {
+                    "id": f"{edge.id}::tgt::{target.id}",
+                    "source": edge.id,
+                    "target": target.id,
+                    "label": edge.relation or edge.label,
+                },
+                "classes": "tgt",
+            },
+        ]
+    )
+    assert sorted(cytoscape["elements"], key=lambda item: item["data"]["id"]) == sorted(
+        expected_elements, key=lambda item: item["data"]["id"]
+    )
+    assert cytoscape["mode"] == "reify" and cytoscape["doc_id"] is None
 
 
 @pytest.mark.ci
