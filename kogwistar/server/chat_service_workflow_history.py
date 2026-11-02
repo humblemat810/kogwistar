@@ -47,6 +47,7 @@ from typing_extensions import TypedDict
 
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.json_types import JsonObject
+from kogwistar.implementation_selection import ImplementationSelectionSnapshot
 
 from .chat_service_shared import WorkflowProjectionRebuildingError, _BaseComponent
 
@@ -219,6 +220,13 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     It does not execute workflows and does not define conversation/runtime
     behavior.
     """
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Bind design history work to the workflow graph's selector snapshot."""
+        return getattr(
+            self._workflow_engine(), "_implementation_selection_snapshot", None
+        )
 
     def _safe_workflow_nodes(self, *, workflow_id: str) -> list[WorkflowNode]:
         """Return all visible workflow nodes for a workflow.

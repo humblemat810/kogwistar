@@ -311,6 +311,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.jobs import JobQueueSubsystem
     from kogwistar.server.chat_service_run_execution import _RunExecutionService
     from kogwistar.server.chat_service_run_inspection import _RunInspectionService
+    from kogwistar.server.chat_service_workflow_design import _WorkflowDesignService
 
     unbound: list[str] = []
     for subsystem in (
@@ -483,6 +484,27 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
+    workflow_design_entrypoints = (
+        "workflow_design_history",
+        "refresh_workflow_design_projection",
+        "workflow_design_upsert_node",
+        "workflow_design_upsert_edge",
+        "workflow_design_delete_node",
+        "workflow_design_delete_edge",
+        "workflow_design_undo",
+        "workflow_design_redo",
+        "workflow_design_graph",
+    )
+    unbound.extend(
+        f"_WorkflowDesignService.{name}"
+        for name in workflow_design_entrypoints
+        if not getattr(
+            getattr(_WorkflowDesignService, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
     assert unbound == []
 
 
@@ -547,6 +569,45 @@ def test_resume_contract_keeps_conversation_engine_selection(
 
     assert result["compatible"] is False
     assert observed == ["python", "python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_workflow_design_history_uses_workflow_engine_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.server.chat_service_workflow_design import _WorkflowDesignService
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    workflow_engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    conversation_engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    owner = SimpleNamespace(
+        _workflow_engine=lambda: workflow_engine,
+        _conversation_engine=lambda: conversation_engine,
+        _workflow_history_lock=threading.Lock(),
+    )
+    service = _WorkflowDesignService(owner)
+    observed: list[str] = []
+
+    def projection_status(**_kwargs: object) -> str:
+        observed.append(runtime_implementation_mode())
+        return "ready"
+
+    def sync_projection(**_kwargs: object) -> dict[str, object]:
+        observed.append(runtime_implementation_mode())
+        return {}
+
+    monkeypatch.setattr(service, "_workflow_projection_status", projection_status)
+    monkeypatch.setattr(service, "_workflow_sync_projection_locked", sync_projection)
+
+    result = service.workflow_design_history(workflow_id="wf-selector-test")
+
+    assert result["materialization_status"] == "ready"
+    assert observed == ["python", "python", "python"]
     assert runtime_implementation_mode() == "rust"
 
 
