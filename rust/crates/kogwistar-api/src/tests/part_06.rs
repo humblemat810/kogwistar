@@ -3135,9 +3135,9 @@
             .await
             .unwrap()
             .with_embedding_provider(provider);
-        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
         service
-            .store
+            .conversation_store
             .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
             .await
             .unwrap();
@@ -3145,7 +3145,7 @@
         let conversation_id = "send-message-conversation";
         let root_id = "send-message-root";
         service
-            .store
+            .conversation_store
             .apply_graph_mutation(GraphMutation {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -3184,7 +3184,7 @@
             .unwrap();
         let acl_id = "send-message-root-acl";
         service
-            .store
+            .conversation_store
             .apply_graph_mutation(GraphMutation {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -3224,7 +3224,7 @@
         let connection_task = tokio::spawn(connection);
         fault_client
             .batch_execute(&format!(
-                "CREATE FUNCTION \"{schema}\".reject_send_message_index_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected send_message index failure'; END; $$; CREATE TRIGGER reject_send_message_index_job BEFORE INSERT ON \"{schema}\".index_jobs FOR EACH ROW EXECUTE FUNCTION \"{schema}\".reject_send_message_index_job();"
+                "CREATE FUNCTION \"{schema}_conversation\".reject_send_message_index_job() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected send_message index failure'; END; $$; CREATE TRIGGER reject_send_message_index_job BEFORE INSERT ON \"{schema}_conversation\".index_jobs FOR EACH ROW EXECUTE FUNCTION \"{schema}_conversation\".reject_send_message_index_job();"
             ))
             .await
             .unwrap();
@@ -3272,7 +3272,7 @@
         let rejected = service.execute(make_request(Some("conversation-owner"))).await;
         assert!(rejected.status >= 500, "{}", String::from_utf8_lossy(&rejected.body));
         let still_only_root = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -3295,7 +3295,7 @@
         assert_eq!(still_only_root[0].id, root_id);
         assert_eq!(
             service
-                .store
+                .conversation_store
                 .list_index_jobs(Some("alpha"), None, None, None, None, 20)
                 .await
                 .unwrap()
@@ -3321,7 +3321,7 @@
         let connection_task = tokio::spawn(connection);
         cleanup_client
             .batch_execute(&format!(
-                "DROP TRIGGER reject_send_message_index_job ON \"{schema}\".index_jobs; DROP FUNCTION \"{schema}\".reject_send_message_index_job();"
+                "DROP TRIGGER reject_send_message_index_job ON \"{schema}_conversation\".index_jobs; DROP FUNCTION \"{schema}_conversation\".reject_send_message_index_job();"
             ))
             .await
             .unwrap();
@@ -3400,7 +3400,7 @@
         let run_id = response["result"]["run_id"].as_str().unwrap();
         let turn_id = response["result"]["turn_node_id"].as_str().unwrap();
         let nodes = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -3423,7 +3423,7 @@
         assert!(nodes.iter().any(|node| node.id == turn_id));
         assert_eq!(
             service
-                .store
+                .conversation_store
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -3478,7 +3478,7 @@
         );
         assert_eq!(
             service
-                .store
+                .conversation_store
                 .list_index_jobs(Some("alpha"), None, None, None, None, 20)
                 .await
                 .unwrap()
@@ -3493,7 +3493,12 @@
             tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let connection_task = tokio::spawn(connection);
         cleanup
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
         drop(cleanup);
