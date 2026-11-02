@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "omitted-doc-id-selects-all",
+      "doc_id": null,
+      "selected_doc_ids": ["doc-a", "doc-b"],
+      "selected_edge_doc_ids": ["doc-a", "doc-b"],
+      "response_doc_id": null
+    },
+    {
+      "name": "empty-doc-id-selects-all-but-preserves-query-value",
+      "doc_id": "",
+      "selected_doc_ids": ["doc-a", "doc-b"],
+      "selected_edge_doc_ids": ["doc-a", "doc-b"],
+      "response_doc_id": ""
+    },
+    {
+      "name": "non-empty-doc-id-filters-selected-records",
+      "doc_id": "doc-a",
+      "selected_doc_ids": ["doc-a"],
+      "selected_edge_doc_ids": ["doc-a"],
+      "response_doc_id": "doc-a"
+    }
+  ]
+}

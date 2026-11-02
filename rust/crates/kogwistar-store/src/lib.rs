@@ -1239,11 +1239,13 @@ fn graph_viz_selected_records<'a>(
     doc_id: Option<&str>,
     insertion_method: Option<&str>,
 ) -> Vec<&'a GraphRecord> {
+    // Python's `_ids_by_doc` treats an empty query value like an omitted filter.
+    let selection_doc_id = doc_id.filter(|value| !value.is_empty());
     let base = records
         .iter()
         .filter(|record| {
             !is_tombstoned(&record.metadata)
-                && doc_id.is_none_or(|expected| {
+                && selection_doc_id.is_none_or(|expected| {
                     record_field(record, "doc_id")
                         .and_then(|value| value.as_str().map(str::to_owned))
                         .as_deref()
@@ -1257,7 +1259,7 @@ fn graph_viz_selected_records<'a>(
     let matching = base
         .iter()
         .copied()
-        .filter(|record| graph_record_has_reference(record, expected_method, doc_id))
+        .filter(|record| graph_record_has_reference(record, expected_method, selection_doc_id))
         .collect::<Vec<_>>();
     if matching.is_empty() { base } else { matching }
 }
@@ -3663,6 +3665,106 @@ mod tests {
                     .iter()
                     .filter(|element| element["data"]["source"] == source["id"])
                     .all(|element| &element["data"]["label"] == expected_label)
+            );
+        }
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_empty_doc_id_matches_python_contract; python=kogwistar/visualization/graph_viz.py#_ids_by_doc; fixture=contracts/golden/visualization-doc-filter-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_empty_doc_id_matches_python_contract; python_test=tests/test_visualization.py#test_visualization_empty_doc_id_matches_python_route_selection_contract
+    #[test]
+    fn graph_visualization_empty_doc_id_matches_python_contract() {
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-doc-filter-v1.json"
+        )))
+        .expect("visualization doc filter contract is valid JSON");
+        let model_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("Python graph model fixture is valid JSON");
+        let node_template = model_fixture["cases"]
+            .as_array()
+            .expect("model fixture cases")
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .expect("node model fixture")["payload"]
+            .clone();
+        let edge_template = model_fixture["cases"]
+            .as_array()
+            .expect("model fixture cases")
+            .iter()
+            .find(|case| case["kind"] == "edge")
+            .expect("edge model fixture")["payload"]
+            .clone();
+        let record = |payload: &Value| GraphRecord {
+            id: payload["id"].as_str().expect("record ID").to_owned(),
+            document: Some(payload.to_string()),
+            metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+            embedding: None,
+        };
+        let mut first_node = node_template.clone();
+        first_node["id"] = json!("node-a");
+        first_node["doc_id"] = json!("doc-a");
+        first_node["metadata"]["doc_id"] = json!("doc-a");
+        let mut second_node = node_template;
+        second_node["id"] = json!("node-b");
+        second_node["doc_id"] = json!("doc-b");
+        second_node["metadata"]["doc_id"] = json!("doc-b");
+        let nodes = vec![record(&first_node), record(&second_node)];
+        let mut first_edge = edge_template.clone();
+        first_edge["id"] = json!("edge-a");
+        first_edge["doc_id"] = json!("doc-a");
+        first_edge["metadata"]["doc_id"] = json!("doc-a");
+        first_edge["source_ids"] = json!(["node-a"]);
+        first_edge["target_ids"] = json!(["node-a"]);
+        let mut second_edge = edge_template;
+        second_edge["id"] = json!("edge-b");
+        second_edge["doc_id"] = json!("doc-b");
+        second_edge["metadata"]["doc_id"] = json!("doc-b");
+        second_edge["source_ids"] = json!(["node-b"]);
+        second_edge["target_ids"] = json!(["node-b"]);
+        let edges = vec![record(&first_edge), record(&second_edge)];
+
+        for case in contract["cases"].as_array().expect("contract cases") {
+            let doc_id = case["doc_id"].as_str();
+            let payload = graph_viz_d3_from_records(&nodes, &edges, doc_id, "reify", None);
+            assert_eq!(payload["doc_id"], case["response_doc_id"]);
+            let mut actual_doc_ids = payload["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|node| node["type"] == "entity")
+                .map(|node| node["doc_id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            actual_doc_ids.sort();
+            let mut expected_doc_ids = case["selected_doc_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|doc_id| doc_id.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            expected_doc_ids.sort();
+            assert_eq!(actual_doc_ids, expected_doc_ids, "case {}", case["name"]);
+
+            let mut actual_edge_doc_ids = payload["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|node| node["type"] == "edge-node")
+                .map(|node| node["doc_id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            actual_edge_doc_ids.sort();
+            let mut expected_edge_doc_ids = case["selected_edge_doc_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|doc_id| doc_id.as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            expected_edge_doc_ids.sort();
+            assert_eq!(
+                actual_edge_doc_ids, expected_edge_doc_ids,
+                "edge selection case {}",
+                case["name"]
             );
         }
     }

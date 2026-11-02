@@ -1091,6 +1091,20 @@ mod visualization_route_tests {
         assert_eq!(path, uri.to_string());
         assert!(body.is_empty());
     }
+
+    #[test]
+    fn public_visualization_get_preserves_empty_doc_id_for_python_parity() {
+        let uri = "/api/viz/d3.json?doc_id="
+            .parse()
+            .expect("valid URI with an explicitly empty query value");
+        let (method, path, body) = public_visualization_effect(&Method::GET, &uri, Bytes::new());
+        assert_eq!(method, "POST");
+        assert_eq!(path, INTERNAL_GRAPH_VIZ_D3_ROUTE);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("query becomes JSON"),
+            json!({"doc_id": ""})
+        );
+    }
 }
 
 /// Real Rust HTTP transport. Business capabilities are injected into this

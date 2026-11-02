@@ -354,6 +354,89 @@ def test_visualization_edge_label_fallback_matches_shared_contract() -> None:
 
 
 @pytest.mark.ci
+def test_visualization_empty_doc_id_matches_python_route_selection_contract() -> None:
+    fixture = json.loads(
+        (ROOT / "contracts/golden/visualization-doc-filter-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model_fixture = json.loads(
+        (ROOT / "contracts/golden/python-graph-model-payloads-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    node_template = next(
+        case["payload"] for case in model_fixture["cases"] if case["kind"] == "node"
+    )
+    edge_template = next(
+        case["payload"] for case in model_fixture["cases"] if case["kind"] == "edge"
+    )
+    nodes = [
+        Node.model_validate(
+            {**node_template, "id": "node-a", "label": "A", "doc_id": "doc-a"}
+        ),
+        Node.model_validate(
+            {**node_template, "id": "node-b", "label": "B", "doc_id": "doc-b"}
+        ),
+    ]
+    edges = [
+        Edge.model_validate(
+            {
+                **edge_template,
+                "id": "edge-a",
+                "doc_id": "doc-a",
+                "source_ids": ["node-a"],
+                "target_ids": ["node-a"],
+            }
+        ),
+        Edge.model_validate(
+            {
+                **edge_template,
+                "id": "edge-b",
+                "doc_id": "doc-b",
+                "source_ids": ["node-b"],
+                "target_ids": ["node-b"],
+            }
+        ),
+    ]
+    read = SimpleNamespace(
+        node_ids_by_doc=lambda doc_id: [
+            node.id for node in nodes if node.doc_id == doc_id
+        ],
+        edge_ids_by_doc=lambda doc_id: [
+            edge.id for edge in edges if edge.doc_id == doc_id
+        ],
+        load_node_map=lambda ids, **_kwargs: {
+            node.id: node for node in nodes if node.id in ids
+        },
+        load_edge_map=lambda ids, **_kwargs: {
+            edge.id: edge for edge in edges if edge.id in ids
+        },
+    )
+    backend = SimpleNamespace(
+        node_get=lambda: {"ids": [node.id for node in nodes]},
+        edge_get=lambda: {"ids": [edge.id for edge in edges]},
+    )
+    engine = SimpleNamespace(kg_graph_type="knowledge", backend=backend, read=read)
+
+    for case in fixture["cases"]:
+        payload = to_d3_force(engine, doc_id=case["doc_id"])
+        assert payload["doc_id"] == case["response_doc_id"]
+        selected_doc_ids = sorted(
+            node["doc_id"]
+            for node in payload["nodes"]
+            if node["type"] == "entity"
+        )
+        assert selected_doc_ids == case["selected_doc_ids"]
+        selected_edge_doc_ids = sorted(
+            node["doc_id"]
+            for node in payload["nodes"]
+            if node["type"] == "edge-node"
+        )
+        assert selected_edge_doc_ids == case["selected_edge_doc_ids"]
+
+
+@pytest.mark.ci
 def test_pretty_print_graph():
     doc_id = "doc::test::pretty_print_graph"
     engine = GraphKnowledgeEngine(
