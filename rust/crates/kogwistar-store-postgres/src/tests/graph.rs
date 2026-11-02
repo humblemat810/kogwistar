@@ -1025,6 +1025,115 @@ async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_availa
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn graph_mutation_batch_rolls_back_event_when_projection_fails_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_projection_rollback");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let tables = Tables::new(&schema)?;
+    store
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE FUNCTION {}.reject_graph_projection() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = 'projection-rollback-failing-node' THEN \
+                 RAISE EXCEPTION 'injected graph projection failure'; END IF; RETURN NEW; \
+                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {} \
+                 FOR EACH ROW EXECUTE FUNCTION {}.reject_graph_projection();",
+            tables.quoted_schema,
+            format!("{}.gke_nodes", tables.quoted_schema),
+            tables.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+
+    let namespace = format!("projection-rollback-{}", std::process::id());
+    let entity_id = "projection-rollback-node";
+    let failing_entity_id = "projection-rollback-failing-node";
+    let make_mutation = |id: &str| kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": id, "entity_type": "node"}),
+        record: kogwistar_store::GraphRecord {
+            id: id.to_owned(),
+            document: Some("atomic projection rollback probe".to_owned()),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+    let batch = kogwistar_store::GraphMutationBatch {
+        mutations: vec![make_mutation(entity_id), make_mutation(failing_entity_id)],
+        index_jobs: [entity_id, failing_entity_id]
+            .into_iter()
+            .map(|id| kogwistar_store::NewIndexJob {
+                job_id: format!("job-{id}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .collect(),
+    };
+
+    assert!(matches!(
+        store
+            .apply_graph_mutations_with_index_jobs_atomic(batch)
+            .await,
+        Err(PostgresStoreError::Backend(_))
+    ));
+    assert!(store.replay_raw_events(&namespace, 0, 10).await?.is_empty());
+    assert!(
+        store
+            .graph_projection_records(GraphProjectionRead {
+                scope: kogwistar_store::GraphScope {
+                    namespace: namespace.clone(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![entity_id.to_owned(), failing_entity_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 10,
+            })
+            .await?
+            .is_empty()
+    );
+    assert!(
+        store
+            .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+            .await?
+            .is_empty()
+    );
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn unit_of_work_reads_acl_truth_from_its_own_transaction() -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
