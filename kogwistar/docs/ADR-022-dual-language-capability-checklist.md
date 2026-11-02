@@ -8,6 +8,8 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 Current inventory: **177 items** (**154 PASS, 23 IN PROGRESS; 87.0% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
+DL-16AM current process-table evidence: SQLite's process-table projection was already implemented but hidden from MCP discovery. It is now advertised only on the workflow surface for principals scoped to `workflow` or `*` with `project_view` or `workflow.run.read`; regression `sqlite_workflow_process_table_is_discovered_with_scope_and_capability` verifies allowed/denied discovery and filtered retrieval. This supersedes the stale SQLite-unimplemented sentence in the detailed DL-16AM evidence below. DL-16AM remains IN PROGRESS; the overall inventory remains 154/177 PASS (87.0%).
+
 Do not add checklist IDs without an explicit scope decision. A PASS item may change status only for concrete regression, invalid evidence, or an approved contract change. Preserve its prior evidence in Git history; do not duplicate progress notes here.
 
 ## Design and inventory

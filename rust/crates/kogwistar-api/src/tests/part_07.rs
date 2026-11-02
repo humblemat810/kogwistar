@@ -1,4 +1,83 @@
 #[tokio::test]
+async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability() {
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-process-table-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "process-table-run".to_owned(),
+            conversation_id: "process-table-conversation".to_owned(),
+            workflow_id: "process-table-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "process-table-turn".to_owned(),
+            status: "succeeded".to_owned(),
+        })
+        .unwrap();
+
+    let authorized = json!({
+        "sub":"alice", "role":"ro", "ns":["workflow"],
+        "capabilities":["workflow.run.read"]
+    });
+    assert!(service.supports_mcp_tool("workflow", "workflow.process_table"));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.process_table",
+        &authorized,
+    ));
+    for (surface, principal) in [
+        ("root", authorized.clone()),
+        (
+            "workflow",
+            json!({"sub":"alice", "role":"rw", "ns":["workflow"], "capabilities":["read_graph"]}),
+        ),
+        (
+            "workflow",
+            json!({"sub":"alice", "role":"ro", "ns":["other"], "capabilities":["workflow.run.read"]}),
+        ),
+        (
+            "workflow",
+            json!({"sub":"alice", "role":"ro", "ns":["workflow"], "capabilities":["read_graph"]}),
+        ),
+    ] {
+        assert!(
+            !service.supports_mcp_tool_for_principal(surface, "workflow.process_table", &principal),
+            "unexpected process-table access for {surface} principal {principal}"
+        );
+    }
+    let project_view_reader = json!({
+        "sub":"alice", "role":"ro", "ns":["*"], "capabilities":["project_view"]
+    });
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.process_table",
+        &project_view_reader,
+    ));
+
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/process-table?status=succeeded&limit=10".to_owned(),
+            body: Vec::new(),
+            principal: authorized,
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let body: Value = serde_json::from_slice(&response.body).unwrap();
+    assert!(body["processes"].as_array().unwrap().iter().any(|process| {
+        process["process_id"] == "process-table-run"
+            && process["process_kind"] == "workflow_run"
+            && process["status"] == "succeeded"
+    }));
+
+    drop(service);
+    let _ = std::fs::remove_file(sqlite_path);
+}
+
+#[tokio::test]
 async fn sqlite_run_transient_delta_routes_preserve_owner_and_sequence_contract() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-transient-delta-route-{}.sqlite",

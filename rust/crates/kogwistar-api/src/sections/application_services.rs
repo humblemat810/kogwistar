@@ -1263,7 +1263,6 @@ impl ApplicationService for SqliteRunApplicationService {
                 ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()));
         }
         name != "workflow.tool_audit"
-            && name != "workflow.process_table"
             && name != "workflow.run_evidence"
             && name != "workflow.run_lineage"
             && (name != "conversation.create" || self.chroma_graph.is_some())
@@ -1297,6 +1296,24 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "workflow.process_table" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return (capabilities.contains("project_view")
+                || capabilities.contains("workflow.run.read"))
+                && self.supports_mcp_tool(surface, name);
+        }
         if name != "wisdom.kg_upsert_graph" {
             return self.supports_mcp_tool(surface, name);
         }
