@@ -312,6 +312,9 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.server.chat_service_run_execution import _RunExecutionService
     from kogwistar.server.chat_service_run_inspection import _RunInspectionService
     from kogwistar.server.chat_service_workflow_design import _WorkflowDesignService
+    from kogwistar.server.chat_service_conversation_queries import (
+        _ConversationQueryService,
+    )
 
     unbound: list[str] = []
     for subsystem in (
@@ -505,6 +508,25 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
+    conversation_query_entrypoints = (
+        "create_conversation",
+        "_conversation_nodes",
+        "_conversation_owner",
+        "list_conversations_for_user",
+        "get_conversation",
+        "list_transcript",
+        "latest_snapshot",
+    )
+    unbound.extend(
+        f"_ConversationQueryService.{name}"
+        for name in conversation_query_entrypoints
+        if not getattr(
+            getattr(_ConversationQueryService, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
     assert unbound == []
 
 
@@ -608,6 +630,48 @@ def test_workflow_design_history_uses_workflow_engine_selection(
 
     assert result["materialization_status"] == "ready"
     assert observed == ["python", "python", "python"]
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_conversation_query_uses_conversation_engine_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.server.chat_service_conversation_queries import (
+        _ConversationQueryService,
+    )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    owner = SimpleNamespace(
+        _conversation_engine=lambda: engine,
+        _conversation_service=lambda: SimpleNamespace(
+            get_conversation_tail=lambda **_kwargs: SimpleNamespace(id="tail")
+        ),
+    )
+    service = _ConversationQueryService(owner)
+    observed: list[str] = []
+    start_node = SimpleNamespace(
+        metadata={"entity_type": "conversation_start"},
+        properties={"status": "active"},
+        id="start",
+        user_id="user-1",
+        turn_index=0,
+    )
+
+    def conversation_nodes(_conversation_id: str) -> list[SimpleNamespace]:
+        observed.append(runtime_implementation_mode())
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        return [start_node]
+
+    monkeypatch.setattr(service, "_conversation_nodes", conversation_nodes)
+
+    result = service.get_conversation("conversation-selector-test")
+
+    assert result["tail_node_id"] == "tail"
+    assert result["turn_count"] == 0
+    assert observed == ["python", "python"]
     assert runtime_implementation_mode() == "rust"
 
 

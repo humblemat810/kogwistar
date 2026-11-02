@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from kogwistar.conversation.models import ConversationNode
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonValue
 
 from .chat_service_shared import _BaseComponent
@@ -15,6 +16,7 @@ class _ConversationQueryService(_BaseComponent):
     def _json_int(value: JsonValue) -> int:
         return int(value) if isinstance(value, (int, float, str)) else 0
 
+    @implementation_selection_bound
     def create_conversation(
         self,
         *,
@@ -28,6 +30,7 @@ class _ConversationQueryService(_BaseComponent):
         )
         return self.get_conversation(conv_id) | {"start_node_id": start_id}
 
+    @implementation_selection_bound
     def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
         nodes: list[ConversationNode] = cast(
             list[ConversationNode],
@@ -41,6 +44,7 @@ class _ConversationQueryService(_BaseComponent):
             raise KeyError(f"Unknown conversation_id: {conversation_id}")
         return nodes
 
+    @implementation_selection_bound
     def _conversation_owner(self, conversation_id: str) -> str | None:
         starts = [
             node
@@ -53,6 +57,7 @@ class _ConversationQueryService(_BaseComponent):
         starts.sort(key=lambda node: int(getattr(node, "turn_index", -1) or -1))
         return str(getattr(starts[0], "user_id", None) or "")
 
+    @implementation_selection_bound
     def list_conversations_for_user(
         self, user_id: str
     ) -> list[dict[str, JsonValue]]:
@@ -93,6 +98,7 @@ class _ConversationQueryService(_BaseComponent):
         )
         return results
 
+    @implementation_selection_bound
     def get_conversation(self, conversation_id: str) -> dict[str, JsonValue]:
         nodes = self._conversation_nodes(conversation_id)
         svc = self._conversation_service()
@@ -116,6 +122,7 @@ class _ConversationQueryService(_BaseComponent):
             "turn_count": len(turns),
         }
 
+    @implementation_selection_bound
     def list_transcript(self, conversation_id: str) -> list[dict[str, JsonValue]]:
         nodes = self._conversation_nodes(conversation_id)
         turns: list[dict[str, JsonValue]] = []
@@ -144,6 +151,7 @@ class _ConversationQueryService(_BaseComponent):
         )
         return turns
 
+    @implementation_selection_bound
     def latest_snapshot(
         self,
         conversation_id: str,
