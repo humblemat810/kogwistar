@@ -548,18 +548,20 @@ _SUBSYSTEMS_WITH_E = (
 def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str) -> Iterator[None]:
     """Temporarily scope a graph engine to a namespace without mutating it."""
     proxy = _NamespacedEngineProxy(engine, namespace)
-    rebindings: list[tuple[object, str, object]] = []
-    for sub_name in _SUBSYSTEMS_WITH_E:
-        sub = getattr(engine, sub_name, None)
-        if sub is not None and hasattr(sub, "_e"):
-            rebindings.append((sub, "_e", sub._e))
-
-    indexing = getattr(engine, "indexing", None)
-    if indexing is not None and hasattr(indexing, "engine"):
-        rebindings.append((indexing, "engine", indexing.engine))
-
     lock = _get_engine_ns_lock(engine)
     with lock:
+        # Capture bindings only after acquiring the lock so a waiting scope
+        # cannot save and later restore another scope's temporary proxy.
+        rebindings: list[tuple[object, str, object]] = []
+        for sub_name in _SUBSYSTEMS_WITH_E:
+            sub = getattr(engine, sub_name, None)
+            if sub is not None and hasattr(sub, "_e"):
+                rebindings.append((sub, "_e", sub._e))
+
+        indexing = getattr(engine, "indexing", None)
+        if indexing is not None and hasattr(indexing, "engine"):
+            rebindings.append((indexing, "engine", indexing.engine))
+
         for obj, attr, _ in rebindings:
             setattr(obj, attr, proxy)
         try:
