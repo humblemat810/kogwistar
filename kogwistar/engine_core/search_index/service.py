@@ -228,6 +228,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             ranked = sorted(
                 combined.values(), key=lambda x: x["hybrid_score"], reverse=True
             )
+            ranked = self._filter_acl_visible_entries(ranked)
 
             if resolve_node:
                 return self._resolve_nodes(ranked[:limit], q)
@@ -236,6 +237,37 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
         finally:
             cur.close()
             conn.close()
+
+    def _filter_acl_visible_entries(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Filter derived-index hits through the canonical graph ACL surface."""
+        if not self._e.acl_enabled or not rows:
+            return rows
+
+        node_ids = list(
+            dict.fromkeys(
+                str(row.get("node_id") or "")
+                for row in rows
+                if str(row.get("node_id") or "")
+            )
+        )
+        if not node_ids:
+            return []
+
+        # Do not trust derived index metadata as authorization evidence. The
+        # ACL-aware facade is authoritative and fails closed if it cannot decide.
+        visible_nodes = self._e.read.get_nodes(
+            ids=node_ids,
+            include=None,
+            limit=len(node_ids),
+        )
+        visible_ids = {
+            str(node.safe_get_id())
+            for node in visible_nodes
+            if node.safe_get_id()
+        }
+        return [row for row in rows if str(row.get("node_id") or "") in visible_ids]
 
     def _normalize_fts_rows(self, rows: list[sqlite3.Row]) -> dict[str, float]:
         if not rows:
