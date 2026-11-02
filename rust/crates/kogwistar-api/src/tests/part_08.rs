@@ -607,6 +607,132 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(written["atomic"], true);
     assert_eq!(written["results"].as_array().unwrap().len(), 10);
 
+    let cross_kind_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-neighbors-cross-kind-id-v1.json"
+    )))
+    .unwrap();
+    let parent_edge = &cross_kind_fixture["parent_edge"];
+    let cross_kind_id = cross_kind_fixture["expected"]["node_ids"][0]
+        .as_str()
+        .unwrap();
+    let parent_edge_id = cross_kind_fixture["rid"].as_str().unwrap();
+    let mut cross_kind_node = mutation(
+        cross_kind_id,
+        "gke_nodes",
+        "node",
+        json!({"label":"shared node identity"}),
+        Some(r#"{"label":"shared node identity"}"#),
+    );
+    cross_kind_node["event_id"] = json!("event-cross-kind-node");
+    let mut cross_kind_edge = mutation(
+        cross_kind_id,
+        "gke_edges",
+        "edge",
+        json!({"source_ids":[],"target_ids":[],"relation":"shared edge identity"}),
+        Some(r#"{"source_ids":[],"target_ids":[],"relation":"shared edge identity"}"#),
+    );
+    cross_kind_edge["event_id"] = json!("event-cross-kind-edge");
+    let mut parent_edge_mutation = mutation(
+        parent_edge_id,
+        "gke_edges",
+        "edge",
+        json!(parent_edge),
+        Some(&parent_edge.to_string()),
+    );
+    parent_edge_mutation["event_id"] = json!("event-cross-kind-parent-edge");
+    let cross_kind_mutations = vec![
+        cross_kind_node,
+        cross_kind_edge,
+        parent_edge_mutation,
+        mutation(
+            "acl-cross-kind-node",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":cross_kind_id,"acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-cross-kind-edge",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":cross_kind_id,"acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-cross-kind-parent-edge",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":parent_edge_id,"acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+    ];
+    let cross_kind_body = json!({
+        "contract_version":1,
+        "atomic":true,
+        "mutations":cross_kind_mutations,
+        "index_jobs":[]
+    });
+    let cross_kind_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["write_graph"])),
+                )
+                .body(Body::from(serde_json::to_vec(&cross_kind_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_kind_write.status(), StatusCode::OK);
+    let cross_kind_neighbors = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"cross-kind-neighbors",
+                        "method":"tools/call",
+                        "params":{"name":"kg_neighbors","arguments":{
+                            "rid":parent_edge_id,
+                            "truth_graph":"knowledge"
+                        }}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_kind_neighbors.status(), StatusCode::OK);
+    let cross_kind_neighbors: Value = serde_json::from_slice(
+        &to_bytes(cross_kind_neighbors.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        cross_kind_neighbors["result"]["nodes"],
+        cross_kind_fixture["expected"]["node_ids"]
+    );
+    assert_eq!(
+        cross_kind_neighbors["result"]["edges"],
+        cross_kind_fixture["expected"]["edge_ids"]
+    );
+
     let conversation_scope = json!({
         "namespace": "tenant-a",
         "workspace_id": "workspace-a",
