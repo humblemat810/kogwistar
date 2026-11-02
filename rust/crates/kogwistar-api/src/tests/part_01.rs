@@ -2281,6 +2281,9 @@
                     metadata.insert("source_ids".to_owned(), entity["source_ids"].clone());
                     metadata.insert("target_ids".to_owned(), entity["target_ids"].clone());
                 }
+                if let Some(lifecycle_status) = entity["lifecycle_status"].as_str() {
+                    metadata.insert("lifecycle_status".to_owned(), json!(lifecycle_status));
+                }
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {

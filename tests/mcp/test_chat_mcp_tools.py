@@ -546,6 +546,8 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
         metadata = {"visibility": spec["mode"]}
         if "owner_id" in spec:
             metadata["owner_agent_id"] = spec["owner_id"]
+        if "lifecycle_status" in spec:
+            metadata["lifecycle_status"] = spec["lifecycle_status"]
         node = build_entity_node(
             node_id=spec["id"],
             doc_id="D-vector-acl",
@@ -557,13 +559,16 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
 
     edges = []
     for spec in fixture["edges"]:
+        metadata = {"visibility": spec["mode"]}
+        if "lifecycle_status" in spec:
+            metadata["lifecycle_status"] = spec["lifecycle_status"]
         edge = build_relationship_edge(
             edge_id=spec["id"],
             src=spec["source_ids"][0],
             tgt=spec["target_ids"][0],
             doc_id="D-vector-acl",
             relation="links",
-            metadata={"visibility": spec["mode"]},
+            metadata=metadata,
         )
         edge.embedding = spec["embedding"]
         edges.append(edge)

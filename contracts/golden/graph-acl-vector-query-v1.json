@@ -6,7 +6,7 @@
     "workspace_id": "workspace-a"
   },
   "metric": "cosine",
-  "n_results": 2,
+  "n_results": 3,
   "query_embeddings": [[1.0, 0.0], [0.0, 1.0]],
   "nodes": [
     {
@@ -19,6 +19,12 @@
       "id": "visible-public",
       "embedding": [0.8, 0.6],
       "mode": "public"
+    },
+    {
+      "id": "tombstoned-public",
+      "embedding": [0.99, 0.1],
+      "mode": "public",
+      "lifecycle_status": "tombstoned"
     }
   ],
   "edges": [
@@ -35,6 +41,14 @@
       "mode": "public",
       "source_ids": ["visible-public"],
       "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-tombstoned-public",
+      "embedding": [0.99, 0.1],
+      "mode": "public",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"],
+      "lifecycle_status": "tombstoned"
     }
   ],
   "principals": [
