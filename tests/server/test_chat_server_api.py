@@ -4,8 +4,10 @@ import json
 import os
 import queue
 import shutil
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -253,19 +255,62 @@ def _visible_workflow_design_ids(
     return str(start.id), {str(node_id) for node_id in nodes.keys()}, edge_ids
 
 
+def test_workflow_namespace_scope_isolated_across_concurrent_threads(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    original_namespace = workflow_engine.namespace
+    first_entered = threading.Event()
+    second_attempted = threading.Event()
+    second_entered = threading.Event()
+
+    def first_scope() -> tuple[bool, str]:
+        with service._workflow_namespace_scope("scope-first") as scoped:
+            first_namespace = service._workflow_namespace("scope-first")
+            assert scoped.write._e.namespace == first_namespace
+            assert workflow_engine.namespace == original_namespace
+            first_entered.set()
+            assert second_attempted.wait(timeout=2)
+            entered_concurrently = second_entered.wait(timeout=0.1)
+            observed_namespace = scoped.write._e.namespace
+            return entered_concurrently, observed_namespace
+
+    def second_scope() -> str:
+        assert first_entered.wait(timeout=2)
+        second_attempted.set()
+        with service._workflow_namespace_scope("scope-second") as scoped:
+            second_entered.set()
+            assert workflow_engine.namespace == original_namespace
+            return scoped.write._e.namespace
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_scope)
+        second = executor.submit(second_scope)
+        first_result = first.result(timeout=3)
+        second_namespace = second.result(timeout=3)
+
+    assert first_result == (False, service._workflow_namespace("scope-first"))
+    assert second_namespace == service._workflow_namespace("scope-second")
+    assert workflow_engine.namespace == original_namespace
+
+
 def _assert_workflow_design_entities_use_scoped_namespace(
     service, workflow_engine, *, workflow_id: str, node_ids: set[str], edge_ids: set[str]
 ) -> None:
+    expected_namespace = service._workflow_namespace(workflow_id)
     with service._workflow_namespace_scope(workflow_id) as scoped_engine:
         nodes = scoped_engine.read.get_nodes(ids=sorted(node_ids)) if node_ids else []
         edges = scoped_engine.read.get_edges(ids=sorted(edge_ids)) if edge_ids else []
         assert {str(node.id) for node in nodes} == node_ids
         assert {str(edge.id) for edge in edges} == edge_ids
         assert all(
-            node.metadata.get("namespace") == scoped_engine.namespace for node in nodes
+            node.metadata.get("namespace") == expected_namespace for node in nodes
         )
         assert all(
-            edge.metadata.get("namespace") == scoped_engine.namespace for edge in edges
+            edge.metadata.get("namespace") == expected_namespace for edge in edges
         )
 
 

@@ -17,7 +17,7 @@ from typing import Any, ClassVar, cast
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.cost_ledger import CostLedger
 
@@ -248,13 +248,9 @@ class ChatRunService:
         self, workflow_id: str
     ) -> Iterator[GraphKnowledgeEngine]:
         eng = self._workflow_engine()
-        prev_ns = str(getattr(eng, "namespace", "default") or "default")
         target_ns = self._workflow_namespace(workflow_id)
-        eng.namespace = target_ns
-        try:
+        with scoped_namespace(eng, target_ns):
             yield eng
-        finally:
-            eng.namespace = prev_ns
 
     def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
         return self._conversation_queries._conversation_nodes(conversation_id)
