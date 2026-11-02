@@ -107,11 +107,16 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
     registry
         .register_graph("app/inline-owner-test", "v1", |request| {
             let entity_id = format!("inline-node-{}", request.run_id);
+            let namespace = if request.run_id == "sqlite-inline-cross-scope" {
+                "beta"
+            } else {
+                "alpha"
+            };
             let batch = serde_json::from_value(json!({
                 "contract_version": 1,
                 "atomic": true,
                 "mutations": [{
-                    "scope": {"namespace": "alpha"},
+                    "scope": {"namespace": namespace},
                     "table": "gke_nodes",
                     "entity_kind": "node",
                     "event_id": format!("inline-event-{}", request.run_id),
@@ -198,6 +203,64 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
         .unwrap()
         .iter()
         .all(|event| event.event_id != "inline-event-sqlite-inline-owner-revoked"));
+
+    let restored = auth_connection
+        .execute("UPDATE users SET global_role = 'rw' WHERE user_id = 'alice'", [])
+        .unwrap();
+    assert_eq!(restored, 1);
+    let cross_scope_submit = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": "sqlite-inline-cross-scope",
+                "workflow_id": "wf",
+                "conversation_id": "conv-inline-cross-scope",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/app/inline-owner-test"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "user_id": "alice",
+                "sub": "alice@example.test",
+                "role": "rw",
+                "ns": "alpha",
+                "storage_ns": "alpha",
+                "capabilities": ["workflow.run.write", "write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(cross_scope_submit.status, StatusCode::ACCEPTED.as_u16());
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    assert_eq!(
+        service
+            .store
+            .get_server_run("sqlite-inline-cross-scope")
+            .unwrap()
+            .unwrap()
+            .status,
+        "failed"
+    );
+    let cross_scope_lanes = service
+        .store
+        .list_projected_lane_messages(LaneMessageFilter {
+            correlation_id: Some("sqlite-inline-cross-scope".to_owned()),
+            limit: 10,
+            ..LaneMessageFilter::default()
+        })
+        .unwrap();
+    assert_eq!(cross_scope_lanes.len(), 1);
+    assert_eq!(cross_scope_lanes[0].status, "completed");
+    assert!(!service.execute_inline_native_work_once().await.unwrap());
+    assert!(service
+        .store
+        .replay_raw_events("beta", 0, 100)
+        .unwrap()
+        .iter()
+        .all(|event| event.event_id != "inline-event-sqlite-inline-cross-scope"));
 
     drop(auth_connection);
     drop(service);
