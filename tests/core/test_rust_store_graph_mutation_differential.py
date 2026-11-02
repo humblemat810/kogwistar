@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 pytest.importorskip("pgvector")
-pytest.importorskip("sqlalchemy")
+sa = pytest.importorskip("sqlalchemy")
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -774,3 +774,82 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
     finally:
         with sa_engine.begin() as conn:
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
+    pg_dsn: str | None, pg_container: Any
+) -> None:
+    if pg_dsn is None or pg_container is None:
+        pytest.skip("fresh disposable PostgreSQL database requires the local test container")
+
+    database_name = f"gke_bootstrap_{uuid.uuid4().hex[:16]}"
+    python_schema = f"gke_python_{uuid.uuid4().hex[:16]}"
+    rust_schema = f"gke_rust_{uuid.uuid4().hex[:16]}"
+    admin_url = sa.engine.make_url(pg_dsn).set(database="postgres")
+    admin_engine = sa.create_engine(admin_url)
+    database_created = False
+    try:
+        with admin_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as connection:
+            connection.exec_driver_sql(f'CREATE DATABASE "{database_name}"')
+        database_created = True
+        target_dsn = admin_url.set(database=database_name).render_as_string(
+            hide_password=False
+        )
+        start = Barrier(2)
+
+        def bootstrap_python() -> None:
+            engine = sa.create_engine(target_dsn)
+            try:
+                backend = PgVectorBackend(
+                    engine=engine, embedding_dim=3, schema=python_schema
+                )
+                start.wait(timeout=10)
+                backend.ensure_schema()
+            finally:
+                engine.dispose()
+
+        def bootstrap_rust() -> Any:
+            start.wait(timeout=10)
+            return _rust(
+                target_dsn,
+                rust_schema,
+                {"kind": "create_graph_schema", "embedding_dim": 3},
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            python_future = executor.submit(bootstrap_python)
+            rust_future = executor.submit(bootstrap_rust)
+            python_future.result(timeout=60)
+            assert rust_future.result(timeout=60) == {"initialized": True}
+
+        target_engine = sa.create_engine(target_dsn)
+        try:
+            with target_engine.connect() as connection:
+                assert connection.scalar(
+                    sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                ) == 1
+                for schema in (python_schema, rust_schema):
+                    table_name = f"{schema}.gke_nodes"
+                    assert connection.scalar(
+                        sa.text("SELECT to_regclass(:table_name) IS NOT NULL").bindparams(
+                            table_name=table_name
+                        )
+                    )
+        finally:
+            target_engine.dispose()
+    finally:
+        if database_created:
+            with admin_engine.connect().execution_options(
+                isolation_level="AUTOCOMMIT"
+            ) as connection:
+                connection.execute(
+                    sa.text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = :database_name AND pid <> pg_backend_pid()"
+                    ),
+                    {"database_name": database_name},
+                )
+                connection.exec_driver_sql(f'DROP DATABASE "{database_name}"')
+        admin_engine.dispose()
