@@ -320,7 +320,12 @@ class GraphQuery:
             )
 
         existing = {
-            (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            (
+                str(row.get("edge_id")),
+                str(row.get("endpoint_id")),
+                str(row.get("endpoint_type")),
+                str(row.get("role")),
+            )
             for row in rows
         }
         staged_rows = await self._stage1_endpoint_rows_async(edge_id=edge_id)
@@ -333,6 +338,7 @@ class GraphQuery:
             key = (
                 str(row.get("edge_id")),
                 str(row.get("endpoint_id")),
+                str(row.get("endpoint_type")),
                 str(row.get("role")),
             )
             if matches(row) and key not in existing:
@@ -462,27 +468,22 @@ class GraphQuery:
     def _endpoint_rows(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
         """Return backend endpoint rows plus matching transient Stage-1 rows."""
         rows: list[GraphRow] = []
-        
+
         reader = getattr(self.e, "read", None)
         endpoint_get = getattr(reader, "get_edge_endpoints", None)
         if callable(endpoint_get):
-            got = _as_graph_payload(
-                endpoint_get(where=where, include=["documents"])
-            )
+            got = _as_graph_payload(endpoint_get(where=where, include=["documents"]))
         elif reader is not None:
             got = {"documents": []}
         else:
             got = _as_graph_payload(
-                self.e.backend.edge_endpoints_get(
-                    where=where, include=["documents"]
-                )
+                self.e.backend.edge_endpoints_get(where=where, include=["documents"])
             )
         rows.extend(
             json.loads(document)
             for document in (got.get("documents") or [])
             if document
         )
-
 
         def matches(row: dict) -> bool:
             clauses = where.get("$and", [where]) if isinstance(where, dict) else []
@@ -495,7 +496,12 @@ class GraphQuery:
             return True
 
         existing = {
-            (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            (
+                str(row.get("edge_id")),
+                str(row.get("endpoint_id")),
+                str(row.get("endpoint_type")),
+                str(row.get("role")),
+            )
             for row in rows
         }
         for row in self._stage1_endpoint_rows(edge_id=edge_id):
@@ -503,6 +509,7 @@ class GraphQuery:
                 key = (
                     str(row.get("edge_id")),
                     str(row.get("endpoint_id")),
+                    str(row.get("endpoint_type")),
                     str(row.get("role")),
                 )
                 if key not in existing:
