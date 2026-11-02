@@ -298,6 +298,14 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
     let dashboard: Value = serde_json::from_slice(&dashboard.body).unwrap();
     assert_eq!(dashboard["operator_inbox"].as_array().unwrap().len(), 1);
     assert_eq!(dashboard["operator_inbox"][0]["message_id"], "visible-message");
+    assert_eq!(dashboard["capabilities"]["current_subject"], "alice");
+    assert!(dashboard["capabilities"]["specs"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert!(dashboard["capabilities"]["effective_capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("project_view")));
 }
 
 #[tokio::test]
