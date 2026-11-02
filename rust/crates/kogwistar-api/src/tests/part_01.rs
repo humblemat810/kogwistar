@@ -2418,6 +2418,101 @@
             }
         }
 
+        let item_node_id = "node-source-span-private";
+        let item_grounding_id = format!("{item_node_id}::mention::0");
+        let item_span_id = format!("{item_grounding_id}::span::0");
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: item_node_id.to_owned(),
+                    document: Some(item_node_id.to_owned()),
+                    metadata: Map::from_iter([
+                        ("entity_type".to_owned(), json!("node")),
+                        ("label".to_owned(), json!(item_node_id)),
+                        ("mentions".to_owned(), json!([{"spans": [{}]}])),
+                    ]),
+                    embedding: Some(vec![1.0, 0.0]),
+                },
+                embedding_dim: 2,
+            })
+            .await
+            .unwrap();
+        for (record_id, grain, target_item_id, mode) in [
+            ("acl-source-node", "node", None, "public"),
+            (
+                "acl-source-grounding",
+                "grounding",
+                Some(item_grounding_id.as_str()),
+                "public",
+            ),
+            (
+                "acl-source-span",
+                "span",
+                Some(item_span_id.as_str()),
+                "private",
+            ),
+        ] {
+            let mut metadata = Map::from_iter([
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("acl_truth_graph".to_owned(), fixture["truth_graph"].clone()),
+                ("acl_target_entity_id".to_owned(), json!(item_node_id)),
+                ("acl_target_grain".to_owned(), json!(grain)),
+                ("acl_version".to_owned(), json!(1)),
+                ("acl_mode".to_owned(), json!(mode)),
+            ]);
+            if let Some(target_item_id) = target_item_id {
+                metadata.insert("acl_target_item_id".to_owned(), json!(target_item_id));
+            }
+            if mode == "private" {
+                metadata.insert("owner_id".to_owned(), json!("owner-b"));
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: record_id.to_owned(),
+                        document: None,
+                        metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+        let response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "entity_kind": "node",
+                    "query_embeddings": [[1.0, 0.0]],
+                    "metric": "cosine",
+                    "truth_graph": fixture["truth_graph"],
+                    "where": {"label": item_node_id},
+                    "n_results": 1,
+                    "include": ["distances"]
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "reader-a",
+                    "ns": scope.namespace,
+                    "storage_ns": scope.namespace,
+                    "workspace": scope.workspace_id,
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(result["ids"], json!([[]]));
+
         drop(service);
         let cleanup_dsn = dsn
             .strip_prefix("postgresql+psycopg://")
