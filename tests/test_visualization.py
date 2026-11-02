@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
+from starlette.responses import JSONResponse
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
@@ -112,8 +114,10 @@ def test_visualization_route_graph_type_selection_matches_shared_rust_fixture(
 
 @pytest.mark.ci
 def test_visualization_uses_acl_policy_for_selected_python_graph_type(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
     graph_engines = {
         graph_type: GraphKnowledgeEngine(
             persist_directory=str(tmp_path / graph_type),
@@ -121,9 +125,14 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             kg_graph_type=graph_type,
             acl_enabled=True,
         )
-        for graph_type in ("knowledge", "conversation")
+        for graph_type in ("knowledge", "conversation", "workflow", "wisdom")
     }
     try:
+        monkeypatch.setattr(server, "engine", graph_engines["knowledge"])
+        monkeypatch.setattr(server, "conversation_engine", graph_engines["conversation"])
+        monkeypatch.setattr(server, "workflow_engine", graph_engines["workflow"])
+        monkeypatch.setattr(server, "wisdom_engine", graph_engines["wisdom"])
+
         for graph_type, engine in graph_engines.items():
             node = Node(
                 id="same-id",
@@ -144,7 +153,7 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 mode="private" if graph_type == "knowledge" else "public",
                 owner_id="owner-a",
             )
-            if graph_type == "conversation":
+            if graph_type != "knowledge":
                 grounding_ids, span_ids = engine.acl.usage_ids_for_item(node)
                 for grain, target_ids in (
                     ("grounding", grounding_ids),
@@ -162,29 +171,34 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
 
         token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
         try:
-            knowledge_d3 = to_d3_force(graph_engines["knowledge"], mode="classic")
-            conversation_d3 = to_d3_force(
-                graph_engines["conversation"], mode="classic"
-            )
-            knowledge_cytoscape = to_cytoscape(
-                graph_engines["knowledge"], mode="classic"
-            )
-            conversation_cytoscape = to_cytoscape(
-                graph_engines["conversation"], mode="classic"
-            )
+            route_results: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+            for graph_type in graph_engines:
+                d3_response = cast(
+                    JSONResponse,
+                    server.api_viz_d3(mode="classic", graph_type=graph_type),
+                )
+                cytoscape_response = cast(
+                    JSONResponse,
+                    server.api_viz_cytoscape(mode="classic", graph_type=graph_type),
+                )
+                route_results[graph_type] = (
+                    json.loads(d3_response.body),
+                    json.loads(cytoscape_response.body),
+                )
         finally:
             claims_ctx.reset(token)
 
-        assert [node["id"] for node in knowledge_d3["nodes"]] == []
-        assert [node["id"] for node in conversation_d3["nodes"]] == ["same-id"]
+        assert [node["id"] for node in route_results["knowledge"][0]["nodes"]] == []
+        for graph_type in ("conversation", "workflow", "wisdom"):
+            d3_payload, cytoscape_payload = route_results[graph_type]
+            assert [node["id"] for node in d3_payload["nodes"]] == ["same-id"]
+            assert [
+                item["data"]["id"] for item in cytoscape_payload["elements"]
+            ] == ["same-id"]
         assert [
             item["data"]["id"]
-            for item in knowledge_cytoscape["elements"]
+            for item in route_results["knowledge"][1]["elements"]
         ] == []
-        assert [
-            item["data"]["id"]
-            for item in conversation_cytoscape["elements"]
-        ] == ["same-id"]
     finally:
         for engine in graph_engines.values():
             engine.close()
