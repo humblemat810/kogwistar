@@ -310,6 +310,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.messaging.service import LaneMessagingService
     from kogwistar.engine_core.jobs import JobQueueSubsystem
     from kogwistar.server.chat_service_run_execution import _RunExecutionService
+    from kogwistar.server.chat_service_run_inspection import _RunInspectionService
 
     unbound: list[str] = []
     for subsystem in (
@@ -464,6 +465,24 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
+    inspection_entrypoints = (
+        "resume_contract",
+        "list_steps",
+        "workflow_run_lineage",
+        "list_checkpoints",
+        "get_checkpoint",
+        "replay_run",
+    )
+    unbound.extend(
+        f"_RunInspectionService.{name}"
+        for name in inspection_entrypoints
+        if not getattr(
+            getattr(_RunInspectionService, name),
+            "__implementation_selection_bound__",
+            False,
+        )
+    )
+
     assert unbound == []
 
 
@@ -500,6 +519,34 @@ def test_server_resume_runner_uses_conversation_engine_selection(
     with pytest.raises(ResumeReachedCheckpoint):
         service._default_resume_runner(request)
 
+    assert runtime_implementation_mode() == "rust"
+
+
+def test_resume_contract_keeps_conversation_engine_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.server.chat_service_run_inspection import _RunInspectionService
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    observed: list[str] = []
+
+    def get_nodes(**_kwargs: object) -> list[object]:
+        observed.append(runtime_implementation_mode())
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        return []
+
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection(),
+        meta_sqlite=object(),
+        get_nodes=get_nodes,
+    )
+    owner = SimpleNamespace(_conversation_engine=lambda: engine)
+    service = _RunInspectionService(owner)
+
+    result = service.resume_contract("inspection-selector-test")
+
+    assert result["compatible"] is False
+    assert observed == ["python", "python"]
     assert runtime_implementation_mode() == "rust"
 
 

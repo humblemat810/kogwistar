@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from kogwistar.engine_core.models import Node
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
@@ -58,6 +59,7 @@ class _RunInspectionService(_BaseComponent):
         "rate_window",
     ]
 
+    @implementation_selection_bound
     def resume_contract(self, run_id: str) -> JsonObject:
         checkpoints = self.list_checkpoints(run_id)
         latest = checkpoints[-1] if checkpoints else None
@@ -142,6 +144,7 @@ class _RunInspectionService(_BaseComponent):
                 return []
             raise
 
+    @implementation_selection_bound
     def list_steps(self, run_id: str) -> list[JsonObject]:
         nodes = self._workflow_nodes(entity_type="workflow_step_exec", run_id=run_id)
         out: list[JsonObject] = []
@@ -171,6 +174,7 @@ class _RunInspectionService(_BaseComponent):
         out.sort(key=lambda item: _json_int(item.get("step_seq")))
         return out
 
+    @implementation_selection_bound
     def workflow_run_lineage(self, run_id: str) -> JsonObject:
         """Return the persisted parent chain without exposing graph contents."""
         lineage: list[JsonObject] = []
@@ -201,6 +205,7 @@ class _RunInspectionService(_BaseComponent):
             "lineage": cast(JsonValue, lineage),
         }
 
+    @implementation_selection_bound
     def list_checkpoints(self, run_id: str) -> list[JsonObject]:
         nodes = self._workflow_nodes(entity_type="workflow_checkpoint", run_id=run_id)
         out: list[JsonObject] = []
@@ -217,6 +222,7 @@ class _RunInspectionService(_BaseComponent):
         out.sort(key=lambda item: _json_int(item.get("step_seq")))
         return out
 
+    @implementation_selection_bound
     def get_checkpoint(self, run_id: str, step_seq: int) -> JsonObject:
         state = load_checkpoint(
             conversation_engine=self._conversation_engine(),
@@ -229,6 +235,7 @@ class _RunInspectionService(_BaseComponent):
             "state": state,
         }
 
+    @implementation_selection_bound
     def replay_run(self, run_id: str, target_step_seq: int) -> JsonObject:
         state = replay_to(
             conversation_engine=self._conversation_engine(),
