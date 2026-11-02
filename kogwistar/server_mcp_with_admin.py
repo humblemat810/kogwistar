@@ -1001,6 +1001,7 @@ class DocumentUpsertResult(BaseModel):
 def document_upsert(
     inp: DocumentUpsert, response_model: type[BaseModel] = DocumentUpsertResult
 ) -> object:
+    require_role("rw")
     try:
         eng = engine.get()
         if inp.doc_type == "text":
@@ -1056,6 +1057,7 @@ def document_upsert_tree(payload: DocumentGraphUpsert) -> object:
     - The canonical ingestion table lives in
       `kogwistar/docs/ARD-postgresql-inclusive.md`.
     """
+    require_role("rw")
     eng = engine.get()
     try:
         res = eng.persist_document_graph_extraction(
