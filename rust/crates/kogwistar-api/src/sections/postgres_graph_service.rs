@@ -192,6 +192,14 @@ impl PostgresRunApplicationService {
         &self,
         scope: GraphScope,
     ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), String> {
+        self.graph_records_snapshot_from(&self.store, scope).await
+    }
+
+    async fn graph_records_snapshot_from(
+        &self,
+        store: &PostgresStore,
+        scope: GraphScope,
+    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>), String> {
         let reads = ["gke_nodes", "gke_edges"]
             .into_iter()
             .map(|table| GraphProjectionRead {
@@ -202,8 +210,7 @@ impl PostgresRunApplicationService {
                 limit: 10_000,
             })
             .collect();
-        let mut snapshots = self
-            .store
+        let mut snapshots = store
             .graph_projection_snapshot(reads)
             .await
             .map_err(|error| error.to_string())?
@@ -1431,7 +1438,7 @@ impl PostgresRunApplicationService {
             }
         };
         let scope_value = security_scope_value(&request.principal);
-        let scope = GraphScope {
+        let mut scope = GraphScope {
             namespace: scope_value["storage_namespace"]
                 .as_str()
                 .unwrap_or("default")
@@ -1448,7 +1455,27 @@ impl PostgresRunApplicationService {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         };
-        let (nodes, edges) = match self.graph_records_snapshot(scope).await {
+        let truth_graph = input.truth_graph();
+        let store = if truth_graph == "wisdom" {
+            &self.wisdom_store
+        } else {
+            &self.store
+        };
+        if matches!(truth_graph, "conversation" | "workflow") {
+            if scope
+                .graph_space
+                .as_deref()
+                .is_some_and(|space| space != truth_graph)
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_GRAPH_SPACE_FORBIDDEN",
+                    "Visualization graph type conflicts with the admitted graph space",
+                );
+            }
+            scope.graph_space = Some(truth_graph.to_owned());
+        }
+        let (nodes, edges) = match self.graph_records_snapshot_from(store, scope).await {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
@@ -1462,7 +1489,7 @@ impl PostgresRunApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        let (nodes, edges) = graph_records_visible_by_acl(&nodes, &edges, truth_graph, &principal);
         let result = if cytoscape {
             graph_viz_cytoscape_from_records(
                 &nodes,

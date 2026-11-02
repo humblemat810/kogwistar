@@ -334,6 +334,7 @@ fn recorded_step_snapshots_matches_python_fixture() {
     assert!(fixture["legacy_step_omits_trace_context"].as_bool().unwrap());
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_read_effect; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=none; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/test_visualization.py
 #[tokio::test]
 async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let secret = "in-memory-api-contract-secret";
@@ -347,7 +348,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token = |namespace: &str, capabilities: &[&str]| {
+    let token_for_graph_space = |namespace: &str, capabilities: &[&str], graph_space: &str| {
         encode(
             &Header::new(Algorithm::HS256),
             &json!({
@@ -357,7 +358,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "storage_ns": "tenant-a",
                 "workspace": "workspace-a",
                 "workspace_id": "workspace-a",
-                "graph_space": "facts",
+                "graph_space": graph_space,
                 "capabilities": capabilities,
                 "exp": now + 300
             }),
@@ -365,6 +366,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         )
         .unwrap()
     };
+    let token = |namespace: &str, capabilities: &[&str]| {
+        token_for_graph_space(namespace, capabilities, "facts")
+    };
+    let application = Arc::new(InMemoryGraphApplicationService::default());
     let make_app = || {
         router_with_application(
             ApiState {
@@ -373,7 +378,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 implementation: ImplementationSnapshot::default(),
                 auth: auth.clone(),
             },
-            Arc::new(InMemoryGraphApplicationService::default()),
+            application.clone(),
         )
     };
     let app = make_app();
@@ -549,6 +554,113 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         serde_json::from_slice(&to_bytes(written.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(written["atomic"], true);
     assert_eq!(written["results"].as_array().unwrap().len(), 8);
+
+    let conversation_scope = json!({
+        "namespace": "tenant-a",
+        "workspace_id": "workspace-a",
+        "graph_space": "conversation"
+    });
+    let conversation_mutation = |id: &str, metadata: Value, document: Option<&str>| {
+        let mut value = mutation(id, "gke_nodes", "node", metadata.clone(), document);
+        value["event_id"] = json!(format!("conversation-event-{id}"));
+        value["scope"] = conversation_scope.clone();
+        value
+    };
+    let conversation_body = json!({
+        "contract_version": 1,
+        "atomic": true,
+        "index_jobs": [],
+        "mutations": [
+            conversation_mutation(
+                "conversation-node",
+                json!({"label":"conversation only"}),
+                Some("conversation only"),
+            ),
+            conversation_mutation(
+                "conversation-acl",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"conversation",
+                    "acl_target_grain":"node",
+                    "acl_target_entity_id":"conversation-node",
+                    "acl_version":1,
+                    "acl_mode":"public"
+                }),
+                None,
+            )
+        ]
+    });
+    let conversation_written = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_graph_space("docs", &["write_graph"], "conversation")
+                    ),
+                )
+                .body(Body::from(serde_json::to_vec(&conversation_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conversation_written.status(), StatusCode::OK);
+
+    let visualization_request = |graph_space: &str| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+        body: br#"{"graph_type":"conversation"}"#.to_vec(),
+        principal: json!({
+            "sub":"writer", "role":"rw", "ns":["docs"],
+            "storage_ns":"tenant-a", "workspace_id":"workspace-a",
+            "graph_space":graph_space, "capabilities":["read_graph"]
+        }),
+    };
+    let conversation_visualization = application
+        .graph_read_effect(&visualization_request("conversation"))
+        .await;
+    assert_eq!(conversation_visualization.status, StatusCode::OK.as_u16());
+    let conversation_visualization: Value =
+        serde_json::from_slice(&conversation_visualization.body).unwrap();
+    assert!(
+        conversation_visualization["nodes"].to_string().contains("conversation-node"),
+        "selected conversation visualization did not return its graph: {conversation_visualization}"
+    );
+    assert!(
+        !conversation_visualization["nodes"].to_string().contains("n1"),
+        "conversation visualization leaked knowledge graph data: {conversation_visualization}"
+    );
+
+    let mismatched_visualization = application
+        .graph_read_effect(&visualization_request("facts"))
+        .await;
+    assert_eq!(mismatched_visualization.status, StatusCode::FORBIDDEN.as_u16());
+
+    let deferred_visualization = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/viz/d3.json?graph_type=conversation")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_graph_space("docs", &["read_graph"], "conversation")
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deferred_visualization.status(), StatusCode::NOT_IMPLEMENTED);
 
     let read = app
         .clone()

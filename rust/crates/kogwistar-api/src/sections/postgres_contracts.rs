@@ -21,10 +21,27 @@ struct GraphVisualizationRequest {
     doc_id: Option<String>,
     #[serde(default = "default_graph_visualization_mode")]
     mode: String,
+    #[serde(default = "default_graph_visualization_type")]
+    graph_type: String,
 }
 
 fn default_graph_visualization_mode() -> String {
     "reify".to_owned()
+}
+
+fn default_graph_visualization_type() -> String {
+    "knowledge".to_owned()
+}
+
+impl GraphVisualizationRequest {
+    fn truth_graph(&self) -> &'static str {
+        match self.graph_type.to_ascii_lowercase().as_str() {
+            "conversation" => "conversation",
+            "workflow" => "workflow",
+            "wisdom" => "wisdom",
+            _ => "knowledge",
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]

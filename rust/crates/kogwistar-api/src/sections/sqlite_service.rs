@@ -4790,7 +4790,10 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
+        let graph_snapshot = match self
+            .chroma_graph_snapshot(request, input.truth_graph())
+            .await
+        {
             Ok(records) => records,
             Err(response) => return response,
         };
