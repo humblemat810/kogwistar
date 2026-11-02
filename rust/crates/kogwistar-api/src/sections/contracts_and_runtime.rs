@@ -638,7 +638,7 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
             embedding_worker_available = true;
         }
         service
-            .ensure_schema()
+            .ensure_graph_type_schemas()
             .await
             .map_err(std::io::Error::other)?;
         Arc::new(service)

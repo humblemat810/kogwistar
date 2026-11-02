@@ -1867,6 +1867,125 @@ fn postgres_graph_type_stores_follow_python_schema_partitioning() {
 }
 
 #[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses disposable PostgreSQL schemas"]
+async fn postgres_graph_mutation_batch_uses_configured_graph_type_store() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let base = format!("rust_graph_role_{}", uuid::Uuid::new_v4().simple());
+    let schemas = [
+        format!("{base}_knowledge"),
+        format!("{base}_conversation"),
+        format!("{base}_workflow"),
+        format!("{base}_wisdom"),
+    ];
+    let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+        &dsn,
+        &schemas[0],
+        &schemas[1],
+        &schemas[2],
+        &schemas[3],
+    )
+    .unwrap()
+    .with_graph_role("conversation")
+    .unwrap();
+    service.ensure_schema().await.unwrap();
+    for store in [
+        &service.store,
+        &service.conversation_store,
+        &service.workflow_store,
+        &service.wisdom_store,
+    ] {
+        store
+            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+    }
+
+    let mut batch: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-mutation-batch-v1.json"
+    )))
+    .unwrap();
+    batch["mutations"][0]["scope"] = json!({
+        "namespace": "tenant-a",
+        "workspace_id": "ws",
+        "graph_space": "facts"
+    });
+    batch["mutations"][0]["record"]["id"] = json!("conversation-node");
+    batch["mutations"][0]["payload"]["id"] = json!("conversation-node");
+    batch["mutations"][0]["event_id"] = json!("conversation-node-event");
+
+    let response = ApplicationService::execute(
+        &service,
+        ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_MUTATIONS_ROUTE.to_owned(),
+            body: serde_json::to_vec(&batch).unwrap(),
+            principal: json!({
+                "sub": "alice",
+                "role": "rw",
+                "ns": ["tenant-a"],
+                "storage_ns": "tenant-a",
+                "workspace_id": "ws",
+                "graph_space": "facts",
+                "capabilities": ["write_graph"]
+            }),
+        },
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("ws".to_owned()),
+        graph_space: Some("facts".to_owned()),
+    };
+    let read = |id: &str| GraphProjectionRead {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        ids: Some(vec![id.to_owned()]),
+        metadata: MetadataFilter::default(),
+        limit: 1,
+    };
+    let conversation_rows = service
+        .conversation_store
+        .graph_projection_records(read("conversation-node"))
+        .await
+        .unwrap();
+    let knowledge_rows = service
+        .store
+        .graph_projection_records(read("conversation-node"))
+        .await
+        .unwrap();
+    assert_eq!(conversation_rows.len(), 1);
+    assert!(knowledge_rows.is_empty());
+
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(
+            &schemas
+                .iter()
+                .map(|schema| format!("DROP SCHEMA \"{schema}\" CASCADE"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .await
+        .unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn in_memory_mcp_traversal_matches_shared_python_contract() {
     let fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

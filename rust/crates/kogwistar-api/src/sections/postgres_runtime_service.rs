@@ -549,6 +549,10 @@ impl PostgresRunApplicationService {
             .parse::<tokio_postgres::Config>()
             .map_err(|_| "invalid PostgreSQL DSN".to_owned())?;
         let embedding_storage_scope = rust_pgvector_embedding_scope(&config, knowledge_schema);
+        let conversation_embedding_storage_scope =
+            rust_pgvector_embedding_scope(&config, conversation_schema);
+        let workflow_embedding_storage_scope =
+            rust_pgvector_embedding_scope(&config, workflow_schema);
         let native_operations = crate::native_answer_persist::registry().map_err(|error| {
             format!("could not register native conversation operations: {error}")
         })?;
@@ -573,6 +577,8 @@ impl PostgresRunApplicationService {
             owner_auth_store: None,
             embedding_provider: None,
             embedding_storage_scope,
+            conversation_embedding_storage_scope,
+            workflow_embedding_storage_scope,
             wisdom_embedding_storage_scope,
             chat_completion_provider: None,
             transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
@@ -617,6 +623,41 @@ impl PostgresRunApplicationService {
             .map_err(Clone::clone)?;
         ensure_embedding_profile_binding_for_store(&self.wisdom_store, configured, wisdom_scope)
             .await
+    }
+
+    pub async fn ensure_graph_type_schemas(&self) -> Result<(), String> {
+        self.ensure_schema().await?;
+        self.conversation_store
+            .ensure_schema()
+            .await
+            .map_err(|error| error.to_string())?;
+        self.workflow_store
+            .ensure_schema()
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Some(provider) = &self.embedding_provider {
+            let conversation_scope = self
+                .conversation_embedding_storage_scope
+                .as_ref()
+                .map_err(Clone::clone)?;
+            ensure_embedding_profile_binding_for_store(
+                &self.conversation_store,
+                provider.profile(),
+                conversation_scope,
+            )
+            .await?;
+            let workflow_scope = self
+                .workflow_embedding_storage_scope
+                .as_ref()
+                .map_err(Clone::clone)?;
+            ensure_embedding_profile_binding_for_store(
+                &self.workflow_store,
+                provider.profile(),
+                workflow_scope,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Compose trusted application-owned Rust operations into the opt-in native
@@ -2205,22 +2246,23 @@ impl PostgresRunApplicationService {
             .profile()
             .validate()
             .map_err(|error| error.to_string())?;
-        self.ensure_schema().await?;
+        self.ensure_graph_type_schemas().await?;
 
-        let store = self.store.clone();
+        let store = self.graph_store_for_type(&self.graph_role).clone();
+        let provider_store = store.clone();
         let index_filter = IndexJobClaimFilter {
             namespace: namespace.map(str::to_owned),
             index_kinds: vec!["node_embedding".to_owned()],
         };
         kogwistar_engine::projection_worker::run_graph_projection_jobs_once_filtered_with_batch_provider_input(
-            &self.store,
-            &self.store,
+            &store,
+            &store,
             limit,
             lease_seconds,
             index_filter,
             move |inputs| {
                 let provider = provider.clone();
-                let store = store.clone();
+                let store = provider_store.clone();
                 async move {
                     let mut results = Vec::with_capacity(inputs.len());
                     let mut prepared = Vec::new();
@@ -4982,8 +5024,8 @@ impl PostgresRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !self
-            .store
+        let graph_store = self.graph_store_for_type(&self.graph_role);
+        if !graph_store
             .graph_authority_capability()
             .supports_atomic_index_jobs()
         {
@@ -5066,7 +5108,7 @@ impl PostgresRunApplicationService {
             );
         }
         let applied = if input.index_jobs.is_empty() {
-            self.store.apply_graph_mutations_atomic(mutations).await
+            graph_store.apply_graph_mutations_atomic(mutations).await
         } else {
             let index_jobs = match graph_index_jobs_value(&input, &mutations) {
                 Ok(value) => value,
@@ -5078,7 +5120,7 @@ impl PostgresRunApplicationService {
                     );
                 }
             };
-            self.store
+            graph_store
                 .apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
                     mutations,
                     index_jobs,
@@ -5208,8 +5250,8 @@ impl PostgresRunApplicationService {
     }
 
     async fn public_graph_upsert_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        if !self
-            .store
+        let graph_store = self.graph_store_for_type(&self.graph_role);
+        if !graph_store
             .graph_authority_capability()
             .supports_atomic_index_jobs()
             || !self
@@ -5243,8 +5285,7 @@ impl PostgresRunApplicationService {
             graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
         };
         let existing_document = if input.content.is_none() {
-            match self
-                .store
+            match graph_store
                 .graph_projection_records(GraphProjectionRead {
                     scope: document_scope.clone(),
                     table: "gke_documents".to_owned(),
@@ -5299,8 +5340,7 @@ impl PostgresRunApplicationService {
                     "External graph endpoint closure exceeds 10000 entities",
                 );
             }
-            let records = match self
-                .store
+            let records = match graph_store
                 .graph_projection_records(GraphProjectionRead {
                     scope: document_scope.clone(),
                     table: "gke_edges".to_owned(),
@@ -5354,8 +5394,7 @@ impl PostgresRunApplicationService {
         let endpoint_nodes = if endpoint_node_ids.is_empty() {
             Vec::new()
         } else {
-            match self
-                .store
+            match graph_store
                 .graph_projection_records(GraphProjectionRead {
                     scope: document_scope.clone(),
                     table: "gke_nodes".to_owned(),
@@ -5419,8 +5458,7 @@ impl PostgresRunApplicationService {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert("doc_type".to_owned(), json!(input.doc_type));
                 metadata.insert("insertion_method".to_owned(), json!(input.insertion_method));
-                if let Err(error) = self
-                    .store
+                if let Err(error) = graph_store
                     .upsert_document_projection(DocumentProjectionUpsert {
                         scope: document_scope,
                         record: GraphRecord {
@@ -5546,8 +5584,7 @@ impl PostgresRunApplicationService {
                     .map(|mutation| (mutation.entity_kind.clone(), mutation.record.id.clone())),
             )
             .collect::<BTreeSet<_>>();
-        match self
-            .store
+        match graph_store
             .transaction(move |uow| {
                 Box::pin(async move {
                     for (kind, id) in std::mem::take(&mut identity_locks) {

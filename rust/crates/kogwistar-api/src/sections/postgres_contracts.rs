@@ -11,6 +11,8 @@ pub struct PostgresRunApplicationService {
     owner_auth_store: Option<Arc<AuthStore>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     embedding_storage_scope: Result<String, String>,
+    conversation_embedding_storage_scope: Result<String, String>,
+    workflow_embedding_storage_scope: Result<String, String>,
     wisdom_embedding_storage_scope: Result<String, String>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
