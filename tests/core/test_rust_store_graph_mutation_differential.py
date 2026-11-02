@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +13,12 @@ pytest.importorskip("pgvector")
 pytest.importorskip("sqlalchemy")
 
 from kogwistar._rust_bridge import RustParityError, store_postgres
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Edge, Node
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from tests._helpers.embeddings import ConstantEmbeddingFunction
+from tests._helpers.graph_builders import build_entity_node
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 
@@ -145,6 +150,89 @@ def test_graph_mutation_event_history_pgvector_and_python_mutual_readability(
         },
     )
     assert [row["id"] for row in rows] == ["n1", "python-row"]
+
+
+def test_python_and_rust_postgres_writers_serialize_shared_event_stream(
+    sa_engine,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Independent Python/Rust transactions commit into one ordered graph log."""
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    pytest.importorskip("kogwistar._rust")
+    namespace = f"mixed-writer-{uuid.uuid4().hex}"
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    meta.ensure_initialized()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "mixed_python_rust_pg_writers"),
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+        backend=backend,
+        namespace=namespace,
+    )
+    python_node = build_entity_node(
+        node_id="python-writer-node",
+        doc_id="python-writer-doc",
+        summary="committed through Python authority",
+    )
+    rust_operation = _mutation(
+        event_id="rust-writer-event",
+        op="ADD",
+        namespace=namespace,
+        id="rust-writer-node",
+        document="committed through Rust authority",
+        metadata={"lifecycle_status": "active"},
+        embedding=[0.0, 1.0, 0.0],
+    )
+    start = Barrier(2)
+
+    def write_python() -> str:
+        start.wait(timeout=10)
+        engine.write.add_node(python_node)
+        return python_node.id
+
+    def write_rust() -> str:
+        start.wait(timeout=10)
+        result = _rust(dsn, schema, rust_operation)
+        assert result["inserted"] is True
+        return "rust-writer-node"
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(write_python), pool.submit(write_rust)]
+            assert {future.result(timeout=30) for future in futures} == {
+                "python-writer-node",
+                "rust-writer-node",
+            }
+
+        events = list(meta.iter_entity_events(namespace=namespace, from_seq=1))
+        assert [event[0] for event in events] == [1, 2]
+        assert {event[2] for event in events} == {
+            "python-writer-node",
+            "rust-writer-node",
+        }
+        assert backend.node_get(
+            ids=["python-writer-node", "rust-writer-node"],
+            include=["documents", "metadatas"],
+        )["ids"] == ["python-writer-node", "rust-writer-node"]
+        assert _rust(
+            dsn,
+            schema,
+            {
+                "kind": "latest_retained_event_seq",
+                "namespace": namespace,
+            },
+        ) == 2
+    finally:
+        engine.close()
 
 
 def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
