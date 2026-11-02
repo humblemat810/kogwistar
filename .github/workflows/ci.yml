@@ -568,6 +568,16 @@ jobs:
           tests/core/test_rust_store_graph_mutation_differential.py::test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation
           -q -p no:cacheprovider
 
+      - name: Verify mixed Python/Rust PostgreSQL bootstrap serialization
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+          GKE_TEST_PG_IMAGE: "pgvector/pgvector:pg16"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+        run: >-
+          python -m pytest
+          tests/core/test_rust_store_graph_mutation_differential.py::test_python_and_rust_bootstrap_serialize_vector_extension_creation
+          -q -p no:cacheprovider
+
   pypy-beta-best-effort:
     # PyPy support is an automatic compatibility signal, not a required
     # release gate while PyPy 3.12 and the PyO3 toolchain remain beta.
