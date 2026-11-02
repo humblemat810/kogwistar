@@ -178,6 +178,60 @@ fn canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails() {
 }
 
 #[test]
+fn canonical_graph_batch_rolls_back_when_stage1_metadata_projection_fails() {
+    let (store, path) = store("canonical-graph-stage1-failure");
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_stage1_metadata_projection
+             BEFORE INSERT ON stage1_node_projections
+             WHEN NEW.key = 'node:node-2'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected Stage-1 metadata projection failure');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let store = SqliteStore::open(&path).unwrap();
+    let result = store.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: vec![
+            mutation("event-node-1", "node-1"),
+            mutation("event-node-2", "node-2"),
+        ],
+        index_jobs: Vec::new(),
+    });
+
+    assert!(result.is_err());
+    assert!(
+        store
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .is_empty(),
+        "canonical events must roll back when a later metadata projection fails"
+    );
+    assert!(
+        store
+            .list_index_jobs(Some("conversation"), None, None, None, None, 10)
+            .unwrap()
+            .is_empty(),
+        "durable projection jobs must roll back with the canonical events"
+    );
+    assert!(
+        store
+            .list_stage1_node_projections("conversation")
+            .unwrap()
+            .is_empty(),
+        "earlier Stage-1 rows must roll back with the failed projection"
+    );
+
+    drop(store);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn canonical_graph_batch_rolls_back_when_explicit_index_intent_fails() {
     let (store, path) = store("canonical-graph-explicit-job-failure");
     drop(store);
