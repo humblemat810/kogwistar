@@ -67,15 +67,18 @@ invalid test of the supported sequential-handoff contract.
 The differential tests now explicitly close those raw handles while retaining
 their transaction semantics. With the bundled Rust SQLite 3.50.2 and Python
 SQLite 3.46.1 still distinct, the SQLite-filtered differential suites passed
-on Linux CPython 3.12 and Windows CPython 3.13.3 (**21 passed, 9 deselected on
-each**). Ruff passes. The captured failing database copy passes
+on Linux CPython 3.12 and Windows CPython 3.12.13, 3.13.3, and 3.14.3 (**21
+passed, 9 deselected on each**). Ruff passes. The captured failing database copy passes
 `PRAGMA integrity_check` and contains both expected events, further indicating
 that the failure was tied to overlapping live handles rather than corrupt
 persisted data. The system-linked result is not evidence that matching SQLite
 versions are required.
 
-This closes the reproduced test failure, not the entire DL-07 gate. Native
-PyPy handoff and the required hosted platform/interpreter matrix remain open.
+This closes the reproduced test failure, not the entire DL-07 gate. The PyPy
+3.11 CI lane is Python-authority-only and excludes `requires_rust`; the native
+extension currently targets `abi3-py312`, so PyPy 3.11 native SQLite handoff is
+not a supported topology and is not claimed. Hosted CI evidence for the fixed
+cross-language suites and the remaining platform matrix are still required.
 
 ## Code-level lifecycle findings
 
