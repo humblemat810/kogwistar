@@ -816,11 +816,68 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     assert_eq!(conversation_written.status(), StatusCode::OK);
 
-    let visualization_request = |graph_space: &str| ApiEffectRequest {
+    for case in isolation_cases.iter().filter(|case| {
+        matches!(case["truth_graph"].as_str(), Some("workflow" | "wisdom"))
+    }) {
+        let truth_graph = case["truth_graph"].as_str().unwrap();
+        let mut graph_node = mutation(
+            shared_entity_id,
+            "gke_nodes",
+            "node",
+            json!({"label":format!("same ID in {truth_graph}")}),
+            Some("same ID in selected graph"),
+        );
+        graph_node["scope"]["graph_space"] = json!(truth_graph);
+        graph_node["event_id"] = json!(format!("{truth_graph}-event-node"));
+        let mut graph_acl = mutation(
+            &format!("{truth_graph}-acl-shared"),
+            "gke_nodes",
+            "node",
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":truth_graph,
+                "acl_target_grain":"node",
+                "acl_target_entity_id":shared_entity_id,
+                "acl_version":1,
+                "acl_mode":case["mode"]
+            }),
+            None,
+        );
+        graph_acl["scope"]["graph_space"] = json!(truth_graph);
+        graph_acl["event_id"] = json!(format!("{truth_graph}-event-acl"));
+        let graph_body = json!({
+            "contract_version":1,
+            "atomic":true,
+            "index_jobs":[],
+            "mutations":[graph_node, graph_acl]
+        });
+        let written = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/graph/mutations")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!(
+                            "Bearer {}",
+                            token_for_graph_space("docs", &["write_graph"], truth_graph)
+                        ),
+                    )
+                    .body(Body::from(serde_json::to_vec(&graph_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(written.status(), StatusCode::OK, "graph={truth_graph}");
+    }
+
+    let visualization_request = |truth_graph: &str, graph_space: &str| ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
         path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
-        body: br#"{"graph_type":"conversation"}"#.to_vec(),
+        body: serde_json::to_vec(&json!({"graph_type":truth_graph})).unwrap(),
         principal: json!({
             "sub":"writer", "role":"rw", "ns":["docs"],
             "storage_ns":"tenant-a", "workspace_id":"workspace-a",
@@ -828,7 +885,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         }),
     };
     let conversation_visualization = application
-        .graph_read_effect(&visualization_request("conversation"))
+        .graph_read_effect(&visualization_request("conversation", "conversation"))
         .await;
     assert_eq!(conversation_visualization.status, StatusCode::OK.as_u16());
     let conversation_visualization: Value =
@@ -853,12 +910,39 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     );
 
     let mismatched_visualization = application
-        .graph_read_effect(&visualization_request("facts"))
+        .graph_read_effect(&visualization_request("conversation", "facts"))
         .await;
     assert_eq!(
         mismatched_visualization.status,
         StatusCode::FORBIDDEN.as_u16()
     );
+
+    for case in isolation_cases {
+        let truth_graph = case["truth_graph"].as_str().unwrap();
+        let graph_space = match truth_graph {
+            "knowledge" => "facts",
+            other => other,
+        };
+        let response = application
+            .graph_read_effect(&visualization_request(truth_graph, graph_space))
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16(), "graph={truth_graph}");
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        let rendered_nodes = payload["nodes"].to_string();
+        let expected_visible = case["expected_visible"].as_bool().unwrap();
+        assert_eq!(
+            rendered_nodes.contains(shared_entity_id),
+            expected_visible,
+            "selected graph={truth_graph} used the wrong ACL policy: {payload}"
+        );
+        if truth_graph == "workflow" || truth_graph == "wisdom" {
+            assert!(
+                !rendered_nodes.contains("n1")
+                    && !rendered_nodes.contains("conversation-node"),
+                "selected graph={truth_graph} leaked records from another graph: {payload}"
+            );
+        }
+    }
 
     let deferred_visualization = app
         .clone()
