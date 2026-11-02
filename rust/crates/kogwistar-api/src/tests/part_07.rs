@@ -16,6 +16,17 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
             status: "succeeded".to_owned(),
         })
         .unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "process-table-blocked-run".to_owned(),
+            conversation_id: "process-table-blocked-conversation".to_owned(),
+            workflow_id: "process-table-blocked-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "process-table-blocked-turn".to_owned(),
+            status: "suspended".to_owned(),
+        })
+        .unwrap();
 
     let authorized = json!({
         "sub":"alice", "role":"ro", "ns":["workflow"],
@@ -25,6 +36,12 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
     assert!(service.supports_mcp_tool_for_principal(
         "workflow",
         "workflow.process_table",
+        &authorized,
+    ));
+    assert!(service.supports_mcp_tool("workflow", "workflow.blocked_runs"));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.blocked_runs",
         &authorized,
     ));
     for (surface, principal) in [
@@ -43,8 +60,13 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
         ),
     ] {
         assert!(
-            !service.supports_mcp_tool_for_principal(surface, "workflow.process_table", &principal),
-            "unexpected process-table access for {surface} principal {principal}"
+            !service.supports_mcp_tool_for_principal(surface, "workflow.process_table", &principal)
+                && !service.supports_mcp_tool_for_principal(
+                    surface,
+                    "workflow.blocked_runs",
+                    &principal
+                ),
+            "unexpected workflow monitor access for {surface} principal {principal}"
         );
     }
     let project_view_reader = json!({
@@ -53,6 +75,11 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
     assert!(service.supports_mcp_tool_for_principal(
         "workflow",
         "workflow.process_table",
+        &project_view_reader,
+    ));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.blocked_runs",
         &project_view_reader,
     ));
 
@@ -72,9 +99,55 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
             && process["process_kind"] == "workflow_run"
             && process["status"] == "succeeded"
     }));
+    let blocked = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/blocked-runs?limit=10".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "role":"ro", "ns":["workflow"],
+                "capabilities":["project_view"]
+            }),
+        })
+        .await;
+    assert_eq!(blocked.status, StatusCode::OK.as_u16());
+    let blocked: Value = serde_json::from_slice(&blocked.body).unwrap();
+    let blocked_processes = blocked["processes"].as_array().unwrap();
+    assert_eq!(blocked_processes.len(), 1);
+    assert_eq!(blocked_processes[0]["process_id"], "process-table-blocked-run");
+    assert_eq!(blocked_processes[0]["status"], "suspended");
 
     drop(service);
     let _ = std::fs::remove_file(sqlite_path);
+}
+
+#[test]
+fn postgres_workflow_monitor_tools_require_workflow_scope_and_read_capability() {
+    let service = PostgresRunApplicationService::from_dsn(
+        "postgres://unused:unused@127.0.0.1:1/unused",
+        "workflow_monitor_discovery",
+    )
+    .unwrap();
+    for tool in ["workflow.process_table", "workflow.blocked_runs"] {
+        for principal in [
+            json!({"role":"ro", "ns":["workflow"], "capabilities":["read_graph"]}),
+            json!({"role":"rw", "ns":["other"], "capabilities":["workflow.run.read"]}),
+        ] {
+            assert!(!service.supports_mcp_tool_for_principal("workflow", tool, &principal));
+        }
+        for capability in ["project_view", "workflow.run.read"] {
+            let principal = json!({
+                "role":"ro", "ns":["workflow"], "capabilities":[capability]
+            });
+            assert!(service.supports_mcp_tool_for_principal("workflow", tool, &principal));
+        }
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            tool,
+            &json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+        ));
+    }
 }
 
 #[tokio::test]

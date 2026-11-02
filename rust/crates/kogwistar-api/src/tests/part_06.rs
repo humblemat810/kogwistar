@@ -8446,6 +8446,11 @@
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "workflow.process_table"));
+        assert!(process_table_tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "workflow.blocked_runs"));
         let process_table_response = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&process_table_token)
@@ -8481,6 +8486,33 @@
         assert_eq!(process["process_kind"], "workflow_run");
         assert_eq!(process["status"], "succeeded");
         assert_eq!(process["workflow_id"], "agentic_answering.v2");
+        let blocked_runs_response = client
+            .post(format!("{base_url}/mcp/workflow"))
+            .bearer_auth(&process_table_token)
+            .json(&json!({
+                "jsonrpc":"2.0",
+                "id":75,
+                "method":"tools/call",
+                "params":{
+                    "name":"workflow.blocked_runs",
+                    "arguments":{"limit":10}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            blocked_runs_response.status().is_success(),
+            "authorized blocked-runs MCP call should succeed"
+        );
+        let blocked_runs: Value = blocked_runs_response.json().await.unwrap();
+        let blocked_processes = blocked_runs["result"]["processes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("unexpected blocked-runs response: {blocked_runs:#?}"));
+        assert!(
+            blocked_processes.is_empty(),
+            "completed PostgreSQL runs must not appear as blocked"
+        );
         let streamed_provider_events = durable_events
             .iter()
             .filter(|event| event.event_type == "workflow.provider_event.v1")

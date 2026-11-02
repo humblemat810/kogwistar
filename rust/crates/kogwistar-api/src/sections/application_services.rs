@@ -881,7 +881,7 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
-        if name == "workflow.process_table" {
+        if matches!(name, "workflow.process_table" | "workflow.blocked_runs") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")
@@ -1296,7 +1296,7 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
-        if name == "workflow.process_table" {
+        if matches!(name, "workflow.process_table" | "workflow.blocked_runs") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")
@@ -3044,7 +3044,8 @@ impl SqliteRunApplicationService {
             && let Some(path) = operational_path(&request.path_and_query)
         {
             let process_table = path == "/api/workflow/process-table";
-            if process_table
+            let process_listing = process_table || path == "/api/workflow/blocked-runs";
+            if process_listing
                 && !capability_any_allowed(
                     &request,
                     &self.capabilities,
@@ -3059,13 +3060,13 @@ impl SqliteRunApplicationService {
                 );
             }
             let limit =
-                query_integer(&request.path_and_query, "limit", if process_table { 100 } else { 200 })
+                query_integer(&request.path_and_query, "limit", if process_listing { 100 } else { 200 })
                     .clamp(1, 10_000) as usize;
             let runs = match self.store.list_server_runs(
                 process_table.then(|| decoded_query_string(&request.path_and_query, "status")).flatten().as_deref(),
                 process_table.then(|| decoded_query_string(&request.path_and_query, "workflow_id")).flatten().as_deref(),
                 process_table.then(|| decoded_query_string(&request.path_and_query, "conversation_id")).flatten().as_deref(),
-                if process_table { limit } else { 10_000 },
+                if process_listing { limit } else { 10_000 },
             ) {
                 Ok(runs) => runs,
                 Err(error) => {
@@ -3095,7 +3096,7 @@ impl SqliteRunApplicationService {
                 match self.store.list_server_run_events(
                     &run.run_id,
                     0,
-                    if process_table { 50 } else { limit },
+                    if process_listing { 50 } else { limit },
                 ) {
                     Ok(mut run_events) => events.append(&mut run_events),
                     Err(error) => {
@@ -3121,7 +3122,7 @@ impl SqliteRunApplicationService {
                 .into_iter()
                 .map(|row| Value::Object(row.payload))
                 .collect::<Vec<_>>();
-            let service_event_rows = if process_table {
+            let service_event_rows = if process_listing {
                 match self.store.replay_raw_events("workflow", 0, usize::MAX) {
                     Ok(rows) => rows
                         .into_iter()

@@ -725,6 +725,36 @@ async fn mcp_handler(
                     principal: principal.clone(),
                 })
             }
+            "workflow.blocked_runs" => {
+                let limit = match arguments.get("limit") {
+                    None => Some(100),
+                    Some(Value::Number(value)) => value.as_i64(),
+                    _ => None,
+                };
+                let Some(limit) = limit.filter(|limit| (1..=10_000).contains(limit)) else {
+                    return Json(json!({
+                        "jsonrpc":"2.0",
+                        "id":id,
+                        "error":{"code":-32602,"message":"Invalid blocked-runs arguments"}
+                    }))
+                    .into_response();
+                };
+                if arguments.keys().any(|name| name != "limit") {
+                    return Json(json!({
+                        "jsonrpc":"2.0",
+                        "id":id,
+                        "error":{"code":-32602,"message":"Invalid blocked-runs arguments"}
+                    }))
+                    .into_response();
+                }
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/workflow/blocked-runs?limit={limit}"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
             "workflow.dead_letters" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),

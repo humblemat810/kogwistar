@@ -241,6 +241,7 @@
                         "workflow.run_events"
                             | "workflow.process_timeline"
                             | "workflow.process_table"
+                            | "workflow.blocked_runs"
                     )
             }
 
@@ -300,6 +301,31 @@
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);
         assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
+
+        let response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workflow.blocked_runs","arguments":{"limit":23}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"]["method"], "GET");
+        assert_eq!(
+            value["result"]["path_and_query"],
+            "/api/workflow/blocked-runs?limit=23"
+        );
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
         assert!(request.body.is_empty());
 
         let response = make_app()

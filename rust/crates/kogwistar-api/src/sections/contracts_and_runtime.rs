@@ -148,6 +148,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
             name,
             "workflow.budget_history"
                 | "workflow.budget_snapshot"
+                | "workflow.blocked_runs"
                 | "workflow.capabilities_snapshot"
                 | "workflow.capability_approve"
                 | "workflow.capability_revoke"

@@ -574,11 +574,12 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("workflow", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(supported, 42);
+        assert_eq!(supported, 43);
         assert!(rust_mcp_tool_supported(
             "workflow",
             "workflow.process_table"
         ));
+        assert!(rust_mcp_tool_supported("workflow", "workflow.blocked_runs"));
         assert!(rust_mcp_tool_supported(
             "workflow",
             "workflow.process_timeline"

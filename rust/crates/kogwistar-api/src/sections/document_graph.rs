@@ -1634,6 +1634,7 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
         path,
         "/api/workflow/operator/dashboard"
             | "/api/workflow/process-table"
+            | "/api/workflow/blocked-runs"
             | "/api/workflow/lane/progress"
             | "/api/workflow/resources"
             | "/api/workflow/budget"
@@ -2028,6 +2029,19 @@ fn process_table_effect(
         );
         right_key.cmp(&left_key)
     });
+    if request
+        .path_and_query
+        .split('?')
+        .next()
+        == Some("/api/workflow/blocked-runs")
+    {
+        processes.retain(|process| {
+            matches!(
+                process["status"].as_str(),
+                Some("blocked" | "waiting" | "suspended" | "cancelling")
+            )
+        });
+    }
     json_effect(StatusCode::OK, json!({"processes": processes}))
 }
 
@@ -2053,7 +2067,7 @@ fn operational_effect(
     let mut resources = resource_value(&runs, &lanes, &usage, &events, storage_usage_bytes);
     resources["services"] = resource_service_value(&services);
     match path {
-        "/api/workflow/process-table" => process_table_effect(
+        "/api/workflow/process-table" | "/api/workflow/blocked-runs" => process_table_effect(
             request,
             runs,
             services,
