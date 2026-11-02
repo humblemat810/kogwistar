@@ -811,9 +811,9 @@
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_snapshot_route_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
-        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
         service
-            .store
+            .conversation_store
             .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
             .await
             .unwrap();
@@ -835,7 +835,7 @@
         snapshot_metadata.insert("run_id".to_owned(), json!("run-1"));
         snapshot_metadata.insert("stage".to_owned(), json!("final"));
         service
-            .store
+            .conversation_store
             .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                 scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
@@ -859,7 +859,7 @@
         private_snapshot_metadata.insert("run_id".to_owned(), json!("run-private"));
         private_snapshot_metadata.insert("stage".to_owned(), json!("final"));
         service
-            .store
+            .conversation_store
             .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                 scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
@@ -886,7 +886,7 @@
             private_acl_metadata.insert(key.to_owned(), value);
         }
         service
-            .store
+            .conversation_store
             .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                 scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
@@ -912,7 +912,7 @@
             acl_metadata.insert(key.to_owned(), value);
         }
         service
-            .store
+            .conversation_store
             .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                 scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
@@ -1080,7 +1080,12 @@
             let _ = connection.await;
         });
         cleanup
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
     }
@@ -1097,9 +1102,9 @@
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_conversation_detail_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
-        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
         service
-            .store
+            .conversation_store
             .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
             .await
             .unwrap();
@@ -1133,7 +1138,7 @@
             metadata.insert("conversation_id".to_owned(), json!(conversation_id));
             metadata.extend(extra.as_object().unwrap().clone());
             service
-                .store
+                .conversation_store
                 .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                     scope: scope.clone(),
                     table: "gke_nodes".to_owned(),
@@ -1159,7 +1164,7 @@
                 acl_metadata.insert(key.to_owned(), value);
             }
             service
-                .store
+                .conversation_store
                 .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                     scope: scope.clone(),
                     table: "gke_nodes".to_owned(),
@@ -1223,7 +1228,7 @@
                 embedding: None,
             };
             service
-                .store
+                .conversation_store
                 .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                     scope: scope.clone(),
                     table: "gke_nodes".to_owned(),
@@ -1247,7 +1252,7 @@
                 acl_metadata.insert("owner_id".to_owned(), json!("bob"));
             }
             service
-                .store
+                .conversation_store
                 .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
                     scope: scope.clone(),
                     table: "gke_nodes".to_owned(),
@@ -1555,7 +1560,12 @@
             let _ = connection.await;
         });
         cleanup
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
     }
@@ -1685,9 +1695,9 @@
                 calls: Arc::clone(&embedding_calls),
                 fail: None,
             }));
-        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
         service
-            .store
+            .conversation_store
             .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
             .await
             .unwrap();
@@ -1715,7 +1725,12 @@
             }),
         };
         let created = service.execute(create("alice")).await;
-        assert_eq!(created.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            created.status,
+            StatusCode::OK.as_u16(),
+            "conversation creation failed: {}",
+            String::from_utf8_lossy(&created.body)
+        );
         let created: Value = serde_json::from_slice(&created.body).unwrap();
         assert_eq!(created["status"], "ok");
         assert_eq!(created["result"]["conversation_id"], "conv-create-test");
@@ -1724,7 +1739,7 @@
         assert_eq!(created["result"]["tail_node_id"], "conv-create-start");
         assert_eq!(created["result"]["turn_count"], 0);
         let start_projection = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "conversation".to_owned(),
@@ -1741,7 +1756,7 @@
         assert_eq!(start_projection[0].embedding, Some(vec![0.6, 0.8, 0.0]));
         assert_eq!(embedding_calls.lock().unwrap()[0].len(), 1);
         let events = service
-            .store
+            .conversation_store
             .replay_events("conversation", 0, 100)
             .await
             .unwrap();
@@ -1907,7 +1922,12 @@
             let _ = connection.await;
         });
         cleanup
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
     }

@@ -1,4 +1,4 @@
-use kogwistar_contracts::{GraphMutationBatchV2, GraphMutationV1};
+use kogwistar_contracts::{GraphModelClass, GraphMutationBatchV2, GraphMutationV1};
 use kogwistar_runtime::{
     NativeOperationOutput, NativeOperationRegistrationError, NativeOperationRegistry,
     RecordedStateUpdate, RuntimeNativeExecutionError, RuntimeNativeStepRequest,
@@ -113,7 +113,14 @@ pub(crate) fn graph_mutation(
     let document = serde_json::to_string(&document_fields)
         .map_err(|_| invalid("memory", "canonical graph document could not be serialized"))?;
     let doc_id = payload.get("doc_id").and_then(Value::as_str);
-    let projected_metadata = metadata_projection(&metadata, &document_fields, doc_id, model_class);
+    let model_class = serde_json::from_value::<GraphModelClass>(json!(model_class))
+        .map_err(|_| invalid("memory", "graph model class is invalid"))?;
+    let projected_metadata = metadata_projection(
+        &metadata,
+        &document_fields,
+        doc_id,
+        model_class.python_name(),
+    );
     let envelope = json!({
         "schema_version": 1,
         "model_class": model_class,

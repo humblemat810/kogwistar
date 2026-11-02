@@ -866,8 +866,9 @@
             .await
             .unwrap()
             .with_embedding_provider(embedding_provider);
-        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
         service.store.create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default()).await.unwrap();
+        service.conversation_store.create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default()).await.unwrap();
 
         let secret = "native-graph-test-secret";
         let token = |subject: &str, namespace: &str, caps: &[&str]| encode(
@@ -1011,7 +1012,7 @@
             ("native-assistant-turn", "assistant_turn", "assistant"),
         ] {
             service
-                .store
+                .conversation_store
                 .apply_graph_mutation(GraphMutation {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -1050,7 +1051,7 @@
                 .await
                 .unwrap();
             service
-                .store
+                .conversation_store
                 .apply_graph_mutation(GraphMutation {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -1237,7 +1238,7 @@
             .as_str()
             .unwrap();
         let linked_edges = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -1259,7 +1260,7 @@
         assert_eq!(linked_edge_doc["relation"], "next_turn");
         assert_eq!(linked_edge_doc["source_ids"], json!(["native-user-turn"]));
         assert_eq!(linked_edge_doc["target_ids"], json!(["native-assistant-turn"]));
-        let link_events = service.store.replay_raw_events("alpha", 0, 500).await.unwrap();
+        let link_events = service.conversation_store.replay_raw_events("alpha", 0, 500).await.unwrap();
         assert_eq!(
             link_events
                 .iter()
@@ -1269,7 +1270,7 @@
             "retry must not append a duplicate assistant-turn edge event"
         );
         let link_jobs = service
-            .store
+            .conversation_store
             .list_index_jobs(Some("alpha"), None, None, None, None, 500)
             .await
             .unwrap();
@@ -1296,8 +1297,12 @@
         ] {
             let conversation_id = (truth_graph == "conversation")
                 .then_some("conv-native-pointer");
-            service
-                .store
+            let graph_store = if truth_graph == "conversation" {
+                &service.conversation_store
+            } else {
+                &service.store
+            };
+            graph_store
                 .apply_graph_mutation(GraphMutation {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -1328,8 +1333,7 @@
                 })
                 .await
                 .unwrap();
-            service
-                .store
+            graph_store
                 .apply_graph_mutation(GraphMutation {
                     scope: GraphScope {
                         namespace: "alpha".to_owned(),
@@ -1423,7 +1427,7 @@
             ],
         );
         let pointer_records = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -1451,7 +1455,7 @@
             ],
         );
         let usage_edges = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -1468,7 +1472,7 @@
         assert_eq!(usage_edges.len(), 1);
         assert_eq!(
             service
-                .store
+                .conversation_store
                 .replay_raw_events("alpha", 0, 1000)
                 .await
                 .unwrap()
@@ -1844,7 +1848,7 @@
         assert_eq!(memory_result_status, StatusCode::OK, "{memory_result_body}");
 
         let memory_node = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -1862,7 +1866,7 @@
         assert_eq!(memory_node[0].metadata["user_id"], "alice");
         assert_eq!(memory_node[0].metadata["doc_id"], "native-memory-context");
         let spoofed_namespace_node = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "beta".to_owned(),
@@ -1878,7 +1882,7 @@
             .unwrap();
         assert!(spoofed_namespace_node.is_empty());
         let memory_edges = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -1907,7 +1911,7 @@
                 && edge.metadata["doc_id"] == "conv:conv-native-memory-pin"
         }));
         let memory_acl = service
-            .store
+            .conversation_store
             .graph_acl_records_for_entities(
                 &GraphScope {
                     namespace: "alpha".to_owned(),
@@ -1937,7 +1941,7 @@
             "native-memory-context::e::memory-source-edge",
         ];
         let memory_index_jobs = service
-            .store
+            .conversation_store
             .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
             .unwrap()
@@ -1978,6 +1982,7 @@
                 "initial_state": {
                     "conversation_id": "conv-native-answer-persist",
                     "run_node_id": "run-node-native-answer-persist",
+                    "turn_index": 4,
                     "answer": {"text": "Native response 🌱", "claim_citations": []},
                     "used_node_ids": ["source-node-1"],
                     "projected_pointer_ids": ["pointer-node-1"],
@@ -2032,7 +2037,7 @@
         let answer_turn_id = "ptr:uvpzlbcvkjixsq7sbwra";
         let answer_edge_id = "e:t7ewoy536jqdo3qakhta";
         let answer_nodes = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2056,7 +2061,7 @@
             .unwrap()
             .contains("Native response 🌱"));
         let answer_edges = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2075,7 +2080,7 @@
         assert_eq!(answer_edges[0].metadata["doc_id"], "conv:conv-native-answer-persist");
         let answer_entity_ids = [answer_turn_id.to_owned(), answer_edge_id.to_owned()];
         let answer_acl = service
-            .store
+            .conversation_store
             .graph_acl_records_for_entities(
                 &GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2093,7 +2098,7 @@
                 && record.metadata["owner_id"] == "alice"
         }));
         let answer_jobs = service
-            .store
+            .conversation_store
             .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
             .unwrap()
@@ -2178,7 +2183,7 @@
         assert_eq!(prepare_status, StatusCode::OK, "{prepare_body}");
         let run_anchor_id = "ptr:7apfcktwl35dka7476tq";
         let run_anchor = service
-            .store
+            .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2196,7 +2201,7 @@
         assert_eq!(run_anchor[0].metadata["_class_name"], "ConversationNode");
         assert_eq!(run_anchor[0].metadata["entity_type"], "agent_run");
         let run_anchor_acl = service
-            .store
+            .conversation_store
             .graph_acl_records_for_entities(
                 &GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2338,7 +2343,12 @@
         server.abort();
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let task = tokio::spawn(connection);
-        cleanup.batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE")).await.unwrap();
+        cleanup.batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+        )).await.unwrap();
         drop(cleanup);
         task.await.unwrap().unwrap();
     }
@@ -2455,9 +2465,14 @@
             .with_owner_auth_config(&auth_config)
             .await
             .unwrap();
-        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
         service
             .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        service
+            .conversation_store
             .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
             .await
             .unwrap();
@@ -2521,7 +2536,7 @@
         assert!(service.execute_inline_native_work_once().await.unwrap());
         let acl_target_id = "inline-v2-node-stable".to_owned();
         let acl_records = service
-            .store
+            .conversation_store
             .graph_acl_records_for_entities(
                 &GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2543,7 +2558,7 @@
             Some("alice")
         );
         let acl_jobs = service
-            .store
+            .conversation_store
             .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
             .unwrap();
@@ -2556,7 +2571,7 @@
         tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
         assert!(service.execute_inline_native_work_once().await.unwrap());
         let replayed_acl_records = service
-            .store
+            .conversation_store
             .graph_acl_records_for_entities(
                 &GraphScope {
                     namespace: "alpha".to_owned(),
@@ -2936,7 +2951,12 @@
             .unwrap();
         let task = tokio::spawn(connection);
         cleanup
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
         drop(cleanup);

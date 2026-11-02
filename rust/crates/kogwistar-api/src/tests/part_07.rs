@@ -260,9 +260,9 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = format!("rust_run_evidence_{}", uuid::Uuid::new_v4().simple());
     let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
-    service.ensure_schema().await.unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
     service
-        .store
+        .conversation_store
         .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
         .await
         .unwrap();
@@ -296,7 +296,7 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
         snapshot_metadata.insert(key.to_owned(), value);
     }
     service
-        .store
+        .conversation_store
         .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
             scope: scope.clone(),
             table: "gke_nodes".to_owned(),
@@ -338,7 +338,7 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
         acl_metadata.insert(key.to_owned(), value);
     }
     service
-        .store
+        .conversation_store
         .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
             scope,
             table: "gke_nodes".to_owned(),
@@ -362,7 +362,7 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     }))
     .unwrap();
     service
-        .store
+        .conversation_store
         .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
             scope: GraphScope {
                 namespace: "conversation".to_owned(),
@@ -403,7 +403,7 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     }))
     .unwrap();
     service
-        .store
+        .conversation_store
         .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
             scope: GraphScope {
                 namespace: "conversation".to_owned(),
@@ -527,7 +527,12 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
         .unwrap();
     let cleanup_task = tokio::spawn(connection);
     cleanup
-        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+        ))
         .await
         .unwrap();
     drop(cleanup);
