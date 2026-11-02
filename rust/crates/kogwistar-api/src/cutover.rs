@@ -63,6 +63,9 @@ fn route_template_matches(template: &str, path: &str) -> bool {
 
 pub const TRANSPORT_OWNED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/health"),
+    ("GET", "/api/viz/cytoscape.json"),
+    ("GET", "/api/viz/d3.json"),
+    ("GET", "/viz/d3.bundle"),
     ("GET", "/api/auth/login"),
     ("GET", "/api/auth/callback"),
     ("GET", "/api/auth/me"),
@@ -106,6 +109,20 @@ mod tests {
         assert_eq!(
             PENDING_SERVER_CUTOVER_ROUTES.len(),
             PENDING_SERVER_CUTOVER_ROUTES
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len()
+        );
+    }
+
+    #[test]
+    fn transport_owned_routes_are_unique_and_frozen() {
+        assert!(TRANSPORT_OWNED_HTTP_ROUTES
+            .iter()
+            .all(|route| FROZEN_OPENAPI_ROUTES.contains(route)));
+        assert_eq!(
+            TRANSPORT_OWNED_HTTP_ROUTES.len(),
+            TRANSPORT_OWNED_HTTP_ROUTES
                 .iter()
                 .collect::<BTreeSet<_>>()
                 .len()

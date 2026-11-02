@@ -358,17 +358,9 @@
         }
         drop(fixture_store);
         let service = SqliteRunApplicationService::open(&path).unwrap();
-        let transport_routes = [
-            ("GET", "/health"),
-            ("GET", "/api/auth/login"),
-            ("GET", "/api/auth/callback"),
-            ("GET", "/api/auth/me"),
-            ("POST", "/api/auth/logout"),
-            ("POST", "/auth/dev-token"),
-        ];
         let mut unavailable = Vec::new();
         for (index, &(method, template)) in FROZEN_OPENAPI_ROUTES.iter().enumerate() {
-            if transport_routes.contains(&(method, template)) {
+            if TRANSPORT_OWNED_HTTP_ROUTES.contains(&(method, template)) {
                 continue;
             }
             let path_and_query = template
