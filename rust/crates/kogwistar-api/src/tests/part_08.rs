@@ -694,6 +694,57 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         "public visualization failed to preserve graph and insertion-method selection: {visualization}"
     );
 
+    for (path, element_path) in [
+        (
+            "/api/viz/d3.json?graph_type=knowledge&mode=reify",
+            "nodes",
+        ),
+        (
+            "/api/viz/cytoscape.json?graph_type=knowledge&mode=reify",
+            "elements",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token("docs", &["read_graph"])),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "route {path}");
+        let visualization: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        let ids = visualization[element_path]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| {
+                if element_path == "elements" {
+                    item["data"]["id"].as_str().unwrap()
+                } else {
+                    item["id"].as_str().unwrap()
+                }
+            })
+            .collect::<Vec<_>>();
+        assert!(ids.iter().any(|id| id.starts_with("n1")), "{path}: {ids:?}");
+        assert!(ids.iter().any(|id| id.starts_with("n2")), "{path}: {ids:?}");
+        assert!(ids.iter().any(|id| id.starts_with("e1")), "{path}: {ids:?}");
+        assert!(
+            ids.iter().all(|id| !id.contains("n3")),
+            "private graph records must not be exposed by {path}: {ids:?}"
+        );
+    }
+
     let read = app
         .clone()
         .oneshot(
