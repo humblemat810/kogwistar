@@ -42,6 +42,7 @@ pub(super) struct Tables {
     pub(super) node_docs: String,
     pub(super) node_refs: String,
     pub(super) edge_refs: String,
+    pub(super) vector_collection_records: String,
 }
 
 impl Tables {
@@ -94,6 +95,7 @@ impl Tables {
             node_docs: qualified(&quoted_schema, NODE_DOCS_TABLE)?,
             node_refs: qualified(&quoted_schema, NODE_REFS_TABLE)?,
             edge_refs: qualified(&quoted_schema, EDGE_REFS_TABLE)?,
+            vector_collection_records: qualified(&quoted_schema, "gke_vector_collection_records")?,
         })
     }
 }

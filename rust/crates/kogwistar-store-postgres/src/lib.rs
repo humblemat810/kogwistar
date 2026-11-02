@@ -28,7 +28,7 @@ use kogwistar_store::{
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, RestoredRawEntityEvent,
     ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
-    ServerRunWriteStore, StoreError, StoreResult, VectorMatch, WorkflowDesignDelta,
+    ServerRunWriteStore, StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
     WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
     WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, runtime_checkpoint_namespace,
     runtime_projection_write, runtime_status_namespace, validate_entity_rebuild_request,

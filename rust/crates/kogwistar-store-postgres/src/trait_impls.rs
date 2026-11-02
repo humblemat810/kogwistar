@@ -5,4 +5,5 @@ mod index_jobs;
 mod lane_messages;
 mod projections;
 mod runs;
+mod vector_collections;
 mod workflow_design;

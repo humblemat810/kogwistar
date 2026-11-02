@@ -1,5 +1,6 @@
 // Domain-focused tests; shared fixtures live in the parent test module.
 use super::*;
+use kogwistar_store::{DistanceMetric, MetadataFilter, VectorCollectionStore, VectorQuery};
 
 #[test]
 fn node_document_ids_match_python_sorted_unique_projection() {
@@ -215,6 +216,123 @@ async fn concurrent_graph_schema_bootstrap_serializes_vector_extension_creation(
         .batch_execute(&format!(
             "DROP SCHEMA \"{first_schema}\" CASCADE; DROP SCHEMA \"{second_schema}\" CASCADE;"
         ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_named_vector_collections_are_scoped_ranked_and_not_graph_entities()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("named_vector_collection");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let record = |id: &str, document: &str, category: &str, vector: Vec<f32>| {
+        let mut metadata = Map::new();
+        metadata.insert("category".to_owned(), Value::String(category.to_owned()));
+        GraphRecord {
+            id: id.to_owned(),
+            document: Some(document.to_owned()),
+            metadata,
+            embedding: Some(vector),
+        }
+    };
+    store
+        .upsert_vector_collection(
+            "tenant-a",
+            "search-index",
+            vec![
+                record("idx-a", "alpha", "manual", vec![1.0, 0.0]),
+                record("idx-b", "beta", "manual", vec![0.8, 0.2]),
+            ],
+        )
+        .await?;
+    store
+        .upsert_vector_collection(
+            "tenant-b",
+            "search-index",
+            vec![record("idx-a", "other tenant", "manual", vec![1.0, 0.0])],
+        )
+        .await?;
+    store
+        .upsert_vector_collection(
+            "tenant-a",
+            "other-index",
+            vec![record(
+                "idx-a",
+                "other collection",
+                "manual",
+                vec![1.0, 0.0],
+            )],
+        )
+        .await?;
+
+    let mut filter = MetadataFilter::default();
+    filter
+        .equals
+        .insert("category".to_owned(), Value::String("manual".to_owned()));
+    let query = VectorQuery {
+        embedding: vec![1.0, 0.0],
+        limit: 10,
+        metadata: filter,
+        metric: DistanceMetric::Cosine,
+    };
+    let ranked = store
+        .query_vector_collection("tenant-a", "search-index", &query)
+        .await?;
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|hit| hit.record.id.as_str())
+            .collect::<Vec<_>>(),
+        ["idx-a", "idx-b"]
+    );
+    assert!(ranked[0].distance < ranked[1].distance);
+
+    store
+        .upsert_vector_collection(
+            "tenant-a",
+            "search-index",
+            vec![record("idx-a", "alpha updated", "manual", vec![0.0, 1.0])],
+        )
+        .await?;
+    let updated = store
+        .query_vector_collection("tenant-a", "search-index", &query)
+        .await?;
+    assert_eq!(updated[0].record.id, "idx-b");
+    assert_eq!(updated[1].record.document.as_deref(), Some("alpha updated"));
+
+    store
+        .delete_vector_collection_records("tenant-a", "search-index", vec!["idx-b".to_owned()])
+        .await?;
+    let remaining = store
+        .query_vector_collection("tenant-a", "search-index", &query)
+        .await?;
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].record.id, "idx-a");
+    let client = store.client().await?;
+    let canonical_node_count: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*) FROM {}.gke_nodes WHERE id=$1",
+                tables.quoted_schema
+            ),
+            &[&"idx-a"],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(canonical_node_count, 0);
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
         .await
         .map_err(backend)?;
     Ok(())

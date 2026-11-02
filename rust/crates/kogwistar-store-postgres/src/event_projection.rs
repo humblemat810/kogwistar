@@ -388,6 +388,8 @@ where
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE INDEX IF NOT EXISTS \"ix_gke_edge_refs_edge\" ON {} ((metadata->>'edge_id')); \
          CREATE INDEX IF NOT EXISTS \"ix_gke_edge_refs_doc\" ON {} ((metadata->>'doc_id')); \
+         CREATE TABLE IF NOT EXISTS {} (namespace TEXT NOT NULL,collection TEXT NOT NULL,id TEXT NOT NULL,document TEXT NULL,metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,embedding vector NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(namespace,collection,id)); \
+         CREATE INDEX IF NOT EXISTS \"idx_gke_vector_collection_lookup\" ON {} (namespace,collection); \
          CREATE TABLE IF NOT EXISTS {} (namespace VARCHAR NOT NULL DEFAULT 'default', entity_kind VARCHAR NOT NULL, entity_id VARCHAR NOT NULL, document TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, source_fingerprint VARCHAR NOT NULL, revision BIGINT NOT NULL DEFAULT 0, materialization_status VARCHAR NOT NULL DEFAULT 'pending', updated_at_ms BIGINT NOT NULL, PRIMARY KEY(namespace, entity_kind, entity_id)); \
          CREATE INDEX IF NOT EXISTS \"idx_gke_stage1_projections_namespace_status\" ON {} (namespace, materialization_status, updated_at_ms);",
         schema_sql(tables),
@@ -412,6 +414,8 @@ where
         edge_refs,
         edge_refs,
         edge_refs,
+        tables.vector_collection_records,
+        tables.vector_collection_records,
         tables.stage1_projections,
         tables.stage1_projections,
     );
