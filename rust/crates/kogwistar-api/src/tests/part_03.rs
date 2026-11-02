@@ -946,6 +946,23 @@
         let make_token = |capabilities: &[&str], storage_ns: &str| {
             make_token_for("alice", capabilities, storage_ns)
         };
+        let make_docs_token_for = |subject: &str, capabilities: &[&str]| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": subject,
+                    "role": "rw",
+                    "roles": ["reader", "rw"],
+                    "ns": "docs",
+                    "storage_ns": "alpha",
+                    "capabilities": capabilities,
+                    "exp": 4102444800_u64
+                }),
+                &EncodingKey::from_secret(key.as_bytes()),
+            )
+            .unwrap()
+        };
+        let make_docs_token = |capabilities: &[&str]| make_docs_token_for("alice", capabilities);
         let make_app = || {
             router_with_application(
                 ApiState {
@@ -1329,7 +1346,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                        format!("Bearer {}", make_docs_token(&["read_graph"])),
                     )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,
@@ -1355,7 +1372,10 @@
                     .method("POST")
                     .uri("/mcp")
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {}", make_token(&[], "alpha")))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_docs_token(&[])),
+                    )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"denied","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
                     ))
@@ -1368,10 +1388,10 @@
             .await
             .unwrap();
         let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
-        assert_eq!(denied_value["error"]["code"], -32000);
+        assert_eq!(denied_value["error"]["code"], -32602);
         assert_eq!(
-            denied_value["error"]["data"]["code"],
-            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+            denied_value["error"]["message"],
+            "Tool not advertised by this application service"
         );
 
         let send_mutation = |app: Router, token: String, payload: Value| async move {
@@ -1639,7 +1659,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                        format!("Bearer {}", make_docs_token(&["read_graph"])),
                     )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"neighbors","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
@@ -1851,7 +1871,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                        format!("Bearer {}", make_docs_token(&["read_graph"])),
                     )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"adjacency","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
@@ -1880,7 +1900,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                        format!("Bearer {}", make_docs_token(&["read_graph"])),
                     )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"find-edges","method":"tools/call","params":{"name":"kg_find_edges","arguments":{"relation":"links","src_label_contains":"alpha","tgt_label_contains":"TARGET"}}}"#,
@@ -1908,7 +1928,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                        format!("Bearer {}", make_docs_token(&["read_graph"])),
                     )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"shortest-path","method":"tools/call","params":{"name":"kg_shortest_path","arguments":{"src_id":"node-1","dst_id":"node-2","max_depth":4}}}"#,
@@ -1941,7 +1961,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&["read_graph"], "alpha")),
+                        format!("Bearer {}", make_docs_token(&["read_graph"])),
                     )
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"k-hop","method":"tools/call","params":{"name":"kg_k_hop","arguments":{"start_ids":["node-1"],"k":1}}}"#,
@@ -2096,7 +2116,7 @@
                                 "authorization",
                                 format!(
                                     "Bearer {}",
-                                    make_token_for(subject, &["read_graph"], "alpha")
+                                    make_docs_token_for(subject, &["read_graph"])
                                 ),
                             )
                             .body(Body::from(
@@ -2280,7 +2300,7 @@
         let key = "graph-pages-test-secret";
         let token = encode(
             &Header::new(Algorithm::HS256),
-            &json!({"sub":"alice","role":"ro","roles":["reader"],"ns":"workflow","storage_ns":"alpha","capabilities":["read_graph"],"exp":4102444800_u64}),
+            &json!({"sub":"alice","role":"ro","roles":["reader"],"ns":"docs","storage_ns":"alpha","capabilities":["read_graph"],"exp":4102444800_u64}),
             &EncodingKey::from_secret(key.as_bytes()),
         ).unwrap();
         let app = router_with_application(
@@ -2296,6 +2316,22 @@
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
         let http = reqwest::Client::new();
+        let preflight: Value = http
+            .post(format!("http://{address}/mcp"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": "snapshot-preflight",
+                "method": "tools/call",
+                "params": {"name": "kg_neighbors", "arguments": {"rid": source_id, "doc_id": "D1"}}
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(preflight.get("error").is_none(), "{preflight}");
 
         // Hold the edge table while the reader establishes its repeatable-read
         // snapshot on nodes. Commit a new edge only after its edge-page SELECT
