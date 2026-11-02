@@ -13,7 +13,7 @@ from kogwistar.server.auth_middleware import claims_ctx
 @pytest.mark.ci
 @pytest.mark.parametrize(
     "route_name",
-    ["document_upsert", "document_upsert_tree"],
+    ["document_upsert", "document_upsert_tree", "admin_delete_doc"],
 )
 @pytest.mark.parametrize("claims", [None, {"role": "ro"}])
 def test_document_write_routes_deny_without_rw_before_engine_access(
