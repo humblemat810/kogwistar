@@ -450,106 +450,24 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         )
     )
 
-    server_run_entrypoints = (
-        "submit_turn_for_answer",
-        "_run_answer",
-        "submit_workflow_run",
-        "_run_workflow",
-        "_default_resume_runner",
-        "get_run",
-        "list_run_events",
-        "cancel_run",
-    )
-    unbound.extend(
-        f"_RunExecutionService.{name}"
-        for name in server_run_entrypoints
-        if not getattr(
-            getattr(_RunExecutionService, name),
-            "__implementation_selection_bound__",
-            False,
+    # Reflect over public server methods so newly added engine-facing entrypoints
+    # cannot silently bypass implementation-selection binding. These exceptions
+    # only forward to an already-bound owner or return static catalog data.
+    safe_unbound_methods = {
+        _RunExecutionService: {"list_steps"},
+        _RunInspectionService: {"list_steps"},
+        _WorkflowDesignService: {"list_steps", "workflow_catalog_ops"},
+        _ConversationQueryService: {"list_steps"},
+        ServiceSupervisor: set(),
+    }
+    for service_type, exceptions in safe_unbound_methods.items():
+        unbound.extend(
+            f"{service_type.__name__}.{name}"
+            for name, method in inspect.getmembers(service_type, callable)
+            if not name.startswith("_")
+            and name not in exceptions
+            and not getattr(method, "__implementation_selection_bound__", False)
         )
-    )
-
-    inspection_entrypoints = (
-        "resume_contract",
-        "list_steps",
-        "workflow_run_lineage",
-        "list_checkpoints",
-        "get_checkpoint",
-        "replay_run",
-    )
-    unbound.extend(
-        f"_RunInspectionService.{name}"
-        for name in inspection_entrypoints
-        if not getattr(
-            getattr(_RunInspectionService, name),
-            "__implementation_selection_bound__",
-            False,
-        )
-    )
-
-    workflow_design_entrypoints = (
-        "workflow_design_history",
-        "refresh_workflow_design_projection",
-        "workflow_design_upsert_node",
-        "workflow_design_upsert_edge",
-        "workflow_design_delete_node",
-        "workflow_design_delete_edge",
-        "workflow_design_undo",
-        "workflow_design_redo",
-        "workflow_design_graph",
-    )
-    unbound.extend(
-        f"_WorkflowDesignService.{name}"
-        for name in workflow_design_entrypoints
-        if not getattr(
-            getattr(_WorkflowDesignService, name),
-            "__implementation_selection_bound__",
-            False,
-        )
-    )
-
-    conversation_query_entrypoints = (
-        "create_conversation",
-        "_conversation_nodes",
-        "_conversation_owner",
-        "list_conversations_for_user",
-        "get_conversation",
-        "list_transcript",
-        "latest_snapshot",
-    )
-    unbound.extend(
-        f"_ConversationQueryService.{name}"
-        for name in conversation_query_entrypoints
-        if not getattr(
-            getattr(_ConversationQueryService, name),
-            "__implementation_selection_bound__",
-            False,
-        )
-    )
-
-    supervisor_entrypoints = (
-        "bootstrap",
-        "declare_service",
-        "get_service",
-        "list_services",
-        "enable_service",
-        "disable_service",
-        "record_service_heartbeat",
-        "trigger_service",
-        "health_snapshot",
-        "list_service_events",
-        "tick",
-    )
-    unbound.extend(
-        f"ServiceSupervisor.{name}"
-        for name in supervisor_entrypoints
-        if not getattr(
-            getattr(ServiceSupervisor, name),
-            "__implementation_selection_bound__",
-            False,
-        )
-    )
 
     assert unbound == []
 
