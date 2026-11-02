@@ -745,6 +745,49 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         );
     }
 
+    let bundle = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/viz/d3.bundle?graph_type=knowledge&mode=reify")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bundle.status(), StatusCode::OK);
+    assert_eq!(
+        bundle.headers()["content-type"],
+        "text/html; charset=utf-8"
+    );
+    let bundle = String::from_utf8(
+        to_bytes(bundle.into_body(), 1_048_576)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    let embedded = bundle
+        .split_once("window.__EMBEDDED_DATA__ = ")
+        .and_then(|(_, rest)| rest.split_once(';'))
+        .map(|(payload, _)| serde_json::from_str::<Value>(payload).unwrap())
+        .expect("bundle includes valid embedded graph data");
+    let embedded_node_ids = embedded["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect::<Vec<_>>();
+    assert!(embedded_node_ids.contains(&"n1"));
+    assert!(embedded_node_ids.contains(&"n2"));
+    assert!(embedded_node_ids.contains(&"e1"));
+    assert!(!embedded_node_ids.contains(&"n3"));
+
     let read = app
         .clone()
         .oneshot(

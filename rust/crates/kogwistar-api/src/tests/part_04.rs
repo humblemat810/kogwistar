@@ -1113,6 +1113,40 @@
     }
 
     #[test]
+    fn d3_bundle_embeds_data_with_script_safe_json_and_python_metadata() {
+        let response = d3_bundle_html_effect(
+            "/viz/d3.bundle?graph_type=WoRkFlOw&mode=classic&doc_id=doc-1&insertion_method=parser",
+            json!({
+                "nodes": [{"id":"n1", "label":"</script><script>alert(1)</script>"}],
+                "links": []
+            }),
+        );
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        assert_eq!(response.content_type, "text/html; charset=utf-8");
+        let body = String::from_utf8(response.body).unwrap();
+        assert!(body.contains("bundle</b>=<code>true</code>"));
+        assert!(body.contains("window.__BUNDLE_GRAPH_TYPE__ = \"workflow\";"));
+        let bundle_meta = body
+            .split_once("window.__BUNDLE_META__ = ")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(meta, _)| serde_json::from_str::<Value>(meta).unwrap())
+            .expect("bundle metadata is valid JSON");
+        assert_eq!(
+            bundle_meta,
+            json!({
+                "graph_type":"workflow",
+                "mode":"classic",
+                "insertion_method":"parser",
+                "doc_id":"doc-1"
+            })
+        );
+        assert!(body.contains("\\u003c/script\\u003e\\u003cscript\\u003e"));
+        assert!(!body.contains("</script><script>alert(1)</script>"));
+        assert!(!body.contains("{{"));
+        assert!(!body.contains("{%"));
+    }
+
+    #[test]
     fn runtime_start_tracks_only_reachable_join_obligations() {
         assert_eq!(runtime_join_outstanding(4, 0b0101), vec![1, 0, 1, 0]);
     }

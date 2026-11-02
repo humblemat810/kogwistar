@@ -977,6 +977,8 @@ async fn application_effect_handler(
     if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
         return forbidden_response();
     }
+    let d3_bundle = method == Method::GET && uri.path() == "/viz/d3.bundle";
+    let bundle_path_and_query = uri.to_string();
     let (method, path_and_query, body) = public_visualization_effect(&method, &uri, body);
     let mut path_and_query = path_and_query;
     if path_and_query.ends_with("/events")
@@ -989,7 +991,7 @@ async fn application_effect_handler(
         path_and_query.push_str("?after_seq=");
         path_and_query.push_str(last_event_id);
     }
-    let response = state
+    let mut response = state
         .application
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -999,6 +1001,16 @@ async fn application_effect_handler(
             principal: request_principal(&headers, &state.api.auth),
         })
         .await;
+    if d3_bundle && (200..300).contains(&response.status) {
+        response = match serde_json::from_slice::<Value>(&response.body) {
+            Ok(payload) => d3_bundle_html_effect(&bundle_path_and_query, payload),
+            Err(_) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_INVALID_RESPONSE",
+                "Graph visualization returned an invalid D3 payload",
+            ),
+        };
+    }
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     (
         status,
@@ -1024,6 +1036,7 @@ fn public_visualization_effect(
     });
     let internal_path = match path {
         "/api/viz/d3.json" => INTERNAL_GRAPH_VIZ_D3_ROUTE,
+        "/viz/d3.bundle" => INTERNAL_GRAPH_VIZ_D3_ROUTE,
         "/api/viz/cytoscape.json" => INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE,
         _ => return (method.to_string(), uri.to_string(), body),
     };
@@ -1067,6 +1080,25 @@ mod visualization_route_tests {
         let uri = "/api/viz/d3.json?doc_id=doc%3A%2F%2Fone&mode=classic&insertion_method=parser&graph_type=wisdom"
             .parse()
             .expect("valid visualization URI");
+        let (method, path, body) = public_visualization_effect(&Method::GET, &uri, Bytes::new());
+        assert_eq!(method, "POST");
+        assert_eq!(path, INTERNAL_GRAPH_VIZ_D3_ROUTE);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("query becomes JSON"),
+            json!({
+                "doc_id":"doc://one",
+                "mode":"classic",
+                "insertion_method":"parser",
+                "graph_type":"wisdom"
+            })
+        );
+    }
+
+    #[test]
+    fn public_d3_bundle_reuses_authorized_d3_projection_with_query_options() {
+        let uri = "/viz/d3.bundle?doc_id=doc%3A%2F%2Fone&mode=classic&insertion_method=parser&graph_type=wisdom"
+            .parse()
+            .expect("valid D3 bundle URI");
         let (method, path, body) = public_visualization_effect(&Method::GET, &uri, Bytes::new());
         assert_eq!(method, "POST");
         assert_eq!(path, INTERNAL_GRAPH_VIZ_D3_ROUTE);

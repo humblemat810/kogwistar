@@ -207,6 +207,104 @@ fn visualization_shell_effect(request: &ApiEffectRequest) -> Option<ApiEffectRes
     Some(html_effect(body))
 }
 
+fn d3_bundle_html_effect(path_and_query: &str, mut payload: Value) -> ApiEffectResponse {
+    let query = path_and_query
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    let query_value = |name: &str| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == name).then(|| value.into_owned()))
+    };
+    let doc_id = query_value("doc_id");
+    let mode = query_value("mode").unwrap_or_else(|| "reify".to_owned());
+    let insertion_method = query_value("insertion_method");
+    let graph_type = query_value("graph_type")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "knowledge".to_owned())
+        .to_lowercase();
+
+    if let Some(object) = payload.as_object_mut() {
+        for field in [
+            "implementation_authority",
+            "seam_attestation_version",
+            "seam_crossings",
+        ] {
+            object.remove(field);
+        }
+    } else {
+        return effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_INVALID_RESPONSE",
+            "Graph visualization payload must be a JSON object",
+        );
+    }
+
+    let inline_json = |value: &Value| {
+        serde_json::to_string(value)
+            .expect("JSON value always serializes")
+            .replace('&', "\\u0026")
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
+    };
+    let insertion_json = inline_json(&json!(insertion_method));
+    let bundle_meta = inline_json(&json!({
+        "graph_type": &graph_type,
+        "mode": &mode,
+        "insertion_method": &insertion_method,
+        "doc_id": &doc_id,
+    }));
+    let bundle_graph_type = inline_json(&json!(&graph_type));
+    let mut body = D3_TEMPLATE
+        .replace(
+            "{{ doc_id or '' }}",
+            &html_escape(doc_id.as_deref().unwrap_or_default()),
+        )
+        .replace("{{ mode }}", &html_escape(&mode))
+        .replace(
+            "{{ insertion_method or '' }}",
+            &html_escape(insertion_method.as_deref().unwrap_or_default()),
+        )
+        .replace("{{ (insertion_method or none) | tojson }}", &insertion_json)
+        .replace(
+            "{{ insertion_method | tojson if insertion_method is not none else 'null' }}",
+            &insertion_json,
+        )
+        .replace(
+            "{% if is_bundle %}&nbsp;|&nbsp;<b>bundle</b>=<code>true</code>{% endif %}",
+            "&nbsp;|&nbsp;<b>bundle</b>=<code>true</code>",
+        )
+        .replace(
+            "{{ embedded_data | safe if embedded_data is defined else \"null\" }}",
+            &inline_json(&payload),
+        )
+        .replace(
+            "{{ bundle_meta | safe if bundle_meta is defined else \"null\" }}",
+            &bundle_meta,
+        )
+        .replace(
+            "{{ bundle_graph_type | safe if bundle_graph_type is defined else \"null\" }}",
+            &bundle_graph_type,
+        )
+        .replace(
+            "{{ cdc_enabled | safe if cdc_enabled is defined else \"false\" }}",
+            "false",
+        )
+        .replace(
+            "{{ cdc_ws_url | safe if cdc_ws_url is defined else \"null\" }}",
+            "null",
+        );
+    if body.contains("{{") || body.contains("{%") {
+        return effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_TEMPLATE_DRIFT",
+            "Unhandled executable expression in D3 bundle template",
+        );
+    }
+    body.shrink_to_fit();
+    html_effect(body)
+}
+
 fn effect_error(
     status: StatusCode,
     code: &'static str,
