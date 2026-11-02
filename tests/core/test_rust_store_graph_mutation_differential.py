@@ -777,11 +777,16 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
+@pytest.mark.parametrize(
+    "python_async", [False, True], ids=["python-sync", "python-async"]
+)
 def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
-    pg_dsn: str | None, pg_container: Any
+    pg_dsn: str | None, pg_container: Any, python_async: bool
 ) -> None:
     if pg_dsn is None or pg_container is None:
-        pytest.skip("fresh-database bootstrap race requires the disposable test container")
+        pytest.skip(
+            "fresh-database bootstrap race requires the disposable test container"
+        )
 
     database_name = f"gke_bootstrap_{uuid.uuid4().hex[:16]}"
     python_schema = f"gke_python_{uuid.uuid4().hex[:16]}"
@@ -802,7 +807,16 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
         target_engine = sa.create_engine(target_dsn)
 
         def bootstrap_python() -> None:
-            engine = sa.create_engine(target_dsn)
+            if python_async:
+                from sqlalchemy.ext.asyncio import create_async_engine
+
+                engine = create_async_engine(
+                    sa.engine.make_url(target_dsn).set(
+                        drivername="postgresql+psycopg_async"
+                    )
+                )
+            else:
+                engine = sa.create_engine(target_dsn)
             try:
                 backend = PgVectorBackend(
                     engine=engine, embedding_dim=3, schema=python_schema
@@ -810,7 +824,12 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                 assert start.wait(timeout=10)
                 backend.ensure_schema()
             finally:
-                engine.dispose()
+                if python_async:
+                    import asyncio
+
+                    asyncio.run(engine.dispose())
+                else:
+                    engine.dispose()
 
         def bootstrap_rust() -> Any:
             assert start.wait(timeout=10)
@@ -866,15 +885,18 @@ def test_python_and_rust_bootstrap_serialize_vector_extension_creation(
                 )
 
             with target_engine.connect() as connection:
-                assert connection.scalar(
-                    sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-                ) == 1
+                assert (
+                    connection.scalar(
+                        sa.text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                    )
+                    == 1
+                )
                 for schema in (python_schema, rust_schema):
                     table_name = f"{schema}.gke_nodes"
                     assert connection.scalar(
-                        sa.text("SELECT to_regclass(:table_name) IS NOT NULL").bindparams(
-                            table_name=table_name
-                        )
+                        sa.text(
+                            "SELECT to_regclass(:table_name) IS NOT NULL"
+                        ).bindparams(table_name=table_name)
                     )
         finally:
             target_engine.dispose()
