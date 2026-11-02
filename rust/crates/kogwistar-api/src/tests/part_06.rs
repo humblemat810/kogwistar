@@ -8357,6 +8357,63 @@
                     && event["payload"]["provider_event"]["details"]["field_name"] == "text"
             })
             .expect("workflow.run_events returns the streamed provider event");
+        let mcp_tools_response = client
+            .post(format!("{base_url}/mcp/workflow"))
+            .bearer_auth(&token)
+            .json(&json!({"jsonrpc":"2.0","id":70,"method":"tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert!(mcp_tools_response.status().is_success());
+        let mcp_tools: Value = mcp_tools_response.json().await.unwrap();
+        assert!(
+            mcp_tools["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "workflow.process_timeline"),
+            "PostgreSQL server must advertise process_timeline to the authorized run reader"
+        );
+        let mcp_timeline_response = client
+            .post(format!("{base_url}/mcp/workflow"))
+            .bearer_auth(&token)
+            .json(&json!({
+                "jsonrpc":"2.0",
+                "id":72,
+                "method":"tools/call",
+                "params":{
+                    "name":"workflow.process_timeline",
+                    "arguments":{"run_id":"rust-only-answer-e2e","after_seq":0}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            mcp_timeline_response.status().is_success(),
+            "authorized workflow.process_timeline MCP call should expose durable run events"
+        );
+        let mcp_timeline: Value = mcp_timeline_response.json().await.unwrap();
+        assert_eq!(
+            mcp_timeline["result"]["run_id"],
+            "rust-only-answer-e2e",
+            "unexpected process-timeline MCP response: {mcp_timeline:#?}"
+        );
+        let timeline_provider_event = mcp_timeline["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| {
+                event["event_type"] == "workflow.provider_event.v1"
+                    && event["payload"]["provider_event"]["kind"] == "field_completed"
+                    && event["payload"]["provider_event"]["details"]["field_name"] == "text"
+            })
+            .expect("workflow.process_timeline returns the persisted semantic provider event");
+        assert_eq!(
+            timeline_provider_event["payload"]["span_id"],
+            public_provider_event["payload"]["span_id"],
+            "process timeline and REST expose the same trace identity"
+        );
         assert_eq!(
             mcp_provider_event["payload"]["span_id"],
             public_provider_event["payload"]["span_id"],
