@@ -2336,6 +2336,9 @@
                 if let Some(owner_id) = entity["owner_id"].as_str() {
                     acl_metadata.insert("owner_id".to_owned(), json!(owner_id));
                 }
+                if let Some(security_scope) = entity["security_scope"].as_str() {
+                    acl_metadata.insert("security_scope".to_owned(), json!(security_scope));
+                }
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
@@ -2356,6 +2359,20 @@
 
         for principal in fixture["principals"].as_array().unwrap() {
             let subject = principal["id"].as_str().unwrap();
+            let mut principal_claims = json!({
+                "sub": subject,
+                "ns": scope.namespace,
+                "storage_ns": scope.namespace,
+                "workspace": scope.workspace_id,
+                "capabilities": ["read_graph"]
+            });
+            if let Some(scope_parts) = principal.get("scope_parts") {
+                for key in ["tenant", "workspace", "project"] {
+                    if let Some(value) = scope_parts.get(key) {
+                        principal_claims[key] = value.clone();
+                    }
+                }
+            }
             for (entity_kind, expected_key) in [("node", "nodes"), ("edge", "edges")] {
                 let request_body = json!({
                     "entity_kind": entity_kind,
@@ -2370,13 +2387,7 @@
                         method: "POST".to_owned(),
                         path_and_query: "/internal/graph/vector-query".to_owned(),
                         body: serde_json::to_vec(&request_body).unwrap(),
-                        principal: json!({
-                            "sub": subject,
-                            "ns": scope.namespace,
-                            "storage_ns": scope.namespace,
-                            "workspace": scope.workspace_id,
-                            "capabilities": ["read_graph"]
-                        }),
+                        principal: principal_claims.clone(),
                     })
                     .await;
                 assert_eq!(response.status, StatusCode::OK.as_u16());

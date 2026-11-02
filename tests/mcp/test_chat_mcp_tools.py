@@ -116,10 +116,20 @@ def _configure_server(
 
 
 @contextmanager
-def _claims(role: str, ns: str, sub: str | None = None):
+def _claims(
+    role: str,
+    ns: str,
+    sub: str | None = None,
+    security_scope: str | None = None,
+    scope_parts: dict[str, str] | None = None,
+):
     claims = {"role": role, "ns": ns}
     if sub is not None:
         claims["sub"] = sub
+    if security_scope is not None:
+        claims["security_scope"] = security_scope
+    if scope_parts is not None:
+        claims.update(scope_parts)
     token = claims_ctx.set(claims)
     try:
         yield
@@ -544,6 +554,8 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
     nodes = {}
     for spec in fixture["nodes"]:
         metadata = {"visibility": spec["mode"]}
+        if "security_scope" in spec:
+            metadata["security_scope"] = spec["security_scope"]
         if "owner_id" in spec:
             metadata["owner_agent_id"] = spec["owner_id"]
         if "lifecycle_status" in spec:
@@ -560,6 +572,8 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
     edges = []
     for spec in fixture["edges"]:
         metadata = {"visibility": spec["mode"]}
+        if "security_scope" in spec:
+            metadata["security_scope"] = spec["security_scope"]
         if "lifecycle_status" in spec:
             metadata["lifecycle_status"] = spec["lifecycle_status"]
         edge = build_relationship_edge(
@@ -580,29 +594,36 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             engine.write.add_edge(edge)
 
     for principal in fixture["principals"]:
-        with _claims("ro", fixture["truth_graph"], sub=principal["id"]):
+        with _claims(
+            "ro",
+            fixture["truth_graph"],
+            sub=principal["id"],
+            security_scope=principal.get("security_scope"),
+            scope_parts=principal.get("scope_parts"),
+        ):
             node_results = engine.read.query_nodes(
                 query_embeddings=fixture["query_embeddings"],
                 n_results=fixture["n_results"],
             )
-            scored_node_results = [
-                engine.read.search_nodes_as_of_scored(
-                    query_embeddings=[embedding],
-                    as_of_ts="2099-01-01T00:00:00+00:00",
-                    n_results=fixture["n_results"],
-                )
-                for embedding in fixture["query_embeddings"]
-            ]
+            assert [[node.id for node in batch] for batch in node_results] == principal[
+                "expected"
+            ]["nodes"], principal["id"]
             edge_results = engine.read.query_edges(
                 query_embeddings=fixture["query_embeddings"],
                 n_results=fixture["n_results"],
             )
-        assert [[node.id for node in batch] for batch in node_results] == principal[
-            "expected"
-        ]["nodes"]
-        assert [[edge.id for edge in batch] for batch in edge_results] == principal[
-            "expected"
-        ]["edges"]
+            assert [[edge.id for edge in batch] for batch in edge_results] == principal[
+                "expected"
+            ]["edges"]
+            # Historical scored reads resolve lifecycle and ACL after candidate retrieval.
+            scored_node_results = [
+                engine.read.search_nodes_as_of_scored(
+                    query_embeddings=[embedding],
+                    as_of_ts="2099-01-01T00:00:00+00:00",
+                    n_results=max(fixture["n_results"], 10),
+                )
+                for embedding in fixture["query_embeddings"]
+            ]
         for query_index, hits in enumerate(scored_node_results):
             assert [hit.node.id for hit in hits] == principal["expected"]["nodes"][
                 query_index

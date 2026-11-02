@@ -1,5 +1,8 @@
 use super::super::*;
 
+const ACTIVE_LIFECYCLE_PREDICATE: &str =
+    "LOWER(COALESCE(metadata->>'lifecycle_status', 'active')) NOT IN ('tombstoned', 'deleted')";
+
 pub(crate) async fn graph_projection_records<C>(
     client: &C,
     tables: &Tables,
@@ -112,7 +115,7 @@ where
         metadata_not_equals,
         1,
     )?;
-    let mut clauses = vec![filter_sql];
+    let mut clauses = vec![filter_sql, ACTIVE_LIFECYCLE_PREDICATE.to_owned()];
     if let Some(level_lte) = level_lte {
         values.push(level_lte.to_string());
         let level_parameter = values.len();
@@ -234,7 +237,7 @@ where
                         matches.embedding::TEXT, matches.distance \
                  FROM query_vectors CROSS JOIN LATERAL ( \
                      SELECT id, document, metadata, embedding, embedding {operator} query_vectors.query_embedding AS distance \
-                     FROM {table} WHERE embedding IS NOT NULL AND {filter_sql} \
+                     FROM {table} WHERE embedding IS NOT NULL AND {filter_sql} AND {ACTIVE_LIFECYCLE_PREDICATE} \
                      ORDER BY distance ASC, id ASC LIMIT ${limit_index}::TEXT::BIGINT \
                  ) AS matches ORDER BY query_vectors.query_index ASC, matches.distance ASC, matches.id ASC",
                 query_vectors.join(", ")

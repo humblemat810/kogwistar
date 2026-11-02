@@ -1744,19 +1744,27 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token = |subject: &str, capabilities: &[&str]| {
+    let token = |subject: &str, capabilities: &[&str], scope_parts: Option<&Value>| {
+        let mut claims = json!({
+            "sub": subject,
+            "role": "rw",
+            "ns": ["docs"],
+            "storage_ns": fixture["scope"]["namespace"],
+            "workspace": fixture["scope"]["workspace_id"],
+            "workspace_id": fixture["scope"]["workspace_id"],
+            "capabilities": capabilities,
+            "exp": now + 300
+        });
+        if let Some(scope_parts) = scope_parts {
+            for key in ["tenant", "workspace", "project"] {
+                if let Some(value) = scope_parts.get(key) {
+                    claims[key] = value.clone();
+                }
+            }
+        }
         encode(
             &Header::new(Algorithm::HS256),
-            &json!({
-                "sub": subject,
-                "role": "rw",
-                "ns": ["docs"],
-                "storage_ns": fixture["scope"]["namespace"],
-                "workspace": fixture["scope"]["workspace_id"],
-                "workspace_id": fixture["scope"]["workspace_id"],
-                "capabilities": capabilities,
-                "exp": now + 300
-            }),
+            &claims,
             &EncodingKey::from_secret(secret.as_bytes()),
         )
         .unwrap()
@@ -1823,6 +1831,9 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             if let Some(owner_id) = spec["owner_id"].as_str() {
                 acl_metadata.insert("owner_id".to_owned(), json!(owner_id));
             }
+            if let Some(security_scope) = spec["security_scope"].as_str() {
+                acl_metadata.insert("security_scope".to_owned(), json!(security_scope));
+            }
             let acl_id = format!("acl-{kind}-{id}");
             mutations.push(json!({
                 "scope": scope,
@@ -1850,7 +1861,7 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
                 .header("content-type", "application/json")
                 .header(
                     "authorization",
-                    format!("Bearer {}", token("owner-b", &["write_graph"])),
+                    format!("Bearer {}", token("owner-b", &["write_graph"], None)),
                 )
                 .body(Body::from(
                     json!({"contract_version":1,"atomic":true,"mutations":mutations,"index_jobs":[]})
@@ -1874,7 +1885,10 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
                         .header("content-type", "application/json")
                         .header(
                             "authorization",
-                            format!("Bearer {}", token(subject, &["read_graph"])),
+                            format!(
+                                "Bearer {}",
+                                token(subject, &["read_graph"], principal.get("scope_parts"))
+                            ),
                         )
                         .body(Body::from(
                             json!({

@@ -21,6 +21,13 @@
       "mode": "public"
     },
     {
+      "id": "visible-scope",
+      "embedding": [0.9, 0.1],
+      "mode": "scope",
+      "owner_id": "owner-b",
+      "security_scope": "tenant-a"
+    },
+    {
       "id": "tombstoned-public",
       "embedding": [0.99, 0.1],
       "mode": "public",
@@ -39,6 +46,15 @@
       "id": "edge-public",
       "embedding": [0.8, 0.6],
       "mode": "public",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-scope",
+      "embedding": [0.7, 0.3],
+      "mode": "scope",
+      "owner_id": "owner-b",
+      "security_scope": "tenant-a",
       "source_ids": ["visible-public"],
       "target_ids": ["visible-public"]
     },
@@ -67,16 +83,32 @@
       "id": "owner-b",
       "expected": {
         "nodes": [
-          ["near-private", "visible-public"],
-          ["visible-public", "near-private"]
+          ["near-private", "visible-scope", "visible-public"],
+          ["visible-public", "visible-scope", "near-private"]
         ],
         "edges": [
-          ["edge-private-endpoint", "edge-public"],
-          ["edge-public", "edge-private-endpoint"]
+          ["edge-private-endpoint", "edge-scope", "edge-public"],
+          ["edge-public", "edge-scope", "edge-private-endpoint"]
         ],
         "distances": {
-          "nodes": [[0.0, 0.2], [0.4, 1.0]],
-          "edges": [[0.0, 0.2], [0.4, 1.0]]
+          "nodes": [[0.0, 0.0061162653, 0.2], [0.4, 0.8895684739, 1.0]],
+          "edges": [[0.0, 0.08085497, 0.2], [0.4, 0.6060807, 1.0]]
+        }
+      }
+    },
+    {
+      "id": "scope-reader",
+      "scope_parts": {
+        "tenant": "tenant-a",
+        "workspace": "workspace-a",
+        "project": "project-a"
+      },
+      "expected": {
+        "nodes": [["visible-scope", "visible-public"], ["visible-public", "visible-scope"]],
+        "edges": [["edge-scope", "edge-public"], ["edge-public", "edge-scope"]],
+        "distances": {
+          "nodes": [[0.0061162653, 0.2], [0.4, 0.8895684739]],
+          "edges": [[0.08085497, 0.2], [0.4, 0.6060807]]
         }
       }
     }
