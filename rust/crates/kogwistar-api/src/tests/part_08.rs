@@ -348,8 +348,26 @@ fn recorded_step_snapshots_matches_python_fixture() {
     );
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type
 #[tokio::test]
 async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
+    let acl_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-acl-v1.json"
+    )))
+    .unwrap();
+    let isolation = &acl_fixture["graph_type_isolation"];
+    let shared_entity_id = isolation["entity_id"].as_str().unwrap();
+    let isolation_cases = isolation["cases"].as_array().unwrap();
+    let knowledge_policy = isolation_cases
+        .iter()
+        .find(|case| case["truth_graph"] == "knowledge")
+        .unwrap();
+    let conversation_policy = isolation_cases
+        .iter()
+        .find(|case| case["truth_graph"] == "conversation")
+        .unwrap();
+
     let secret = "in-memory-api-contract-secret";
     let auth = AuthConfig {
         mode: "jwt".to_owned(),
@@ -447,10 +465,31 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             Some("private"),
         ),
         mutation(
+            shared_entity_id,
+            "gke_nodes",
+            "node",
+            json!({"label":"same ID in knowledge"}),
+            Some("same ID in knowledge"),
+        ),
+        mutation(
             "acl-n1",
             "gke_nodes",
             "node",
             json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-shared-knowledge",
+            "gke_nodes",
+            "node",
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"knowledge",
+                "acl_target_grain":"node",
+                "acl_target_entity_id":shared_entity_id,
+                "acl_version":1,
+                "acl_mode":knowledge_policy["mode"]
+            }),
             None,
         ),
         mutation(
@@ -479,7 +518,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         (0, json!([1.0, 0.0])),
         (1, json!([0.8, 0.2])),
         (3, json!([0.99, 0.01])),
-        (4, json!([0.999, 0.001])),
+        (5, json!([0.999, 0.001])),
     ] {
         mutations[index]["record"]["embedding"] = embedding;
         mutations[index]["embedding_dim"] = json!(2);
@@ -566,7 +605,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let written: Value =
         serde_json::from_slice(&to_bytes(written.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(written["atomic"], true);
-    assert_eq!(written["results"].as_array().unwrap().len(), 8);
+    assert_eq!(written["results"].as_array().unwrap().len(), 10);
 
     let conversation_scope = json!({
         "namespace": "tenant-a",
@@ -590,6 +629,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 Some("conversation only"),
             ),
             conversation_mutation(
+                shared_entity_id,
+                json!({"label":"same ID in conversation"}),
+                Some("same ID in conversation"),
+            ),
+            conversation_mutation(
                 "conversation-acl",
                 json!({
                     "entity_type":"acl_record",
@@ -598,6 +642,19 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "acl_target_entity_id":"conversation-node",
                     "acl_version":1,
                     "acl_mode":"public"
+                }),
+                None,
+            ),
+            conversation_mutation(
+                "conversation-acl-shared",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"conversation",
+                    "acl_target_grain":"node",
+                    "acl_target_entity_id":shared_entity_id,
+                    "acl_version":1,
+                    "acl_mode":conversation_policy["mode"],
+                    "acl_owner_id":conversation_policy["owner_id"]
                 }),
                 None,
             )
@@ -652,6 +709,12 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .to_string()
             .contains("n1"),
         "conversation visualization leaked knowledge graph data: {conversation_visualization}"
+    );
+    assert!(
+        !conversation_visualization["nodes"]
+            .to_string()
+            .contains(shared_entity_id),
+        "conversation visualization ignored its graph-scoped private ACL: {conversation_visualization}"
     );
 
     let mismatched_visualization = application
@@ -731,6 +794,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 }
             })
             .collect::<Vec<_>>();
+        assert!(ids.contains(&shared_entity_id), "{path}: {ids:?}");
         assert!(ids.iter().any(|id| id.starts_with("n1")), "{path}: {ids:?}");
         assert!(ids.iter().any(|id| id.starts_with("n2")), "{path}: {ids:?}");
         assert!(ids.iter().any(|id| id.starts_with("e1")), "{path}: {ids:?}");

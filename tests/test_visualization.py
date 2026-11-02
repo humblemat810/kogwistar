@@ -127,6 +127,14 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         )
         for graph_type in ("knowledge", "conversation", "workflow", "wisdom")
     }
+    acl_fixture = json.loads(
+        (ROOT / "contracts/golden/graph-acl-v1.json").read_text(encoding="utf-8")
+    )
+    isolation = acl_fixture["graph_type_isolation"]
+    policies = {
+        case["truth_graph"]: case
+        for case in isolation["cases"]
+    }
     try:
         monkeypatch.setattr(server, "engine", graph_engines["knowledge"])
         monkeypatch.setattr(server, "conversation_engine", graph_engines["conversation"])
@@ -135,7 +143,7 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
 
         for graph_type, engine in graph_engines.items():
             node = Node(
-                id="same-id",
+                id=isolation["entity_id"],
                 label="Graph-scoped node",
                 type="entity",
                 summary="Graph-scoped ACL fixture",
@@ -146,14 +154,18 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 level_from_root=0,
             )
             engine.raw_write.add_node(node)
+            policy = policies.get(
+                graph_type,
+                {"mode": "public", "expected_visible": True},
+            )
             engine.acl_graph.add_record(
                 truth_graph=graph_type,
                 entity_id=node.id,
                 version=1,
-                mode="private" if graph_type == "knowledge" else "public",
-                owner_id="owner-a",
+                mode=policy["mode"],
+                owner_id=policy.get("owner_id"),
             )
-            if graph_type != "knowledge":
+            if policy["expected_visible"]:
                 grounding_ids, span_ids = engine.acl.usage_ids_for_item(node)
                 for grain, target_ids in (
                     ("grounding", grounding_ids),
@@ -188,17 +200,19 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         finally:
             claims_ctx.reset(token)
 
-        assert [node["id"] for node in route_results["knowledge"][0]["nodes"]] == []
-        for graph_type in ("conversation", "workflow", "wisdom"):
+        for graph_type in graph_engines:
             d3_payload, cytoscape_payload = route_results[graph_type]
-            assert [node["id"] for node in d3_payload["nodes"]] == ["same-id"]
+            expected_ids = (
+                [isolation["entity_id"]]
+                if policies.get(
+                    graph_type, {"expected_visible": True}
+                )["expected_visible"]
+                else []
+            )
+            assert [node["id"] for node in d3_payload["nodes"]] == expected_ids
             assert [
                 item["data"]["id"] for item in cytoscape_payload["elements"]
-            ] == ["same-id"]
-        assert [
-            item["data"]["id"]
-            for item in route_results["knowledge"][1]["elements"]
-        ] == []
+            ] == expected_ids
     finally:
         for engine in graph_engines.values():
             engine.close()
