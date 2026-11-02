@@ -849,12 +849,14 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
     from .models import ConversationEdge
 
+    legacy_link_nodes: tuple[Node, Node] | None = None
     if rust_worker_effects:
         prev_turn_ref = str(prev_turn_id)
         turn_node_ref = turn_node_id
     else:
         prev_node = ce.read.get_nodes([str(prev_turn_id)])[0]
         turn_node = ce.read.get_nodes([turn_node_id])[0]
+        legacy_link_nodes = (prev_node, turn_node)
         prev_turn_ref = str(prev_node.id)
         turn_node_ref = str(turn_node.id)
 
@@ -934,6 +936,8 @@ def _link_prev_turn(ctx: StepContext) -> StepRunResult:
             raise RuntimeError(
                 "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
             )
+        assert legacy_link_nodes is not None
+        prev_node, turn_node = legacy_link_nodes
         add_link_to_new_turn(
             edge_id,
             turn_node,
@@ -996,6 +1000,7 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
 
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
 
+    legacy_link_nodes: tuple[Node, Node] | None = None
     if rust_worker_effects:
         aa_res = sv.get("agentic_answering_result") or {}
         prepared_response_id = (
@@ -1010,6 +1015,7 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
     else:
         user_turn = ce.read.get_nodes([user_turn_id])[0]
         resp_turn = ce.read.get_nodes([str(response_node_id)])[0]
+        legacy_link_nodes = (user_turn, resp_turn)
         user_turn_ref = str(user_turn.id)
         response_turn_id = str(resp_turn.id)
 
@@ -1074,6 +1080,8 @@ def _link_assistant_turn(ctx: StepContext) -> StepRunResult:
             raise RuntimeError(
                 "deps['add_link_to_new_turn'] must be callable for link_prev_turn"
             )
+        assert legacy_link_nodes is not None
+        user_turn, resp_turn = legacy_link_nodes
         add_link_to_new_turn(
             edge_id,
             resp_turn,

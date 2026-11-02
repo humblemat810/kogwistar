@@ -136,7 +136,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return mode, owner_id, security_scope, shared_principals, shared_groups
 
-    def should_auto_acl_item(self, item: Node | Edge) -> bool:
+    def should_auto_acl_item(self, item: ACLItem) -> bool:
         metadata = getattr(item, "metadata", {}) or {}
         entity_type = str(metadata.get("entity_type") or "")
         return not entity_type.startswith("acl_") and entity_type != "acl_record"
@@ -299,7 +299,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     @implementation_selection_bound
     def repair_default_acl_for_item(
         self,
-        item: Node | Edge,
+        item: ACLItem,
         *,
         grain: str,
         defaults: dict[str, Any] | None = None,
@@ -1306,7 +1306,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 retry = self._e.acl.decide_acl_node_read(
                     item_grain="span",
                     truth_graph=self._e.kg_graph_type,
-                    entity_id=str(node.safe_get_id()),
+                    entity_id=_acl_entity_id(node),
                     grounding_item_ids=grounding_ids,
                     target_item_ids=span_ids,
                     principal_id=principal_id,
@@ -1387,7 +1387,10 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                 PureChromaNode if isinstance(edge, PureChromaEdge) else Node
             )
             endpoint_nodes = self._raw.get_nodes(
-                node_type=endpoint_node_type, ids=list(endpoint_ids)
+                # Raw backend protocol annotations currently omit the pure
+                # Chroma projection class even though this runtime path selects it.
+                node_type=cast(type[Node], endpoint_node_type),
+                ids=list(endpoint_ids),
             )
             if {_acl_entity_id(item) for item in endpoint_nodes} != set(endpoint_ids):
                 return False
@@ -1403,8 +1406,11 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         if endpoint_edge_ids:
             endpoint_edges = self._raw.get_edges(
                 ids=list(endpoint_edge_ids),
-                edge_type=(
-                    PureChromaEdge if isinstance(edge, PureChromaEdge) else Edge
+                # See the matching node selector above: this is a runtime model
+                # choice already supported by the backend, not an entity conversion.
+                edge_type=cast(
+                    type[Edge],
+                    PureChromaEdge if isinstance(edge, PureChromaEdge) else Edge,
                 ),
             )
             if {_acl_entity_id(item) for item in endpoint_edges} != set(endpoint_edge_ids):

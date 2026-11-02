@@ -107,8 +107,8 @@ class RustPostgresTwoStageProjectionAdapter:
         if entity_kind != "edge":
             return []
         raw_ids = kwargs.get("ids")
-        ids = (
-            [value for value in raw_ids if isinstance(value, str)]
+        ids: list[JsonValue] | None = (
+            [cast(JsonValue, value) for value in raw_ids if isinstance(value, str)]
             if isinstance(raw_ids, list)
             else None
         )

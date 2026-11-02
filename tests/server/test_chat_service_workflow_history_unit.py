@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from unittest.mock import MagicMock
 
 import pytest
@@ -33,6 +34,9 @@ class MockOwner:
 
     def _workflow_engine(self):
         return self.mock_workflow_engine
+
+    def _workflow_namespace_scope(self, _workflow_id):
+        return nullcontext(self.mock_workflow_engine)
 
     def _workflow_namespace(self, workflow_id):
         return f"wf_design:{workflow_id}"
@@ -366,7 +370,11 @@ def test_workflow_replay_entity_range_rehydrates_workflow_types(history_context)
     owner.mock_workflow_engine.backend.edge_delete = MagicMock()
 
     helper._workflow_replay_entity_range(
-        namespace=namespace, from_seq=1, to_seq=2, dropped_ranges=[]
+        workflow_id=workflow_id,
+        namespace=namespace,
+        from_seq=1,
+        to_seq=2,
+        dropped_ranges=[],
     )
 
     assert type(owner.mock_workflow_engine.write.add_node.call_args.args[0]).__name__ == "WorkflowNode"
