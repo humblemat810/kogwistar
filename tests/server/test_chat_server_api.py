@@ -253,6 +253,22 @@ def _visible_workflow_design_ids(
     return str(start.id), {str(node_id) for node_id in nodes.keys()}, edge_ids
 
 
+def _assert_workflow_design_entities_use_scoped_namespace(
+    service, workflow_engine, *, workflow_id: str, node_ids: set[str], edge_ids: set[str]
+) -> None:
+    with service._workflow_namespace_scope(workflow_id) as scoped_engine:
+        nodes = scoped_engine.read.get_nodes(ids=sorted(node_ids)) if node_ids else []
+        edges = scoped_engine.read.get_edges(ids=sorted(edge_ids)) if edge_ids else []
+        assert {str(node.id) for node in nodes} == node_ids
+        assert {str(edge.id) for edge in edges} == edge_ids
+        assert all(
+            node.metadata.get("namespace") == scoped_engine.namespace for node in nodes
+        )
+        assert all(
+            edge.metadata.get("namespace") == scoped_engine.namespace for edge in edges
+        )
+
+
 def _success_runner(req: AnswerRunRequest) -> dict:
     req.publish("run.stage", {"stage": "retrieve"})
     req.publish(
@@ -1796,6 +1812,13 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(
             {start_id, end_id},
             {edge_id},
         )
+        _assert_workflow_design_entities_use_scoped_namespace(
+            service,
+            workflow_engine,
+            workflow_id=workflow_id,
+            node_ids={start_id, end_id},
+            edge_ids={edge_id},
+        )
 
         hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
         hist.raise_for_status()
@@ -1926,6 +1949,13 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(
             start_id,
             {start_id, end_id},
             {edge_id},
+        )
+        _assert_workflow_design_entities_use_scoped_namespace(
+            service,
+            workflow_engine,
+            workflow_id=workflow_id,
+            node_ids={start_id, end_id},
+            edge_ids={edge_id},
         )
 
         hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
@@ -2796,6 +2826,13 @@ def test_runtime_design_snapshot_restore_matches_full_replay(
     assert (
         _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
         == snapshot_shape
+    )
+    _assert_workflow_design_entities_use_scoped_namespace(
+        service,
+        workflow_engine,
+        workflow_id=workflow_id,
+        node_ids={start_id, end_id},
+        edge_ids=set(),
     )
 
 
