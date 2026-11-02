@@ -625,6 +625,7 @@ impl PostgresRunApplicationService {
             .await
     }
 
+    // PYTHON_PARITY: kogwistar/server/bootstrap.py::ServerStorageSettings.schema_for
     pub async fn ensure_graph_type_schemas(&self) -> Result<(), String> {
         self.ensure_schema().await?;
         self.conversation_store

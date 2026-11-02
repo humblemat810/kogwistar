@@ -28,6 +28,7 @@ enum NativeEvidenceRecordError {
 }
 
 impl PostgresRunApplicationService {
+    // PYTHON_PARITY: kogwistar/server/bootstrap.py::build_graph_engine(graph_type=...)
     fn graph_store_for_type(&self, graph_type: &str) -> &PostgresStore {
         match graph_type.to_ascii_lowercase().as_str() {
             "conversation" => &self.conversation_store,
