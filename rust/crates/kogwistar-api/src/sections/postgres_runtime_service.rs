@@ -6271,6 +6271,10 @@ impl PostgresRunApplicationService {
             let limit =
                 query_integer(&request.path_and_query, "limit", if process_listing { 100 } else { 200 })
                     .clamp(1, 10_000) as usize;
+            let lane_namespace = security_scope_value(&request.principal)["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned();
             let runs = match self
                 .store
                 .list_server_runs(
@@ -6293,7 +6297,7 @@ impl PostgresRunApplicationService {
             let lanes = match self
                 .store
                 .list_projected_lane_messages(LaneMessageFilter {
-                    namespace: Some("workflow".to_owned()),
+                    namespace: Some(lane_namespace),
                     limit: 10_000,
                     ..LaneMessageFilter::default()
                 })

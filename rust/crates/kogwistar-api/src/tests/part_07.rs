@@ -476,16 +476,17 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
             status: "waiting".to_owned(),
         })
         .unwrap();
-    for (message_id, inbox_id, status) in [
-        ("dashboard-pending-a", "ops", "pending"),
-        ("dashboard-pending-b", "ops", "pending"),
-        ("dashboard-failed", "retry", "failed"),
+    for (message_id, inbox_id, status, status_namespace) in [
+        ("dashboard-pending-a", "ops", "pending", "tenant-workflow"),
+        ("dashboard-pending-b", "ops", "pending", "tenant-workflow"),
+        ("dashboard-failed", "retry", "failed", "tenant-workflow"),
+        ("dashboard-other-namespace", "other", "failed", "workflow"),
     ] {
         service
             .store
             .project_lane_message(NewProjectedLaneMessage {
                 message_id: message_id.to_owned(),
-                namespace: "workflow".to_owned(),
+                namespace: status_namespace.to_owned(),
                 purpose: "operator".to_owned(),
                 inbox_id: inbox_id.to_owned(),
                 conversation_id: "dashboard-conversation".to_owned(),
@@ -510,6 +511,7 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
         body: Vec::new(),
         principal: json!({
             "sub":"alice", "role":"ro", "ns":["workflow"],
+            "storage_ns":"tenant-workflow",
             "capabilities":capabilities
         }),
     };
