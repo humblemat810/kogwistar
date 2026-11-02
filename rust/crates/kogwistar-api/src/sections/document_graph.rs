@@ -2332,19 +2332,43 @@ fn operational_effect(
             )
         }
         "/api/workflow/operator/dashboard" => {
-            let process_table = runs
+            let process_table_response = process_table_effect(
+                request,
+                runs.clone(),
+                services.clone(),
+                events.clone(),
+                service_event_rows.clone(),
+            );
+            let process_table_payload = serde_json::from_slice::<Value>(&process_table_response.body)
+                .unwrap_or_else(|_| json!({}));
+            let process_table = process_table_payload["processes"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let blocked_runs = process_table
                 .iter()
+                .filter(|process| {
+                    matches!(
+                        process["status"].as_str(),
+                        Some("blocked" | "waiting" | "suspended" | "cancelling")
+                    )
+                })
                 .take(limit)
                 .cloned()
-                .map(server_run_value)
                 .collect::<Vec<_>>();
-            let blocked_runs = runs
+            let blocked_flow_nodes = blocked_runs
                 .iter()
-                .filter(|run| run.status == "suspended")
-                .take(limit)
-                .cloned()
-                .map(server_run_value)
+                .map(|process| {
+                    json!({
+                        "id": process["process_id"],
+                        "kind": process["process_kind"],
+                        "status": process["status"],
+                        "workflow_id": process["workflow_id"],
+                        "conversation_id": process["conversation_id"],
+                    })
+                })
                 .collect::<Vec<_>>();
+            let blocked_count = blocked_flow_nodes.len();
             let dead_letters = lanes
                 .iter()
                 .filter(|lane| lane.status == "dead-letter")
@@ -2357,8 +2381,8 @@ fn operational_effect(
                 json!({
                     "process_table": process_table,
                     "operator_inbox": [],
-                    "blocked_runs": blocked_runs.clone(),
-                    "blocked_flow_graph": {"nodes": blocked_runs.clone(), "edges": [], "blocked_count": blocked_runs.len()},
+                    "blocked_runs": blocked_runs,
+                    "blocked_flow_graph": {"nodes": blocked_flow_nodes, "edges": [], "blocked_count": blocked_count},
                     "message_queue": message_queue,
                     "dead_letters": {"runs": dead_letters, "limit": limit},
                     "capabilities": {},

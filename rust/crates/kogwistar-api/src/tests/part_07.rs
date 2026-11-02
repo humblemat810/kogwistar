@@ -465,6 +465,17 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
             status: "suspended".to_owned(),
         })
         .unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "dashboard-waiting-run".to_owned(),
+            conversation_id: "dashboard-conversation".to_owned(),
+            workflow_id: "dashboard-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "dashboard-waiting-turn".to_owned(),
+            status: "waiting".to_owned(),
+        })
+        .unwrap();
     for (message_id, inbox_id, status) in [
         ("dashboard-pending-a", "ops", "pending"),
         ("dashboard-pending-b", "ops", "pending"),
@@ -510,7 +521,17 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
     let allowed = service.execute(request(json!(["project_view"]))).await;
     assert_eq!(allowed.status, StatusCode::OK.as_u16());
     let dashboard: Value = serde_json::from_slice(&allowed.body).unwrap();
-    assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 1);
+    assert_eq!(dashboard["process_table"].as_array().unwrap().len(), 2);
+    assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 2);
+    let blocked_nodes = dashboard["blocked_flow_graph"]["nodes"].as_array().unwrap();
+    assert_eq!(dashboard["blocked_flow_graph"]["blocked_count"], 2);
+    assert_eq!(blocked_nodes.len(), 2);
+    assert!(blocked_nodes.iter().any(|node| {
+        node["id"] == "dashboard-waiting-run"
+            && node["kind"] == "workflow_run"
+            && node["status"] == "waiting"
+            && node.as_object().is_some_and(|fields| fields.len() == 5)
+    }));
     assert_eq!(dashboard["operator_inbox"], json!([]));
     assert_eq!(dashboard["message_queue"]["total"], 3);
     assert_eq!(dashboard["message_queue"]["by_status"]["pending"], 2);
