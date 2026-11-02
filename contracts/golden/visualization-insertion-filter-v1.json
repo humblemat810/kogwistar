@@ -14,6 +14,12 @@
       "references": [
         {"doc_id": "d1", "insertion_method": "manual"}
       ]
+    },
+    {
+      "id": "n3",
+      "references": [
+        {"doc_id": "d1", "insertion_method": ""}
+      ]
     }
   ],
   "edges": [
@@ -27,6 +33,12 @@
       "id": "e2",
       "references": [
         {"doc_id": "d1", "insertion_method": "manual"}
+      ]
+    },
+    {
+      "id": "e3",
+      "references": [
+        {"doc_id": "d1", "insertion_method": ""}
       ]
     }
   ],
@@ -45,5 +57,10 @@
     "edge": ["e1"]
   },
   "expected_matches": ["e1", "n1"],
-  "expected_empty_match_fallback": ["e1", "e2", "n1", "n2"]
+  "expected_empty_match_fallback": ["e1", "e2", "e3", "n1", "n2", "n3"],
+  "expected_empty_method_filter": ["e1", "e2", "e3", "n1", "n2", "n3"],
+  "expected_empty_method_filter_by_kind": {
+    "node": ["n1", "n2", "n3"],
+    "edge": ["e1", "e2", "e3"]
+  }
 }

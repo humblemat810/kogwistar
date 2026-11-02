@@ -1253,7 +1253,8 @@ fn graph_viz_selected_records<'a>(
                 })
         })
         .collect::<Vec<_>>();
-    let Some(expected_method) = insertion_method else {
+    // Python's `_filter_by_insertion_method` treats an empty query as no filter.
+    let Some(expected_method) = insertion_method.filter(|value| !value.is_empty()) else {
         return base;
     };
     let matching = base
@@ -3984,6 +3985,22 @@ mod tests {
                 .iter()
                 .map(|id| id.as_str().unwrap())
                 .collect::<BTreeSet<_>>()
+        );
+
+        let mut empty_method_ids = graph_viz_selected_records(&nodes, doc_id, Some(""))
+            .into_iter()
+            .chain(graph_viz_selected_records(&edges, doc_id, Some("")))
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>();
+        empty_method_ids.sort_unstable();
+        assert_eq!(
+            empty_method_ids,
+            fixture["expected_empty_method_filter"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect::<Vec<_>>()
         );
 
         let mut fallback_ids = graph_viz_selected_records(&nodes, doc_id, Some("missing-method"))

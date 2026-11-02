@@ -59,6 +59,13 @@ def test_visualization_insertion_method_filter_matches_shared_rust_fixture() -> 
             by_doc_id=fixture["doc_id"],
         ) == fixture["expected_matches_by_kind"][entity_kind]
         assert collection.where == fixture["expected_index_query"]
+        assert _filter_by_insertion_method(
+            SimpleNamespace(**{f"{entity_kind}_refs_collection": collection}),
+            ids,
+            entity_kind,
+            "",
+            by_doc_id=fixture["doc_id"],
+        ) == fixture["expected_empty_method_filter_by_kind"][entity_kind]
 
         no_matches = RefCollection([])
         assert _filter_by_insertion_method(
