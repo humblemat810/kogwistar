@@ -725,6 +725,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     )
     .unwrap();
     assert_eq!(
+        cross_kind_neighbors["result"]["implementation_authority"],
+        "rust"
+    );
+    assert_eq!(
+        cross_kind_neighbors["result"]["seam_attestation_version"],
+        1
+    );
+    assert_eq!(cross_kind_neighbors["result"]["seam_crossings"], json!([]));
+    assert_eq!(
         cross_kind_neighbors["result"]["nodes"],
         cross_kind_fixture["expected"]["node_ids"]
     );
