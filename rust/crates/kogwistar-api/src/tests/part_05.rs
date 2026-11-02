@@ -222,7 +222,7 @@
     }
 
     #[tokio::test]
-    async fn mcp_run_events_builds_the_canonical_application_effect_route() {
+    async fn mcp_run_event_timeline_tools_build_the_canonical_application_effect_route() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use std::future::Future;
@@ -235,7 +235,8 @@
 
         impl ApplicationService for RequestRecorder {
             fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-                surface == "workflow" && name == "workflow.run_events"
+                surface == "workflow"
+                    && matches!(name, "workflow.run_events" | "workflow.process_timeline")
             }
 
             fn execute(
@@ -259,16 +260,18 @@
         }
 
         let seen = Arc::new(Mutex::new(None));
-        let app = router_with_application(
-            ApiState {
-                health: snapshot(),
-                required_roles: Vec::new(),
-                implementation: ImplementationSnapshot::default(),
-                auth: AuthConfig::default(),
-            },
-            Arc::new(RequestRecorder(Arc::clone(&seen))),
-        );
-        let response = app
+        let make_app = || {
+            router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: Vec::new(),
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig::default(),
+                },
+                Arc::new(RequestRecorder(Arc::clone(&seen))),
+            )
+        };
+        let response = make_app()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -288,6 +291,32 @@
         assert_eq!(
             value["result"]["path_and_query"],
             "/api/runs/run-1/events/poll?after_seq=7&limit=25"
+        );
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
+        assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
+
+        let response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow.process_timeline","arguments":{"run_id":"run-2","after_seq":4}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"]["method"], "GET");
+        assert_eq!(
+            value["result"]["path_and_query"],
+            "/api/runs/run%2D2/events/poll?after_seq=4&limit=200"
         );
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);
@@ -2694,6 +2723,31 @@
         let mcp_event_body = to_bytes(mcp_events.into_body(), 8192).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&mcp_event_body).unwrap()["result"]["events"][0]["event_type"],
+            "run.started"
+        );
+
+        let mcp_timeline = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"workflow.process_timeline","arguments":{"run_id":"run-1","after_seq":0,"limit":10}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_timeline.status(), StatusCode::OK);
+        let mcp_timeline_body = to_bytes(mcp_timeline.into_body(), 8192).await.unwrap();
+        let mcp_timeline_value = serde_json::from_slice::<Value>(&mcp_timeline_body).unwrap();
+        assert_eq!(mcp_timeline_value["id"], 10);
+        assert_eq!(mcp_timeline_value["result"]["run_id"], "run-1");
+        assert_eq!(
+            mcp_timeline_value["result"]["events"][0]["event_type"],
             "run.started"
         );
         drop(app);

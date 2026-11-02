@@ -438,6 +438,44 @@ async fn mcp_handler(
                     principal: principal.clone(),
                 })
             }
+            "workflow.process_timeline" if !run_id.is_empty() => {
+                let valid_arguments = !arguments
+                    .keys()
+                    .any(|argument| !matches!(argument.as_str(), "run_id" | "after_seq" | "limit"))
+                    && arguments
+                        .get("after_seq")
+                        .map(Value::as_i64)
+                        .unwrap_or(Some(0))
+                        .is_some_and(|after_seq| after_seq >= 0)
+                    && arguments
+                        .get("limit")
+                        .map(Value::as_i64)
+                        .unwrap_or(Some(200))
+                        .is_some_and(|limit| (1..=10_000).contains(&limit));
+                valid_arguments.then(|| {
+                    let after_seq = arguments
+                        .get("after_seq")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0);
+                    let limit = arguments
+                        .get("limit")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(200);
+                    let encoded_run_id = percent_encoding::utf8_percent_encode(
+                        run_id,
+                        percent_encoding::NON_ALPHANUMERIC,
+                    );
+                    ApiEffectRequest {
+                        contract_version: 1,
+                        method: "GET".to_owned(),
+                        path_and_query: format!(
+                            "/api/runs/{encoded_run_id}/events/poll?after_seq={after_seq}&limit={limit}"
+                        ),
+                        body: Vec::new(),
+                        principal: principal.clone(),
+                    }
+                })
+            }
             "workflow.run_evidence"
                 if !run_id.is_empty() && arguments.keys().all(|argument| argument == "run_id") =>
             {
