@@ -130,9 +130,14 @@ def test_step_worker_rejects_handler_changed_to_non_callable() -> None:
             pass
 
         def step_completed(
-            self, _trace_context: object, *, status: str, duration_ms: int
+            self,
+            _trace_context: object,
+            *,
+            status: str,
+            duration_ms: int,
+            extra: dict[str, object] | None = None,
         ) -> None:
-            del status, duration_ms
+            del status, duration_ms, extra
 
     message_queue: queue.Queue[dict[str, object]] = queue.Queue()
     done_queue: queue.Queue[tuple[object, ...]] = queue.Queue()
