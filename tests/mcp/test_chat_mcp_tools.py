@@ -615,6 +615,11 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             assert [[edge.id for edge in batch] for batch in edge_results] == principal[
                 "expected"
             ]["edges"]
+            if principal["id"] == "reader-a":
+                limited = engine.read.query_nodes(
+                    query_embeddings=[fixture["query_embeddings"][0]], n_results=1
+                )
+                assert [[node.id for node in batch] for batch in limited] == [[]]
             # Historical scored reads resolve lifecycle and ACL after candidate retrieval.
             scored_node_results = [
                 engine.read.search_nodes_as_of_scored(

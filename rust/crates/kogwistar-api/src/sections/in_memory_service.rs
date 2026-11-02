@@ -296,8 +296,16 @@ impl InMemoryGraphApplicationService {
         for matches in vector_matches {
             let matches = matches
                 .into_iter()
-                .filter(|matched| visible_ids.contains(matched.record.id.as_str()))
+                .filter(|matched| {
+                    !matched
+                        .record
+                        .metadata
+                        .get("lifecycle_status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                })
                 .take(input.n_results)
+                .filter(|matched| visible_ids.contains(matched.record.id.as_str()))
                 .collect::<Vec<_>>();
             ids.push(
                 matches

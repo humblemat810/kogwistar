@@ -1936,6 +1936,39 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
                     );
                 }
             }
+            if subject == "reader-a" && kind == "node" {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/internal/graph/vector-query")
+                            .header("content-type", "application/json")
+                            .header(
+                                "authorization",
+                                format!("Bearer {}", token(subject, &["read_graph"], None)),
+                            )
+                            .body(Body::from(
+                                json!({
+                                    "entity_kind": "node",
+                                    "query_embeddings": [fixture["query_embeddings"][0]],
+                                    "metric": fixture["metric"],
+                                    "truth_graph": fixture["truth_graph"],
+                                    "n_results": 1,
+                                    "include": ["distances"]
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let result: Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap())
+                        .unwrap();
+                assert_eq!(result["ids"], json!([[]]));
+            }
         }
     }
 }
