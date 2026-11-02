@@ -843,6 +843,159 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert!(vector_query.get("documents").is_none());
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/visualization/graph_viz.py#_filter_by_insertion_method; fixture=contracts/golden/visualization-insertion-filter-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_insertion_method_filter_matches_shared_rust_fixture
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_viz_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_schema().await.unwrap();
+    service
+        .store
+        .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+        .await
+        .unwrap();
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/visualization-insertion-filter-v1.json"
+    )))
+    .unwrap();
+    let scope = GraphScope {
+        namespace: "viz-test".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let mut entities = fixture["nodes"].as_array().unwrap().clone();
+    entities.push(json!({
+        "id": "n-private",
+        "references": [{"doc_id": "d1", "insertion_method": "parser"}]
+    }));
+    for entity in &entities {
+        let id = entity["id"].as_str().unwrap();
+        let metadata = Map::from_iter([
+            ("entity_type".to_owned(), json!("node")),
+            ("doc_id".to_owned(), fixture["doc_id"].clone()),
+            ("lifecycle_status".to_owned(), json!("active")),
+        ]);
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(
+                        json!({
+                            "id": id,
+                            "label": id,
+                            "references": entity["references"]
+                        })
+                        .to_string(),
+                    ),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        let acl = if id == "n-private" {
+            json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_grain": "node",
+                "acl_target_entity_id": id,
+                "acl_mode": "private",
+                "owner_id": "bob",
+                "acl_version": 1,
+                "tombstoned": false
+            })
+        } else {
+            json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_grain": "node",
+                "acl_target_entity_id": id,
+                "acl_mode": "public",
+                "acl_version": 1,
+                "tombstoned": false
+            })
+        };
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: format!("acl|{id}"),
+                    document: Some("{}".to_owned()),
+                    metadata: acl.as_object().unwrap().clone(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+    }
+
+    let response = ApplicationService::execute(
+        &service,
+        ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({
+                "doc_id": fixture["doc_id"],
+                "mode": "reify",
+                "insertion_method": fixture["insertion_method"],
+                "graph_type": "knowledge"
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub": "alice",
+                "user_id": "alice",
+                "storage_ns": "viz-test",
+                "ns": ["viz-test"],
+                "capabilities": ["read_graph"]
+            }),
+        },
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let payload: Value = serde_json::from_slice(&response.body).unwrap();
+    let mut returned_ids = payload["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect::<Vec<_>>();
+    returned_ids.sort_unstable();
+    assert_eq!(
+        returned_ids,
+        fixture["expected_matches_by_kind"]["node"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .await
+        .unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+}
+
 #[tokio::test]
 async fn in_memory_vector_query_matches_shared_python_acl_contract() {
     let fixture: Value = serde_json::from_str(include_str!(concat!(

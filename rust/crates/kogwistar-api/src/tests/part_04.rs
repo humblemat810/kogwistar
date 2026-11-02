@@ -2631,6 +2631,86 @@
         assert_eq!(edge.embedding.as_deref(), Some([0.6_f32, 0.8_f32].as_slice()));
         assert_eq!(edge.metadata["_kogwistar_stage2_ready"], true);
 
+        let visualization = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "doc_id": "doc-1",
+                    "mode": "reify",
+                    "insertion_method": "api_upsert",
+                    "graph_type": "knowledge"
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "live-owner",
+                    "user_id": "live-owner",
+                    "role": "ro",
+                    "ns": [namespace],
+                    "storage_ns": namespace,
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            visualization.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&visualization.body)
+        );
+        let visualization_payload: Value =
+            serde_json::from_slice(&visualization.body).unwrap();
+        let mut visualized_ids = visualization_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect::<Vec<_>>();
+        visualized_ids.sort_unstable();
+        let mut expected_visualized_ids = node_ids
+            .iter()
+            .chain(edge_ids.iter())
+            .map(|id| id.as_str().unwrap())
+            .collect::<Vec<_>>();
+        expected_visualized_ids.sort_unstable();
+        assert_eq!(visualized_ids, expected_visualized_ids);
+
+        let unauthorized_visualization = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "doc_id": "doc-1",
+                    "mode": "reify",
+                    "insertion_method": "api_upsert",
+                    "graph_type": "knowledge"
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "other-owner",
+                    "user_id": "other-owner",
+                    "role": "ro",
+                    "ns": [namespace],
+                    "storage_ns": namespace,
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            unauthorized_visualization.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&unauthorized_visualization.body)
+        );
+        let unauthorized_payload: Value =
+            serde_json::from_slice(&unauthorized_visualization.body).unwrap();
+        assert!(
+            unauthorized_payload["nodes"].as_array().unwrap().is_empty(),
+            "another principal must not read the graph owner's visualization"
+        );
+
         drop(graph);
         drop(service);
         let _ = std::fs::remove_file(path);
