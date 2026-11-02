@@ -8,6 +8,11 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
+
 if TYPE_CHECKING:
     from .engine import GraphKnowledgeEngine
 
@@ -40,6 +45,12 @@ class JobQueueSubsystem:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Expose the owning engine snapshot to queue operation boundaries."""
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def require_available(self, *, enqueue: bool = False, claim: bool = False) -> None:
         required: list[str] = []
         if enqueue:
@@ -60,6 +71,7 @@ class JobQueueSubsystem:
                 + ", ".join(sorted(missing))
             )
 
+    @implementation_selection_bound
     def enqueue(
         self,
         *,
@@ -89,6 +101,7 @@ class JobQueueSubsystem:
         )
         return str(stored_job_id or chosen_job_id)
 
+    @implementation_selection_bound
     def claim(
         self,
         *,
@@ -104,6 +117,7 @@ class JobQueueSubsystem:
             for row in claim(limit=limit, lease_seconds=lease_seconds, namespace=namespace)
         ]
 
+    @implementation_selection_bound
     def mark_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
         mark_done = getattr(self.engine.metadata, "mark_index_job_done", None)
         if mark_done is not None:
@@ -112,12 +126,14 @@ class JobQueueSubsystem:
             return bool(mark_done(str(job_id), claim_token=claim_token))
         return False
 
+    @implementation_selection_bound
     def renew_lease(self, job: JobQueueItem, *, lease_seconds: int) -> bool:
         renew = getattr(self.engine.metadata, "renew_index_job_lease", None)
         if renew is None or job.claim_token is None:
             return False
         return bool(renew(job.job_id, claim_token=job.claim_token, lease_seconds=lease_seconds))
 
+    @implementation_selection_bound
     def accept_candidate(self, job: JobQueueItem, candidate: object) -> dict[str, object]:
         """Durably fence a candidate to the first live claimant.
 
@@ -139,6 +155,7 @@ class JobQueueSubsystem:
         )
         return result
 
+    @implementation_selection_bound
     def accepted_candidate(self, job: JobQueueItem) -> object | None:
         result = getattr(self.engine.metadata, "get_index_job_result", lambda _job_id: None)(job.job_id)
         if not result or result.get("result_json") is None:
@@ -148,6 +165,7 @@ class JobQueueSubsystem:
         except (TypeError, ValueError):
             return None
 
+    @implementation_selection_bound
     def mark_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
         mark_failed = getattr(self.engine.metadata, "mark_index_job_failed", None)
         if mark_failed is not None:
@@ -156,6 +174,7 @@ class JobQueueSubsystem:
             else:
                 mark_failed(str(job_id), str(error), final=final, claim_token=claim_token)
 
+    @implementation_selection_bound
     def retry_or_fail(
         self,
         job: JobQueueItem,
@@ -176,6 +195,7 @@ class JobQueueSubsystem:
                 return
         self.mark_failed(job.job_id, err, final=True, claim_token=job.claim_token)
 
+    @implementation_selection_bound
     def requeue_at_tail(
         self,
         job: JobQueueItem,
@@ -200,6 +220,7 @@ class JobQueueSubsystem:
             kwargs["claim_token"] = job.claim_token
         requeue(str(job.job_id), **kwargs)
 
+    @implementation_selection_bound
     def list(
         self,
         *,
@@ -215,6 +236,7 @@ class JobQueueSubsystem:
             for row in list_jobs(namespace=namespace, status=status, limit=limit)
         ]
 
+    @implementation_selection_bound
     def coerce(self, row: object) -> JobQueueItem:
         """Normalize a raw metastore row or return an existing job item."""
         if isinstance(row, JobQueueItem):

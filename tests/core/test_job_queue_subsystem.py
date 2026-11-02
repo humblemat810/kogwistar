@@ -45,20 +45,21 @@ def test_jobs_claim_returns_typed_item_with_decoded_payload(tmp_path):
 
     claimed = engine.jobs.claim(namespace="jobs:demo", limit=1, lease_seconds=60)
 
-    assert claimed == [
-        JobQueueItem(
-            job_id="job-1",
-            namespace="jobs:demo",
-            entity_kind="projection_request",
-            entity_id="entity-1",
-            job_kind="projection_request",
-            op="UPSERT",
-            payload={"promoted_entity_id": "entity-1"},
-            retry_count=0,
-            max_retries=10,
-            last_error=None,
-        )
-    ]
+    assert len(claimed) == 1
+    assert claimed[0] == JobQueueItem(
+        job_id="job-1",
+        namespace="jobs:demo",
+        entity_kind="projection_request",
+        entity_id="entity-1",
+        job_kind="projection_request",
+        op="UPSERT",
+        payload={"promoted_entity_id": "entity-1"},
+        retry_count=0,
+        max_retries=10,
+        claim_token=claimed[0].claim_token,
+        last_error=None,
+    )
+    assert claimed[0].claim_token
 
 
 def test_jobs_claim_is_namespace_isolated(tmp_path):

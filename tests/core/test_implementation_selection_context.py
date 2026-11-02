@@ -51,6 +51,7 @@ from kogwistar.implementation_selection import (
     assert_python_transaction_entry_allowed,
     postgres_authority_selectors_aligned,
     resolve_implementation_selection,
+    selected_transaction_authority,
     transaction_authority_for_selection,
     transaction_authority_scope,
 )
@@ -306,11 +307,13 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     from kogwistar.engine_core.subsystems.acl import ACLAwareWriteSubsystem
     from kogwistar.engine_core.subsystems.ingest import IngestSubsystem
     from kogwistar.messaging.service import LaneMessagingService
+    from kogwistar.engine_core.jobs import JobQueueSubsystem
 
     unbound: list[str] = []
     for subsystem in (
         RecoverySubsystem,
         IndexingSubsystem,
+        JobQueueSubsystem,
         LaneMessagingService,
         ReadSubsystem,
         RollbackSubsystem,
@@ -469,6 +472,28 @@ def test_indexing_compound_enqueue_keeps_one_selector_snapshot(
 
     assert observed == ["python", "python"]
     assert runtime_implementation_mode() == "rust"
+
+
+def test_job_queue_operations_keep_engine_selection_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "python")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_in_memory_backend,
+    )
+    observed_authorities: list[str] = []
+
+    def claim_jobs(**kwargs: object) -> list[object]:
+        observed_authorities.append(selected_transaction_authority())
+        return []
+
+    monkeypatch.setattr(engine.metadata, "claim_index_jobs", claim_jobs)
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "rust")
+
+    assert engine.jobs.claim(namespace="jobs:selection") == []
+    assert observed_authorities == ["python"]
 
 
 def test_recovery_inspection_keeps_one_selector_snapshot(
