@@ -362,6 +362,20 @@ where
         .into_iter()
         .map(|name| qualified(&tables.quoted_schema, &name))
         .collect::<PostgresStoreResult<Vec<_>>>()?;
+    let scope_identity_indexes = relations
+        .iter()
+        .enumerate()
+        .map(|(index, relation)| {
+            format!(
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"uq_gke_scope_identity_{index}\" ON {relation} \
+                 (id, (COALESCE(metadata->>'namespace', 'default')), \
+                 (COALESCE(metadata->>'workspace_id', '')), \
+                 (COALESCE(metadata->>'graph_space', '')))"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+        + ";";
     let edge_endpoints = qualified(&tables.quoted_schema, EDGE_ENDPOINTS_TABLE)?;
     let node_docs = qualified(&tables.quoted_schema, NODE_DOCS_TABLE)?;
     let node_refs = qualified(&tables.quoted_schema, NODE_REFS_TABLE)?;
@@ -376,6 +390,7 @@ where
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
+         {} \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_endpoint_id\" ON {} ((metadata->>'endpoint_id')); \
          CREATE INDEX IF NOT EXISTS \"ix_gke_edge_endpoints_edge\" ON {} ((metadata->>'edge_id')); \
@@ -402,6 +417,7 @@ where
         dim,
         relations[3],
         dim,
+        scope_identity_indexes,
         edge_endpoints,
         edge_endpoints,
         edge_endpoints,

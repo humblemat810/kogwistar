@@ -2511,6 +2511,14 @@
 
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(
+                3,
+                kogwistar_store_postgres::GraphTableNames::default(),
+            )
+            .await
+            .unwrap();
         let key = "document-route-test-secret";
         let token = encode(
             &Header::new(Algorithm::HS256),
@@ -2571,12 +2579,16 @@
             }),
         )
         .await;
-        assert_eq!(first.status(), StatusCode::OK);
+        let first_status = first.status();
+        let first_body = to_bytes(first.into_body(), 4096).await.unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(
-                &to_bytes(first.into_body(), 4096).await.unwrap()
-            )
-            .unwrap(),
+            first_status,
+            StatusCode::OK,
+            "document upsert failed: {}",
+            String::from_utf8_lossy(&first_body)
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&first_body).unwrap(),
             json!({"status": "ok"})
         );
         let retry = send(
