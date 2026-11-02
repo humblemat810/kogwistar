@@ -200,6 +200,36 @@ def _load_edge_map(
         return out
 
 
+def _filter_edges_to_selected_endpoints(
+    node_map: Mapping[str, Node], edge_map: Mapping[str, Edge]
+) -> dict[str, Edge]:
+    """Keep only edges whose referenced endpoints are present in this view."""
+    visible_node_ids = set(node_map)
+    visible_edge_ids = set(edge_map)
+    while True:
+        next_visible_edge_ids = {
+            edge_id
+            for edge_id, edge in edge_map.items()
+            if all(
+                endpoint_id in visible_node_ids
+                for field in ("source_ids", "target_ids")
+                for endpoint_id in (getattr(edge, field, None) or ())
+            )
+            and all(
+                endpoint_id in visible_edge_ids
+                for field in ("source_edge_ids", "target_edge_ids")
+                for endpoint_id in (getattr(edge, field, None) or ())
+            )
+        }
+        if next_visible_edge_ids == visible_edge_ids:
+            return {
+                edge_id: edge
+                for edge_id, edge in edge_map.items()
+                if edge_id in visible_edge_ids
+            }
+        visible_edge_ids = next_visible_edge_ids
+
+
 def _ids_by_doc(
     engine: GraphKnowledgeEngine, doc_id: str | None
 ) -> tuple[list[str], list[str]]:
@@ -451,7 +481,9 @@ def to_d3_force(
     engine_obj = cast("GraphKnowledgeEngine", engine)
     node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
     node_map = _load_node_map(engine_obj, node_ids)
-    edge_map = _load_edge_map(engine_obj, edge_ids)
+    edge_map = _filter_edges_to_selected_endpoints(
+        node_map, _load_edge_map(engine_obj, edge_ids)
+    )
 
     nodes: dict[str, dict] = {}
     links: list[dict] = []
@@ -655,7 +687,9 @@ def to_cytoscape(
     engine_obj = cast("GraphKnowledgeEngine", engine)
     node_ids, edge_ids = _collect_ids(engine_obj, doc_id, insertion_method)
     node_map = _load_node_map(engine_obj, node_ids)
-    edge_map = _load_edge_map(engine_obj, edge_ids)
+    edge_map = _filter_edges_to_selected_endpoints(
+        node_map, _load_edge_map(engine_obj, edge_ids)
+    )
 
     elements: list[dict] = []
 

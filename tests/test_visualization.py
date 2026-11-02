@@ -166,6 +166,21 @@ def test_graph_visualization_payloads_match_shared_python_model_fixture() -> Non
     )
     assert d3["mode"] == "reify" and d3["doc_id"] is None
 
+    classic_d3 = to_d3_force(engine, mode="classic")
+    expected_classic_links = [
+        {
+            "source": source.id,
+            "target": target.id,
+            "relation": edge.relation,
+            "properties": edge.properties,
+        }
+    ]
+    assert sorted(classic_d3["nodes"], key=lambda item: item["id"]) == sorted(
+        [source.model_dump(), target.model_dump()], key=lambda item: item["id"]
+    )
+    assert classic_d3["links"] == expected_classic_links
+    assert classic_d3["mode"] == "classic" and classic_d3["doc_id"] is None
+
     cytoscape = to_cytoscape(engine)
     expected_elements = [
         {
@@ -204,6 +219,72 @@ def test_graph_visualization_payloads_match_shared_python_model_fixture() -> Non
         expected_elements, key=lambda item: item["data"]["id"]
     )
     assert cytoscape["mode"] == "reify" and cytoscape["doc_id"] is None
+
+    classic_cytoscape = to_cytoscape(engine, mode="classic")
+    expected_classic_elements = [
+        {
+            "data": {"id": model.id, "label": model.label, "type": "entity"},
+            "classes": "",
+        }
+        for model in (source, target)
+    ]
+    expected_classic_elements.append(
+        {
+            "data": {
+                "id": f"{edge.id}::{source.id}->{target.id}",
+                "source": source.id,
+                "target": target.id,
+                "label": edge.relation,
+            },
+            "classes": "",
+        }
+    )
+    assert sorted(
+        classic_cytoscape["elements"], key=lambda item: item["data"]["id"]
+    ) == sorted(expected_classic_elements, key=lambda item: item["data"]["id"])
+    assert classic_cytoscape["mode"] == "classic"
+
+    outside_target_payload = {
+        **node_payload,
+        "id": "outside-target",
+        "label": "Outside selected document",
+        "doc_id": "another-document",
+    }
+    outside_target = Node.model_validate(outside_target_payload)
+    omitted_endpoint_edge = Edge.model_validate(
+        {
+            **next(case["payload"] for case in fixture["cases"] if case["kind"] == "edge"),
+            "id": "doc-scoped-edge",
+            "doc_id": "selected-document",
+            "source_ids": [source.id],
+            "target_ids": [outside_target.id],
+        }
+    )
+    doc_scoped_read = SimpleNamespace(
+        node_ids_by_doc=lambda doc_id: [source.id],
+        edge_ids_by_doc=lambda doc_id: [omitted_endpoint_edge.id],
+        load_node_map=lambda ids, **_kwargs: {source.id: source}
+        if source.id in ids
+        else {},
+        load_edge_map=lambda ids, **_kwargs: (
+            {omitted_endpoint_edge.id: omitted_endpoint_edge}
+            if omitted_endpoint_edge.id in ids
+            else {}
+        ),
+    )
+    doc_scoped_engine = SimpleNamespace(kg_graph_type="knowledge", read=doc_scoped_read)
+    incomplete_d3 = to_d3_force(doc_scoped_engine, doc_id="selected-document")
+    assert incomplete_d3["doc_id"] == "selected-document"
+    assert [node["id"] for node in incomplete_d3["nodes"]] == [source.id]
+    assert incomplete_d3["links"] == []
+
+    incomplete_cytoscape = to_cytoscape(
+        doc_scoped_engine, doc_id="selected-document"
+    )
+    assert incomplete_cytoscape["doc_id"] == "selected-document"
+    assert [element["data"]["id"] for element in incomplete_cytoscape["elements"]] == [
+        source.id
+    ]
 
 
 @pytest.mark.ci

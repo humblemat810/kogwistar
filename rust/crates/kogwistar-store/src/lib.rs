@@ -3484,6 +3484,31 @@ mod tests {
         });
         assert_eq!(actual_links, expected_links);
 
+        let classic_d3 = graph_viz_d3_from_records(&nodes, &edges, None, "classic", None);
+        let mut expected_classic_nodes = vec![source.clone(), target.clone()];
+        for node in &mut expected_classic_nodes {
+            node["type"] = json!("entity");
+            node["properties"] = node["properties"]
+                .as_object()
+                .cloned()
+                .map(Value::Object)
+                .unwrap_or_else(|| json!({}));
+        }
+        expected_classic_nodes
+            .sort_by_key(|node| node["id"].as_str().unwrap_or_default().to_owned());
+        let mut actual_classic_nodes = classic_d3["nodes"].as_array().unwrap().clone();
+        actual_classic_nodes.sort_by_key(|node| node["id"].as_str().unwrap_or_default().to_owned());
+        assert_eq!(actual_classic_nodes, expected_classic_nodes);
+        assert_eq!(
+            classic_d3["links"],
+            json!([{
+                "source": source["id"],
+                "target": target["id"],
+                "relation": edge["relation"],
+                "properties": edge["properties"]
+            }])
+        );
+
         let cytoscape = graph_viz_cytoscape_from_records(&nodes, &edges, None, "reify", None);
         let mut expected_elements = vec![
             json!({"data":{"id":source["id"],"label":source["label"],"type":"entity"},"classes":""}),
@@ -3508,6 +3533,45 @@ mod tests {
         assert_eq!(actual_elements, expected_elements);
         assert_eq!(cytoscape["mode"], "reify");
         assert!(cytoscape["doc_id"].is_null());
+
+        let classic_cytoscape =
+            graph_viz_cytoscape_from_records(&nodes, &edges, None, "classic", None);
+        assert_eq!(classic_cytoscape["elements"].as_array().unwrap().len(), 3);
+        let expected_classic_edge_id = format!(
+            "{}::{}->{}",
+            edge["id"].as_str().unwrap(),
+            source["id"].as_str().unwrap(),
+            target["id"].as_str().unwrap()
+        );
+        assert!(
+            classic_cytoscape["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|element| {
+                    element["data"]["id"].as_str() == Some(expected_classic_edge_id.as_str())
+                })
+        );
+        assert_eq!(classic_cytoscape["mode"], "classic");
+
+        let incomplete_edge = record(&payload("edge"));
+        let incomplete_nodes = vec![record(&source)];
+        let incomplete_edges = vec![incomplete_edge];
+        let incomplete_d3 =
+            graph_viz_d3_from_records(&incomplete_nodes, &incomplete_edges, None, "reify", None);
+        assert_eq!(incomplete_d3["nodes"].as_array().unwrap().len(), 1);
+        assert!(incomplete_d3["links"].as_array().unwrap().is_empty());
+        let incomplete_cytoscape = graph_viz_cytoscape_from_records(
+            &incomplete_nodes,
+            &incomplete_edges,
+            None,
+            "reify",
+            None,
+        );
+        assert_eq!(
+            incomplete_cytoscape["elements"].as_array().unwrap().len(),
+            1
+        );
     }
 
     #[test]
