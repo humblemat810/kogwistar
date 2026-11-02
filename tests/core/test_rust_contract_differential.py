@@ -968,6 +968,7 @@ def test_conversation_graph_metadata_matches_python_model_contract() -> None:
             edge_payload if model_class == "conversation_edge" else node_payload
         )
         payload["metadata"] = case["metadata"]
+        payload.update(case.get("top_level", {}))
         if case["valid"]:
             python_payload = (
                 model_by_class[model_class]

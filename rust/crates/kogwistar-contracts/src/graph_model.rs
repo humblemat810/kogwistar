@@ -898,10 +898,7 @@ impl GraphModelEnvelope {
             }
             GraphModelClass::ConversationNode => {
                 self.decode_persistent_shape(GraphEntityKind::Node)?;
-                validate_conversation_node_metadata(&raw_metadata(
-                    GraphModelClass::ConversationNode,
-                    &self.payload,
-                )?)
+                validate_conversation_node_payload(&self.payload)
             }
             GraphModelClass::ConversationEdge => {
                 self.decode_persistent_edge_shape()?;
@@ -1323,11 +1320,10 @@ fn validate_workflow_edge_metadata(
     Ok(())
 }
 
-fn validate_conversation_node_metadata(
-    metadata: &BTreeMap<String, Value>,
-) -> Result<(), GraphModelError> {
+fn validate_conversation_node_payload(payload: &Value) -> Result<(), GraphModelError> {
+    let metadata = raw_metadata(GraphModelClass::ConversationNode, payload)?;
     let value: ConversationNodeMetadataV1 =
-        validate_metadata(GraphModelClass::ConversationNode, metadata)?;
+        validate_metadata(GraphModelClass::ConversationNode, &metadata)?;
     let role_valid = metadata.get("role").is_none_or(|role| {
         role.is_null()
             || matches!(
@@ -1337,6 +1333,23 @@ fn validate_conversation_node_metadata(
     });
     let optional_fields_valid = ["conversation_id", "user_id"].into_iter().all(|field| {
         metadata
+            .get(field)
+            .is_none_or(|value| value.is_null() || value.is_string())
+    });
+    // Python projection: ConversationRoleMixin validates these serialized fields before
+    // push_conversation_metadata mirrors non-null values into metadata.
+    let top_level_role_valid = payload.get("role").is_none_or(|role| {
+        role.is_null()
+            || matches!(
+                role.as_str(),
+                Some("user" | "assistant" | "system" | "tool")
+            )
+    });
+    let top_level_turn_index_valid = payload
+        .get("turn_index")
+        .is_none_or(|index| index.is_null() || python_integer_input(index).is_some());
+    let top_level_identifiers_valid = ["conversation_id", "user_id"].into_iter().all(|field| {
+        payload
             .get(field)
             .is_none_or(|value| value.is_null() || value.is_string())
     });
@@ -1354,6 +1367,9 @@ fn validate_conversation_node_metadata(
             .is_some_and(|index| python_integer_input(index).is_none())
         || !role_valid
         || !optional_fields_valid
+        || !top_level_role_valid
+        || !top_level_turn_index_valid
+        || !top_level_identifiers_valid
         || forbidden.iter().any(|key| metadata.contains_key(*key))
     {
         return Err(GraphModelError::InvalidEntityFields {
@@ -3261,6 +3277,11 @@ mod tests {
             let baseline_index = usize::from(model_class == GraphModelClass::ConversationEdge);
             let mut payload = graph_fixture["cases"][baseline_index]["payload"].clone();
             payload["metadata"] = case["metadata"].clone();
+            if let Some(top_level) = case["top_level"].as_object() {
+                for (field, value) in top_level {
+                    payload[field] = value.clone();
+                }
+            }
             let result = GraphModelEnvelope::new(model_class, payload).validate_family_v1();
             assert_eq!(
                 result.is_ok(),

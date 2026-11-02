@@ -62,6 +62,27 @@
       "valid": false
     },
     {
+      "id": "conversation_node_top_level_invalid_role",
+      "model_class": "conversation_node",
+      "metadata": {"level_from_root": 0, "role": "user"},
+      "top_level": {"role": "developer"},
+      "valid": false
+    },
+    {
+      "id": "conversation_node_top_level_invalid_turn_index",
+      "model_class": "conversation_node",
+      "metadata": {"level_from_root": 0, "turn_index": 2},
+      "top_level": {"turn_index": "not-an-integer"},
+      "valid": false
+    },
+    {
+      "id": "conversation_node_top_level_identifier_must_be_string_or_null",
+      "model_class": "conversation_node",
+      "metadata": {"level_from_root": 0, "conversation_id": "conversation:test"},
+      "top_level": {"conversation_id": 7},
+      "valid": false
+    },
+    {
       "id": "conversation_edge_defaults_omitted",
       "model_class": "conversation_edge",
       "metadata": {},
