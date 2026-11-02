@@ -37,6 +37,8 @@
     }
   ],
   "expected": {
+    "reified_d3_node_order": ["n-alpha", "n-beta", "e-base", "e-hyper", "e-terminal"],
+    "classic_d3_node_order": ["n-alpha", "n-beta"],
     "reified_d3_links": [
       {"source": "n-alpha", "target": "e-base", "role": "src", "relation": "supports"},
       {"source": "e-base", "target": "n-beta", "role": "tgt", "relation": "supports"},
@@ -60,6 +62,14 @@
     "classic_cytoscape_links": [
       {"id": "e-base::n-alpha->n-beta", "source": "n-alpha", "target": "n-beta", "label": "supports", "class": ""},
       {"id": "e-hyper::n-alpha->n-beta", "source": "n-alpha", "target": "n-beta", "label": "qualifies", "class": ""}
+    ],
+    "reified_cytoscape_element_order": [
+      "n-alpha", "n-beta", "e-base", "e-base::src::n-alpha", "e-base::tgt::n-beta",
+      "e-hyper", "e-hyper::src::n-alpha", "e-hyper::srcE::e-base", "e-hyper::tgt::n-beta",
+      "e-hyper::tgtE::e-terminal", "e-terminal"
+    ],
+    "classic_cytoscape_element_order": [
+      "n-alpha", "n-beta", "e-base::n-alpha->n-beta", "e-hyper::n-alpha->n-beta"
     ]
   }
 }

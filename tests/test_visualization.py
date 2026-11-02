@@ -497,9 +497,9 @@ def test_hyperedge_visualization_matches_shared_python_contract() -> None:
     )
 
     d3 = to_d3_force(engine, mode="reify")
-    assert {node["id"] for node in d3["nodes"]} == {
-        node["id"] for node in fixture["nodes"]
-    } | {edge["id"] for edge in fixture["edges"]}
+    assert [node["id"] for node in d3["nodes"]] == fixture["expected"][
+        "reified_d3_node_order"
+    ]
     actual_reified_links = {
         (link["source"], link["target"], link["role"], link["relation"])
         for link in d3["links"]
@@ -511,6 +511,9 @@ def test_hyperedge_visualization_matches_shared_python_contract() -> None:
     assert actual_reified_links == expected_reified_links
 
     classic_d3 = to_d3_force(engine, mode="classic")
+    assert [node["id"] for node in classic_d3["nodes"]] == fixture["expected"][
+        "classic_d3_node_order"
+    ]
     assert {
         (link["source"], link["target"], link["relation"])
         for link in classic_d3["links"]
@@ -520,6 +523,9 @@ def test_hyperedge_visualization_matches_shared_python_contract() -> None:
     }
 
     reified_cytoscape = to_cytoscape(engine, mode="reify")
+    assert [element["data"]["id"] for element in reified_cytoscape["elements"]] == (
+        fixture["expected"]["reified_cytoscape_element_order"]
+    )
     actual_reified_cytoscape_links = {
         (
             element["data"]["id"],
@@ -543,6 +549,9 @@ def test_hyperedge_visualization_matches_shared_python_contract() -> None:
     }
 
     classic_cytoscape = to_cytoscape(engine, mode="classic")
+    assert [element["data"]["id"] for element in classic_cytoscape["elements"]] == (
+        fixture["expected"]["classic_cytoscape_element_order"]
+    )
     assert {
         (
             element["data"]["id"],

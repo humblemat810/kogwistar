@@ -1316,6 +1316,7 @@ pub fn graph_viz_d3_from_records(
     insertion_method: Option<&str>,
 ) -> Value {
     let mut node_values = BTreeMap::<String, Value>::new();
+    let mut node_order = Vec::<String>::new();
     let selected_nodes = graph_viz_selected_records(nodes, doc_id, insertion_method);
     for node in selected_nodes {
         let mut value = record_json(node)
@@ -1339,6 +1340,9 @@ pub fn graph_viz_d3_from_records(
                 .filter(Value::is_object)
                 .unwrap_or_else(|| Value::Object(Map::new())),
         );
+        if !node_values.contains_key(&node.id) {
+            node_order.push(node.id.clone());
+        }
         node_values.insert(node.id.clone(), value);
     }
     let node_ids = node_values.keys().cloned().collect::<BTreeSet<_>>();
@@ -1377,6 +1381,7 @@ pub fn graph_viz_d3_from_records(
                     record_field(edge, "summary").unwrap_or(Value::Null),
                 );
                 object.insert("properties".to_owned(), properties.clone());
+                node_order.push(edge.id.clone());
                 node_values.insert(edge.id.clone(), edge_node);
             }
             for source in sources.iter().filter(|id| node_ids.contains(*id)) {
@@ -1400,7 +1405,7 @@ pub fn graph_viz_d3_from_records(
         }
     }
     json!({
-        "nodes": node_values.into_values().collect::<Vec<_>>(),
+        "nodes": node_order.into_iter().filter_map(|id| node_values.remove(&id)).collect::<Vec<_>>(),
         "links": links,
         "mode": mode,
         "doc_id": doc_id,
@@ -1429,7 +1434,12 @@ pub fn graph_viz_cytoscape_from_records(
         .iter()
         .map(|edge| edge.id.clone())
         .collect::<BTreeSet<_>>();
-    for node in d3["nodes"].as_array().into_iter().flatten() {
+    let d3_nodes = d3["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    for node in d3_nodes.iter().filter(|node| node["type"] == "entity") {
         let data = if node["type"] == "entity" {
             json!({"id": node["id"], "label": node["label"], "type": "entity"})
         } else {
@@ -1441,40 +1451,61 @@ pub fn graph_viz_cytoscape_from_records(
         }));
     }
     if mode.eq_ignore_ascii_case("reify") {
-        for link in d3["links"].as_array().into_iter().flatten() {
-            let role = link["role"].as_str().unwrap_or_default();
-            let edge_id = if role == "src" {
-                link["target"].as_str().unwrap_or_default()
-            } else {
-                link["source"].as_str().unwrap_or_default()
-            };
-            let endpoint_id = if role == "src" {
-                link["source"].as_str().unwrap_or_default()
-            } else {
-                link["target"].as_str().unwrap_or_default()
-            };
-            let endpoint_is_edge = visible_edge_ids.contains(endpoint_id);
-            let endpoint_role = match (role, endpoint_is_edge) {
-                ("src", true) => "srcE",
-                ("src", false) => "src",
-                (_, true) => "tgtE",
-                (_, false) => "tgt",
-            };
-            elements.push(json!({
-                "data": {
-                    "id": format!("{edge_id}::{endpoint_role}::{endpoint_id}"),
-                    "source": link["source"],
-                    "target": link["target"],
-                    "label": link["relation"],
-                },
-                "classes": role,
-            }));
+        let links = d3["links"].as_array().into_iter().flatten().fold(
+            BTreeMap::<String, Vec<&Value>>::new(),
+            |mut grouped, link| {
+                let role = link["role"].as_str().unwrap_or_default();
+                let edge_id = if role == "src" {
+                    link["target"].as_str().unwrap_or_default()
+                } else {
+                    link["source"].as_str().unwrap_or_default()
+                };
+                grouped.entry(edge_id.to_owned()).or_default().push(link);
+                grouped
+            },
+        );
+        for edge in &selected_edges {
+            if let Some(node) = d3_nodes
+                .iter()
+                .find(|node| node["type"] == "edge-node" && node["id"] == edge.id)
+            {
+                elements.push(json!({
+                    "data": {"id": node["id"], "label": node["label"], "type": "edge-node"},
+                    "classes": "edge-node",
+                }));
+            }
+            for link in links.get(&edge.id).into_iter().flatten() {
+                let role = link["role"].as_str().unwrap_or_default();
+                let edge_id = if role == "src" {
+                    link["target"].as_str().unwrap_or_default()
+                } else {
+                    link["source"].as_str().unwrap_or_default()
+                };
+                let endpoint_id = if role == "src" {
+                    link["source"].as_str().unwrap_or_default()
+                } else {
+                    link["target"].as_str().unwrap_or_default()
+                };
+                let endpoint_is_edge = visible_edge_ids.contains(endpoint_id);
+                let endpoint_role = match (role, endpoint_is_edge) {
+                    ("src", true) => "srcE",
+                    ("src", false) => "src",
+                    (_, true) => "tgtE",
+                    (_, false) => "tgt",
+                };
+                elements.push(json!({
+                    "data": {
+                        "id": format!("{edge_id}::{endpoint_role}::{endpoint_id}"),
+                        "source": link["source"],
+                        "target": link["target"],
+                        "label": link["relation"],
+                    },
+                    "classes": role,
+                }));
+            }
         }
     } else {
-        for edge in edges
-            .iter()
-            .filter(|edge| visible_edge_ids.contains(&edge.id))
-        {
+        for edge in &selected_edges {
             let relation = graph_visualization_edge_relation(edge);
             for source in graph_record_string_list(edge, "source_ids")
                 .iter()
@@ -3801,14 +3832,13 @@ mod tests {
             .unwrap()
             .iter()
             .map(|node| node["id"].as_str().unwrap())
-            .collect::<BTreeSet<_>>();
-        let expected_node_ids = fixture["nodes"]
+            .collect::<Vec<_>>();
+        let expected_node_ids = expected["reified_d3_node_order"]
             .as_array()
             .unwrap()
             .iter()
-            .chain(fixture["edges"].as_array().unwrap())
-            .map(|record| record["id"].as_str().unwrap())
-            .collect::<BTreeSet<_>>();
+            .map(|id| id.as_str().unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(actual_node_ids, expected_node_ids);
         let actual_reified_links = d3["links"]
             .as_array()
@@ -3839,6 +3869,20 @@ mod tests {
         assert_eq!(actual_reified_links, expected_reified_links);
 
         let classic_d3 = graph_viz_d3_from_records(&nodes, &edges, None, "classic", None);
+        assert_eq!(
+            classic_d3["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|node| node["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected["classic_d3_node_order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
         let actual_classic_links = classic_d3["links"]
             .as_array()
             .unwrap()
@@ -3868,6 +3912,20 @@ mod tests {
         let cytoscape_links =
             |mode: &str| graph_viz_cytoscape_from_records(&nodes, &edges, None, mode, None);
         let reified_cytoscape = cytoscape_links("reify");
+        assert_eq!(
+            reified_cytoscape["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|element| element["data"]["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected["reified_cytoscape_element_order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
         let actual_reified_cytoscape_links = reified_cytoscape["elements"]
             .as_array()
             .unwrap()
@@ -3903,6 +3961,20 @@ mod tests {
         );
 
         let classic_cytoscape = cytoscape_links("classic");
+        assert_eq!(
+            classic_cytoscape["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|element| element["data"]["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected["classic_cytoscape_element_order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
         let actual_classic_cytoscape_links = classic_cytoscape["elements"]
             .as_array()
             .unwrap()
