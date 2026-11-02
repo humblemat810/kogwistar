@@ -66,16 +66,6 @@ def _python_symbol_exists(source: str, symbol: str) -> bool:
 
 def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> bool:
     tree = ast.parse(source)
-    fixture_variables = {
-        target.id
-        for node in tree.body
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and fixture_name in (ast.get_source_segment(source, node.value) or "")
-        for target in (
-            node.targets if isinstance(node, ast.Assign) else [node.target]
-        )
-        if isinstance(target, ast.Name)
-    }
     function = next(
         (
             node
@@ -87,6 +77,20 @@ def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -
     )
     if function is None:
         return False
+    fixture_setup_nodes = [
+        node
+        for node in [*tree.body, *ast.walk(function)]
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and fixture_name in (ast.get_source_segment(source, node.value) or "")
+    ]
+    fixture_variables = {
+        target.id
+        for node in fixture_setup_nodes
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Name)
+    }
     calls = [
         node
         for node in ast.walk(function)
