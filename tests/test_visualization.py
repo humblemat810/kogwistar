@@ -67,6 +67,38 @@ def test_visualization_insertion_method_filter_matches_shared_rust_fixture() -> 
 
 
 @pytest.mark.ci
+def test_visualization_route_graph_type_selection_matches_shared_rust_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    fixture_path = ROOT / "contracts/golden/visualization-graph-type-v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engines = {
+        "knowledge": object(),
+        "conversation": object(),
+        "workflow": object(),
+        "wisdom": object(),
+    }
+    selected: list[object] = []
+
+    monkeypatch.setattr(server, "engine", engines["knowledge"])
+    monkeypatch.setattr(server, "conversation_engine", engines["conversation"])
+    monkeypatch.setattr(server, "workflow_engine", engines["workflow"])
+    monkeypatch.setattr(server, "wisdom_engine", engines["wisdom"])
+    monkeypatch.setattr(
+        server,
+        "to_cytoscape",
+        lambda engine, **_kwargs: selected.append(engine) or {"ok": True},
+    )
+
+    for case in fixture["cases"]:
+        response = server.api_viz_cytoscape(graph_type=case["input"])
+        assert response.body == b'{"ok":true}'
+        assert selected.pop() is engines[case["expected"]]
+
+
+@pytest.mark.ci
 def test_pretty_print_graph():
     doc_id = "doc::test::pretty_print_graph"
     engine = GraphKnowledgeEngine(

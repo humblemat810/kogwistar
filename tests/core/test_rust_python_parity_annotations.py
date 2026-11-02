@@ -203,7 +203,7 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         assert re.search(rf"\b(?:pub\s+)?fn {re.escape(rust_symbol)}\s*\(", rust_source)
 
         python_path, python_symbol = _parse_target(fields["python"])
-        python_source = python_path.read_text(encoding="utf-8")
+        python_source = python_path.read_text(encoding="utf-8-sig")
         assert _python_symbol_exists(python_source, python_symbol)
 
         rust_test_path, rust_test_symbol = _parse_target(fields["rust_test"])
@@ -213,7 +213,7 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         )
 
         python_test_path, python_test_symbol = _parse_target(fields["python_test"])
-        python_test_source = python_test_path.read_text(encoding="utf-8")
+        python_test_source = python_test_path.read_text(encoding="utf-8-sig")
         assert _python_symbol_exists(python_test_source, python_test_symbol)
 
         fixture_path = ROOT / fields["fixture"]

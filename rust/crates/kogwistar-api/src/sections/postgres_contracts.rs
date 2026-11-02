@@ -46,6 +46,35 @@ impl GraphVisualizationRequest {
     }
 }
 
+#[cfg(test)]
+mod visualization_graph_type_contract_tests {
+    use super::GraphVisualizationRequest;
+    use serde_json::Value;
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_contracts.rs#graph_type_normalization_matches_python_golden_contract; python=kogwistar/server_mcp_with_admin.py#api_viz_cytoscape; fixture=contracts/golden/visualization-graph-type-v1.json; rust_test=rust/crates/kogwistar-api/src/sections/postgres_contracts.rs#graph_type_normalization_matches_python_golden_contract; python_test=tests/test_visualization.py#test_visualization_route_graph_type_selection_matches_shared_rust_fixture
+    #[test]
+    fn graph_type_normalization_matches_python_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-graph-type-v1.json"
+        )))
+        .expect("shared graph-type contract fixture is valid JSON");
+
+        for case in fixture["cases"].as_array().expect("fixture cases") {
+            let request: GraphVisualizationRequest = serde_json::from_value(serde_json::json!({
+                "graph_type": case["input"]
+            }))
+            .expect("fixture graph_type deserializes");
+            assert_eq!(
+                request.truth_graph(),
+                case["expected"].as_str().expect("expected graph type"),
+                "graph_type input: {}",
+                case["input"]
+            );
+        }
+    }
+}
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeOwnerBindingV1 {
