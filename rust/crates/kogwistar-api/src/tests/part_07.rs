@@ -449,33 +449,30 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
 
 #[tokio::test]
 async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_runs_from_inbox() {
+    let dashboard_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/operator-dashboard-v1.json"
+    )))
+    .unwrap();
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-operator-dashboard-{}.sqlite",
         uuid::Uuid::new_v4().simple()
     ));
     let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
-    service
-        .store
-        .create_server_run(ServerRunCreate {
-            run_id: "dashboard-blocked-run".to_owned(),
-            conversation_id: "dashboard-conversation".to_owned(),
-            workflow_id: "dashboard-workflow".to_owned(),
-            user_id: Some("alice".to_owned()),
-            user_turn_node_id: "dashboard-turn".to_owned(),
-            status: "suspended".to_owned(),
-        })
-        .unwrap();
-    service
-        .store
-        .create_server_run(ServerRunCreate {
-            run_id: "dashboard-waiting-run".to_owned(),
-            conversation_id: "dashboard-conversation".to_owned(),
-            workflow_id: "dashboard-workflow".to_owned(),
-            user_id: Some("alice".to_owned()),
-            user_turn_node_id: "dashboard-waiting-turn".to_owned(),
-            status: "waiting".to_owned(),
-        })
-        .unwrap();
+    for status in dashboard_contract["blocked_statuses"].as_array().unwrap() {
+        let status = status.as_str().unwrap();
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: format!("dashboard-{status}-run"),
+                conversation_id: "dashboard-conversation".to_owned(),
+                workflow_id: "dashboard-workflow".to_owned(),
+                user_id: Some("alice".to_owned()),
+                user_turn_node_id: format!("dashboard-{status}-turn"),
+                status: status.to_owned(),
+            })
+            .unwrap();
+    }
     for (message_id, inbox_id, status, status_namespace) in [
         ("dashboard-pending-a", "ops", "pending", "tenant-workflow"),
         ("dashboard-pending-b", "ops", "pending", "tenant-workflow"),
@@ -523,17 +520,44 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
     let allowed = service.execute(request(json!(["project_view"]))).await;
     assert_eq!(allowed.status, StatusCode::OK.as_u16());
     let dashboard: Value = serde_json::from_slice(&allowed.body).unwrap();
-    assert_eq!(dashboard["process_table"].as_array().unwrap().len(), 2);
-    assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 2);
+    assert_eq!(dashboard["process_table"].as_array().unwrap().len(), 4);
+    assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 4);
+    let dashboard_fields = dashboard_contract["dashboard_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(dashboard_fields.iter().all(|field| dashboard.get(*field).is_some()));
     let blocked_nodes = dashboard["blocked_flow_graph"]["nodes"].as_array().unwrap();
-    assert_eq!(dashboard["blocked_flow_graph"]["blocked_count"], 2);
-    assert_eq!(blocked_nodes.len(), 2);
-    assert!(blocked_nodes.iter().any(|node| {
-        node["id"] == "dashboard-waiting-run"
-            && node["kind"] == "workflow_run"
-            && node["status"] == "waiting"
-            && node.as_object().is_some_and(|fields| fields.len() == 5)
-    }));
+    assert_eq!(dashboard["blocked_flow_graph"]["blocked_count"], 4);
+    assert_eq!(blocked_nodes.len(), 4);
+    let expected_node_fields = dashboard_contract["blocked_flow_node_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_statuses = dashboard_contract["blocked_statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|status| status.as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_statuses = blocked_nodes
+        .iter()
+        .map(|node| node["status"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_statuses, expected_statuses);
+    for node in blocked_nodes {
+        let fields = node
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(fields, expected_node_fields);
+    }
     assert_eq!(dashboard["operator_inbox"], json!([]));
     assert_eq!(dashboard["message_queue"]["total"], 3);
     assert_eq!(dashboard["message_queue"]["by_status"]["pending"], 2);

@@ -2194,6 +2194,7 @@ fn process_table_effect(
     json_effect(StatusCode::OK, json!({"processes": processes}))
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_operator_dashboard_requires_project_view_and_separates_blocked_runs_from_inbox; python_test=tests/server/test_service_daemon_model.py#test_service_operator_dashboard_round_trip
 fn operational_effect(
     request: &ApiEffectRequest,
     path: &str,
