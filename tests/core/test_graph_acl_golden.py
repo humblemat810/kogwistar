@@ -45,6 +45,28 @@ def test_python_acl_visibility_matches_shared_golden_contract() -> None:
 
     assert visible == fixture["expected_visible"]
 
+    isolation = fixture["graph_type_isolation"]
+    graph_scoped_acl = ACLGraph(cache_enabled=True)
+    for case in isolation["cases"]:
+        graph_scoped_acl.add_record(
+            grain=case["grain"],
+            truth_graph=case["truth_graph"],
+            entity_id=isolation["entity_id"],
+            version=1,
+            mode=case["mode"],
+            owner_id=case.get("owner_id"),
+        )
+    for case in isolation["cases"]:
+        decision = graph_scoped_acl.decide(
+            grain=case["grain"],
+            truth_graph=case["truth_graph"],
+            entity_id=isolation["entity_id"],
+            principal_id=principal["id"],
+            principal_groups=principal["groups"],
+            security_scope=principal["security_scope"],
+        )
+        assert decision.visible is case["expected_visible"]
+
 
 def test_python_node_item_usage_matches_shared_golden_contract() -> None:
     fixture = json.loads(

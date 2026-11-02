@@ -23,5 +23,12 @@
   "expected_visible": {
     "nodes": ["node-public", "node-owner", "node-shared", "node-group", "node-unicode-group", "node-scope"],
     "edges": ["edge-public", "edge-shared"]
+  },
+  "graph_type_isolation": {
+    "entity_id": "same-id-in-distinct-graphs",
+    "cases": [
+      {"truth_graph": "knowledge", "grain": "node", "mode": "public", "expected_visible": true},
+      {"truth_graph": "conversation", "grain": "node", "mode": "private", "owner_id": "bob", "expected_visible": false}
+    ]
   }
 }

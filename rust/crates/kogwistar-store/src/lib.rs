@@ -5105,6 +5105,43 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(node_ids, expected_nodes);
         assert_eq!(edge_ids, expected_edges);
+
+        let isolation = &fixture["graph_type_isolation"];
+        let entity_id = isolation["entity_id"].as_str().expect("entity ID");
+        let mut scoped_nodes = vec![GraphRecord::new(entity_id)];
+        for case in isolation["cases"].as_array().expect("graph-type cases") {
+            let mut acl = GraphRecord::new(format!(
+                "acl-{}",
+                case["truth_graph"].as_str().expect("truth graph")
+            ));
+            acl.metadata.extend(
+                serde_json::json!({
+                    "entity_type": "acl_record",
+                    "acl_truth_graph": case["truth_graph"],
+                    "acl_target_entity_id": entity_id,
+                    "acl_target_grain": case["grain"],
+                    "acl_version": 1,
+                    "acl_mode": case["mode"],
+                    "owner_id": case.get("owner_id")
+                })
+                .as_object()
+                .expect("ACL metadata object")
+                .clone(),
+            );
+            scoped_nodes.push(acl);
+        }
+        for case in isolation["cases"].as_array().expect("graph-type cases") {
+            let truth_graph = case["truth_graph"].as_str().expect("truth graph");
+            let (visible, _) =
+                graph_records_visible_by_acl(&scoped_nodes, &[], truth_graph, &principal);
+            assert_eq!(
+                visible.iter().any(|record| record.id == entity_id),
+                case["expected_visible"]
+                    .as_bool()
+                    .expect("visibility expectation"),
+                "ACL decision leaked across graph type {truth_graph}"
+            );
+        }
     }
 
     #[test]
