@@ -23,6 +23,7 @@ mod native_seam;
 mod projection_checkpoint;
 mod provider_event;
 mod provider_request;
+mod search_index;
 mod source_map;
 mod tool_audit;
 pub use agent_event::{
@@ -89,6 +90,10 @@ pub use provider_event::{
 pub use provider_request::{
     PROVIDER_REQUEST_CONTRACT_VERSION, ProviderRequestContractError, ProviderRequestV1,
     provider_request_from_str,
+};
+pub use search_index::{
+    SearchIndexEntryV1, SearchIndexUpsertV1, build_search_index_embedding_text,
+    make_search_index_key,
 };
 pub use source_map::{
     SOURCE_MAP_WIRE_VERSION, SourceMapChunkV1, SourceMapV1, SourceMapValidationError,
