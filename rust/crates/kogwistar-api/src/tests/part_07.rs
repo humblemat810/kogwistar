@@ -906,7 +906,7 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
             scope: GraphScope {
                 namespace: "docs".to_owned(),
                 workspace_id: None,
-                graph_space: Some(String::new()),
+                graph_space: None,
             },
             table: "gke_nodes".to_owned(),
             ids: Some(vec![graph_node_id.to_owned()]),
