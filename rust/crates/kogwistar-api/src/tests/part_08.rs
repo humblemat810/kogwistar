@@ -1971,6 +1971,123 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             }
         }
     }
+    let item_node_id = "node-source-span-private";
+    let item_grounding_id = format!("{item_node_id}::mention::0");
+    let item_span_id = format!("{item_grounding_id}::span::0");
+    let mut item_mutations = vec![json!({
+        "scope": scope,
+        "table": "gke_nodes",
+        "entity_kind": "node",
+        "event_id": item_node_id,
+        "op": "ADD",
+        "payload": {"id": item_node_id},
+        "record": {
+            "id": item_node_id,
+            "document": item_node_id,
+            "metadata": {
+                "entity_type": "node",
+                "label": item_node_id,
+                "mentions": [{"spans": [{}]}]
+            },
+            "embedding": [1.0, 0.0]
+        },
+        "embedding_dim": 2
+    })];
+    for (event_id, grain, target_item_id, mode) in [
+        ("acl-source-node", "node", None, "public"),
+        (
+            "acl-source-grounding",
+            "grounding",
+            Some(item_grounding_id.as_str()),
+            "public",
+        ),
+        (
+            "acl-source-span",
+            "span",
+            Some(item_span_id.as_str()),
+            "private",
+        ),
+    ] {
+        let mut acl_metadata = json!({
+            "entity_type": "acl_record",
+            "acl_truth_graph": fixture["truth_graph"],
+            "acl_target_entity_id": item_node_id,
+            "acl_target_grain": grain,
+            "acl_version": 1,
+            "acl_mode": mode
+        });
+        if let Some(target_item_id) = target_item_id {
+            acl_metadata["acl_target_item_id"] = json!(target_item_id);
+        }
+        if mode == "private" {
+            acl_metadata["owner_id"] = json!("owner-b");
+        }
+        item_mutations.push(json!({
+            "scope": scope,
+            "table": "gke_nodes",
+            "entity_kind": "node",
+            "event_id": event_id,
+            "op": "ADD",
+            "payload": {"id": event_id},
+            "record": {
+                "id": event_id,
+                "document": null,
+                "metadata": acl_metadata,
+                "embedding": null
+            },
+            "embedding_dim": 0
+        }));
+    }
+    let write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("owner-b", &["write_graph"], None)),
+                )
+                .body(Body::from(
+                    json!({"contract_version":1,"atomic":true,"mutations":item_mutations,"index_jobs":[]})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.status(), StatusCode::OK);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/vector-query")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("reader-a", &["read_graph"], None)),
+                )
+                .body(Body::from(
+                    json!({
+                        "entity_kind": "node",
+                        "query_embeddings": [[1.0, 0.0]],
+                        "metric": "cosine",
+                        "truth_graph": fixture["truth_graph"],
+                        "where": {"label": item_node_id},
+                        "n_results": 1,
+                        "include": ["distances"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(result["ids"], json!([[]]));
 }
 
 #[test]

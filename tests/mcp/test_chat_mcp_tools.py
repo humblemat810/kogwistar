@@ -593,6 +593,7 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
         for edge in edges:
             engine.write.add_edge(edge)
 
+
     for principal in fixture["principals"]:
         with _claims(
             "ro",
@@ -650,6 +651,32 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
         ["visible-public"],
         ["visible-public"],
     ]
+
+    source_restricted = build_entity_node(
+        node_id="node-source-span-private",
+        doc_id="D-vector-acl-source-span",
+        label="node-source-span-private",
+        metadata={"visibility": "public"},
+    )
+    source_restricted.mentions = [Grounding(spans=[Span.from_dummy_for_conversation()])]
+    with _claims("rw", fixture["truth_graph"], sub="owner-b"):
+        engine.write.add_node(source_restricted)
+        engine.acl.record_acl(
+            grain="span",
+            truth_graph=fixture["truth_graph"],
+            entity_id=source_restricted.id,
+            target_item_id=f"{source_restricted.id}::mention::0::span::0",
+            version=2,
+            mode="private",
+            owner_id="owner-b",
+        )
+    with _claims("ro", fixture["truth_graph"], sub="reader-a"):
+        source_restricted_hits = engine.read.query_nodes(
+            query_embeddings=[[1.0, 0.0]],
+            where={"label": "node-source-span-private"},
+            n_results=1,
+        )
+    assert [[node.id for node in batch] for batch in source_restricted_hits] == [[]]
 
 
 def _success_runner(req: AnswerRunRequest) -> dict:
