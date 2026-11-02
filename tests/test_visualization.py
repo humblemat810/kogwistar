@@ -182,8 +182,8 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     server.api_viz_cytoscape(mode="classic", graph_type=graph_type),
                 )
                 route_results[graph_type] = (
-                    json.loads(d3_response.body),
-                    json.loads(cytoscape_response.body),
+                    json.loads(bytes(d3_response.body)),
+                    json.loads(bytes(cytoscape_response.body)),
                 )
         finally:
             claims_ctx.reset(token)
