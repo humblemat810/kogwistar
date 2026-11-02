@@ -1216,7 +1216,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert!(vector_query.get("documents").is_none());
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/visualization-insertion-filter-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_public_routes_forward_shared_fixture_options
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
@@ -1383,6 +1383,98 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
         })
         .await
         .unwrap();
+
+    let acl_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-acl-v1.json"
+    )))
+    .unwrap();
+    let isolation = &acl_fixture["graph_type_isolation"];
+    let isolation_id = isolation["entity_id"].as_str().unwrap();
+    for (store, case) in [
+        (&service.store, &isolation["cases"][0]),
+        (&service.conversation_store, &isolation["cases"][1]),
+        (&service.workflow_store, &isolation["cases"][2]),
+        (&service.wisdom_store, &isolation["cases"][3]),
+    ] {
+        let graph_type = case["truth_graph"].as_str().unwrap();
+        store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: isolation_id.to_owned(),
+                    document: Some(json!({"id": isolation_id, "label": isolation_id}).to_string()),
+                    metadata: Map::from_iter([
+                        ("entity_type".to_owned(), json!("node")),
+                        ("lifecycle_status".to_owned(), json!("active")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        let mut acl = Map::from_iter([
+            ("entity_type".to_owned(), json!("acl_record")),
+            ("acl_truth_graph".to_owned(), json!(graph_type)),
+            ("acl_target_grain".to_owned(), json!("node")),
+            ("acl_target_entity_id".to_owned(), json!(isolation_id)),
+            ("acl_mode".to_owned(), case["mode"].clone()),
+            ("acl_version".to_owned(), json!(1)),
+            ("tombstoned".to_owned(), json!(false)),
+        ]);
+        if let Some(owner_id) = case.get("owner_id") {
+            acl.insert("owner_id".to_owned(), owner_id.clone());
+        }
+        store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: format!("acl|{isolation_id}"),
+                    document: Some("{}".to_owned()),
+                    metadata: acl,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+    }
+
+    for case in isolation["cases"].as_array().unwrap() {
+        let graph_type = case["truth_graph"].as_str().unwrap();
+        let result = ApplicationService::execute(
+            &service,
+            ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+                body: serde_json::to_vec(&json!({"graph_type": graph_type})).unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "user_id": "alice",
+                    "storage_ns": "viz-test",
+                    "ns": ["viz-test"],
+                    "capabilities": ["read_graph"]
+                }),
+            },
+        )
+        .await;
+        assert_eq!(result.status, StatusCode::OK.as_u16(), "{graph_type}");
+        let payload: Value = serde_json::from_slice(&result.body).unwrap();
+        let visible = payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == isolation_id);
+        assert_eq!(
+            visible,
+            case["expected_visible"].as_bool().unwrap(),
+            "graph type {graph_type} must select its own graph and ACL policy"
+        );
+    }
 
     let conversation_result = ApplicationService::execute(
         &service,
