@@ -8422,6 +8422,65 @@
         let mcp_event_payload = serde_json::to_string(mcp_provider_event).unwrap();
         assert!(!mcp_event_payload.contains("The workflow runtime state is stored in the graph."));
         assert!(!mcp_event_payload.contains("The selected evidence states this directly."));
+        let process_table_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"alice","role":"rw","roles":["rw"],"ns":["workflow"],
+                "storage_ns":"alpha","execution_ns":"alpha",
+                "capabilities":["workflow.run.read"],"exp":now_seconds + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+        )
+        .unwrap();
+        let process_table_tools = client
+            .post(format!("{base_url}/mcp/workflow"))
+            .bearer_auth(&process_table_token)
+            .json(&json!({"jsonrpc":"2.0","id":73,"method":"tools/list"}))
+            .send()
+            .await
+            .unwrap();
+        assert!(process_table_tools.status().is_success());
+        let process_table_tools: Value = process_table_tools.json().await.unwrap();
+        assert!(process_table_tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "workflow.process_table"));
+        let process_table_response = client
+            .post(format!("{base_url}/mcp/workflow"))
+            .bearer_auth(&process_table_token)
+            .json(&json!({
+                "jsonrpc":"2.0",
+                "id":74,
+                "method":"tools/call",
+                "params":{
+                    "name":"workflow.process_table",
+                    "arguments":{
+                        "status":"succeeded",
+                        "workflow_id":"agentic_answering.v2",
+                        "conversation_id":"answer-e2e-conversation",
+                        "limit":10
+                    }
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            process_table_response.status().is_success(),
+            "authorized process-table MCP call should succeed"
+        );
+        let process_table: Value = process_table_response.json().await.unwrap();
+        let processes = process_table["result"]["processes"]
+            .as_array()
+            .unwrap_or_else(|| panic!("unexpected process-table MCP response: {process_table:#?}"));
+        let process = processes
+            .iter()
+            .find(|process| process["process_id"] == "rust-only-answer-e2e")
+            .expect("process table should include the completed Rust-native run");
+        assert_eq!(process["process_kind"], "workflow_run");
+        assert_eq!(process["status"], "succeeded");
+        assert_eq!(process["workflow_id"], "agentic_answering.v2");
         let streamed_provider_events = durable_events
             .iter()
             .filter(|event| event.event_type == "workflow.provider_event.v1")

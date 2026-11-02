@@ -662,6 +662,18 @@ fn capability_allowed_for_principal(
     audit_capability(principal, &mut state, action, required)
 }
 
+fn capability_any_allowed(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    action: &str,
+    alternatives: &[&str],
+) -> bool {
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    audit_capability_any(&request.principal, &mut state, action, alternatives)
+}
+
 fn graph_mutation_scope_allowed(scope: &GraphScope, security_scope: &Value) -> bool {
     if scope.namespace
         != security_scope

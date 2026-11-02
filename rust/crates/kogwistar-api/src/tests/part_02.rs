@@ -574,7 +574,11 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("workflow", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(supported, 41);
+        assert_eq!(supported, 42);
+        assert!(rust_mcp_tool_supported(
+            "workflow",
+            "workflow.process_table"
+        ));
         assert!(rust_mcp_tool_supported(
             "workflow",
             "workflow.process_timeline"
@@ -582,6 +586,41 @@
         assert!(rust_mcp_tool_supported("workflow", "workflow.run_steps"));
         assert!(rust_mcp_tool_supported("workflow", "workflow.run_evidence"));
         assert!(rust_mcp_tool_supported("workflow", "workflow.run_lineage"));
+    }
+
+    #[test]
+    fn any_capability_gate_accepts_one_grant_and_audits_alternatives() {
+        let principal = json!({"sub":"reader","role":"ro"});
+        let mut state = CapabilityState::default();
+        state.revoked.insert(
+            "reader".to_owned(),
+            BTreeSet::from(["project_view".to_owned()]),
+        );
+
+        assert!(audit_capability_any(
+            &principal,
+            &mut state,
+            "read process table",
+            &["project_view", "workflow.run.read"],
+        ));
+        assert_eq!(state.audit_log[0]["outcome"], "allow");
+        assert_eq!(
+            state.audit_log[0]["required_any"],
+            json!(["project_view", "workflow.run.read"])
+        );
+
+        state
+            .revoked
+            .get_mut("reader")
+            .unwrap()
+            .insert("workflow.run.read".to_owned());
+        assert!(!audit_capability_any(
+            &principal,
+            &mut state,
+            "read process table",
+            &["project_view", "workflow.run.read"],
+        ));
+        assert_eq!(state.audit_log[1]["outcome"], "deny");
     }
 
     #[tokio::test]

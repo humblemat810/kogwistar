@@ -637,6 +637,60 @@ async fn mcp_handler(
                     principal: principal.clone(),
                 })
             }
+            "workflow.process_table" => {
+                let valid_names = arguments
+                    .keys()
+                    .all(|name| matches!(name.as_str(), "status" | "workflow_id" | "conversation_id" | "limit"));
+                let optional_text = |name: &str| match arguments.get(name) {
+                    None | Some(Value::Null) => Some(None),
+                    Some(Value::String(value)) => Some((!value.is_empty()).then_some(value.as_str())),
+                    _ => None,
+                };
+                let status = optional_text("status");
+                let workflow_id = optional_text("workflow_id");
+                let conversation_id = optional_text("conversation_id");
+                let limit = match arguments.get("limit") {
+                    None => Some(100),
+                    Some(Value::Number(value)) => value.as_i64(),
+                    _ => None,
+                };
+                let (Some(status), Some(workflow_id), Some(conversation_id), Some(limit)) =
+                    (status, workflow_id, conversation_id, limit)
+                else {
+                    return Json(json!({
+                        "jsonrpc":"2.0",
+                        "id":id,
+                        "error":{"code":-32602,"message":"Invalid process-table arguments"}
+                    }))
+                    .into_response();
+                };
+                if !valid_names || !(1..=10_000).contains(&limit) {
+                    return Json(json!({
+                        "jsonrpc":"2.0",
+                        "id":id,
+                        "error":{"code":-32602,"message":"Invalid process-table arguments"}
+                    }))
+                    .into_response();
+                }
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query.append_pair("limit", &limit.to_string());
+                for (name, value) in [
+                    ("status", status),
+                    ("workflow_id", workflow_id),
+                    ("conversation_id", conversation_id),
+                ] {
+                    if let Some(value) = value {
+                        query.append_pair(name, value);
+                    }
+                }
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/workflow/process-table?{}", query.finish()),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
             "workflow.operator_dashboard" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),

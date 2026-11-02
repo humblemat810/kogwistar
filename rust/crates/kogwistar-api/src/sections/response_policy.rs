@@ -348,6 +348,15 @@ fn query_string(path_and_query: &str, name: &str) -> Option<String> {
         })
 }
 
+fn decoded_query_string(path_and_query: &str, name: &str) -> Option<String> {
+    let query = path_and_query
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    url::form_urlencoded::parse(query.as_bytes())
+        .find_map(|(key, value)| (key == name && !value.is_empty()).then(|| value.into_owned()))
+}
+
 fn tool_audit_query(path_and_query: &str) -> Result<(Option<String>, usize), String> {
     let query = path_and_query
         .split_once('?')
@@ -784,6 +793,33 @@ fn audit_capability(
         "granted": effective,
         "outcome": if allowed { "allow" } else { "deny" },
         "reason": if allowed { String::new() } else { format!("missing={}", missing.join(",")) },
+        "parent_capabilities": base_capabilities(principal),
+    }));
+    allowed
+}
+
+fn audit_capability_any(
+    principal: &Value,
+    state: &mut CapabilityState,
+    action: &str,
+    alternatives: &[&str],
+) -> bool {
+    let effective = effective_capabilities(principal, state);
+    let allowed = alternatives
+        .iter()
+        .any(|capability| effective.contains(*capability));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default();
+    state.audit_log.push(json!({
+        "ts_ms": now,
+        "subject": principal_subject(principal),
+        "action": action,
+        "required_any": alternatives,
+        "granted": effective,
+        "outcome": if allowed { "allow" } else { "deny" },
+        "reason": if allowed { String::new() } else { format!("missing_one_of={}", alternatives.join(",")) },
         "parent_capabilities": base_capabilities(principal),
     }));
     allowed

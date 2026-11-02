@@ -236,7 +236,12 @@
         impl ApplicationService for RequestRecorder {
             fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
                 surface == "workflow"
-                    && matches!(name, "workflow.run_events" | "workflow.process_timeline")
+                    && matches!(
+                        name,
+                        "workflow.run_events"
+                            | "workflow.process_timeline"
+                            | "workflow.process_table"
+                    )
             }
 
             fn execute(
@@ -304,6 +309,34 @@
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
                     .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workflow.process_table","arguments":{"workflow_id":"wf & one","status":"succeeded","limit":7}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"]["method"], "GET");
+        let request = seen.lock().unwrap().clone().unwrap();
+        let parsed_query = url::form_urlencoded::parse(
+            request.path_and_query.split_once('?').unwrap().1.as_bytes(),
+        )
+        .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(request.path_and_query.split('?').next(), Some("/api/workflow/process-table"));
+        assert_eq!(parsed_query.get("workflow_id").map(|value| value.as_ref()), Some("wf & one"));
+        assert_eq!(parsed_query.get("status").map(|value| value.as_ref()), Some("succeeded"));
+        assert_eq!(parsed_query.get("limit").map(|value| value.as_ref()), Some("7"));
+        assert!(request.body.is_empty());
+
+        let response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow.process_timeline","arguments":{"run_id":"run-2","after_seq":4}}}"#,
                     ))
                     .unwrap(),
@@ -322,6 +355,75 @@
         assert_eq!(request.contract_version, 1);
         assert_eq!(request.method, "GET");
         assert!(request.body.is_empty());
+    }
+
+    #[test]
+    fn process_table_projects_filtered_runs_and_service_event_counts() {
+        let request = ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/process-table?workflow_id=wf%20one&limit=5"
+                .to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice","ns":["workflow"]}),
+        };
+        let run = ServerRun {
+            run_id: "run-1".to_owned(),
+            conversation_id: "conv-1".to_owned(),
+            workflow_id: "wf one".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: Some("user-turn".to_owned()),
+            assistant_turn_node_id: Some("assistant-turn".to_owned()),
+            status: "succeeded".to_owned(),
+            cancel_requested: false,
+            result_json: None,
+            error_json: None,
+            created_at_ms: 10,
+            updated_at_ms: 20,
+            started_at_ms: Some(11),
+            finished_at_ms: Some(19),
+        };
+        let run_event = ServerRunEvent {
+            seq: 3,
+            run_id: "run-1".to_owned(),
+            event_type: "run.completed".to_owned(),
+            payload_json: "{}".to_owned(),
+            created_at_ms: 19,
+        };
+        let service = json!({
+            "service_id":"svc-1",
+            "service_kind":"workflow",
+            "target_kind":"workflow",
+            "target_ref":"wf one",
+            "target_config":{"conversation_id":"conv-1"},
+            "lifecycle_status":"active",
+            "enabled":true,
+            "created_at_ms":12,
+            "updated_at_ms":21,
+        });
+        let service_event = json!({
+            "metadata":{"entity_type":"service_event","service_id":"svc-1"}
+        });
+        let response = process_table_effect(
+            &request,
+            vec![run],
+            vec![service],
+            vec![run_event],
+            vec![(1, "node".to_owned(), "event-1".to_owned(), "ADD".to_owned(), service_event.to_string())],
+        );
+
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let value: Value = serde_json::from_slice(&response.body).unwrap();
+        let processes = value["processes"].as_array().unwrap();
+        assert_eq!(processes.len(), 2);
+        assert_eq!(processes[0]["process_id"], "svc-1");
+        assert_eq!(processes[0]["process_kind"], "service");
+        assert_eq!(processes[0]["event_count"], 1);
+        assert_eq!(processes[1]["process_id"], "run-1");
+        assert_eq!(processes[1]["process_kind"], "workflow_run");
+        assert_eq!(processes[1]["event_count"], 1);
+        assert_eq!(processes[1]["last_event_type"], "run.completed");
+        assert_eq!(processes[1]["terminal"], true);
     }
 
     #[tokio::test]

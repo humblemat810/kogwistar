@@ -881,6 +881,24 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "workflow.process_table" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return (capabilities.contains("project_view")
+                || capabilities.contains("workflow.run.read"))
+                && self.supports_mcp_tool(surface, name);
+        }
         let graph_read_namespace = match name {
             "kg_find_edges"
             | "kg_k_hop"
@@ -1245,6 +1263,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()));
         }
         name != "workflow.tool_audit"
+            && name != "workflow.process_table"
             && name != "workflow.run_evidence"
             && name != "workflow.run_lineage"
             && (name != "conversation.create" || self.chroma_graph.is_some())
@@ -1917,6 +1936,7 @@ impl SqliteRunApplicationService {
                             lanes,
                             events,
                             services,
+                            Vec::new(),
                         ),
                     )
                 }
@@ -3006,9 +3026,30 @@ impl SqliteRunApplicationService {
         if request.method == "GET"
             && let Some(path) = operational_path(&request.path_and_query)
         {
+            let process_table = path == "/api/workflow/process-table";
+            if process_table
+                && !capability_any_allowed(
+                    &request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "workflow.run.read"],
+                )
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading process table requires project_view or workflow.run.read capability",
+                );
+            }
             let limit =
-                query_integer(&request.path_and_query, "limit", 200).clamp(1, 10_000) as usize;
-            let runs = match self.store.list_server_runs(None, None, None, 10_000) {
+                query_integer(&request.path_and_query, "limit", if process_table { 100 } else { 200 })
+                    .clamp(1, 10_000) as usize;
+            let runs = match self.store.list_server_runs(
+                process_table.then(|| decoded_query_string(&request.path_and_query, "status")).flatten().as_deref(),
+                process_table.then(|| decoded_query_string(&request.path_and_query, "workflow_id")).flatten().as_deref(),
+                process_table.then(|| decoded_query_string(&request.path_and_query, "conversation_id")).flatten().as_deref(),
+                if process_table { limit } else { 10_000 },
+            ) {
                 Ok(runs) => runs,
                 Err(error) => {
                     return effect_error(
@@ -3034,7 +3075,11 @@ impl SqliteRunApplicationService {
             };
             let mut events = Vec::new();
             for run in &runs {
-                match self.store.list_server_run_events(&run.run_id, 0, limit) {
+                match self.store.list_server_run_events(
+                    &run.run_id,
+                    0,
+                    if process_table { 50 } else { limit },
+                ) {
                     Ok(mut run_events) => events.append(&mut run_events),
                     Err(error) => {
                         return effect_error(
@@ -3059,7 +3104,30 @@ impl SqliteRunApplicationService {
                 .into_iter()
                 .map(|row| Value::Object(row.payload))
                 .collect::<Vec<_>>();
-            return operational_effect(&request, path, runs, lanes, events, services);
+            let service_event_rows = if process_table {
+                match self.store.replay_raw_events("workflow", 0, usize::MAX) {
+                    Ok(rows) => rows
+                        .into_iter()
+                        .map(|event| (
+                            event.seq,
+                            event.entity_kind,
+                            event.entity_id,
+                            event.op,
+                            event.payload_json,
+                        ))
+                        .collect(),
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            return operational_effect(&request, path, runs, lanes, events, services, service_event_rows);
         }
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request);

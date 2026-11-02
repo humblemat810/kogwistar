@@ -1633,6 +1633,7 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
     matches!(
         path,
         "/api/workflow/operator/dashboard"
+            | "/api/workflow/process-table"
             | "/api/workflow/lane/progress"
             | "/api/workflow/resources"
             | "/api/workflow/budget"
@@ -1870,6 +1871,166 @@ fn resource_service_value(services: &[Value]) -> Value {
     json!({"total_services": services.len(), "by_health": by_health})
 }
 
+fn process_table_effect(
+    request: &ApiEffectRequest,
+    runs: Vec<ServerRun>,
+    mut services: Vec<Value>,
+    run_events: Vec<ServerRunEvent>,
+    service_event_rows: Vec<(i64, String, String, String, String)>,
+) -> ApiEffectResponse {
+    let limit = query_integer(&request.path_and_query, "limit", 100).clamp(1, 10_000) as usize;
+    let query_value = |name: &str| {
+        let query = request
+            .path_and_query
+            .split_once('?')
+            .map(|(_, query)| query)
+            .unwrap_or_default();
+        url::form_urlencoded::parse(query.as_bytes())
+            .find_map(|(key, value)| (key == name && !value.is_empty()).then(|| value.into_owned()))
+    };
+    let status_filter = query_value("status");
+    let workflow_filter = query_value("workflow_id");
+    let conversation_filter = query_value("conversation_id");
+    let scope = security_scope_value(&request.principal);
+
+    let mut processes = runs
+        .into_iter()
+        .filter(|run| status_filter.as_deref().is_none_or(|status| run.status == status))
+        .filter(|run| workflow_filter.as_deref().is_none_or(|workflow| run.workflow_id == workflow))
+        .filter(|run| {
+            conversation_filter
+                .as_deref()
+                .is_none_or(|conversation| run.conversation_id == conversation)
+        })
+        .take(limit)
+        .map(|run| {
+            let related_events = run_events
+                .iter()
+                .filter(|event| event.run_id == run.run_id)
+                .take(50)
+                .collect::<Vec<_>>();
+            let last_event = related_events.last();
+            json!({
+                "process_id": run.run_id,
+                "process_kind": "workflow_run",
+                "status": run.status,
+                "workflow_id": run.workflow_id,
+                "conversation_id": run.conversation_id,
+                "user_id": run.user_id,
+                "user_turn_node_id": run.user_turn_node_id,
+                "assistant_turn_node_id": run.assistant_turn_node_id,
+                "created_at_ms": run.created_at_ms,
+                "updated_at_ms": run.updated_at_ms,
+                "started_at_ms": run.started_at_ms,
+                "finished_at_ms": run.finished_at_ms,
+                "terminal": matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled"),
+                "event_count": related_events.len(),
+                "last_event_type": last_event.map(|event| event.event_type.as_str()),
+                "last_event_seq": last_event.map(|event| event.seq),
+                "owner": run.user_id,
+                "namespace": scope["execution_namespace"],
+                "storage_namespace": scope["storage_namespace"],
+                "security_scope": scope["security_scope"],
+            })
+        })
+        .collect::<Vec<_>>();
+
+    services.sort_by(|left, right| left["service_id"].as_str().cmp(&right["service_id"].as_str()));
+    services.truncate(limit);
+    let mut current_service_events = BTreeMap::<String, String>::new();
+    for (_seq, entity_kind, entity_id, op, payload_json) in service_event_rows {
+        if entity_kind != "node" {
+            continue;
+        }
+        match op.to_ascii_uppercase().as_str() {
+            "DELETE" | "TOMBSTONE" | "REMOVE" => {
+                current_service_events.remove(&entity_id);
+                continue;
+            }
+            "ADD" | "REPLACE" | "UPSERT" => {}
+            _ => continue,
+        }
+        let Ok(payload) = serde_json::from_str::<Value>(&payload_json) else {
+            continue;
+        };
+        let Some(metadata) = payload.get("metadata").and_then(Value::as_object) else {
+            continue;
+        };
+        if metadata.get("entity_type").and_then(Value::as_str) == Some("service_event")
+            && let Some(service_id) = metadata.get("service_id").and_then(Value::as_str)
+        {
+            current_service_events.insert(entity_id, service_id.to_owned());
+        }
+    }
+    let mut service_event_counts = BTreeMap::<String, usize>::new();
+    for service_id in current_service_events.into_values() {
+        *service_event_counts.entry(service_id).or_default() += 1;
+    }
+
+    for service in services {
+        let service_id = service["service_id"].as_str().unwrap_or_default();
+        let service_status = service["lifecycle_status"].as_str().unwrap_or_default();
+        let target_ref = service["target_ref"].as_str().unwrap_or_default();
+        let target_config = service.get("target_config").and_then(Value::as_object);
+        let service_conversation = target_config
+            .and_then(|config| config.get("conversation_id"))
+            .and_then(Value::as_str);
+        if status_filter.as_deref().is_some_and(|status| status != service_status)
+            || workflow_filter
+                .as_deref()
+                .is_some_and(|workflow| workflow != target_ref)
+            || conversation_filter
+                .as_deref()
+                .is_some_and(|conversation| Some(conversation) != service_conversation)
+        {
+            continue;
+        }
+        processes.push(json!({
+            "process_id": service_id,
+            "process_kind": "service",
+            "status": service_status,
+            "workflow_id": if service["target_kind"] == "workflow" { service.get("target_ref") } else { None },
+            "conversation_id": service_conversation,
+            "user_id": Value::Null,
+            "user_turn_node_id": Value::Null,
+            "assistant_turn_node_id": Value::Null,
+            "created_at_ms": service.get("created_at_ms"),
+            "updated_at_ms": service.get("updated_at_ms"),
+            "started_at_ms": service.get("current_child_started_at_ms"),
+            "finished_at_ms": Value::Null,
+            "terminal": !service["enabled"].as_bool().unwrap_or(false),
+            "event_count": service_event_counts.get(service_id).copied().unwrap_or_default().min(200),
+            "last_event_type": Value::Null,
+            "last_event_seq": Value::Null,
+            "owner": Value::Null,
+            "namespace": service.get("execution_namespace"),
+            "storage_namespace": service.get("storage_namespace"),
+            "security_scope": service.get("security_scope"),
+            "service_kind": service.get("service_kind"),
+            "health_status": service.get("health_status"),
+            "last_heartbeat_ms": service.get("last_heartbeat_ms"),
+            "restart_count": service.get("restart_count"),
+            "last_trigger_type": service.get("last_trigger_type"),
+            "current_child_run_id": service.get("current_child_run_id"),
+            "current_child_status": service.get("current_child_status"),
+        }));
+    }
+    processes.sort_by(|left, right| {
+        let left_key = (
+            left["updated_at_ms"].as_i64().unwrap_or_default(),
+            left["process_kind"].as_str().unwrap_or_default(),
+            left["process_id"].as_str().unwrap_or_default(),
+        );
+        let right_key = (
+            right["updated_at_ms"].as_i64().unwrap_or_default(),
+            right["process_kind"].as_str().unwrap_or_default(),
+            right["process_id"].as_str().unwrap_or_default(),
+        );
+        right_key.cmp(&left_key)
+    });
+    json_effect(StatusCode::OK, json!({"processes": processes}))
+}
+
 fn operational_effect(
     request: &ApiEffectRequest,
     path: &str,
@@ -1877,6 +2038,7 @@ fn operational_effect(
     lanes: Vec<ProjectedLaneMessage>,
     events: Vec<ServerRunEvent>,
     services: Vec<Value>,
+    service_event_rows: Vec<(i64, String, String, String, String)>,
 ) -> ApiEffectResponse {
     let limit = query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
     let usage = usage_history(&events, limit.max(1));
@@ -1891,6 +2053,13 @@ fn operational_effect(
     let mut resources = resource_value(&runs, &lanes, &usage, &events, storage_usage_bytes);
     resources["services"] = resource_service_value(&services);
     match path {
+        "/api/workflow/process-table" => process_table_effect(
+            request,
+            runs,
+            services,
+            events,
+            service_event_rows,
+        ),
         "/api/workflow/catalog/ops" => json_effect(
             StatusCode::OK,
             json!([
