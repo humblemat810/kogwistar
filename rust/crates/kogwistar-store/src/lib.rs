@@ -3041,7 +3041,9 @@ pub trait GraphReadStore: Send + Sync {
 /// as fake Nodes or Edges: graph reads, ACL traversal, and lifecycle writes
 /// treat those entity kinds as authoritative graph data.
 pub trait VectorCollectionStore: Send + Sync {
-    /// Atomically upsert a bounded batch within one namespace and collection.
+    /// Upsert one bounded batch within one namespace and collection. The
+    /// backend's transaction/eventual-consistency guarantees remain explicit;
+    /// this method does not imply graph-mutation atomicity.
     fn upsert_vector_collection(
         &self,
         namespace: &str,

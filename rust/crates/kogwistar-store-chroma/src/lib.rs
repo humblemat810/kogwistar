@@ -6,4 +6,4 @@ mod records;
 mod store;
 
 pub use client::ChromaStoreConfig;
-pub use store::ChromaGraphStore;
+pub use store::{ChromaGraphStore, ChromaVectorCollectionStore};

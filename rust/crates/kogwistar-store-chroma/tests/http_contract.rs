@@ -1,8 +1,8 @@
 use kogwistar_store::{
     DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
-    VectorQuery,
+    VectorCollectionStore, VectorQuery,
 };
-use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
+use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig, ChromaVectorCollectionStore};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -56,6 +56,7 @@ async fn fake_chroma(
             let response = if first_line.contains("/collections HTTP") {
                 json!({
                     "id": format!("collection-{}", payload["name"].as_str().unwrap_or("legacy")),
+                    // Existing Python collections only persist the metric.
                     "metadata": {"hnsw:space": metric}
                 })
             } else if first_line.contains("/upsert HTTP") || first_line.contains("/delete HTTP") {
@@ -95,6 +96,70 @@ async fn fake_chroma(
         observed
     });
     (format!("http://{address}"), handle)
+}
+
+#[tokio::test]
+async fn named_vector_collection_uses_distinct_contract_and_namespace_scoping() {
+    let (endpoint, server) = fake_chroma(4, "cosine", 0.25).await;
+    let store = ChromaVectorCollectionStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "node-index".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect dedicated vector collection");
+
+    let mut record = GraphRecord::new("idx:one");
+    record.document = Some("index document".to_owned());
+    record.embedding = Some(vec![0.1, 0.2]);
+    record
+        .metadata
+        .insert("target_node_id".to_owned(), json!("node-1"));
+    assert!(
+        store
+            .upsert_vector_collection("workspace-a", "wrong-collection", vec![record.clone()])
+            .await
+            .is_err()
+    );
+    store
+        .upsert_vector_collection("workspace-a", "node-index", vec![record])
+        .await
+        .expect("upsert into dedicated collection");
+
+    let matches = store
+        .query_vector_collection(
+            "workspace-a",
+            "node-index",
+            &VectorQuery {
+                embedding: vec![0.1, 0.2],
+                limit: 4,
+                metadata: MetadataFilter::default(),
+                metric: DistanceMetric::Cosine,
+            },
+        )
+        .await
+        .expect("query dedicated collection");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].distance, 0.25);
+    store
+        .delete_vector_collection_records("workspace-a", "node-index", vec!["idx:one".to_owned()])
+        .await
+        .expect("delete scoped vector entry");
+
+    let requests = server.await.expect("fixture server");
+    assert_eq!(requests.len(), 4);
+    assert_eq!(
+        requests[0].1["metadata"]["kogwistar:contract"],
+        "vector-collection-v1"
+    );
+    assert_eq!(requests[1].1["ids"], json!(["idx:one"]));
+    assert_eq!(requests[1].1["embeddings"], json!([[0.1, 0.2]]));
+    assert_eq!(
+        requests[1].1["metadatas"][0]["_kogwistar_namespace"],
+        "workspace-a"
+    );
+    assert!(requests[2].1["where"].to_string().contains("workspace-a"));
+    assert!(requests[3].1["where"].to_string().contains("workspace-a"));
 }
 
 #[tokio::test]

@@ -45,6 +45,20 @@ pub(crate) struct ChromaHttpStore {
 
 impl ChromaHttpStore {
     pub(crate) async fn connect(config: &ChromaStoreConfig) -> Result<Self, ChromaStoreError> {
+        Self::connect_with_contract(config, "graph-record-v1", false).await
+    }
+
+    pub(crate) async fn connect_vector_collection(
+        config: &ChromaStoreConfig,
+    ) -> Result<Self, ChromaStoreError> {
+        Self::connect_with_contract(config, "vector-collection-v1", true).await
+    }
+
+    async fn connect_with_contract(
+        config: &ChromaStoreConfig,
+        contract: &str,
+        require_contract_match: bool,
+    ) -> Result<Self, ChromaStoreError> {
         let endpoint = Url::parse(&config.endpoint)
             .map_err(|error| ChromaStoreError::Configuration(error.to_string()))?;
         let tenant = config
@@ -93,7 +107,7 @@ impl ChromaHttpStore {
                     "get_or_create": true,
                     "metadata": {
                         "hnsw:space": metric_name(config.metric),
-                        "kogwistar:contract": "graph-record-v1"
+                        "kogwistar:contract": contract
                     }
                 })),
             )
@@ -107,6 +121,16 @@ impl ChromaHttpStore {
         if actual_metric != Some(expected_metric) {
             return Err(ChromaStoreError::Configuration(format!(
                 "collection metric is {actual_metric:?}; configured metric is {expected_metric:?}"
+            )));
+        }
+        let actual_contract = body
+            .get("metadata")
+            .and_then(|metadata| metadata.get("kogwistar:contract"))
+            .and_then(Value::as_str);
+        if require_contract_match && actual_contract.is_some() && actual_contract != Some(contract)
+        {
+            return Err(ChromaStoreError::Configuration(format!(
+                "collection contract is {actual_contract:?}; configured contract is {contract:?}"
             )));
         }
         store.collection_id = body

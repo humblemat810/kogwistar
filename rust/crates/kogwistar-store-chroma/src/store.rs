@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use kogwistar_store::{
     DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
-    StoreError, StoreResult, VectorMatch, VectorQuery,
+    StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery,
 };
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -20,6 +20,16 @@ pub enum ChromaStoreError {
 #[derive(Clone, Debug)]
 pub struct ChromaGraphStore {
     collections: ChromaCollections,
+    metric: DistanceMetric,
+}
+
+/// Chroma collection dedicated to non-graph vectors such as Python's
+/// `node_index`. It has a distinct collection contract and cannot be used as a
+/// graph store by the API composition layer.
+#[derive(Clone, Debug)]
+pub struct ChromaVectorCollectionStore {
+    http: ChromaHttpStore,
+    collection: String,
     metric: DistanceMetric,
 }
 
@@ -127,6 +137,146 @@ impl ChromaGraphStore {
             .map_err(Self::backend_error)?;
         let payload: Value = response.json().await.map_err(Self::backend_error)?;
         decode_records(&payload, false, namespace)
+    }
+}
+
+impl ChromaVectorCollectionStore {
+    pub async fn connect(config: crate::ChromaStoreConfig) -> Result<Self, ChromaStoreError> {
+        let http = ChromaHttpStore::connect_vector_collection(&config).await?;
+        Ok(Self {
+            http,
+            collection: config.collection,
+            metric: config.metric,
+        })
+    }
+
+    fn validate_collection(&self, collection: &str) -> StoreResult<()> {
+        if collection != self.collection {
+            return Err(ChromaGraphStore::backend_error(
+                "requested vector collection differs from the connected collection",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl VectorCollectionStore for ChromaVectorCollectionStore {
+    async fn upsert_vector_collection(
+        &self,
+        namespace: &str,
+        collection: &str,
+        records: Vec<GraphRecord>,
+    ) -> StoreResult<()> {
+        records::validate_namespace(namespace)?;
+        self.validate_collection(collection)?;
+        if records.len() > 10_000 {
+            return Err(ChromaGraphStore::backend_error(
+                "upsert batch exceeds the 10000-record limit",
+            ));
+        }
+        let mut ids = Vec::with_capacity(records.len());
+        let mut embeddings = Vec::with_capacity(records.len());
+        let mut documents = Vec::with_capacity(records.len());
+        let mut metadatas = Vec::with_capacity(records.len());
+        let mut seen = BTreeSet::new();
+        for record in records {
+            if record.id.trim().is_empty() || record.id.contains('\0') {
+                return Err(StoreError::InvalidIdentifier {
+                    identifier: "vector collection record id",
+                });
+            }
+            if !seen.insert(record.id.clone()) {
+                return Err(ChromaGraphStore::backend_error(
+                    "upsert batch contains duplicate record IDs",
+                ));
+            }
+            let metadata = records::chroma_metadata(namespace, &record)?;
+            let embedding = record.embedding.ok_or_else(|| {
+                ChromaGraphStore::backend_error("vector collection records require embeddings")
+            })?;
+            if embedding.iter().any(|value| !value.is_finite()) {
+                return Err(StoreError::NonFiniteVector);
+            }
+            ids.push(record.id);
+            embeddings.push(embedding);
+            documents.push(record.document);
+            metadatas.push(metadata);
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let url = self
+            .http
+            .collection_url("upsert")
+            .map_err(ChromaGraphStore::backend_error)?;
+        self.http
+            .request(
+                Method::POST,
+                url,
+                Some(json!({
+                    "ids": ids,
+                    "embeddings": embeddings,
+                    "documents": documents,
+                    "metadatas": metadatas
+                })),
+            )
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        Ok(())
+    }
+
+    async fn delete_vector_collection_records(
+        &self,
+        namespace: &str,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> StoreResult<()> {
+        records::validate_namespace(namespace)?;
+        self.validate_collection(collection)?;
+        if ids.len() > 10_000
+            || ids
+                .iter()
+                .any(|id| id.trim().is_empty() || id.contains('\0'))
+        {
+            return Err(ChromaGraphStore::backend_error(
+                "delete IDs must be non-empty and the batch cannot exceed 10000 records",
+            ));
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let url = self
+            .http
+            .collection_url("delete")
+            .map_err(ChromaGraphStore::backend_error)?;
+        self.http
+            .request(
+                Method::POST,
+                url,
+                Some(json!({
+                    "ids": ids,
+                    "where": records::query_where(namespace, &MetadataFilter::default())
+                })),
+            )
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        Ok(())
+    }
+
+    async fn query_vector_collection(
+        &self,
+        namespace: &str,
+        collection: &str,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        self.validate_collection(collection)?;
+        let graph_store = ChromaGraphStore {
+            collections: ChromaCollections::Single(self.http.clone()),
+            metric: self.metric,
+        };
+        graph_store
+            .vector_query_in_collection(&self.http, namespace, query, None)
+            .await
     }
 }
 
