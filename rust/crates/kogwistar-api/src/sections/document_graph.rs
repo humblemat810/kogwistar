@@ -2354,6 +2354,21 @@ fn operator_dashboard_with_inbox(
     dashboard
 }
 
+fn operator_dashboard_with_capabilities(
+    mut dashboard: ApiEffectResponse,
+    capabilities: Value,
+) -> ApiEffectResponse {
+    let Ok(mut value) = serde_json::from_slice::<Value>(&dashboard.body) else {
+        return dashboard;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return dashboard;
+    };
+    object.insert("capabilities".to_owned(), capabilities);
+    dashboard.body = serde_json::to_vec(&value).expect("JSON value always serializes");
+    dashboard
+}
+
 fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     for prefix in ["/api/runs/", "/api/workflow/runs/"] {

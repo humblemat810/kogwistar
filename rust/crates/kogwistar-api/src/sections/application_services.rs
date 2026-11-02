@@ -1770,7 +1770,20 @@ impl ApplicationService for SqliteRunApplicationService {
                     return error;
                 }
                 let dashboard = self.execute_sync(request.clone());
-                if dashboard.status != StatusCode::OK.as_u16() || self.chroma_graph.is_none() {
+                if dashboard.status != StatusCode::OK.as_u16() {
+                    return dashboard;
+                }
+                let dashboard = operator_dashboard_with_capabilities(
+                    dashboard,
+                    {
+                        let capability_state = self
+                            .capabilities
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        capability_snapshot(&request.principal, &capability_state)
+                    },
+                );
+                if self.chroma_graph.is_none() {
                     return dashboard;
                 }
                 let scope = security_scope_value(&request.principal);

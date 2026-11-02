@@ -477,6 +477,16 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
     let dashboard: Value = serde_json::from_slice(&allowed.body).unwrap();
     assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 1);
     assert_eq!(dashboard["operator_inbox"], json!([]));
+    let capability_snapshot = &dashboard["capabilities"];
+    assert!(capability_snapshot["specs"].as_array().is_some_and(|items| !items.is_empty()));
+    assert_eq!(capability_snapshot["current_subject"], "alice");
+    assert!(capability_snapshot["effective_capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("project_view")));
+    assert!(capability_snapshot["approvals"].is_array());
+    assert!(capability_snapshot["revoked"].is_array());
+    assert!(capability_snapshot["audit_log"].is_array());
 }
 
 #[tokio::test]

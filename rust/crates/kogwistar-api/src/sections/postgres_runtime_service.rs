@@ -6386,6 +6386,16 @@ impl PostgresRunApplicationService {
             let response =
                 operational_effect(&request, path, runs, lanes, events, services, service_event_rows);
             if path == "/api/workflow/operator/dashboard" {
+                let response = operator_dashboard_with_capabilities(
+                    response,
+                    {
+                        let capability_state = self
+                            .capabilities
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        capability_snapshot(&request.principal, &capability_state)
+                    },
+                );
                 return operator_dashboard_with_inbox(response, dashboard_inbox);
             }
             return response;
