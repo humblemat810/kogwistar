@@ -348,7 +348,6 @@ fn recorded_step_snapshots_matches_python_fixture() {
     );
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_read_effect; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=none; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
 #[tokio::test]
 async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let secret = "in-memory-api-contract-secret";

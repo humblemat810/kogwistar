@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "doc_id": "d1",
+  "insertion_method": "parser",
+  "nodes": [
+    {
+      "id": "n1",
+      "references": [
+        {"doc_id": "d1", "insertion_method": "parser"}
+      ]
+    },
+    {
+      "id": "n2",
+      "references": [
+        {"doc_id": "d1", "insertion_method": "manual"}
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "references": [
+        {"document_page_url": "https://docs/d1/page", "insertion_method": "parser"}
+      ]
+    },
+    {
+      "id": "e2",
+      "references": [
+        {"doc_id": "d1", "insertion_method": "manual"}
+      ]
+    }
+  ],
+  "python_index_matches": {
+    "node": ["n1"],
+    "edge": ["e1"]
+  },
+  "expected_index_query": {
+    "$and": [
+      {"insertion_method": "parser"},
+      {"doc_id": "d1"}
+    ]
+  },
+  "expected_matches_by_kind": {
+    "node": ["n1"],
+    "edge": ["e1"]
+  },
+  "expected_matches": ["e1", "n1"],
+  "expected_empty_match_fallback": ["e1", "e2", "n1", "n2"]
+}

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,9 +18,14 @@ from kogwistar.visualization.graph_viz import _filter_by_insertion_method
 from kogwistar.visualization.basic_visualization import Visualizer
 from tests._helpers.fake_backend import build_fake_backend
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.mark.ci
-def test_visualization_insertion_method_filter_and_empty_match_fallback() -> None:
+def test_visualization_insertion_method_filter_matches_shared_rust_fixture() -> None:
+    fixture_path = ROOT / "contracts/golden/visualization-insertion-filter-v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
     class RefCollection:
         def __init__(self, metadatas: list[dict[str, str]]) -> None:
             self.metadatas = metadatas
@@ -29,21 +35,35 @@ def test_visualization_insertion_method_filter_and_empty_match_fallback() -> Non
             self.where = where
             return {"metadatas": self.metadatas}
 
-    collection = RefCollection([{"node_id": "n1"}])
-    engine = SimpleNamespace(node_refs_collection=collection)
-    assert _filter_by_insertion_method(
-        engine, ["n1", "n2"], "node", "parser", by_doc_id="d1"
-    ) == ["n1"]
-    assert collection.where == {"$and": [{"insertion_method": "parser"}, {"doc_id": "d1"}]}
+    for entity_kind in ("node", "edge"):
+        ids = [record["id"] for record in fixture[f"{entity_kind}s"]]
+        id_field = f"{entity_kind}_id"
+        collection = RefCollection(
+            [
+                {id_field: identifier}
+                for identifier in fixture["python_index_matches"][entity_kind]
+            ]
+        )
+        engine = SimpleNamespace(
+            **{f"{entity_kind}_refs_collection": collection}
+        )
+        assert _filter_by_insertion_method(
+            engine,
+            ids,
+            entity_kind,
+            fixture["insertion_method"],
+            by_doc_id=fixture["doc_id"],
+        ) == fixture["expected_matches_by_kind"][entity_kind]
+        assert collection.where == fixture["expected_index_query"]
 
-    no_matches = RefCollection([])
-    assert _filter_by_insertion_method(
-        SimpleNamespace(node_refs_collection=no_matches),
-        ["n1", "n2"],
-        "node",
-        "missing",
-        by_doc_id="d1",
-    ) == ["n1", "n2"]
+        no_matches = RefCollection([])
+        assert _filter_by_insertion_method(
+            SimpleNamespace(**{f"{entity_kind}_refs_collection": no_matches}),
+            ids,
+            entity_kind,
+            "missing-method",
+            by_doc_id=fixture["doc_id"],
+        ) == ids
 
 
 @pytest.mark.ci
