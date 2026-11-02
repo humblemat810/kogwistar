@@ -465,6 +465,33 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
             status: "suspended".to_owned(),
         })
         .unwrap();
+    for (message_id, inbox_id, status) in [
+        ("dashboard-pending-a", "ops", "pending"),
+        ("dashboard-pending-b", "ops", "pending"),
+        ("dashboard-failed", "retry", "failed"),
+    ] {
+        service
+            .store
+            .project_lane_message(NewProjectedLaneMessage {
+                message_id: message_id.to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "operator".to_owned(),
+                inbox_id: inbox_id.to_owned(),
+                conversation_id: "dashboard-conversation".to_owned(),
+                recipient_id: "operator".to_owned(),
+                sender_id: "worker".to_owned(),
+                msg_type: "maintenance.result".to_owned(),
+                status: status.to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: None,
+                step_id: None,
+                correlation_id: Some(format!("correlation-{message_id}")),
+                payload_json: None,
+                error_json: None,
+            })
+            .unwrap();
+    }
     let request = |capabilities: Value| ApiEffectRequest {
         contract_version: 1,
         method: "GET".to_owned(),
@@ -485,6 +512,16 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
     let dashboard: Value = serde_json::from_slice(&allowed.body).unwrap();
     assert_eq!(dashboard["blocked_runs"].as_array().unwrap().len(), 1);
     assert_eq!(dashboard["operator_inbox"], json!([]));
+    assert_eq!(dashboard["message_queue"]["total"], 3);
+    assert_eq!(dashboard["message_queue"]["by_status"]["pending"], 2);
+    assert_eq!(dashboard["message_queue"]["by_status"]["failed"], 1);
+    assert_eq!(dashboard["message_queue"]["by_inbox"]["ops"], 2);
+    assert_eq!(dashboard["message_queue"]["by_inbox"]["retry"], 1);
+    assert_eq!(dashboard["message_queue"]["failed"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        dashboard["message_queue"]["failed"][0]["message_id"],
+        "dashboard-failed"
+    );
     let capability_snapshot = &dashboard["capabilities"];
     assert!(capability_snapshot["specs"].as_array().is_some_and(|items| !items.is_empty()));
     assert_eq!(capability_snapshot["current_subject"], "alice");

@@ -1795,6 +1795,37 @@ fn status_counts<'a>(values: impl Iterator<Item = &'a str>) -> serde_json::Map<S
     counts
 }
 
+fn message_queue_snapshot_value(lanes: &[ProjectedLaneMessage]) -> Value {
+    let mut by_inbox = serde_json::Map::new();
+    for lane in lanes {
+        let count = by_inbox
+            .get(&lane.inbox_id)
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + 1;
+        by_inbox.insert(lane.inbox_id.clone(), json!(count));
+    }
+    let failed = lanes
+        .iter()
+        .filter(|lane| lane.status == "failed")
+        .take(20)
+        .map(|lane| {
+            json!({
+                "message_id": lane.message_id,
+                "inbox_id": lane.inbox_id,
+                "conversation_id": lane.conversation_id,
+                "correlation_id": lane.correlation_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "total": lanes.len(),
+        "by_status": status_counts(lanes.iter().map(|lane| lane.status.as_str())),
+        "by_inbox": by_inbox,
+        "failed": failed,
+    })
+}
+
 fn usage_history(events: &[ServerRunEvent], limit: usize) -> Vec<Value> {
     let mut values = events
         .iter()
@@ -2320,7 +2351,7 @@ fn operational_effect(
                 .take(limit)
                 .map(lane_progress_value)
                 .collect::<Vec<_>>();
-            let lane_counts = status_counts(lanes.iter().map(|lane| lane.status.as_str()));
+            let message_queue = message_queue_snapshot_value(&lanes);
             json_effect(
                 StatusCode::OK,
                 json!({
@@ -2328,7 +2359,7 @@ fn operational_effect(
                     "operator_inbox": [],
                     "blocked_runs": blocked_runs.clone(),
                     "blocked_flow_graph": {"nodes": blocked_runs.clone(), "edges": [], "blocked_count": blocked_runs.len()},
-                    "message_queue": {"total": lanes.len(), "by_status": lane_counts, "by_inbox": {}, "failed": []},
+                    "message_queue": message_queue,
                     "dead_letters": {"runs": dead_letters, "limit": limit},
                     "capabilities": {},
                     "resources": resources,
