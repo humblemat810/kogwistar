@@ -43,6 +43,43 @@ fn failed_inline_graph_effect_clears_provider_event_side_effects() {
 }
 
 #[test]
+fn inline_graph_mutation_scope_uses_current_owner_scope() {
+    let principal = json!({
+        "ns": ["docs"],
+        "storage_ns": "docs",
+        "workspace": "workspace-a",
+        "graph_space": "knowledge"
+    });
+    let mutation: kogwistar_contracts::GraphMutationV1 = serde_json::from_value(json!({
+        "scope": {
+            "namespace": "docs",
+            "workspace_id": "workspace-a",
+            "graph_space": "knowledge"
+        },
+        "table": "gke_nodes",
+        "entity_kind": "node",
+        "event_id": "event-1",
+        "op": "upsert",
+        "payload": {},
+        "record": {"id": "node-1", "metadata": {}},
+        "embedding_dim": 0
+    }))
+    .expect("valid graph mutation");
+
+    assert!(!inline_graph_mutations_outside_owner_scope(
+        &principal,
+        std::slice::from_ref(&mutation)
+    ));
+
+    let mut cross_scope = mutation;
+    cross_scope.scope.workspace_id = Some("workspace-b".to_owned());
+    assert!(inline_graph_mutations_outside_owner_scope(
+        &principal,
+        &[cross_scope]
+    ));
+}
+
+#[test]
 fn recorded_step_snapshots_matches_python_fixture() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-step-trace-context-v1.json"

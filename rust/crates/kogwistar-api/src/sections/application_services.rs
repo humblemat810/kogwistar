@@ -42,6 +42,23 @@ fn recorded_effect_graph_mutations(
         })
 }
 
+fn inline_graph_mutations_outside_owner_scope(
+    principal: &Value,
+    mutations: &[kogwistar_contracts::GraphMutationV1],
+) -> bool {
+    let security_scope = security_scope_value(principal);
+    mutations.iter().any(|mutation| {
+        !graph_mutation_scope_allowed(
+            &GraphScope {
+                namespace: mutation.scope.namespace.clone(),
+                workspace_id: mutation.scope.workspace_id.clone(),
+                graph_space: mutation.scope.graph_space.clone(),
+            },
+            &security_scope,
+        )
+    })
+}
+
 impl PostgresRunApplicationService {
     async fn completed_native_handoff_response(
         &self,
@@ -795,17 +812,7 @@ impl ApplicationService for PostgresRunApplicationService {
                         .and_then(recorded_effect_graph_mutations),
                 )
                 .is_some_and(|(principal, mutations)| {
-                    let security_scope = security_scope_value(principal);
-                    mutations.iter().any(|mutation| {
-                        !graph_mutation_scope_allowed(
-                            &GraphScope {
-                                namespace: mutation.scope.namespace.clone(),
-                                workspace_id: mutation.scope.workspace_id.clone(),
-                                graph_space: mutation.scope.graph_space.clone(),
-                            },
-                            &security_scope,
-                        )
-                    })
+                    inline_graph_mutations_outside_owner_scope(principal, mutations)
                 });
             if scope_denied {
                 let effect = result
@@ -981,7 +988,7 @@ impl ApplicationService for SqliteRunApplicationService {
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
-            let result = if work.payload.get("op").and_then(Value::as_str)
+            let mut result = if work.payload.get("op").and_then(Value::as_str)
                 == Some("agent.event.receive")
             {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
@@ -1158,7 +1165,7 @@ impl ApplicationService for SqliteRunApplicationService {
             } else {
                 native_result_for_claimed_work(work, &self.native_operations)?
             };
-            let inline_principal = if result.effect.as_ref().is_some_and(|effect| {
+            let mut inline_principal = if result.effect.as_ref().is_some_and(|effect| {
                 effect.graph_mutation_batch.is_some()
                     || effect.graph_mutation_batch_v2.is_some()
                     || !effect.provider_event_acknowledgements.is_empty()
@@ -1168,15 +1175,45 @@ impl ApplicationService for SqliteRunApplicationService {
                     .await
                 {
                     Ok(principal) => Some(principal),
-                    Err(error) => {
-                        return Err(format!(
-                            "native graph effect owner revalidation failed: {error}"
-                        ));
+                    Err(_) => {
+                        let effect = result
+                            .effect
+                            .as_mut()
+                            .expect("graph effect is present in this branch");
+                        fail_inline_graph_effect(
+                            effect,
+                            "KOGWISTAR_GRAPH_AUTHORIZATION_DENIED",
+                            "inline graph effects failed current owner authorization",
+                        );
+                        None
                     }
                 }
             } else {
                 None
             };
+            let scope_denied = inline_principal
+                .as_ref()
+                .zip(
+                    result
+                        .effect
+                        .as_ref()
+                        .and_then(recorded_effect_graph_mutations),
+                )
+                .is_some_and(|(principal, mutations)| {
+                    inline_graph_mutations_outside_owner_scope(principal, mutations)
+                });
+            if scope_denied {
+                let effect = result
+                    .effect
+                    .as_mut()
+                    .expect("graph batch is present in this branch");
+                fail_inline_graph_effect(
+                    effect,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "inline graph effect scope is outside the authenticated run owner scope",
+                );
+                inline_principal = None;
+            }
             let applied = self.apply_runtime_result_input(
                 result,
                 kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
