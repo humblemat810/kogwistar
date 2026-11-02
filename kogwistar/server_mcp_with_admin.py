@@ -1143,6 +1143,7 @@ class IndexingItem(BaseModel):
 
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput) -> object:
+    require_role("rw")
     engine.get().search_index.upsert_entries(payload.index)
     return {"ok": True}
 
