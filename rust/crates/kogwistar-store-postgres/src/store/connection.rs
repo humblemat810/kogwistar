@@ -70,16 +70,24 @@ impl PostgresStore {
     ) -> PostgresStoreResult<()> {
         let mut pooled_client = self.client().await?;
         let client: &mut tokio_postgres::Client = &mut pooled_client;
-        let transaction = client.transaction().await.map_err(backend)?;
+        let transaction = client.transaction().await.map_err(|error| {
+            PostgresStoreError::Backend(format!("graph schema transaction start failed: {error:?}"))
+        })?;
         transaction
             .query_one(
                 "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))",
                 &[],
             )
             .await
-            .map_err(backend)?;
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!("graph schema advisory lock failed: {error:?}"))
+            })?;
         create_graph_schema(&transaction, &self.tables, embedding_dim, names).await?;
-        transaction.commit().await.map_err(backend)
+        transaction.commit().await.map_err(|error| {
+            PostgresStoreError::Backend(format!(
+                "graph schema transaction commit failed: {error:?}"
+            ))
+        })
     }
 
     /// Run append/cursor work in one RAII PostgreSQL transaction.

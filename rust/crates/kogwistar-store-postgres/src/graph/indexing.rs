@@ -191,10 +191,16 @@ where
     client
         .execute(
             &format!(
-                "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
-                tables.edge_endpoints
+                "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1 AND {}",
+                tables.edge_endpoints,
+                graph_scope_identity_predicate(2)
             ),
-            &[&edge_id],
+            &[
+                &edge_id,
+                &scope.namespace,
+                &scope.workspace_id.as_deref().unwrap_or(""),
+                &scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?;
@@ -213,7 +219,7 @@ where
             .execute(
                 &format!(
                     "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
-                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                     ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, \
                      metadata = EXCLUDED.metadata, updated_at = NOW()",
                     tables.edge_endpoints
                 ),

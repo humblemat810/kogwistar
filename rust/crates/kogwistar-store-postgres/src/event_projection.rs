@@ -415,5 +415,62 @@ where
         tables.stage1_projections,
         tables.stage1_projections,
     );
-    client.batch_execute(&sql).await.map_err(backend)
+    client.batch_execute(&sql).await.map_err(|error| {
+        PostgresStoreError::Backend(format!("graph schema base DDL failed: {error:?}"))
+    })?;
+
+    // Python isolates each graph type in its own schema. Rust stores graph
+    // types together, so canonical IDs must be unique only within GraphScope.
+    let scoped_relations = [
+        relations[0].as_str(),
+        relations[1].as_str(),
+        relations[2].as_str(),
+        relations[3].as_str(),
+        edge_endpoints.as_str(),
+        node_docs.as_str(),
+        node_refs.as_str(),
+        edge_refs.as_str(),
+    ];
+    for (index, relation) in scoped_relations.into_iter().enumerate() {
+        if let Some(row) = client
+            .query_opt(
+                "SELECT conname FROM pg_constraint WHERE conrelid = to_regclass($1) AND contype = 'p'",
+                &[&relation],
+            )
+            .await
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!(
+                    "scoped graph identity migration lookup failed: {error:?}"
+                ))
+            })?
+        {
+            let constraint: String = row.try_get(0).map_err(backend)?;
+            client
+                .batch_execute(&format!(
+                    "ALTER TABLE {relation} DROP CONSTRAINT {}",
+                    quote_identifier(&constraint)?
+                ))
+                .await
+                .map_err(|error| {
+                    PostgresStoreError::Backend(format!(
+                        "scoped graph identity migration failed for {relation}: {error:?}"
+                    ))
+                })?;
+        }
+        let index = quote_identifier(&format!("uq_graph_scope_identity_{index}"))?;
+        client
+            .batch_execute(&format!(
+                "CREATE UNIQUE INDEX IF NOT EXISTS {index} ON {relation} \
+                 (id, (COALESCE(metadata->>'namespace', 'default')), \
+                 (COALESCE(metadata->>'workspace_id', '')), \
+                 (COALESCE(metadata->>'graph_space', '')))"
+            ))
+            .await
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!(
+                    "scoped graph identity index creation failed for {relation}: {error:?}"
+                ))
+            })?;
+    }
+    Ok(())
 }

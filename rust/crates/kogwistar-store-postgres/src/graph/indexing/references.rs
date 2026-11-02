@@ -50,10 +50,16 @@ where
     client
         .execute(
             &format!(
-                "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
-                tables.node_docs
+                "DELETE FROM {} WHERE metadata ->> 'node_id' = $1 AND {}",
+                tables.node_docs,
+                graph_scope_identity_predicate(2)
             ),
-            &[&mutation.record.id],
+            &[
+                &mutation.record.id,
+                &mutation.scope.namespace,
+                &mutation.scope.workspace_id.as_deref().unwrap_or(""),
+                &mutation.scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?;
@@ -91,7 +97,7 @@ where
             .execute(
                 &format!(
                     "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
-                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                     ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, \
                      metadata = EXCLUDED.metadata, updated_at = NOW()",
                     tables.node_docs
                 ),
@@ -106,9 +112,16 @@ where
     client
         .execute(
             &format!(
-                "UPDATE {graph_table} SET metadata = metadata || jsonb_build_object('doc_ids', $1::TEXT), updated_at = NOW() WHERE id = $2"
+                "UPDATE {graph_table} SET metadata = metadata || jsonb_build_object('doc_ids', $1::TEXT), updated_at = NOW() WHERE id = $2 AND {}",
+                graph_scope_identity_predicate(3)
             ),
-            &[&doc_ids_json, &mutation.record.id],
+            &[
+                &doc_ids_json,
+                &mutation.record.id,
+                &mutation.scope.namespace,
+                &mutation.scope.workspace_id.as_deref().unwrap_or(""),
+                &mutation.scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?;
@@ -197,8 +210,16 @@ where
     };
     client
         .execute(
-            &format!("DELETE FROM {table} WHERE metadata ->> '{owner_key}' = $1"),
-            &[&mutation.record.id],
+            &format!(
+                "DELETE FROM {table} WHERE metadata ->> '{owner_key}' = $1 AND {}",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &mutation.record.id,
+                &mutation.scope.namespace,
+                &mutation.scope.workspace_id.as_deref().unwrap_or(""),
+                &mutation.scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?;
@@ -225,7 +246,7 @@ where
             .execute(
                 &format!(
                     "INSERT INTO {table} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
-                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, \
+                     ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, \
                      metadata = EXCLUDED.metadata, updated_at = NOW()"
                 ),
                 &[&row_id, &row_json, &metadata_json],

@@ -1,5 +1,19 @@
 use super::super::*;
 
+pub(crate) fn graph_scope_identity_predicate(start: usize) -> String {
+    format!(
+        "COALESCE(metadata->>'namespace', 'default') = ${start} \
+         AND COALESCE(metadata->>'workspace_id', '') = ${} \
+         AND COALESCE(metadata->>'graph_space', '') = ${}",
+        start + 1,
+        start + 2,
+    )
+}
+
+pub(crate) const GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET: &str = "(id, (COALESCE(metadata->>'namespace', 'default')), \
+     (COALESCE(metadata->>'workspace_id', '')), \
+     (COALESCE(metadata->>'graph_space', '')))";
+
 pub(crate) fn sql_text_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }

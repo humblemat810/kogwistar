@@ -656,8 +656,8 @@ async fn arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_av
     let namespace = format!("large-integer-{}", std::process::id());
     let scope = kogwistar_store::GraphScope {
         namespace: namespace.clone(),
-        workspace_id: None,
-        graph_space: None,
+        workspace_id: Some("ws".to_owned()),
+        graph_space: Some("facts".to_owned()),
     };
     store
         .apply_graph_mutation(kogwistar_store::GraphMutation {

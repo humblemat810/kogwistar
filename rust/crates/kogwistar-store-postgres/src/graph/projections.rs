@@ -33,8 +33,16 @@ where
     let table = graph_table(tables, &write.table)?;
     if let Some(row) = client
         .query_opt(
-            &format!("SELECT metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
-            &[&write.record.id],
+            &format!(
+                "SELECT metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &write.record.id,
+                &write.scope.namespace,
+                &write.scope.workspace_id.as_deref().unwrap_or(""),
+                &write.scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?
@@ -58,7 +66,7 @@ where
         .execute(
             &format!(
                 "INSERT INTO {table}(id, document, metadata, embedding) VALUES ($1, $2, {}::JSONB, {embedding_sql}) \
-                 ON CONFLICT(id) DO UPDATE SET document = EXCLUDED.document, metadata = EXCLUDED.metadata, \
+                 ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, metadata = EXCLUDED.metadata, \
                  embedding = EXCLUDED.embedding, updated_at = NOW()",
                 sql_text_literal(&metadata_json),
             ),
@@ -117,8 +125,16 @@ where
     let table = graph_table(tables, table_name)?;
     let Some(row) = client
         .query_opt(
-            &format!("SELECT metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
-            &[&entity_id],
+            &format!(
+                "SELECT metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &entity_id,
+                &scope.namespace,
+                &scope.workspace_id.as_deref().unwrap_or(""),
+                &scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?
@@ -138,15 +154,35 @@ where
     }
 
     client
-        .execute(&format!("DELETE FROM {table} WHERE id = $1"), &[&entity_id])
+        .execute(
+            &format!(
+                "DELETE FROM {table} WHERE id = $1 AND {}",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &entity_id,
+                &scope.namespace,
+                &scope.workspace_id.as_deref().unwrap_or(""),
+                &scope.graph_space.as_deref().unwrap_or(""),
+            ],
+        )
         .await
         .map_err(backend)?;
     if entity_kind == "node" {
         for derived in [&tables.node_docs, &tables.node_refs] {
             client
                 .execute(
-                    &format!("DELETE FROM {derived} WHERE metadata ->> $1 = $2"),
-                    &[&derived_key, &entity_id],
+                    &format!(
+                        "DELETE FROM {derived} WHERE metadata ->> $1 = $2 AND {}",
+                        graph_scope_identity_predicate(3)
+                    ),
+                    &[
+                        &derived_key,
+                        &entity_id,
+                        &scope.namespace,
+                        &scope.workspace_id.as_deref().unwrap_or(""),
+                        &scope.graph_space.as_deref().unwrap_or(""),
+                    ],
                 )
                 .await
                 .map_err(backend)?;
@@ -155,20 +191,32 @@ where
         client
             .execute(
                 &format!(
-                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
-                    tables.edge_endpoints
+                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1 AND {}",
+                    tables.edge_endpoints,
+                    graph_scope_identity_predicate(2)
                 ),
-                &[&entity_id],
+                &[
+                    &entity_id,
+                    &scope.namespace,
+                    &scope.workspace_id.as_deref().unwrap_or(""),
+                    &scope.graph_space.as_deref().unwrap_or(""),
+                ],
             )
             .await
             .map_err(backend)?;
         client
             .execute(
                 &format!(
-                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1",
-                    tables.edge_refs
+                    "DELETE FROM {} WHERE metadata ->> 'edge_id' = $1 AND {}",
+                    tables.edge_refs,
+                    graph_scope_identity_predicate(2)
                 ),
-                &[&entity_id],
+                &[
+                    &entity_id,
+                    &scope.namespace,
+                    &scope.workspace_id.as_deref().unwrap_or(""),
+                    &scope.graph_space.as_deref().unwrap_or(""),
+                ],
             )
             .await
             .map_err(backend)?;
@@ -191,8 +239,16 @@ where
     let table = graph_table(tables, &patch.table)?;
     let Some(row) = client
         .query_opt(
-            &format!("SELECT document, metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
-            &[&patch.entity_id],
+            &format!(
+                "SELECT document, metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &patch.entity_id,
+                &patch.scope.namespace,
+                &patch.scope.workspace_id.as_deref().unwrap_or(""),
+                &patch.scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(backend)?
@@ -232,10 +288,17 @@ where
     client
         .execute(
             &format!(
-                "UPDATE {table} SET document = $1, metadata = {}::JSONB, updated_at = NOW() WHERE id = $2",
+                "UPDATE {table} SET document = $1, metadata = {}::JSONB, updated_at = NOW() WHERE id = $2 AND {}",
                 sql_text_literal(&metadata_json)
+                , graph_scope_identity_predicate(3)
             ),
-            &[&patched_document, &patch.entity_id],
+            &[
+                &patched_document,
+                &patch.entity_id,
+                &patch.scope.namespace,
+                &patch.scope.workspace_id.as_deref().unwrap_or(""),
+                &patch.scope.graph_space.as_deref().unwrap_or(""),
+            ],
         )
         .await
         .map_err(|error| {
