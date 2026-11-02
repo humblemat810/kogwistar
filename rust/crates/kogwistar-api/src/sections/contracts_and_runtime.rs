@@ -1668,7 +1668,7 @@ fn answer_workflow_admission_ready(
         })
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#answer_workflow_plan_is_executable; python=kogwistar/conversation/agentic_answering_design.py#build_agentic_answering_workflow_design; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_06.rs#sqlite_chroma_admits_valid_python_answer_workflow_plan; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#answer_workflow_plan_is_executable; python=kogwistar/conversation/agentic_answering_design.py#build_agentic_answering_workflow_design; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_01.rs#answer_workflow_admission_supports_per_node_python_and_registered_rust_executors; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
 fn answer_workflow_plan_is_executable(
     workflow_id: &str,
     plan: &RuntimeGraphPlan,
