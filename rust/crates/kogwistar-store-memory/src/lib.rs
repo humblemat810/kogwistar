@@ -10,7 +10,7 @@ use kogwistar_store::{
     NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
+    StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery, WorkflowDesignDelta,
     WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
     WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
     validate_graph_mutation, validate_graph_mutation_batch, validate_graph_mutation_replay,
@@ -26,6 +26,7 @@ pub struct InMemoryStore {
 #[derive(Debug, Default)]
 struct State {
     namespaces: BTreeMap<String, NamespaceState>,
+    vector_collections: BTreeMap<(String, String), Vec<GraphRecord>>,
     graph_projections: BTreeMap<GraphScope, GraphProjectionState>,
     workflow_design_snapshots: BTreeMap<(String, i64), WorkflowDesignSnapshot>,
     workflow_design_deltas: BTreeMap<(String, i64), WorkflowDesignDelta>,
@@ -1333,6 +1334,15 @@ fn namespace(ns: &str) -> StoreResult<()> {
         Ok(())
     }
 }
+fn collection_name(collection: &str) -> StoreResult<()> {
+    if collection.trim().is_empty() || collection.contains('\0') {
+        Err(StoreError::InvalidIdentifier {
+            identifier: "vector collection name",
+        })
+    } else {
+        Ok(())
+    }
+}
 fn graph_kind_name(kind: GraphEntityKind) -> &'static str {
     match kind {
         GraphEntityKind::Node => "node",
@@ -1457,6 +1467,129 @@ fn graph_projection_vector_matches(
     results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
     results.truncate(query.limit);
     Ok(results)
+}
+
+impl VectorCollectionStore for InMemoryStore {
+    async fn upsert_vector_collection(
+        &self,
+        ns: &str,
+        collection: &str,
+        records: Vec<GraphRecord>,
+    ) -> StoreResult<()> {
+        namespace(ns)?;
+        collection_name(collection)?;
+        if records.len() > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-vector-collection".to_owned(),
+                message: "upsert batch exceeds the 10000-record limit".to_owned(),
+            });
+        }
+        for record in &records {
+            if record.id.trim().is_empty() || record.id.contains('\0') {
+                return Err(StoreError::InvalidIdentifier {
+                    identifier: "vector collection record id",
+                });
+            }
+            if let Some(embedding) = &record.embedding {
+                finite(embedding)?;
+            }
+        }
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let collection_records = state
+            .vector_collections
+            .entry((ns.to_owned(), collection.to_owned()))
+            .or_default();
+        for record in records {
+            if let Some(existing) = collection_records
+                .iter_mut()
+                .find(|existing| existing.id == record.id)
+            {
+                *existing = record;
+            } else {
+                collection_records.push(record);
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_vector_collection_records(
+        &self,
+        ns: &str,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> StoreResult<()> {
+        namespace(ns)?;
+        collection_name(collection)?;
+        if ids.len() > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-vector-collection".to_owned(),
+                message: "delete batch exceeds the 10000-record limit".to_owned(),
+            });
+        }
+        if ids
+            .iter()
+            .any(|id| id.trim().is_empty() || id.contains('\0'))
+        {
+            return Err(StoreError::InvalidIdentifier {
+                identifier: "vector collection record id",
+            });
+        }
+        let ids = ids.into_iter().collect::<std::collections::BTreeSet<_>>();
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        if let Some(records) = state
+            .vector_collections
+            .get_mut(&(ns.to_owned(), collection.to_owned()))
+        {
+            records.retain(|record| !ids.contains(&record.id));
+        }
+        Ok(())
+    }
+
+    async fn query_vector_collection(
+        &self,
+        ns: &str,
+        collection: &str,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        namespace(ns)?;
+        collection_name(collection)?;
+        finite(&query.embedding)?;
+        if query.limit > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-vector-collection".to_owned(),
+                message: "query limit exceeds the 10000-record limit".to_owned(),
+            });
+        }
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let Some(records) = state
+            .vector_collections
+            .get(&(ns.to_owned(), collection.to_owned()))
+        else {
+            return Ok(Vec::new());
+        };
+        let mut matches = records
+            .iter()
+            .filter(|record| query.metadata.matches(&record.metadata))
+            .map(|record| {
+                let distance = match query.metric {
+                    DistanceMetric::Cosine => {
+                        cosine_memory_distance(&query.embedding, record.embedding.as_deref())
+                    }
+                    metric => match record.embedding.as_deref() {
+                        Some(embedding) => distance(metric, &query.embedding, embedding)?,
+                        None => 2.0,
+                    },
+                };
+                Ok(VectorMatch {
+                    record: record.clone(),
+                    distance,
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
+        matches.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+        matches.truncate(query.limit);
+        Ok(matches)
+    }
 }
 
 impl GraphReadStore for InMemoryStore {
@@ -2150,6 +2283,7 @@ mod tests {
         GraphAuthorityCapability, GraphMutation, GraphMutationStore, GraphProjectionRead,
         GraphProjectionVectorQuery, GraphRecord, GraphScope, NewProjectedLaneMessage,
         ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore, ShadowInspectable,
+        VectorCollectionStore,
     };
     use serde_json::{Value, json};
     use std::future::Future;
@@ -2177,6 +2311,70 @@ mod tests {
         );
         assert!(capability.supports_single_mutation());
         assert!(capability.supports_atomic_index_jobs());
+    }
+
+    #[test]
+    fn named_vector_collection_isolated_from_graph_and_other_namespaces() {
+        let store = InMemoryStore::new();
+        let record = |id: &str, embedding: Vec<f32>| GraphRecord {
+            id: id.to_owned(),
+            document: Some(format!("index entry {id}")),
+            metadata: serde_json::Map::from_iter([("entry".to_owned(), json!(true))]),
+            embedding: Some(embedding),
+        };
+        block_on(store.upsert_vector_collection(
+            "knowledge",
+            "node_index",
+            vec![
+                record("idx:one", vec![1.0, 0.0]),
+                record("idx:two", vec![0.0, 1.0]),
+            ],
+        ))
+        .expect("named vector entries upsert");
+        block_on(store.upsert_vector_collection(
+            "other",
+            "node_index",
+            vec![record("idx:private", vec![1.0, 0.0])],
+        ))
+        .expect("other namespace entry upsert");
+
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 10,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        let results = block_on(store.query_vector_collection("knowledge", "node_index", &query))
+            .expect("query named vector collection");
+        assert_eq!(
+            results
+                .iter()
+                .map(|item| item.record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["idx:one", "idx:two"]
+        );
+        assert_eq!(results[0].distance, 0.0);
+        assert!(
+            block_on(store.graph_record("knowledge", "idx:one"))
+                .expect("graph read")
+                .is_none()
+        );
+        assert!(
+            block_on(store.query_vector_collection("missing", "node_index", &query))
+                .expect("isolated namespace query")
+                .is_empty()
+        );
+
+        block_on(store.delete_vector_collection_records(
+            "knowledge",
+            "node_index",
+            vec!["idx:one".to_owned()],
+        ))
+        .expect("delete from only the selected collection");
+        let remaining = block_on(store.query_vector_collection("knowledge", "node_index", &query))
+            .expect("query after delete");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].record.id, "idx:two");
     }
 
     #[test]

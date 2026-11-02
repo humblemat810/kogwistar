@@ -3036,6 +3036,37 @@ pub trait GraphReadStore: Send + Sync {
     }
 }
 
+/// An independently named vector collection, separate from canonical graph
+/// entities. Derived indexes such as Python's `node_index` must not be stored
+/// as fake Nodes or Edges: graph reads, ACL traversal, and lifecycle writes
+/// treat those entity kinds as authoritative graph data.
+pub trait VectorCollectionStore: Send + Sync {
+    /// Atomically upsert a bounded batch within one namespace and collection.
+    fn upsert_vector_collection(
+        &self,
+        namespace: &str,
+        collection: &str,
+        records: Vec<GraphRecord>,
+    ) -> impl Future<Output = StoreResult<()>> + Send;
+
+    /// Delete the requested IDs from only the selected namespace/collection.
+    fn delete_vector_collection_records(
+        &self,
+        namespace: &str,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> impl Future<Output = StoreResult<()>> + Send;
+
+    /// Query only the selected namespace/collection using the shared distance
+    /// contract and stable backend ordering.
+    fn query_vector_collection(
+        &self,
+        namespace: &str,
+        collection: &str,
+        query: &VectorQuery,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+}
+
 pub trait GraphWriteStore: GraphReadStore {
     fn upsert_graph_record(
         &self,
