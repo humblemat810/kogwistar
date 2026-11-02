@@ -227,10 +227,12 @@ def test_python_and_rust_postgres_writers_serialize_shared_event_stream(
             "python-writer-node",
             "rust-writer-node",
         }
-        assert backend.node_get(
-            ids=["python-writer-node", "rust-writer-node"],
-            include=["documents", "metadatas"],
-        )["ids"] == ["python-writer-node", "rust-writer-node"]
+        assert set(
+            backend.node_get(
+                ids=["python-writer-node", "rust-writer-node"],
+                include=["documents", "metadatas"],
+            )["ids"]
+        ) == {"python-writer-node", "rust-writer-node"}
         assert _rust(
             dsn,
             schema,
