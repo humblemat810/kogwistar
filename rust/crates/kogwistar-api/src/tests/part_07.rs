@@ -3132,7 +3132,8 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use kogwistar_store::{
-        GraphMutation, GraphMutationBatch, GraphRecord, GraphScope, NamedProjectionWrite,
+        DistanceMetric, GraphMutation, GraphMutationBatch, GraphReadStore, GraphRecord,
+        GraphScope, GraphWriteStore, MetadataFilter, NamedProjectionWrite, VectorQuery,
         WorkflowDesignSnapshotWrite,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3322,17 +3323,47 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         }
         projection_requests
     });
-    let config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
-        endpoint: endpoint.clone(),
-        collection: collection.to_owned(),
+    let live_chroma_endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL").ok();
+    let chroma_suffix = uuid::Uuid::new_v4().simple().to_string();
+    let config = |entity_kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: live_chroma_endpoint
+            .clone()
+            .unwrap_or_else(|| endpoint.clone()),
+        collection: format!("conversation-{entity_kind}-{chroma_suffix}"),
         ..Default::default()
     };
     let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
-        config("conversation-nodes"),
-        config("conversation-edges"),
+        config("nodes"),
+        config("edges"),
     )
     .await
     .unwrap();
+    if live_chroma_endpoint.is_some() {
+        graph
+            .upsert_graph_record_of_kind(
+                "conversation",
+                kogwistar_store::GraphEntityKind::Node,
+                GraphRecord {
+                    id: "knowledge-node".to_owned(),
+                    document: Some(
+                        "The runtime persists workflow state in the graph.".to_owned(),
+                    ),
+                    metadata: serde_json::from_value(json!({
+                        "entity_type": "node",
+                        "workspace_id": "workspace-a",
+                        "graph_space": "conversation",
+                        "label": "Workflow runtime state",
+                        "summary": "The runtime persists workflow state in the graph.",
+                        "level_from_root": 0,
+                        "lifecycle_status": "active"
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+    }
     let path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-conversation-create-{}.sqlite",
         uuid::Uuid::new_v4().simple()
@@ -3392,7 +3423,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     });
     let service = SqliteRunApplicationService::open(&path)
         .unwrap()
-        .with_chroma_graph(graph)
+        .with_chroma_graph(graph.clone())
         .with_embedding_provider(embedding_provider.clone())
         .with_chat_completion_provider(
             crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
@@ -3431,6 +3462,21 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     acl_payload["metadata"]["acl_target_grain"] = json!("node");
     acl_payload["metadata"]["acl_version"] = json!(1);
     acl_payload["metadata"]["acl_mode"] = json!("public");
+    if live_chroma_endpoint.is_some() {
+        graph
+            .upsert_graph_record_of_kind(
+                "conversation",
+                kogwistar_store::GraphEntityKind::Node,
+                GraphRecord {
+                    id: acl_payload["id"].as_str().unwrap().to_owned(),
+                    document: Some(acl_payload["summary"].as_str().unwrap().to_owned()),
+                    metadata: serde_json::from_value(acl_payload["metadata"].clone()).unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+    }
     let graph_scope = GraphScope {
         namespace: "conversation".to_owned(),
         workspace_id: Some("workspace-a".to_owned()),
@@ -3465,6 +3511,34 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             index_jobs: Vec::new(),
         })
         .unwrap();
+    if live_chroma_endpoint.is_some() {
+        let mut metadata = MetadataFilter::default();
+        metadata
+            .equals
+            .insert("workspace_id".to_owned(), json!("workspace-a"));
+        metadata
+            .equals
+            .insert("graph_space".to_owned(), json!("conversation"));
+        let hits = graph
+            .vector_query_of_kind_numeric_lte(
+                "conversation",
+                kogwistar_store::GraphEntityKind::Node,
+                &VectorQuery {
+                    embedding: vec![0.6, 0.8],
+                    limit: 20,
+                    metadata,
+                    metric: DistanceMetric::Cosine,
+                },
+                "level_from_root",
+                4.0,
+            )
+            .await
+            .unwrap();
+        assert!(
+            hits.iter().any(|matched| matched.record.id == "knowledge-node"),
+            "canonical SQLite admission must not remove the seeded Chroma retrieval hit"
+        );
+    }
 
     let workflow_contract: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -3776,8 +3850,8 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     drop(service);
 
     let recovered_graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
-        config("conversation-nodes"),
-        config("conversation-edges"),
+        config("nodes"),
+        config("edges"),
     )
     .await
     .unwrap();

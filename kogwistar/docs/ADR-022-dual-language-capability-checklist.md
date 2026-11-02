@@ -455,7 +455,14 @@ the focused test passed, and the API suite passed after that change. The ignored
 live-Chroma test requires an explicitly configured service; a separate live
 projection/reopen test passed against disposable Chroma 1.5.9. This adds
 evidence to the existing DL-16BQ gate; it does not add a checklist item or
-change the denominator.
+change the denominator. The same provider-backed agentic test can now be run
+against a disposable live Chroma endpoint by setting
+`KOGWISTAR_TEST_CHROMA_URL`; the live run passed (**1 passed**) on Chroma 1.5.9.
+It verifies canonical SQLite admission, Chroma retrieval after service reopen,
+host ACL filtering, structured provider completion, and durable assistant-turn
+projection on the live backend. The default fake-Chroma mode also passed (**1
+passed**). This closes the prior gap in live agentic-workflow evidence only;
+DL-16BQ remains open for broader syscall, backend, and whole-stack parity.
 
 Python-written pure graph records are covered across the PostgreSQL/Rust MCP
 seam: `_class_name` preserves allowlisted `PureChromaNode`/`PureChromaEdge`
