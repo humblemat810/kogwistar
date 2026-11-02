@@ -21,6 +21,8 @@ struct GraphVisualizationRequest {
     doc_id: Option<String>,
     #[serde(default = "default_graph_visualization_mode")]
     mode: String,
+    #[serde(default)]
+    insertion_method: Option<String>,
     #[serde(default = "default_graph_visualization_type")]
     graph_type: String,
 }
@@ -145,16 +147,17 @@ fn parse_graph_vector_query_request(body: &[u8]) -> Result<GraphVectorQueryReque
     let metric = match wire.metric.trim().to_ascii_lowercase().as_str() {
         "cosine" => DistanceMetric::Cosine,
         "l2" => DistanceMetric::L2,
-        "ip" | "inner" | "inner_product" | "innerproduct" => {
-            DistanceMetric::InnerProduct
-        }
+        "ip" | "inner" | "inner_product" | "innerproduct" => DistanceMetric::InnerProduct,
         _ => return Err("metric must be cosine, l2, or ip".to_owned()),
     };
     let include = wire
         .include
         .unwrap_or_else(|| vec!["documents".into(), "embeddings".into(), "metadatas".into()]);
     if include.iter().any(|field| {
-        !matches!(field.as_str(), "documents" | "embeddings" | "metadatas" | "distances")
+        !matches!(
+            field.as_str(),
+            "documents" | "embeddings" | "metadatas" | "distances"
+        )
     }) {
         return Err("include contains an unsupported field".to_owned());
     }

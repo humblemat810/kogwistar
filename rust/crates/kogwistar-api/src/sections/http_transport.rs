@@ -133,11 +133,9 @@ async fn mcp_handler(
                         tool.get("name")
                             .and_then(Value::as_str)
                             .is_some_and(|name| {
-                                state.application.supports_mcp_tool_for_principal(
-                                    surface,
-                                    name,
-                                    &principal,
-                                )
+                                state
+                                    .application
+                                    .supports_mcp_tool_for_principal(surface, name, &principal)
                             })
                     })
                     .cloned()
@@ -189,9 +187,13 @@ async fn mcp_handler(
                     .filter(|value| !value.is_null())
                     .and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty());
-                let optional_strings_valid = ["conversation_id", "start_node_id"]
-                    .iter()
-                    .all(|key| arguments.get(*key).is_none_or(|value| value.is_null() || value.as_str().is_some_and(|value| !value.trim().is_empty())));
+                let optional_strings_valid =
+                    ["conversation_id", "start_node_id"].iter().all(|key| {
+                        arguments.get(*key).is_none_or(|value| {
+                            value.is_null()
+                                || value.as_str().is_some_and(|value| !value.trim().is_empty())
+                        })
+                    });
                 let known_arguments = ["user_id", "conversation_id", "start_node_id"];
                 user_id
                     .filter(|_| {
@@ -243,9 +245,7 @@ async fn mcp_handler(
                     .zip(text)
                     .filter(|_| {
                         user_id_valid
-                            && arguments
-                                .get("workflow_id")
-                                .is_none_or(Value::is_string)
+                            && arguments.get("workflow_id").is_none_or(Value::is_string)
                             && arguments
                                 .keys()
                                 .all(|argument| known_arguments.contains(&argument.as_str()))
@@ -353,8 +353,7 @@ async fn mcp_handler(
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: "/api/wisdom/graph/upsert".to_owned(),
-                body: serde_json::to_vec(&arguments)
-                    .expect("MCP wisdom graph arguments serialize"),
+                body: serde_json::to_vec(&arguments).expect("MCP wisdom graph arguments serialize"),
                 principal: principal.clone(),
             }),
             "wisdom.semantic_seed_then_expand" => Some(ApiEffectRequest {
@@ -440,8 +439,7 @@ async fn mcp_handler(
                 })
             }
             "workflow.run_evidence"
-                if !run_id.is_empty()
-                    && arguments.keys().all(|argument| argument == "run_id") =>
+                if !run_id.is_empty() && arguments.keys().all(|argument| argument == "run_id") =>
             {
                 let encoded_run_id = percent_encoding::utf8_percent_encode(
                     run_id,
@@ -979,7 +977,8 @@ async fn application_effect_handler(
     if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
         return forbidden_response();
     }
-    let mut path_and_query = uri.to_string();
+    let (method, path_and_query, body) = public_visualization_effect(&method, &uri, body);
+    let mut path_and_query = path_and_query;
     if path_and_query.ends_with("/events")
         && !path_and_query.contains("after_seq=")
         && let Some(last_event_id) = headers
@@ -994,7 +993,7 @@ async fn application_effect_handler(
         .application
         .execute(ApiEffectRequest {
             contract_version: 1,
-            method: method.to_string(),
+            method,
             path_and_query,
             body: body.to_vec(),
             principal: request_principal(&headers, &state.api.auth),
@@ -1009,6 +1008,43 @@ async fn application_effect_handler(
         .into_response()
 }
 
+fn public_visualization_effect(
+    method: &Method,
+    uri: &axum::http::Uri,
+    body: Bytes,
+) -> (String, String, Bytes) {
+    if method != Method::GET {
+        return (method.to_string(), uri.to_string(), body);
+    }
+    let (path, query) = uri.path_and_query().map_or((uri.path(), ""), |value| {
+        value
+            .as_str()
+            .split_once('?')
+            .unwrap_or((value.as_str(), ""))
+    });
+    let internal_path = match path {
+        "/api/viz/d3.json" => INTERNAL_GRAPH_VIZ_D3_ROUTE,
+        "/api/viz/cytoscape.json" => INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE,
+        _ => return (method.to_string(), uri.to_string(), body),
+    };
+    let mut input = serde_json::Map::new();
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if matches!(
+            key.as_ref(),
+            "doc_id" | "mode" | "insertion_method" | "graph_type"
+        ) {
+            input.insert(key.into_owned(), json!(value.into_owned()));
+        }
+    }
+    (
+        "POST".to_owned(),
+        internal_path.to_owned(),
+        Bytes::from(
+            serde_json::to_vec(&Value::Object(input)).expect("visualization query serializes"),
+        ),
+    )
+}
+
 fn method_filter(method: &str) -> MethodFilter {
     match method {
         "GET" => MethodFilter::GET,
@@ -1019,6 +1055,41 @@ fn method_filter(method: &str) -> MethodFilter {
         "HEAD" => MethodFilter::HEAD,
         "OPTIONS" => MethodFilter::OPTIONS,
         other => panic!("unsupported frozen OpenAPI method {other}"),
+    }
+}
+
+#[cfg(test)]
+mod visualization_route_tests {
+    use super::*;
+
+    #[test]
+    fn public_visualization_get_preserves_python_query_options() {
+        let uri = "/api/viz/d3.json?doc_id=doc%3A%2F%2Fone&mode=classic&insertion_method=parser&graph_type=wisdom"
+            .parse()
+            .expect("valid visualization URI");
+        let (method, path, body) = public_visualization_effect(&Method::GET, &uri, Bytes::new());
+        assert_eq!(method, "POST");
+        assert_eq!(path, INTERNAL_GRAPH_VIZ_D3_ROUTE);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).expect("query becomes JSON"),
+            json!({
+                "doc_id":"doc://one",
+                "mode":"classic",
+                "insertion_method":"parser",
+                "graph_type":"wisdom"
+            })
+        );
+    }
+
+    #[test]
+    fn unrelated_get_routes_are_not_rewritten() {
+        let uri = "/api/search_index_hybrid?q=graph"
+            .parse()
+            .expect("valid URI");
+        let (method, path, body) = public_visualization_effect(&Method::GET, &uri, Bytes::new());
+        assert_eq!(method, "GET");
+        assert_eq!(path, uri.to_string());
+        assert!(body.is_empty());
     }
 }
 

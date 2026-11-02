@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,8 +13,37 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.utils.kge_debug_dump import dump_d3_bundle
+from kogwistar.visualization.graph_viz import _filter_by_insertion_method
 from kogwistar.visualization.basic_visualization import Visualizer
 from tests._helpers.fake_backend import build_fake_backend
+
+
+@pytest.mark.ci
+def test_visualization_insertion_method_filter_and_empty_match_fallback() -> None:
+    class RefCollection:
+        def __init__(self, metadatas: list[dict[str, str]]) -> None:
+            self.metadatas = metadatas
+            self.where: object = None
+
+        def get(self, *, where: object, include: list[str]) -> dict[str, object]:
+            self.where = where
+            return {"metadatas": self.metadatas}
+
+    collection = RefCollection([{"node_id": "n1"}])
+    engine = SimpleNamespace(node_refs_collection=collection)
+    assert _filter_by_insertion_method(
+        engine, ["n1", "n2"], "node", "parser", by_doc_id="d1"
+    ) == ["n1"]
+    assert collection.where == {"$and": [{"insertion_method": "parser"}, {"doc_id": "d1"}]}
+
+    no_matches = RefCollection([])
+    assert _filter_by_insertion_method(
+        SimpleNamespace(node_refs_collection=no_matches),
+        ["n1", "n2"],
+        "node",
+        "missing",
+        by_doc_id="d1",
+    ) == ["n1", "n2"]
 
 
 @pytest.mark.ci

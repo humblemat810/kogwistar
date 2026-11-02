@@ -184,7 +184,10 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let auth_connection = rusqlite::Connection::open(&auth_path).unwrap();
     let changed = auth_connection
-        .execute("UPDATE users SET global_role = 'ro' WHERE user_id = 'alice'", [])
+        .execute(
+            "UPDATE users SET global_role = 'ro' WHERE user_id = 'alice'",
+            [],
+        )
         .unwrap();
     assert_eq!(changed, 1);
 
@@ -206,15 +209,20 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
     assert_eq!(lanes.len(), 1);
     assert_eq!(lanes[0].status, "completed");
     assert!(!service.execute_inline_native_work_once().await.unwrap());
-    assert!(service
-        .store
-        .replay_raw_events("alpha", 0, 100)
-        .unwrap()
-        .iter()
-        .all(|event| event.event_id != "inline-event-sqlite-inline-owner-revoked"));
+    assert!(
+        service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .unwrap()
+            .iter()
+            .all(|event| event.event_id != "inline-event-sqlite-inline-owner-revoked")
+    );
 
     let restored = auth_connection
-        .execute("UPDATE users SET global_role = 'rw' WHERE user_id = 'alice'", [])
+        .execute(
+            "UPDATE users SET global_role = 'rw' WHERE user_id = 'alice'",
+            [],
+        )
         .unwrap();
     assert_eq!(restored, 1);
     let cross_scope_submit = service
@@ -264,12 +272,14 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
     assert_eq!(cross_scope_lanes.len(), 1);
     assert_eq!(cross_scope_lanes[0].status, "completed");
     assert!(!service.execute_inline_native_work_once().await.unwrap());
-    assert!(service
-        .store
-        .replay_raw_events("beta", 0, 100)
-        .unwrap()
-        .iter()
-        .all(|event| event.event_id != "inline-event-sqlite-inline-cross-scope"));
+    assert!(
+        service
+            .store
+            .replay_raw_events("beta", 0, 100)
+            .unwrap()
+            .iter()
+            .all(|event| event.event_id != "inline-event-sqlite-inline-cross-scope")
+    );
 
     drop(auth_connection);
     drop(service);
@@ -331,10 +341,14 @@ fn recorded_step_snapshots_matches_python_fixture() {
     );
     let legacy_steps = recorded_step_snapshots(vec![recorded]);
     assert!(legacy_steps[0].trace_context.is_none());
-    assert!(fixture["legacy_step_omits_trace_context"].as_bool().unwrap());
+    assert!(
+        fixture["legacy_step_omits_trace_context"]
+            .as_bool()
+            .unwrap()
+    );
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_read_effect; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=none; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/test_visualization.py
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_read_effect; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=none; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
 #[tokio::test]
 async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let secret = "in-memory-api-contract-secret";
@@ -629,18 +643,25 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let conversation_visualization: Value =
         serde_json::from_slice(&conversation_visualization.body).unwrap();
     assert!(
-        conversation_visualization["nodes"].to_string().contains("conversation-node"),
+        conversation_visualization["nodes"]
+            .to_string()
+            .contains("conversation-node"),
         "selected conversation visualization did not return its graph: {conversation_visualization}"
     );
     assert!(
-        !conversation_visualization["nodes"].to_string().contains("n1"),
+        !conversation_visualization["nodes"]
+            .to_string()
+            .contains("n1"),
         "conversation visualization leaked knowledge graph data: {conversation_visualization}"
     );
 
     let mismatched_visualization = application
         .graph_read_effect(&visualization_request("facts"))
         .await;
-    assert_eq!(mismatched_visualization.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(
+        mismatched_visualization.status,
+        StatusCode::FORBIDDEN.as_u16()
+    );
 
     let deferred_visualization = app
         .clone()
@@ -660,7 +681,19 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         )
         .await
         .unwrap();
-    assert_eq!(deferred_visualization.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(deferred_visualization.status(), StatusCode::OK);
+    let visualization: Value = serde_json::from_slice(
+        &to_bytes(deferred_visualization.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        visualization["nodes"]
+            .to_string()
+            .contains("conversation-node"),
+        "public visualization failed to preserve graph and insertion-method selection: {visualization}"
+    );
 
     let read = app
         .clone()

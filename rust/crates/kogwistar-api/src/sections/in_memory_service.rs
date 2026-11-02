@@ -111,7 +111,7 @@ impl InMemoryGraphApplicationService {
         if matches!(
             request.path_and_query.as_str(),
             INTERNAL_GRAPH_VIZ_D3_ROUTE | INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE
-        ) && truth_graph != "knowledge"
+        ) && matches!(truth_graph.as_str(), "conversation" | "workflow")
         {
             if scope
                 .graph_space
@@ -227,9 +227,16 @@ impl InMemoryGraphApplicationService {
                         &edges,
                         input.doc_id.as_deref(),
                         &input.mode,
+                        input.insertion_method.as_deref(),
                     )
                 } else {
-                    graph_viz_d3_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
+                    graph_viz_d3_from_records(
+                        &nodes,
+                        &edges,
+                        input.doc_id.as_deref(),
+                        &input.mode,
+                        input.insertion_method.as_deref(),
+                    )
                 }
             }
             _ => return unavailable_effect(request.clone()),

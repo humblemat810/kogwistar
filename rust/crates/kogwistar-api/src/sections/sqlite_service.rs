@@ -2341,43 +2341,68 @@ impl SqliteRunApplicationService {
             .store
             .get_server_run(run_id)
             .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned())
+            })?;
         let owner_id = run
             .user_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no authenticated owner".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run has no authenticated owner".to_owned(),
+                )
+            })?;
         let admission = self
             .store
             .list_server_run_events(run_id, 0, 1)
             .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
             .into_iter()
             .find(|event| event.event_type == "run.created")
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no admission event".to_owned()))?;
-        let admission_payload: Value = serde_json::from_str(&admission.payload_json)
-            .map_err(|_| InlineOwnerPrincipalError::Denied("native worker admission event is invalid".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run has no admission event".to_owned(),
+                )
+            })?;
+        let admission_payload: Value =
+            serde_json::from_str(&admission.payload_json).map_err(|_| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker admission event is invalid".to_owned(),
+                )
+            })?;
         let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
             admission_payload
                 .get("runtime_owner_binding")
                 .cloned()
-                .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no trusted owner binding".to_owned()))?,
+                .ok_or_else(|| {
+                    InlineOwnerPrincipalError::Denied(
+                        "native worker run has no trusted owner binding".to_owned(),
+                    )
+                })?,
         )
-        .map_err(|_| InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned()))?;
+        .map_err(|_| {
+            InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned())
+        })?;
         if binding.user_id != owner_id {
             return Err(InlineOwnerPrincipalError::Denied(
                 "native worker owner binding does not match the durable run owner".to_owned(),
             ));
         }
-        let auth_store = self
-            .owner_auth_store
-            .as_ref()
-            .ok_or_else(|| InlineOwnerPrincipalError::Unavailable("native worker owner revalidation is not configured".to_owned()))?;
+        let auth_store = self.owner_auth_store.as_ref().ok_or_else(|| {
+            InlineOwnerPrincipalError::Unavailable(
+                "native worker owner revalidation is not configured".to_owned(),
+            )
+        })?;
         let user = auth_store
             .auth_user(owner_id)
             .await
             .map_err(InlineOwnerPrincipalError::Unavailable)?
             .filter(|user| user.is_active)
-            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run owner is missing or inactive".to_owned()))?;
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run owner is missing or inactive".to_owned(),
+                )
+            })?;
         revalidated_runtime_owner_principal(
             &binding,
             &user,
@@ -4800,9 +4825,21 @@ impl SqliteRunApplicationService {
         let nodes = graph_snapshot.nodes();
         let edges = graph_snapshot.edges();
         let result = if cytoscape {
-            graph_viz_cytoscape_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
+            graph_viz_cytoscape_from_records(
+                &nodes,
+                &edges,
+                input.doc_id.as_deref(),
+                &input.mode,
+                input.insertion_method.as_deref(),
+            )
         } else {
-            graph_viz_d3_from_records(&nodes, &edges, input.doc_id.as_deref(), &input.mode)
+            graph_viz_d3_from_records(
+                &nodes,
+                &edges,
+                input.doc_id.as_deref(),
+                &input.mode,
+                input.insertion_method.as_deref(),
+            )
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
     }

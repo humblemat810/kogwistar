@@ -72,12 +72,14 @@ impl PostgresRunApplicationService {
                     let mut nodes = if node_ids.is_empty() {
                         Vec::new()
                     } else {
-                        uow.graph_projection_records(read("gke_nodes", &node_ids)).await?
+                        uow.graph_projection_records(read("gke_nodes", &node_ids))
+                            .await?
                     };
                     let edges = if edge_ids.is_empty() {
                         Vec::new()
                     } else {
-                        uow.graph_projection_records(read("gke_edges", &edge_ids)).await?
+                        uow.graph_projection_records(read("gke_edges", &edge_ids))
+                            .await?
                     };
                     let endpoint_ids = edges
                         .iter()
@@ -127,13 +129,12 @@ impl PostgresRunApplicationService {
                         &principal,
                         scope_value["security_scope"].as_str(),
                     );
-                    let (visible_nodes, visible_edges) =
-                        graph_records_visible_by_acl_with_index(
-                            &nodes,
-                            &edges,
-                            &acl_index,
-                            &acl_principal,
-                        );
+                    let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
+                        &nodes,
+                        &edges,
+                        &acl_index,
+                        &acl_principal,
+                    );
                     let selected_node_ids = node_ids.iter().collect::<BTreeSet<_>>();
                     let selected_edge_ids = edge_ids.iter().collect::<BTreeSet<_>>();
                     let node_records = visible_nodes
@@ -231,7 +232,12 @@ impl PostgresRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> Result<ContextSnapshotAuthorization, ApiEffectResponse> {
-        if !capability_allowed(request, &self.capabilities, "project_view", &["project_view"]) {
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
             return Err(effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
@@ -541,10 +547,10 @@ impl PostgresRunApplicationService {
         )
         .map_err(|error| {
             effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
-                    error.to_string(),
-                )
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                error.to_string(),
+            )
         })
     }
 
@@ -572,9 +578,7 @@ impl PostgresRunApplicationService {
         {
             Ok(snapshot) => json_effect(
                 StatusCode::OK,
-                rust_native_attested(
-                    serde_json::to_value(snapshot).expect("snapshot serializes"),
-                ),
+                rust_native_attested(serde_json::to_value(snapshot).expect("snapshot serializes")),
             ),
             Err(response) => response,
         }
@@ -816,8 +820,7 @@ impl PostgresRunApplicationService {
             .await
         {
             Ok(transcript) => {
-                let mut payload =
-                    serde_json::to_value(transcript).expect("transcript serializes");
+                let mut payload = serde_json::to_value(transcript).expect("transcript serializes");
                 if let Some(object) = payload.as_object_mut() {
                     object.remove("schema_version");
                     if let Some(turns) = object.get_mut("turns").and_then(Value::as_array_mut) {
@@ -996,7 +999,11 @@ impl PostgresRunApplicationService {
             .collect::<BTreeSet<_>>();
         let acl_records = self
             .store
-            .graph_acl_records_for_entities(scope, truth_graph, &entity_ids.into_iter().collect::<Vec<_>>())
+            .graph_acl_records_for_entities(
+                scope,
+                truth_graph,
+                &entity_ids.into_iter().collect::<Vec<_>>(),
+            )
             .await
             .map_err(|error| error.to_string())?;
         let mut acl_index = GraphAclIndex::default();
@@ -1065,16 +1072,16 @@ impl PostgresRunApplicationService {
             .query_embeddings
             .iter()
             .map(|embedding| GraphProjectionVectorQuery {
-                    scope: scope.clone(),
-                    table: table.to_owned(),
-                    query: VectorQuery {
-                        embedding: embedding.clone(),
-                        limit: input.n_results,
-                        metadata: input.where_filter.clone(),
-                        metric: input.metric,
-                    },
-                    embedding_dim: embedding.len(),
-                })
+                scope: scope.clone(),
+                table: table.to_owned(),
+                query: VectorQuery {
+                    embedding: embedding.clone(),
+                    limit: input.n_results,
+                    metadata: input.where_filter.clone(),
+                    metric: input.metric,
+                },
+                embedding_dim: embedding.len(),
+            })
             .collect();
         let matches_by_query = match self
             .store
@@ -1187,7 +1194,10 @@ impl PostgresRunApplicationService {
         if input.include.iter().any(|field| field == "distances") {
             response.insert("distances".to_owned(), json!(all_distances));
         }
-        json_effect(StatusCode::OK, rust_native_attested(Value::Object(response)))
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(Value::Object(response)),
+        )
     }
 
     async fn graph_find_edges_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
@@ -1496,6 +1506,7 @@ impl PostgresRunApplicationService {
                 &edges,
                 input.doc_id.as_deref(),
                 &input.mode,
+                input.insertion_method.as_deref(),
             )
         } else {
             graph_viz_d3_from_records(
@@ -1503,6 +1514,7 @@ impl PostgresRunApplicationService {
                 &edges,
                 input.doc_id.as_deref(),
                 &input.mode,
+                input.insertion_method.as_deref(),
             )
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
@@ -1510,8 +1522,14 @@ impl PostgresRunApplicationService {
 
     async fn load_resource_snapshot_rows(
         &self,
-    ) -> Result<(Vec<ServerRun>, Vec<ProjectedLaneMessage>, Vec<ServerRunEvent>), ApiEffectResponse>
-    {
+    ) -> Result<
+        (
+            Vec<ServerRun>,
+            Vec<ProjectedLaneMessage>,
+            Vec<ServerRunEvent>,
+        ),
+        ApiEffectResponse,
+    > {
         let runs = self
             .store
             .list_server_runs(None, None, None, 10_000)
@@ -1685,7 +1703,9 @@ impl PostgresRunApplicationService {
                     return effect_error(
                         StatusCode::FORBIDDEN,
                         "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                        format!("built-in tool {tool_name:?} requires project_view and read_security_scope"),
+                        format!(
+                            "built-in tool {tool_name:?} requires project_view and read_security_scope"
+                        ),
                     );
                 }
                 let state = self
@@ -1707,14 +1727,17 @@ impl PostgresRunApplicationService {
                     return effect_error(
                         StatusCode::FORBIDDEN,
                         "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                        format!("built-in tool {tool_name:?} requires project_view and read_security_scope"),
+                        format!(
+                            "built-in tool {tool_name:?} requires project_view and read_security_scope"
+                        ),
                     );
                 }
                 let (runs, lanes, events) = match self.load_resource_snapshot_rows().await {
                     Ok(rows) => rows,
                     Err(response) => return response,
                 };
-                let service_rows = match self.store.list_named_projections("service_registry").await {
+                let service_rows = match self.store.list_named_projections("service_registry").await
+                {
                     Ok(rows) => rows,
                     Err(error) => {
                         return effect_error(
@@ -1909,10 +1932,7 @@ impl PostgresRunApplicationService {
                         Ok(transcript) => syscall_result(
                             &input.version,
                             op,
-                            json_effect(
-                                StatusCode::OK,
-                                legacy_receive_message_value(transcript),
-                            ),
+                            json_effect(StatusCode::OK, legacy_receive_message_value(transcript)),
                         ),
                         Err(response) => syscall_result(&input.version, op, response),
                     }
@@ -2033,21 +2053,21 @@ impl PostgresRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else {
-                    let (runs, lanes, events) =
-                        match self.load_resource_snapshot_rows().await {
-                            Ok(rows) => rows,
-                            Err(response) => return response,
-                        };
-                    let service_rows = match self.store.list_named_projections("service_registry").await {
+                    let (runs, lanes, events) = match self.load_resource_snapshot_rows().await {
                         Ok(rows) => rows,
-                        Err(error) => {
-                            return effect_error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "KOGWISTAR_STORE_ERROR",
-                                error.to_string(),
-                            );
-                        }
+                        Err(response) => return response,
                     };
+                    let service_rows =
+                        match self.store.list_named_projections("service_registry").await {
+                            Ok(rows) => rows,
+                            Err(error) => {
+                                return effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                );
+                            }
+                        };
                     let services = service_rows
                         .into_iter()
                         .map(|row| Value::Object(row.payload))
