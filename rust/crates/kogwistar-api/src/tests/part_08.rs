@@ -79,6 +79,132 @@ fn inline_graph_mutation_scope_uses_current_owner_scope() {
     ));
 }
 
+#[tokio::test]
+async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
+    let store_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-inline-owner-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-inline-owner-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "alice".to_owned(),
+        email: "alice@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "alice".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "alpha".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+
+    let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
+    registry
+        .register_graph("app/inline-owner-test", "v1", |request| {
+            let entity_id = format!("inline-node-{}", request.run_id);
+            let batch = serde_json::from_value(json!({
+                "contract_version": 1,
+                "atomic": true,
+                "mutations": [{
+                    "scope": {"namespace": "alpha"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": format!("inline-event-{}", request.run_id),
+                    "op": "ADD",
+                    "payload": {"id": entity_id},
+                    "record": {"id": entity_id, "document": "inline owner test"},
+                    "embedding_dim": 0
+                }],
+                "index_jobs": []
+            }))
+            .unwrap();
+            Ok((
+                kogwistar_runtime::NativeOperationOutput {
+                    state_update: Vec::new(),
+                    result: Some(json!({"inline_graph": true})),
+                },
+                batch,
+            ))
+        })
+        .unwrap();
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&store_path)
+        .unwrap()
+        .with_native_operations(registry)
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let submit = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": "sqlite-inline-owner-revoked",
+                "workflow_id": "wf",
+                "conversation_id": "conv-inline-owner-revoked",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/app/inline-owner-test"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "user_id": "alice",
+                "sub": "alice@example.test",
+                "role": "rw",
+                "ns": "alpha",
+                "storage_ns": "alpha",
+                "capabilities": ["workflow.run.write", "write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(submit.status, StatusCode::ACCEPTED.as_u16());
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let auth_connection = rusqlite::Connection::open(&auth_path).unwrap();
+    let changed = auth_connection
+        .execute("UPDATE users SET global_role = 'ro' WHERE user_id = 'alice'", [])
+        .unwrap();
+    assert_eq!(changed, 1);
+
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let run = service
+        .store
+        .get_server_run("sqlite-inline-owner-revoked")
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, "failed");
+    let lanes = service
+        .store
+        .list_projected_lane_messages(LaneMessageFilter {
+            correlation_id: Some("sqlite-inline-owner-revoked".to_owned()),
+            limit: 10,
+            ..LaneMessageFilter::default()
+        })
+        .unwrap();
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].status, "completed");
+    assert!(!service.execute_inline_native_work_once().await.unwrap());
+    assert!(service
+        .store
+        .replay_raw_events("alpha", 0, 100)
+        .unwrap()
+        .iter()
+        .all(|event| event.event_id != "inline-event-sqlite-inline-owner-revoked"));
+
+    drop(auth_connection);
+    drop(service);
+    let _ = std::fs::remove_file(store_path);
+    let _ = std::fs::remove_file(auth_path);
+}
+
 #[test]
 fn recorded_step_snapshots_matches_python_fixture() {
     let fixture: Value = serde_json::from_str(include_str!(
