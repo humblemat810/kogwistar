@@ -738,6 +738,16 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
     schema = f"gke_rust_graph_{uuid.uuid4().hex}"
     try:
         assert _rust(dsn, schema, {"kind": "create_graph_schema", "embedding_dim": 3}) == {"initialized": True}
+        with sa_engine.connect() as connection:
+            has_id_primary_key = connection.execute(
+                sa.text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_constraint "
+                    "WHERE conrelid = to_regclass(:relation) AND contype = 'p' "
+                    "AND pg_get_constraintdef(oid) = 'PRIMARY KEY (id)')"
+                ),
+                {"relation": f'{schema}.gke_nodes'},
+            ).scalar_one()
+        assert has_id_primary_key is True
         quoted = "O'Reilly\\雪"
         mutation = _mutation(
             event_id="fresh", op="ADD", id="fresh", document=quoted,
