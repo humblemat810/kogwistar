@@ -141,7 +141,7 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
         auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
         ..AuthConfig::default()
     };
-    let service = SqliteRunApplicationService::open(&store_path)
+    let mut service = SqliteRunApplicationService::open(&store_path)
         .unwrap()
         .with_native_operations(registry)
         .with_owner_auth_config(&auth_config)
@@ -171,6 +171,15 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
         })
         .await;
     assert_eq!(submit.status, StatusCode::ACCEPTED.as_u16());
+
+    service.owner_auth_store = None;
+    assert!(matches!(
+        service
+            .resolve_inline_native_owner_principal("sqlite-inline-owner-revoked", "write_graph")
+            .await,
+        Err(InlineOwnerPrincipalError::Unavailable(_))
+    ));
+    service.owner_auth_store = Some(AuthStore::from_config(&auth_config).await.unwrap());
 
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
     let auth_connection = rusqlite::Connection::open(&auth_path).unwrap();

@@ -249,6 +249,26 @@ fn revalidated_runtime_owner_principal(
     Ok(principal)
 }
 
+#[derive(Debug)]
+enum InlineOwnerPrincipalError {
+    Denied(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Display for InlineOwnerPrincipalError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied(message) | Self::Unavailable(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<InlineOwnerPrincipalError> for String {
+    fn from(error: InlineOwnerPrincipalError) -> Self {
+        error.to_string()
+    }
+}
+
 fn rust_pgvector_embedding_scope(
     config: &tokio_postgres::Config,
     schema: &str,
@@ -588,53 +608,55 @@ impl PostgresRunApplicationService {
         &self,
         run_id: &str,
         required_capability: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, InlineOwnerPrincipalError> {
         let run = self
             .store
             .server_run(run_id)
             .await
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "native worker run is missing".to_owned())?;
+            .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned()))?;
         let owner_id = run
             .user_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "native worker run has no authenticated owner".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no authenticated owner".to_owned()))?;
         let created = self
             .store
             .server_run_events(run_id, 0, 1)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
             .into_iter()
             .find(|event| event.event_type == "run.created")
-            .ok_or_else(|| "native worker run has no admission event".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no admission event".to_owned()))?;
         let created_payload: Value = serde_json::from_str(&created.payload_json)
-            .map_err(|_| "native worker admission event is invalid".to_owned())?;
+            .map_err(|_| InlineOwnerPrincipalError::Denied("native worker admission event is invalid".to_owned()))?;
         let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
             created_payload
                 .get("runtime_owner_binding")
                 .cloned()
-                .ok_or_else(|| "native worker run has no trusted owner binding".to_owned())?,
+                .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no trusted owner binding".to_owned()))?,
         )
-        .map_err(|_| "native worker owner binding is invalid".to_owned())?;
+        .map_err(|_| InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned()))?;
         if binding.user_id != owner_id {
-            return Err("native worker owner binding does not match the durable run owner".to_owned());
+            return Err(InlineOwnerPrincipalError::Denied("native worker owner binding does not match the durable run owner".to_owned()));
         }
         let auth_store = self
             .owner_auth_store
             .as_ref()
-            .ok_or_else(|| "native worker owner revalidation is not configured".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Unavailable("native worker owner revalidation is not configured".to_owned()))?;
         let user = auth_store
             .auth_user(owner_id)
-            .await?
+            .await
+            .map_err(InlineOwnerPrincipalError::Unavailable)?
             .filter(|user| user.is_active)
-            .ok_or_else(|| "native worker run owner is missing or inactive".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run owner is missing or inactive".to_owned()))?;
         revalidated_runtime_owner_principal(
             &binding,
             &user,
             &self.capabilities,
             required_capability,
         )
+        .map_err(InlineOwnerPrincipalError::Denied)
     }
 
     async fn native_read_principal(
@@ -4073,11 +4095,18 @@ impl PostgresRunApplicationService {
                 .await
             {
                 Ok(principal) => principal,
-                Err(_) => {
+                Err(InlineOwnerPrincipalError::Denied(_)) => {
                     return effect_error(
                         StatusCode::FORBIDDEN,
                         "KOGWISTAR_CAPABILITY_FORBIDDEN",
                         "provider event acknowledgement requires the run owner's current write_graph authority",
+                    );
+                }
+                Err(InlineOwnerPrincipalError::Unavailable(_)) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_RUN_OWNER_UNAVAILABLE",
+                        "provider event acknowledgement could not revalidate the run owner",
                     );
                 }
             };

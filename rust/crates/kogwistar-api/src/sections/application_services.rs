@@ -787,7 +787,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .await
                 {
                     Ok(principal) => Some(principal),
-                    Err(_) => {
+                    Err(InlineOwnerPrincipalError::Denied(_)) => {
                         let effect = result
                             .effect
                             .as_mut()
@@ -799,6 +799,7 @@ impl ApplicationService for PostgresRunApplicationService {
                         );
                         None
                     }
+                    Err(InlineOwnerPrincipalError::Unavailable(error)) => return Err(error),
                 }
             } else {
                 None
@@ -1175,7 +1176,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .await
                 {
                     Ok(principal) => Some(principal),
-                    Err(_) => {
+                    Err(InlineOwnerPrincipalError::Denied(_)) => {
                         let effect = result
                             .effect
                             .as_mut()
@@ -1187,6 +1188,7 @@ impl ApplicationService for SqliteRunApplicationService {
                         );
                         None
                     }
+                    Err(InlineOwnerPrincipalError::Unavailable(error)) => return Err(error),
                 }
             } else {
                 None
@@ -1385,11 +1387,18 @@ impl ApplicationService for SqliteRunApplicationService {
                         .await
                     {
                         Ok(principal) => principal,
-                        Err(_) => {
+                        Err(InlineOwnerPrincipalError::Denied(_)) => {
                             return effect_error(
                                 StatusCode::FORBIDDEN,
                                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
                                 "provider event acknowledgement requires the run owner's current write_graph authority",
+                            );
+                        }
+                        Err(InlineOwnerPrincipalError::Unavailable(_)) => {
+                            return effect_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "KOGWISTAR_RUN_OWNER_UNAVAILABLE",
+                                "provider event acknowledgement could not revalidate the run owner",
                             );
                         }
                     };

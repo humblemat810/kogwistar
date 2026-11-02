@@ -2336,53 +2336,55 @@ impl SqliteRunApplicationService {
         &self,
         run_id: &str,
         required_capability: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, InlineOwnerPrincipalError> {
         let run = self
             .store
             .get_server_run(run_id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "native worker run is missing".to_owned())?;
+            .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned()))?;
         let owner_id = run
             .user_id
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "native worker run has no authenticated owner".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no authenticated owner".to_owned()))?;
         let admission = self
             .store
             .list_server_run_events(run_id, 0, 1)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
             .into_iter()
             .find(|event| event.event_type == "run.created")
-            .ok_or_else(|| "native worker run has no admission event".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no admission event".to_owned()))?;
         let admission_payload: Value = serde_json::from_str(&admission.payload_json)
-            .map_err(|_| "native worker admission event is invalid".to_owned())?;
+            .map_err(|_| InlineOwnerPrincipalError::Denied("native worker admission event is invalid".to_owned()))?;
         let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
             admission_payload
                 .get("runtime_owner_binding")
                 .cloned()
-                .ok_or_else(|| "native worker run has no trusted owner binding".to_owned())?,
+                .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run has no trusted owner binding".to_owned()))?,
         )
-        .map_err(|_| "native worker owner binding is invalid".to_owned())?;
+        .map_err(|_| InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned()))?;
         if binding.user_id != owner_id {
-            return Err(
+            return Err(InlineOwnerPrincipalError::Denied(
                 "native worker owner binding does not match the durable run owner".to_owned(),
-            );
+            ));
         }
         let auth_store = self
             .owner_auth_store
             .as_ref()
-            .ok_or_else(|| "native worker owner revalidation is not configured".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Unavailable("native worker owner revalidation is not configured".to_owned()))?;
         let user = auth_store
             .auth_user(owner_id)
-            .await?
+            .await
+            .map_err(InlineOwnerPrincipalError::Unavailable)?
             .filter(|user| user.is_active)
-            .ok_or_else(|| "native worker run owner is missing or inactive".to_owned())?;
+            .ok_or_else(|| InlineOwnerPrincipalError::Denied("native worker run owner is missing or inactive".to_owned()))?;
         revalidated_runtime_owner_principal(
             &binding,
             &user,
             &self.capabilities,
             required_capability,
         )
+        .map_err(InlineOwnerPrincipalError::Denied)
     }
 
     /// Reconcile one SQLite/Chroma projection namespace against canonical
@@ -6824,7 +6826,7 @@ impl SqliteRunApplicationService {
                 .await
             {
                 Ok(principal) => Some(principal),
-                Err(_) => {
+                Err(InlineOwnerPrincipalError::Denied(_)) => {
                     let effect = result
                         .effect
                         .as_mut()
@@ -6835,6 +6837,13 @@ impl SqliteRunApplicationService {
                         "inline graph effects failed current owner authorization",
                     );
                     None
+                }
+                Err(InlineOwnerPrincipalError::Unavailable(_)) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_RUN_OWNER_UNAVAILABLE",
+                        "inline graph effect could not revalidate the run owner",
+                    );
                 }
             }
         } else {
