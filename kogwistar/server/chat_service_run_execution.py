@@ -528,6 +528,7 @@ class _RunExecutionService(_BaseComponent):
             "budget": final_state.get("budget", budget_state),
         }
 
+    @implementation_selection_bound
     def _default_resume_runner(self, req: RuntimeResumeRequest) -> JsonObject:
         from kogwistar.conversation.resolvers import default_resolver
         from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime

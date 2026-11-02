@@ -449,6 +449,7 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
         "_run_answer",
         "submit_workflow_run",
         "_run_workflow",
+        "_default_resume_runner",
         "get_run",
         "list_run_events",
         "cancel_run",
@@ -464,6 +465,42 @@ def test_public_recovery_and_indexing_operations_bind_engine_selection() -> None
     )
 
     assert unbound == []
+
+
+def test_server_resume_runner_uses_conversation_engine_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.server.chat_service_run_execution import _RunExecutionService
+
+    class ResumeReachedCheckpoint(Exception):
+        pass
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+    engine = SimpleNamespace(
+        _implementation_selection_snapshot=capture_implementation_selection()
+    )
+    owner = SimpleNamespace(_conversation_engine=lambda: engine)
+    service = _RunExecutionService(owner)
+    request = SimpleNamespace(
+        client_result={"step_seq": 0},
+        conversation_engine=engine,
+        run_id="resume-selector-test",
+    )
+
+    def stop_at_checkpoint(**_kwargs: object) -> dict[str, object]:
+        assert runtime_implementation_mode() == "python"
+        raise ResumeReachedCheckpoint
+
+    monkeypatch.setattr(
+        "kogwistar.server.chat_service_run_execution.load_checkpoint",
+        stop_at_checkpoint,
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+
+    with pytest.raises(ResumeReachedCheckpoint):
+        service._default_resume_runner(request)
+
+    assert runtime_implementation_mode() == "rust"
 
 
 def test_indexing_compound_enqueue_keeps_one_selector_snapshot(
