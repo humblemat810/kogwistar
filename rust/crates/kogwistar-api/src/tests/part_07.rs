@@ -286,6 +286,127 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
 }
 
 #[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_CHROMA_URL; uses a unique Chroma collection"]
+async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
+    use kogwistar_store::GraphWriteStore;
+
+    let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+        .expect("ignored Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let collection = |kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: format!("operator-inbox-{kind}-{suffix}"),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        collection("nodes"),
+        collection("edges"),
+    )
+    .await
+    .unwrap();
+    let node_metadata = serde_json::from_value(json!({
+        "entity_type":"lane_message",
+        "conversation_id":"operator-conversation",
+        "workspace_id":"workspace-a",
+        "graph_space":"conversation",
+        "security_scope":"team-a",
+        "shared_scope":false,
+        "shared_inbox":false,
+        "visibility":"private",
+        "lifecycle_status":"active"
+    }))
+    .unwrap();
+    graph
+        .upsert_graph_record_of_kind(
+            "workflow",
+            kogwistar_store::GraphEntityKind::Node,
+            GraphRecord {
+                id: "sqlite-visible-message".to_owned(),
+                document: Some("authorized operator message".to_owned()),
+                metadata: node_metadata,
+                embedding: Some(vec![0.6, 0.8]),
+            },
+        )
+        .await
+        .unwrap();
+    let acl_metadata = serde_json::from_value(json!({
+        "entity_type":"acl_record",
+        "workspace_id":"workspace-a",
+        "graph_space":"conversation",
+        "acl_truth_graph":"conversation",
+        "acl_target_entity_id":"sqlite-visible-message",
+        "acl_target_grain":"node",
+        "acl_version":1,
+        "acl_mode":"public"
+    }))
+    .unwrap();
+    graph
+        .upsert_graph_record_of_kind(
+            "workflow",
+            kogwistar_store::GraphEntityKind::Node,
+            GraphRecord {
+                id: "sqlite-visible-message-acl".to_owned(),
+                document: None,
+                metadata: acl_metadata,
+                embedding: Some(vec![0.6, 0.8]),
+            },
+        )
+        .await
+        .unwrap();
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-operator-inbox-{}.sqlite",
+        suffix
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph);
+    service
+        .store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: "sqlite-visible-message".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "operator".to_owned(),
+            inbox_id: "ops".to_owned(),
+            conversation_id: "operator-conversation".to_owned(),
+            recipient_id: "operator".to_owned(),
+            sender_id: "worker".to_owned(),
+            msg_type: "maintenance.result".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: None,
+            step_id: None,
+            correlation_id: None,
+            payload_json: Some("not-returned".to_owned()),
+            error_json: None,
+        })
+        .unwrap();
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/operator/inbox?inbox_id=ops&status=pending&limit=10"
+                .to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "role":"ro", "ns":["workflow"],
+                "storage_ns":"workflow", "workspace_id":"workspace-a",
+                "graph_space":"conversation", "security_scope":"team-a",
+                "capabilities":["project_view"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let result: Value = serde_json::from_slice(&response.body).unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["message_id"], "sqlite-visible-message");
+    assert_eq!(messages[0]["message_security_scope"], "team-a");
+    assert!(!response.body.windows(12).any(|window| window == b"not-returned"));
+}
+
+#[tokio::test]
 async fn sqlite_run_transient_delta_routes_preserve_owner_and_sequence_contract() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-transient-delta-route-{}.sqlite",
