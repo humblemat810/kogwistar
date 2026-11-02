@@ -46,7 +46,7 @@ pub fn build_search_index_embedding_text(item: &SearchIndexEntryV1) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_search_index_embedding_text, make_search_index_key, SearchIndexUpsertV1};
+    use super::{SearchIndexUpsertV1, build_search_index_embedding_text, make_search_index_key};
     use serde_json::Value;
 
     #[test]

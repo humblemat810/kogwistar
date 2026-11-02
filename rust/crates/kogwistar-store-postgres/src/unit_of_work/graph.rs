@@ -364,14 +364,8 @@ impl PostgresUnitOfWork<'_> {
         entity_ids: &[String],
     ) -> PostgresStoreResult<Vec<GraphRecord>> {
         let tables = self.graph_tables_for_schema(schema)?;
-        graph_acl_records_for_entities(
-            &self.transaction,
-            tables,
-            scope,
-            truth_graph,
-            entity_ids,
-        )
-        .await
+        graph_acl_records_for_entities(&self.transaction, tables, scope, truth_graph, entity_ids)
+            .await
     }
 
     /// Read and share-lock ACL records through this unit of work. Hold these

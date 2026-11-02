@@ -1773,9 +1773,11 @@ mod tests {
         request
             .state
             .insert("run_id".to_owned(), json!("different-run"));
-        assert!(selection_context_snapshot_batch(&request)
-            .unwrap_err()
-            .contains("run does not match admitted run"));
+        assert!(
+            selection_context_snapshot_batch(&request)
+                .unwrap_err()
+                .contains("run does not match admitted run")
+        );
     }
 
     #[test]
@@ -1833,7 +1835,10 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(compatible.claims[0].claim, "fact");
-        assert_eq!(compatible.claims[0].citations[0].source_node_id, "canonical-node");
+        assert_eq!(
+            compatible.claims[0].citations[0].source_node_id,
+            "canonical-node"
+        );
     }
 
     #[test]
@@ -1844,8 +1849,7 @@ mod tests {
         .unwrap();
         assert_eq!(fixture["contract_version"], 1);
 
-        let answer: AnswerWithCitations =
-            serde_json::from_value(fixture["input"].clone()).unwrap();
+        let answer: AnswerWithCitations = serde_json::from_value(fixture["input"].clone()).unwrap();
         assert_eq!(serde_json::to_value(answer).unwrap(), fixture["expected"]);
     }
 

@@ -117,9 +117,11 @@ mod tests {
 
     #[test]
     fn transport_owned_routes_are_unique_and_frozen() {
-        assert!(TRANSPORT_OWNED_HTTP_ROUTES
-            .iter()
-            .all(|route| FROZEN_OPENAPI_ROUTES.contains(route)));
+        assert!(
+            TRANSPORT_OWNED_HTTP_ROUTES
+                .iter()
+                .all(|route| FROZEN_OPENAPI_ROUTES.contains(route))
+        );
         assert_eq!(
             TRANSPORT_OWNED_HTTP_ROUTES.len(),
             TRANSPORT_OWNED_HTTP_ROUTES
