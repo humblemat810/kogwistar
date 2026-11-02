@@ -13,6 +13,7 @@ from kogwistar.engine_core.models import (
     Span,
 )
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.utils.kge_debug_dump import dump_d3_bundle
 from kogwistar.visualization.graph_viz import (
     _filter_by_insertion_method,
@@ -107,6 +108,86 @@ def test_visualization_route_graph_type_selection_matches_shared_rust_fixture(
         response = server.api_viz_cytoscape(graph_type=case["input"])
         assert response.body == b'{"ok":true}'
         assert selected.pop() is engines[case["expected"]]
+
+
+@pytest.mark.ci
+def test_visualization_uses_acl_policy_for_selected_python_graph_type(
+    tmp_path: Path,
+) -> None:
+    graph_engines = {
+        graph_type: GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / graph_type),
+            backend_factory=build_fake_backend,
+            kg_graph_type=graph_type,
+            acl_enabled=True,
+        )
+        for graph_type in ("knowledge", "conversation")
+    }
+    try:
+        for graph_type, engine in graph_engines.items():
+            node = Node(
+                id="same-id",
+                label="Graph-scoped node",
+                type="entity",
+                summary="Graph-scoped ACL fixture",
+                mentions=[_g()],
+                metadata={"entity_type": "fixture"},
+                embedding=None,
+                doc_id=None,
+                level_from_root=0,
+            )
+            engine.raw_write.add_node(node)
+            engine.acl_graph.add_record(
+                truth_graph=graph_type,
+                entity_id=node.id,
+                version=1,
+                mode="private" if graph_type == "knowledge" else "public",
+                owner_id="owner-a",
+            )
+            if graph_type == "conversation":
+                grounding_ids, span_ids = engine.acl.usage_ids_for_item(node)
+                for grain, target_ids in (
+                    ("grounding", grounding_ids),
+                    ("span", span_ids),
+                ):
+                    for target_id in target_ids:
+                        engine.acl_graph.add_record(
+                            grain=grain,
+                            truth_graph=graph_type,
+                            entity_id=node.id,
+                            target_item_id=target_id,
+                            version=1,
+                            mode="public",
+                        )
+
+        token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
+        try:
+            knowledge_d3 = to_d3_force(graph_engines["knowledge"], mode="classic")
+            conversation_d3 = to_d3_force(
+                graph_engines["conversation"], mode="classic"
+            )
+            knowledge_cytoscape = to_cytoscape(
+                graph_engines["knowledge"], mode="classic"
+            )
+            conversation_cytoscape = to_cytoscape(
+                graph_engines["conversation"], mode="classic"
+            )
+        finally:
+            claims_ctx.reset(token)
+
+        assert [node["id"] for node in knowledge_d3["nodes"]] == []
+        assert [node["id"] for node in conversation_d3["nodes"]] == ["same-id"]
+        assert [
+            item["data"]["id"]
+            for item in knowledge_cytoscape["elements"]
+        ] == []
+        assert [
+            item["data"]["id"]
+            for item in conversation_cytoscape["elements"]
+        ] == ["same-id"]
+    finally:
+        for engine in graph_engines.values():
+            engine.close()
 
 
 @pytest.mark.ci
