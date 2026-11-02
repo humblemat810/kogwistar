@@ -3727,6 +3727,183 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 }
 
 #[tokio::test]
+async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (stop_chroma, mut stop_chroma_rx) = tokio::sync::oneshot::channel();
+    let fake_chroma = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_chroma_rx => break,
+                connection = listener.accept() => connection.unwrap(),
+            };
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "Chroma connection closed before request body");
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value =
+                serde_json::from_slice(&bytes[header_end + 4..header_end + 4 + content_length])
+                    .unwrap();
+            let request_line = String::from_utf8_lossy(&bytes[..header_end])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let payload = if request_line.contains("/collections HTTP") {
+                json!({
+                    "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                    "metadata": {"hnsw:space":"cosine"}
+                })
+            } else if request_line.contains("collection-source-acl-nodes/query") {
+                let original = json!({
+                    "entity_type":"node",
+                    "label":"node-source-span-private",
+                    "mentions":[{"spans":[{}]}]
+                });
+                json!({
+                    "ids":[["node-source-span-private"]],
+                    "documents":[["node-source-span-private"]],
+                    "metadatas":[[{
+                        "_kogwistar_namespace":"docs",
+                        "_kogwistar_original_metadata":original.to_string()
+                    }]],
+                    "embeddings":[[[1.0,0.0]]],
+                    "distances":[[0.0]]
+                })
+            } else if request_line.contains("collection-source-acl-nodes/get") {
+                let records = [
+                    (
+                        "acl-source-node",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"node-source-span-private",
+                            "acl_target_grain":"node",
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        }),
+                    ),
+                    (
+                        "acl-source-grounding",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"node-source-span-private",
+                            "acl_target_grain":"grounding",
+                            "acl_target_item_id":"node-source-span-private::mention::0",
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        }),
+                    ),
+                    (
+                        "acl-source-span",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"node-source-span-private",
+                            "acl_target_grain":"span",
+                            "acl_target_item_id":"node-source-span-private::mention::0::span::0",
+                            "acl_version":1,
+                            "acl_mode":"private",
+                            "owner_id":"bob"
+                        }),
+                    ),
+                ];
+                json!({
+                    "ids": records.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    "documents": [null, null, null],
+                    "metadatas": records.iter().map(|(_, original)| json!({
+                        "_kogwistar_namespace":"docs",
+                        "_kogwistar_original_metadata":original.to_string()
+                    })).collect::<Vec<_>>(),
+                    "embeddings": [null, null, null]
+                })
+            } else {
+                json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
+            };
+            let response = payload.to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("source-acl-nodes"),
+        chroma_config("source-acl-edges"),
+    )
+    .await
+    .unwrap();
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-source-acl-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph);
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/graph/vector-query".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "entity_kind":"node",
+                "query_embeddings":[[1.0,0.0]],
+                "metric":"cosine",
+                "truth_graph":"knowledge",
+                "where":{"label":"node-source-span-private"},
+                "n_results":1,
+                "include":["distances"]
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"alice",
+                "role":"ro",
+                "storage_ns":"docs",
+                "capabilities":["read_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let result: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(result["ids"], json!([[]]));
+
+    drop(service);
+    let _ = stop_chroma.send(());
+    fake_chroma.await.unwrap();
+    remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
 async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
