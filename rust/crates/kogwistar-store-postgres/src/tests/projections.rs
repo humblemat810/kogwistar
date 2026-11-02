@@ -271,10 +271,11 @@ async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgr
         .map_err(|error| PostgresStoreError::Backend(format!("schema upgrade: {error:?}")))?;
 
     let isolation = &fixture["graph_type_isolation"];
-    let entity_id = isolation["entity_id"].as_str().unwrap();
+    let fixture_entity_id = isolation["entity_id"].as_str().unwrap();
     let cases = isolation["cases"].as_array().unwrap();
     for case in cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
+        let entity_id = format!("{fixture_entity_id}-{truth_graph}");
         let scope = GraphScope {
             graph_space: Some(truth_graph.to_owned()),
             ..base_scope.clone()
@@ -319,6 +320,7 @@ async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgr
 
     for case in cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
+        let entity_id = format!("{fixture_entity_id}-{truth_graph}");
         let scope = GraphScope {
             graph_space: Some(truth_graph.to_owned()),
             ..base_scope.clone()
@@ -327,7 +329,7 @@ async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgr
             .graph_projection_records(GraphProjectionRead {
                 scope,
                 table: "gke_nodes".to_owned(),
-                ids: Some(vec![entity_id.to_owned()]),
+                ids: Some(vec![entity_id.clone()]),
                 metadata: kogwistar_store::MetadataFilter::default(),
                 limit: 10,
             })
@@ -336,6 +338,35 @@ async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgr
         let document: Value = serde_json::from_str(rows[0].document.as_deref().unwrap())?;
         assert_eq!(document["label"], truth_graph);
     }
+
+    let first_graph = cases[0]["truth_graph"].as_str().unwrap();
+    let second_graph = cases[1]["truth_graph"].as_str().unwrap();
+    let shared_id = format!("{fixture_entity_id}-{first_graph}");
+    assert!(
+        store
+            .apply_graph_mutations_atomic(vec![GraphMutation {
+                scope: GraphScope {
+                    graph_space: Some(second_graph.to_owned()),
+                    ..base_scope.clone()
+                },
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "graph-type-cross-space-id-conflict".to_owned(),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id":shared_id,"entity_type":"node"}),
+                record: GraphRecord {
+                    id: shared_id,
+                    document: Some(
+                        "{\"id\":\"shared\",\"label\":\"must-not-overwrite\"}".to_owned()
+                    ),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }])
+            .await
+            .is_err()
+    );
 
     drop(store);
     let reopened = PostgresStore::from_dsn(&dsn, &schema)?;

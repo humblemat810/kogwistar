@@ -43,6 +43,11 @@ def _rust(dsn: str | None, schema: str, operation: dict[str, Any]) -> Any:
     return store_postgres(dsn=dsn, schema=schema, operation=operation)
 
 
+def _initialize_rust_store(dsn: str, schema: str) -> None:
+    """Mirror RustPostgresSession initialization before raw bridge operations."""
+    assert _rust(dsn, schema, {"kind": "ensure_schema"}) == {"initialized": True}
+
+
 def _require_pg(pg_dsn: str | None, pg_schema: str | None) -> tuple[str, str]:
     if pg_dsn is None or pg_schema is None:
         pytest.skip("PostgreSQL fixture/DSN unavailable")
@@ -87,6 +92,7 @@ def test_graph_mutation_event_history_pgvector_and_python_mutual_readability(
     backend.ensure_schema()
     meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     meta.ensure_initialized()
+    _initialize_rust_store(dsn, schema)
 
     add = _mutation(
         event_id="node-add",
@@ -168,6 +174,7 @@ def test_python_and_rust_postgres_writers_serialize_shared_event_stream(
     backend.ensure_schema()
     meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     meta.ensure_initialized()
+    _initialize_rust_store(dsn, schema)
 
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "python")
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
@@ -244,6 +251,8 @@ def test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation(
     backend.ensure_schema()
     meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     meta.ensure_initialized()
+    # Keep Python-created graph tables, then bootstrap native metadata and indexes.
+    _initialize_rust_store(dsn, schema)
 
     assert PYTHON_GRAPH_MODEL_FIXTURE["schema_version"] == 1
     assert [case["kind"] for case in PYTHON_GRAPH_MODEL_FIXTURE["cases"]] == [
@@ -318,6 +327,7 @@ def test_graph_space_scope_preserves_shared_python_rust_node_edge_storage(
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
     EnginePostgresMetaStore(engine=sa_engine, schema=schema).ensure_initialized()
+    _initialize_rust_store(dsn, schema)
 
     graph_spaces = ("facts", "custom:legal", "urn:tenant:graph:6")
     for index, graph_space in enumerate(graph_spaces):
@@ -497,6 +507,7 @@ def test_arbitrary_precision_node_level_round_trips_python_rust_postgres_python(
     backend.ensure_schema()
     meta = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     meta.ensure_initialized()
+    _initialize_rust_store(dsn, schema)
 
     base_payload = next(
         case["payload"]
@@ -572,6 +583,7 @@ def test_graph_mutation_scope_vector_contract_and_fault_rollback(
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
     backend.ensure_schema()
     EnginePostgresMetaStore(engine=sa_engine, schema=schema).ensure_initialized()
+    _initialize_rust_store(dsn, schema)
 
     for row_id, vector in (("b", [1.0, 0.0, 0.0]), ("a", [1.0, 0.0, 0.0])):
         _rust(
@@ -691,6 +703,7 @@ def test_graph_mutation_vector_metric_parity_with_python_pgvector(
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance=metric, schema=schema)
     backend.ensure_schema()
     EnginePostgresMetaStore(engine=sa_engine, schema=schema).ensure_initialized()
+    _initialize_rust_store(dsn, schema)
     for row_id, embedding in (("b", [1.0, 0.0, 0.0]), ("a", [1.0, 0.0, 0.0]), ("c", [0.0, 1.0, 0.0])):
         _rust(
             dsn,
