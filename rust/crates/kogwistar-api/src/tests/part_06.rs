@@ -5589,6 +5589,76 @@
             );
         }
 
+        for (path, result_key) in [
+            ("/api/viz/d3.json", "nodes"),
+            ("/api/viz/cytoscape.json", "elements"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("{path}?graph_type=knowledge&mode=reify"))
+                        .header(
+                            "authorization",
+                            format!("Bearer {}", token(&["read_graph"])),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let visualization: Value = serde_json::from_slice(
+                &to_bytes(response.into_body(), 65_536).await.unwrap(),
+            )
+            .unwrap();
+            let rows = visualization[result_key].as_array().unwrap();
+            let serialized = visualization.to_string();
+            assert!(serialized.contains("n1"), "{path}: {visualization}");
+            assert!(serialized.contains("n2"), "{path}: {visualization}");
+            assert!(serialized.contains("e1"), "{path}: {visualization}");
+            assert!(!serialized.contains("n3"), "private node leaked: {path}");
+            assert!(!serialized.contains("n5"), "cross-workspace node leaked: {path}");
+            assert!(!rows.is_empty(), "{path} returned no graph records");
+        }
+
+        let bundle = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/viz/d3.bundle?graph_type=knowledge&mode=reify")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bundle.status(), StatusCode::OK);
+        assert_eq!(bundle.headers()["content-type"], "text/html; charset=utf-8");
+        let bundle = String::from_utf8(
+            to_bytes(bundle.into_body(), 1_048_576)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        let embedded = bundle
+            .split_once("window.__EMBEDDED_DATA__ = ")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(payload, _)| serde_json::from_str::<Value>(payload).unwrap())
+            .expect("SQLite+Chroma D3 bundle embeds the authorized projection");
+        let embedded_json = embedded.to_string();
+        assert!(embedded_json.contains("n1"));
+        assert!(embedded_json.contains("n2"));
+        assert!(embedded_json.contains("e1"));
+        assert!(!embedded_json.contains("n3"));
+        assert!(!embedded_json.contains("n5"));
+
         let request = |path: &str, body: Value, capabilities: Value| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),

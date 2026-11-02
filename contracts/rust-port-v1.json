@@ -476,29 +476,17 @@
         ]
       },
       {
-        "name": "graph-query-and-visualization-data",
+        "name": "graph-hybrid-search",
         "owner": "python",
         "status": "intentionally-deferred",
         "required_authority": [
           "graph-pgvector"
         ],
-        "exit_evidence": "graph ordering/filter/query parity, scope authorization, data-bearing visualization parity, and frozen OpenAPI/MCP conformance",
+        "exit_evidence": "Python SearchIndexService FTS/vector fusion and score normalization parity, resolve_node behavior, scoped authorization, durable index admission, and frozen OpenAPI conformance",
         "operations": [
           {
             "method": "GET",
             "path": "/api/search_index_hybrid"
-          },
-          {
-            "method": "GET",
-            "path": "/api/viz/cytoscape.json"
-          },
-          {
-            "method": "GET",
-            "path": "/api/viz/d3.json"
-          },
-          {
-            "method": "GET",
-            "path": "/viz/d3.bundle"
           }
         ]
       },

@@ -11,7 +11,7 @@
   "counts": {
     "http_operations": 84,
     "mcp_operations": 62,
-    "pending_http_operations": 6,
+    "pending_http_operations": 3,
     "allowlisted_mcp_operations": 54,
     "pending_syscalls": 4
   },
@@ -206,13 +206,13 @@
       "method": "GET",
       "path": "/api/viz/cytoscape.json",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "GET",
       "path": "/api/viz/d3.json",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "GET",
@@ -512,7 +512,7 @@
       "method": "GET",
       "path": "/viz/d3.bundle",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "GET",

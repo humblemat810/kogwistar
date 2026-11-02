@@ -152,9 +152,6 @@
     "pending_routes": [
       ["DELETE", "/admin/doc/{doc_id}"],
       ["GET", "/api/search_index_hybrid"],
-      ["GET", "/api/viz/cytoscape.json"],
-      ["GET", "/api/viz/d3.json"],
-      ["GET", "/viz/d3.bundle"],
       ["POST", "/api/add_index_entries"]
     ],
     "pending_syscalls": [
