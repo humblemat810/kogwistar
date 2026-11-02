@@ -1261,7 +1261,7 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
     let scope = GraphScope {
         namespace: "viz-test".to_owned(),
         workspace_id: None,
-        graph_space: None,
+        graph_space: Some("facts".to_owned()),
     };
     let mut entities = fixture["nodes"].as_array().unwrap().clone();
     entities.push(json!({
@@ -1457,6 +1457,7 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
                     "user_id": "alice",
                     "storage_ns": "viz-test",
                     "ns": ["viz-test"],
+                    "graph_space": "facts",
                     "capabilities": ["read_graph"]
                 }),
             },
@@ -1488,6 +1489,7 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
                 "user_id": "alice",
                 "storage_ns": "viz-test",
                 "ns": ["viz-test"],
+                "graph_space": "facts",
                 "capabilities": ["read_graph"]
             }),
         },
@@ -1520,6 +1522,7 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
                 "user_id": "alice",
                 "storage_ns": "viz-test",
                 "ns": ["viz-test"],
+                "graph_space": "facts",
                 "capabilities": ["read_graph"]
             }),
         },
@@ -1563,6 +1566,7 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
                 "role": "rw",
                 "ns": ["viz-test"],
                 "storage_ns": "viz-test",
+                "graph_space": "facts",
                 "capabilities": capabilities,
                 "exp": now + 300
             }),
