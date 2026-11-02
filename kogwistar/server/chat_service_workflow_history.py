@@ -707,39 +707,39 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             references during backend mutation.
         """
         payload = cast(WorkflowVisibleDelta, delta or self._workflow_empty_delta())
-        eng = self._workflow_engine()
-        prev_log = getattr(eng, "_disable_event_log", False)
-        prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
-        eng._disable_event_log = True
-        eng._phase1_enable_index_jobs = False
-        try:
-            with eng.uow():
-                edge_delete_ids = sorted(
-                    {
-                        str(item)
-                        for item in list(payload.get("delete_edge_ids") or [])
-                        if str(item)
-                    }
-                )
-                node_delete_ids = sorted(
-                    {
-                        str(item)
-                        for item in list(payload.get("delete_node_ids") or [])
-                        if str(item)
-                    }
-                )
-                if edge_delete_ids:
-                    eng.backend.edge_delete(ids=edge_delete_ids)
-                if node_delete_ids:
-                    eng.backend.node_delete(ids=node_delete_ids)
-                for raw in list(payload.get("upsert_nodes") or []):
-                    eng.write.add_node(WorkflowNode.model_validate(raw))
-                for raw in list(payload.get("upsert_edges") or []):
-                    eng.write.add_edge(WorkflowEdge.model_validate(raw))
-                self._workflow_remove_orphan_edges(workflow_id=workflow_id)
-        finally:
-            eng._disable_event_log = prev_log
-            eng._phase1_enable_index_jobs = prev_idx
+        with self._workflow_namespace_scope(workflow_id) as eng:
+            prev_log = getattr(eng, "_disable_event_log", False)
+            prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
+            eng._disable_event_log = True
+            eng._phase1_enable_index_jobs = False
+            try:
+                with eng.uow():
+                    edge_delete_ids = sorted(
+                        {
+                            str(item)
+                            for item in list(payload.get("delete_edge_ids") or [])
+                            if str(item)
+                        }
+                    )
+                    node_delete_ids = sorted(
+                        {
+                            str(item)
+                            for item in list(payload.get("delete_node_ids") or [])
+                            if str(item)
+                        }
+                    )
+                    if edge_delete_ids:
+                        eng.backend.edge_delete(ids=edge_delete_ids)
+                    if node_delete_ids:
+                        eng.backend.node_delete(ids=node_delete_ids)
+                    for raw in list(payload.get("upsert_nodes") or []):
+                        eng.write.add_node(WorkflowNode.model_validate(raw))
+                    for raw in list(payload.get("upsert_edges") or []):
+                        eng.write.add_edge(WorkflowEdge.model_validate(raw))
+                    self._workflow_remove_orphan_edges(workflow_id=workflow_id)
+            finally:
+                eng._disable_event_log = prev_log
+                eng._phase1_enable_index_jobs = prev_idx
 
     def _workflow_control_timeline(
         self, *, namespace: str, limit: int = 500
@@ -1145,6 +1145,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_replay_entity_range(
         self,
         *,
+        workflow_id: str,
         namespace: str,
         from_seq: int,
         to_seq: int,
@@ -1172,53 +1173,53 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             4 and replay only the entity events between seq(4)+1 and seq(7), while
             skipping sequences that belong to a branch dropped after undo.
         """
-        eng = self._workflow_engine()
-        prev_log = getattr(eng, "_disable_event_log", False)
-        prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
-        eng._disable_event_log = True
-        eng._phase1_enable_index_jobs = False
-        try:
-            for (
-                seq,
-                entity_kind,
-                entity_id,
-                op,
-                payload_raw,
-            ) in self._iter_entity_events(
-                namespace=namespace,
-                from_seq=max(1, int(from_seq)),
-                to_seq=int(to_seq),
-            ):
-                if self._workflow_seq_in_dropped_ranges(
-                    _json_int(seq), list(dropped_ranges or [])
+        with self._workflow_namespace_scope(workflow_id) as eng:
+            prev_log = getattr(eng, "_disable_event_log", False)
+            prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
+            eng._disable_event_log = True
+            eng._phase1_enable_index_jobs = False
+            try:
+                for (
+                    seq,
+                    entity_kind,
+                    entity_id,
+                    op,
+                    payload_raw,
+                ) in self._iter_entity_events(
+                    namespace=namespace,
+                    from_seq=max(1, int(from_seq)),
+                    to_seq=int(to_seq),
                 ):
-                    continue
-                entity_kind_s = str(entity_kind)
-                if entity_kind_s == self._design_control_kind:
-                    continue
-                payload = self._parse_event_payload(payload_raw)
-                op_s = str(op)
-                if entity_kind_s == "node":
-                    if op_s in {"ADD", "REPLACE"}:
-                        try:
-                            node = WorkflowNode.model_validate(payload)
-                        except Exception:
-                            node = WorkflowNode.model_validate_json(json.dumps(payload))
-                        eng.write.add_node(node)
-                    elif op_s in {"TOMBSTONE", "DELETE"}:
-                        eng.backend.node_delete(ids=[str(entity_id)])
-                elif entity_kind_s == "edge":
-                    if op_s in {"ADD", "REPLACE"}:
-                        try:
-                            edge = WorkflowEdge.model_validate(payload)
-                        except Exception:
-                            edge = WorkflowEdge.model_validate_json(json.dumps(payload))
-                        eng.write.add_edge(edge)
-                    elif op_s in {"TOMBSTONE", "DELETE"}:
-                        eng.backend.edge_delete(ids=[str(entity_id)])
-        finally:
-            eng._disable_event_log = prev_log
-            eng._phase1_enable_index_jobs = prev_idx
+                    if self._workflow_seq_in_dropped_ranges(
+                        _json_int(seq), list(dropped_ranges or [])
+                    ):
+                        continue
+                    entity_kind_s = str(entity_kind)
+                    if entity_kind_s == self._design_control_kind:
+                        continue
+                    payload = self._parse_event_payload(payload_raw)
+                    op_s = str(op)
+                    if entity_kind_s == "node":
+                        if op_s in {"ADD", "REPLACE"}:
+                            try:
+                                node = WorkflowNode.model_validate(payload)
+                            except Exception:
+                                node = WorkflowNode.model_validate_json(json.dumps(payload))
+                            eng.write.add_node(node)
+                        elif op_s in {"TOMBSTONE", "DELETE"}:
+                            eng.backend.node_delete(ids=[str(entity_id)])
+                    elif entity_kind_s == "edge":
+                        if op_s in {"ADD", "REPLACE"}:
+                            try:
+                                edge = WorkflowEdge.model_validate(payload)
+                            except Exception:
+                                edge = WorkflowEdge.model_validate_json(json.dumps(payload))
+                            eng.write.add_edge(edge)
+                        elif op_s in {"TOMBSTONE", "DELETE"}:
+                            eng.backend.edge_delete(ids=[str(entity_id)])
+            finally:
+                eng._disable_event_log = prev_log
+                eng._phase1_enable_index_jobs = prev_idx
 
     def _workflow_capture_visible_snapshot(
         self, *, workflow_id: str
@@ -1247,7 +1248,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         }
 
     def _workflow_restore_snapshot(
-        self, *, snapshot_payload: WorkflowVisibleSnapshot
+        self, *, workflow_id: str, snapshot_payload: WorkflowVisibleSnapshot
     ) -> None:
         """Restore a previously captured visible snapshot into the workflow graph.
 
@@ -1258,21 +1259,21 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             This does not clear existing entities first. Callers that need a clean
             rebuild should delete the visible projection before restoring.
         """
-        eng = self._workflow_engine()
-        prev_log = getattr(eng, "_disable_event_log", False)
-        prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
-        eng._disable_event_log = True
-        eng._phase1_enable_index_jobs = False
-        try:
-            for raw in list(snapshot_payload.get("nodes") or []):
-                node = WorkflowNode.model_validate(raw)
-                eng.write.add_node(node)
-            for raw in list(snapshot_payload.get("edges") or []):
-                edge = WorkflowEdge.model_validate(raw)
-                eng.write.add_edge(edge)
-        finally:
-            eng._disable_event_log = prev_log
-            eng._phase1_enable_index_jobs = prev_idx
+        with self._workflow_namespace_scope(workflow_id) as eng:
+            prev_log = getattr(eng, "_disable_event_log", False)
+            prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
+            eng._disable_event_log = True
+            eng._phase1_enable_index_jobs = False
+            try:
+                for raw in list(snapshot_payload.get("nodes") or []):
+                    node = WorkflowNode.model_validate(raw)
+                    eng.write.add_node(node)
+                for raw in list(snapshot_payload.get("edges") or []):
+                    edge = WorkflowEdge.model_validate(raw)
+                    eng.write.add_edge(edge)
+            finally:
+                eng._disable_event_log = prev_log
+                eng._phase1_enable_index_jobs = prev_idx
 
     def _workflow_remove_orphan_edges(self, *, workflow_id: str) -> None:
         """Delete visible edges whose endpoints are missing or malformed.
@@ -1395,6 +1396,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                         str(snapshot.get("payload_json") or "{}")
                     )
                     self._workflow_restore_snapshot(
+                        workflow_id=workflow_id,
                         snapshot_payload=cast(WorkflowVisibleSnapshot, payload)
                     )
                     restored_version = _json_int(snapshot.get("version"))
@@ -1417,6 +1419,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             upper_seq = _json_int(item.get("target_seq"))
             if upper_seq > lower_seq:
                 self._workflow_replay_entity_range(
+                    workflow_id=workflow_id,
                     namespace=namespace,
                     from_seq=lower_seq + 1,
                     to_seq=upper_seq,
