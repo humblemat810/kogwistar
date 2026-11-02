@@ -91,7 +91,6 @@ async fn document_projection_upsert_reopens_and_retries_idempotently_when_dsn_av
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/tests/projections.rs#graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgrade; python=kogwistar/server/bootstrap.py#ServerStorageSettings.schema_for; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/projections.rs#graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgrade; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type
 async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgrade()
 -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")

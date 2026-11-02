@@ -419,8 +419,8 @@ where
         PostgresStoreError::Backend(format!("graph schema base DDL failed: {error:?}"))
     })?;
 
-    // Python isolates each graph type in its own schema. Rust stores graph
-    // types together, so canonical IDs must be unique only within GraphScope.
+    // Keep graph projection identity scoped across namespace, workspace, and
+    // graph_space. This is not a substitute for Python's GraphType schema routing.
     let scoped_relations = [
         relations[0].as_str(),
         relations[1].as_str(),
