@@ -323,7 +323,7 @@ impl PostgresRunApplicationService {
             &GraphKHopQuery {
                 start_ids: visible_seed_ids,
                 k: hops,
-                doc_id: input.doc_ids,
+                doc_id: None,
             },
             &nodes,
             &edges,

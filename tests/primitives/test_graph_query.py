@@ -446,6 +446,38 @@ def test_semantic_seed_then_expand_text(small_graph):
             / "contracts/golden/semantic-seed-expand-v1.json"
         ).read_text(encoding="utf-8")
     )
+    same_doc_edge = Edge.model_validate_json(engine.edge_collection._docs["E1"])
+    cross_doc_edge = same_doc_edge.model_copy(
+        update={"id": "E2", "doc_id": "D2", "label": "cross-document link"}
+    )
+    engine.edge_collection.add(
+        ids=[cross_doc_edge.id],
+        documents=[cross_doc_edge.model_dump_json(field_mode="backend")],
+        metadatas=[{"doc_id": "D2", "relation": cross_doc_edge.relation}],
+    )
+    engine.edge_endpoints_collection.add(
+        ids=["E2::src::node::A", "E2::tgt::node::B"],
+        documents=[
+            json.dumps({"edge_id": "E2", "endpoint_id": "A"}),
+            json.dumps({"edge_id": "E2", "endpoint_id": "B"}),
+        ],
+        metadatas=[
+            {
+                "edge_id": "E2",
+                "endpoint_id": "A",
+                "endpoint_type": "node",
+                "role": "src",
+                "doc_id": "D2",
+            },
+            {
+                "edge_id": "E2",
+                "endpoint_id": "B",
+                "endpoint_type": "node",
+                "role": "tgt",
+                "doc_id": "D2",
+            },
+        ],
+    )
     gq = GraphQuery(engine)
     out = gq.semantic_seed_then_expand_text(
         fixture["query_text"],
@@ -456,6 +488,6 @@ def test_semantic_seed_then_expand_text(small_graph):
     assert [json.loads(seed)["id"] for seed in out["seeds"]] == fixture[
         "expected_seed_ids"
     ]
-    assert [json.loads(edge)["id"] for edge in out["layers"][0]["edges"]] == (
+    assert sorted(json.loads(edge)["id"] for edge in out["layers"][0]["edges"]) == (
         fixture["expected_first_layer_edge_ids"]
     )

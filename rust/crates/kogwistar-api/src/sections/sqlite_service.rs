@@ -5276,7 +5276,7 @@ impl SqliteRunApplicationService {
             &GraphKHopQuery {
                 start_ids: seed_ids,
                 k: hops,
-                doc_id: doc_id.map(str::to_owned),
+                doc_id: None,
             },
             snapshot.nodes(),
             snapshot.edges(),

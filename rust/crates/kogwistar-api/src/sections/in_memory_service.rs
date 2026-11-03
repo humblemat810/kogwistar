@@ -269,13 +269,9 @@ impl InMemoryGraphApplicationService {
             || query_text.chars().count() > 16_384
             || !(1..=1000).contains(&top_k)
             || hops > 32
-            || input
-                .doc_ids
-                .as_ref()
-                .is_some_and(|doc_id| doc_id.trim().is_empty())
         {
             return invalid_graph_request(
-                "text must contain 1 to 16384 characters, top_k must be 1 to 1000, hops must be at most 32, and doc_ids must be non-empty when provided".to_owned(),
+                "text must contain 1 to 16384 characters, top_k must be 1 to 1000, and hops must be at most 32".to_owned(),
             );
         }
         let Some(provider) = self.embedding_provider.as_ref() else {
@@ -374,7 +370,7 @@ impl InMemoryGraphApplicationService {
             &GraphKHopQuery {
                 start_ids: seed_ids,
                 k: hops,
-                doc_id: input.doc_ids,
+                doc_id: None,
             },
             &visible_nodes,
             &visible_edges,

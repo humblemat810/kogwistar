@@ -7,5 +7,6 @@
   "top_k": 1,
   "hops": 1,
   "expected_seed_ids": ["A"],
-  "expected_first_layer_edge_ids": ["E1"]
+  "expected_first_layer_edge_ids": ["E1", "E2"],
+  "expansion_document_filter": "not_applied"
 }

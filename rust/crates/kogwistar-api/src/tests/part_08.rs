@@ -59,7 +59,11 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     let edge_id = fixture["expected_first_layer_edge_ids"][0]
         .as_str()
         .unwrap();
+    let cross_doc_edge_id = fixture["expected_first_layer_edge_ids"][1]
+        .as_str()
+        .unwrap();
     let doc_id = fixture["scope"]["doc_id"].as_str().unwrap();
+    assert_eq!(fixture["expansion_document_filter"], "not_applied");
 
     struct FixedEmbeddingProvider;
     impl EmbeddingProvider for FixedEmbeddingProvider {
@@ -196,6 +200,67 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
                         ("acl_truth_graph".to_owned(), json!("knowledge")),
                         ("acl_target_grain".to_owned(), json!("node")),
                         ("acl_target_entity_id".to_owned(), json!(seed_id)),
+                        ("acl_version".to_owned(), json!(1)),
+                        ("acl_mode".to_owned(), json!("public")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_edges".to_owned(),
+                entity_kind: "edge".to_owned(),
+                event_id: "semantic-cross-doc-edge-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({
+                    "id":cross_doc_edge_id,
+                    "source_ids":[seed_id],
+                    "target_ids":["B"]
+                }),
+                record: GraphRecord {
+                    id: cross_doc_edge_id.to_owned(),
+                    document: Some(
+                        json!({
+                            "id":cross_doc_edge_id,
+                            "relation":"cross_doc",
+                            "source_ids":[seed_id],
+                            "target_ids":["B"],
+                            "doc_id":"D2"
+                        })
+                        .to_string(),
+                    ),
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("doc_id".to_owned(), json!("D2")),
+                        ("source_ids".to_owned(), json!([seed_id])),
+                        ("target_ids".to_owned(), json!(["B"])),
+                        ("relation".to_owned(), json!("cross_doc")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "semantic-cross-edge-acl-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"semantic-cross-edge-acl"}),
+                record: GraphRecord {
+                    id: "semantic-cross-edge-acl".to_owned(),
+                    document: None,
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("acl_truth_graph".to_owned(), json!("knowledge")),
+                        ("acl_target_grain".to_owned(), json!("edge")),
+                        ("acl_target_entity_id".to_owned(), json!(cross_doc_edge_id)),
                         ("acl_version".to_owned(), json!(1)),
                         ("acl_mode".to_owned(), json!("public")),
                     ]),
