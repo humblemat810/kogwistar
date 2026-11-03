@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use kogwistar_store::{GraphRecord, StoreError};
 use serde_json::{Map, Value, json};
 
@@ -96,13 +94,13 @@ pub(crate) fn query_where(namespace: &str, filter: &kogwistar_store::MetadataFil
     // PYTHON_PARITY: kogwistar/engine_core/subsystems/write.py::WriteSubsystem._attach_graph_namespace
     // Python projections carry their graph namespace in metadata; retain the
     // reserved key alternative for records written by this Rust projection.
-    query_where_with_exclusions(namespace, filter, &BTreeMap::new(), None)
+    query_where_with_exclusions(namespace, filter, &[], None)
 }
 
 pub(crate) fn query_where_with_exclusions(
     namespace: &str,
     filter: &kogwistar_store::MetadataFilter,
-    metadata_not_equals: &BTreeMap<String, Value>,
+    metadata_not_equals: &[(String, Value)],
     numeric_lte: Option<(&str, f64)>,
 ) -> Value {
     let mut clauses = vec![json!({
@@ -289,7 +287,11 @@ mod tests {
         let query = query_where_with_exclusions(
             "workspace-a",
             &filter,
-            &BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+            &[
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("lifecycle_status".to_owned(), json!("tombstoned")),
+                ("lifecycle_status".to_owned(), json!("deleted")),
+            ],
             None,
         );
         assert_eq!(
@@ -302,6 +304,8 @@ mod tests {
         );
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
         assert_eq!(query["$and"][2]["entity_type"]["$ne"], "acl_record");
+        assert_eq!(query["$and"][3]["lifecycle_status"]["$ne"], "tombstoned");
+        assert_eq!(query["$and"][4]["lifecycle_status"]["$ne"], "deleted");
     }
 
     #[test]
@@ -337,7 +341,7 @@ mod tests {
         let query = query_where_with_exclusions(
             "workspace-a",
             &filter,
-            &BTreeMap::new(),
+            &[],
             Some(("level_from_root", 2.0)),
         );
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");

@@ -3924,6 +3924,14 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                     query_filter.contains("\"entity_type\":{\"$ne\":\"acl_record\"}"),
                     "ACL helper exclusion must be pushed into vector top-k: {query_filter}"
                 );
+                assert!(
+                    query_filter.contains("\"lifecycle_status\":{\"$ne\":\"tombstoned\"}"),
+                    "tombstones must be excluded before vector top-k: {query_filter}"
+                );
+                assert!(
+                    query_filter.contains("\"lifecycle_status\":{\"$ne\":\"deleted\"}"),
+                    "legacy deleted records must be excluded before vector top-k: {query_filter}"
+                );
                 let original = json!({
                     "entity_type":"node",
                     "label":"node-source-span-private",

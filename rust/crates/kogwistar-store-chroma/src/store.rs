@@ -275,7 +275,7 @@ impl VectorCollectionStore for ChromaVectorCollectionStore {
             metric: self.metric,
         };
         graph_store
-            .vector_query_in_collection(&self.http, namespace, query, &BTreeMap::new(), None)
+            .vector_query_in_collection(&self.http, namespace, query, &[], None)
             .await
     }
 }
@@ -611,7 +611,7 @@ impl GraphReadStore for ChromaGraphStore {
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.legacy_http()?;
-        self.vector_query_in_collection(http, namespace, query, &BTreeMap::new(), None)
+        self.vector_query_in_collection(http, namespace, query, &[], None)
             .await
     }
 
@@ -623,7 +623,7 @@ impl GraphReadStore for ChromaGraphStore {
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.http_for_kind(kind)?;
-        self.vector_query_in_collection(http, namespace, query, &BTreeMap::new(), None)
+        self.vector_query_in_collection(http, namespace, query, &[], None)
             .await
     }
 
@@ -640,14 +640,8 @@ impl GraphReadStore for ChromaGraphStore {
             return Err(Self::backend_error("invalid numeric metadata bound"));
         }
         let http = self.http_for_kind(kind)?;
-        self.vector_query_in_collection(
-            http,
-            namespace,
-            query,
-            &BTreeMap::new(),
-            Some((field, maximum)),
-        )
-        .await
+        self.vector_query_in_collection(http, namespace, query, &[], Some((field, maximum)))
+            .await
     }
 }
 
@@ -765,7 +759,7 @@ impl ChromaGraphStore {
         http: &ChromaHttpStore,
         namespace: &str,
         query: &VectorQuery,
-        metadata_not_equals: &BTreeMap<String, Value>,
+        metadata_not_equals: &[(String, Value)],
         numeric_lte: Option<(&str, f64)>,
     ) -> StoreResult<Vec<VectorMatch>> {
         if query.metric != self.metric {
@@ -816,7 +810,7 @@ impl ChromaGraphStore {
         namespace: &str,
         kind: GraphEntityKind,
         query: &VectorQuery,
-        metadata_not_equals: &BTreeMap<String, Value>,
+        metadata_not_equals: &[(String, Value)],
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.http_for_kind(kind)?;

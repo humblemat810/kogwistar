@@ -5522,7 +5522,11 @@ impl SqliteRunApplicationService {
                     metadata,
                     metric,
                 },
-                &BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+                &[
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("lifecycle_status".to_owned(), json!("tombstoned")),
+                    ("lifecycle_status".to_owned(), json!("deleted")),
+                ],
             )
             .await
         {
@@ -5661,7 +5665,11 @@ impl SqliteRunApplicationService {
                         metadata: metadata.clone(),
                         metric: input.metric,
                     },
-                    &BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+                    &[
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("lifecycle_status".to_owned(), json!("tombstoned")),
+                        ("lifecycle_status".to_owned(), json!("deleted")),
+                    ],
                 )
                 .await
             {

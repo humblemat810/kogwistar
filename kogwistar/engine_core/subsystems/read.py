@@ -910,18 +910,21 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             include=include,
             )
         )
-        got = cast(
-            Mapping[str, JsonValue],
-            native
-            or run_awaitable_blocking(
-                self._e.backend.node_query(
-                    *args,
-                    query_embeddings=query_embeddings,
-                    include=include,
-                    **kwargs,
-                )
-            ),
-        )
+        if native is not None:
+            got = native
+        else:
+            backend_kwargs = self._active_lifecycle_vector_filter(kwargs)
+            got = cast(
+                Mapping[str, JsonValue],
+                run_awaitable_blocking(
+                    self._e.backend.node_query(
+                        *args,
+                        query_embeddings=query_embeddings,
+                        include=include,
+                        **backend_kwargs,
+                    )
+                ),
+            )
         rows = self.nodes_from_query_result(
             got, node_type=cast(type[TNode], node_type or Node)
         )
@@ -953,6 +956,23 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _active_lifecycle_vector_filter(kwargs: dict[str, object]) -> dict[str, object]:
+        """Keep tombstoned records from consuming active-only vector top-k slots."""
+        result = dict(kwargs)
+        lifecycle_filters = [
+            {"lifecycle_status": {"$ne": "tombstoned"}},
+            {"lifecycle_status": {"$ne": "deleted"}},
+        ]
+        where = result.get("where")
+        if where is None:
+            result["where"] = {"$and": lifecycle_filters}
+        elif isinstance(where, dict):
+            result["where"] = {"$and": [where, *lifecycle_filters]}
+        else:
+            raise TypeError("vector query where filter must be an object")
+        return result
 
     def _is_node_visible_as_of(self, node: Node, as_of: datetime) -> bool:
         meta = getattr(node, "metadata", {}) or {}
@@ -1255,18 +1275,21 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             include=include,
             )
         )
-        got = cast(
-            Mapping[str, JsonValue],
-            native
-            or run_awaitable_blocking(
-                self._e.backend.edge_query(
-                    query_embeddings=query_embeddings,
-                    *args,
-                    include=include,
-                    **kwargs,
-                )
-            ),
-        )
+        if native is not None:
+            got = native
+        else:
+            backend_kwargs = self._active_lifecycle_vector_filter(kwargs)
+            got = cast(
+                Mapping[str, JsonValue],
+                run_awaitable_blocking(
+                    self._e.backend.edge_query(
+                        query_embeddings=query_embeddings,
+                        *args,
+                        include=include,
+                        **backend_kwargs,
+                    )
+                ),
+            )
         rows = self.edges_from_query_result(
             got, edge_type=cast(type[TEdge], edge_type or Edge)
         )

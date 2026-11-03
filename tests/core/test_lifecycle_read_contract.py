@@ -24,6 +24,7 @@ from kogwistar.engine_core.models import (
     PureChromaNode,
     Span,
 )
+from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.utils.refs import backend_update_record_lifecycle
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests._helpers.fake_backend import build_fake_backend
@@ -231,13 +232,56 @@ def test_semantic_queries_filter_tombstones_from_stale_projections(
             "metadatas": [[item.metadata]],
         }
 
-    monkeypatch.setattr(engine.backend, "node_query", lambda **_kwargs: query_result(node))
-    monkeypatch.setattr(engine.backend, "edge_query", lambda **_kwargs: query_result(edge))
+    query_kwargs: dict[str, dict[str, object]] = {}
+
+    def node_query(**kwargs: object) -> dict[str, object]:
+        query_kwargs["node"] = kwargs
+        return query_result(node)
+
+    def edge_query(**kwargs: object) -> dict[str, object]:
+        query_kwargs["edge"] = kwargs
+        return query_result(edge)
+
+    monkeypatch.setattr(engine.backend, "node_query", node_query)
+    monkeypatch.setattr(engine.backend, "edge_query", edge_query)
     try:
         assert engine.read.query_nodes(query_embeddings=[[1.0, 0.0, 0.0]]) == [[]]
         assert engine.read.query_edges(query_embeddings=[[1.0, 0.0, 0.0]]) == [[]]
+        for kind in ("node", "edge"):
+            where = query_kwargs[kind]["where"]
+            assert isinstance(where, dict)
+            assert where["$and"] == [
+                {"lifecycle_status": {"$ne": "tombstoned"}},
+                {"lifecycle_status": {"$ne": "deleted"}},
+            ]
     finally:
         engine.close()
+
+
+@pytest.mark.ci_full
+def test_chroma_active_lifecycle_filter_keeps_legacy_missing_status(tmp_path) -> None:
+    chromadb = pytest.importorskip("chromadb")
+    client = chromadb.PersistentClient(path=str(tmp_path / "chroma-lifecycle"))
+    collection = client.create_collection("lifecycle-filter-contract")
+    collection.add(
+        ids=["legacy-missing", "active", "tombstoned", "legacy-deleted"],
+        embeddings=[[1.0, 0.0]] * 4,
+        metadatas=[
+            {"kind": "node"},
+            {"kind": "node", "lifecycle_status": "active"},
+            {"kind": "node", "lifecycle_status": "tombstoned"},
+            {"kind": "node", "lifecycle_status": "deleted"},
+        ],
+    )
+    where = ReadSubsystem._active_lifecycle_vector_filter({})["where"]
+
+    result = collection.query(
+        query_embeddings=[[1.0, 0.0]],
+        n_results=4,
+        where=where,
+    )
+
+    assert set(result["ids"][0]) == {"legacy-missing", "active"}
 
 
 @pytest.mark.ci_full
