@@ -78,6 +78,9 @@ fn default_lease_seconds() -> i64 {
 fn default_list_limit() -> usize {
     1000
 }
+fn default_node_index_table() -> String {
+    "gke_node_index".to_owned()
+}
 fn default_lane_purpose() -> String {
     "user_visible".to_owned()
 }
@@ -2964,6 +2967,27 @@ enum PostgresStoreOperation {
         #[serde(default)]
         node_index_table: Option<String>,
     },
+    NodeIndexUpsert {
+        #[serde(default = "default_node_index_table")]
+        table: String,
+        records: Vec<GraphMutationRecord>,
+    },
+    NodeIndexGet {
+        #[serde(default = "default_node_index_table")]
+        table: String,
+        ids: Vec<String>,
+    },
+    NodeIndexQuery {
+        #[serde(default = "default_node_index_table")]
+        table: String,
+        embedding: Vec<f32>,
+        #[serde(default = "default_list_limit")]
+        limit: usize,
+        #[serde(default)]
+        metadata: BTreeMap<String, Value>,
+        #[serde(default)]
+        metric: SnapshotDistanceMetric,
+    },
     AllocEventSeq {
         namespace: String,
     },
@@ -3668,6 +3692,41 @@ async fn postgres_store_operation_json(
             }
             Ok(json!({"initialized": true}))
         }
+        PostgresStoreOperation::NodeIndexUpsert { table, records } => {
+            store
+                .upsert_node_index(
+                    &table,
+                    records.into_iter().map(graph_mutation_record).collect(),
+                )
+                .await?;
+            Ok(Value::Null)
+        }
+        PostgresStoreOperation::NodeIndexGet { table, ids } => Ok(json!(store
+            .get_node_index(&table, &ids)
+            .await?
+            .into_iter()
+            .map(graph_record_json)
+            .collect::<Vec<_>>())),
+        PostgresStoreOperation::NodeIndexQuery {
+            table,
+            embedding,
+            limit,
+            metadata,
+            metric,
+        } => Ok(json!(store
+            .query_node_index(
+                &table,
+                &VectorQuery {
+                    embedding,
+                    limit,
+                    metadata: metadata_filter(metadata),
+                    metric: metric.into(),
+                },
+            )
+            .await?
+            .into_iter()
+            .map(|item| json!({"record": graph_record_json(item.record), "distance": item.distance}))
+            .collect::<Vec<_>>())),
         PostgresStoreOperation::AllocEventSeq { namespace } => {
             Ok(json!(store.alloc_event_seq(&namespace).await?))
         }
@@ -6196,6 +6255,9 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "domains_table",
             "node_index_table",
         ][..],
+        "node_index_upsert" => &["kind", "table", "records"][..],
+        "node_index_get" => &["kind", "table", "ids"][..],
+        "node_index_query" => &["kind", "table", "embedding", "limit", "metadata", "metric"][..],
         "alloc_event_seq" => &["kind", "namespace"][..],
         "raw_append" => &[
             "kind",

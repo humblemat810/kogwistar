@@ -72,6 +72,32 @@ def _valid_graph_projection_match(match: object) -> bool:
     ) and _finite_projection_number(distance)
 
 
+def _valid_node_index_record(record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if not isinstance(record.get("id"), str) or not record["id"]:
+        return False
+    if record.get("document") is not None and not isinstance(
+        record.get("document"), str
+    ):
+        return False
+    if not isinstance(record.get("metadata"), dict):
+        return False
+    embedding = record.get("embedding")
+    return embedding is None or (
+        isinstance(embedding, list)
+        and all(_finite_projection_number(value) for value in embedding)
+    )
+
+
+def _valid_node_index_match(match: object) -> bool:
+    return (
+        isinstance(match, dict)
+        and _valid_node_index_record(match.get("record"))
+        and _finite_projection_number(match.get("distance"))
+    )
+
+
 def _decode_graph_projection_match_rows(value: JsonValue) -> list[list[JsonObject]]:
     if not isinstance(value, list):
         raise RuntimeError("native batched graph vector query returned invalid matches")
@@ -386,6 +412,44 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         ):
             raise RuntimeError("native graph projection read returned invalid records")
         return [cast(JsonObject, record) for record in result]
+
+    def node_index_upsert(
+        self, *, records: list[JsonObject], table: str = "gke_node_index"
+    ) -> None:
+        self._call("node_index_upsert", table=table, records=records)
+
+    def node_index_get(
+        self, *, ids: list[str], table: str = "gke_node_index"
+    ) -> list[JsonObject]:
+        result = self._call("node_index_get", table=table, ids=ids)
+        if not isinstance(result, list) or not all(
+            _valid_node_index_record(record) for record in result
+        ):
+            raise RuntimeError("native node-index read returned invalid records")
+        return [cast(JsonObject, record) for record in result]
+
+    def node_index_query(
+        self,
+        *,
+        embedding: list[float],
+        limit: int = 10,
+        metadata: JsonObject | None = None,
+        metric: str = "cosine",
+        table: str = "gke_node_index",
+    ) -> list[JsonObject]:
+        result = self._call(
+            "node_index_query",
+            table=table,
+            embedding=embedding,
+            limit=limit,
+            metadata=metadata or {},
+            metric=metric,
+        )
+        if not isinstance(result, list) or not all(
+            _valid_node_index_match(match) for match in result
+        ):
+            raise RuntimeError("native node-index query returned invalid matches")
+        return [cast(JsonObject, match) for match in result]
 
     def graph_projection_vector_query(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_projection_vector_query", **values)
