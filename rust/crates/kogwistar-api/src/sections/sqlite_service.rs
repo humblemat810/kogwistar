@@ -5972,6 +5972,9 @@ impl SqliteRunApplicationService {
         if let Some(environment_id) = effective_start_environment_id.as_ref() {
             worker_payload["op_environment_id"] = json!(environment_id);
         }
+        if let Some(identity) = effective_start_worker_identity.as_ref() {
+            worker_payload["required_worker_identity"] = identity.clone();
+        }
         add_executor_target(
             &mut worker_payload,
             &effective_start_op,

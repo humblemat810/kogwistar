@@ -352,6 +352,9 @@ impl PostgresRunApplicationService {
                         if let Some(environment_id) = start_environment_id.as_ref() {
                             payload["op_environment_id"] = json!(environment_id);
                         }
+                        if let Some(identity) = start_worker_identity.as_ref() {
+                            payload["required_worker_identity"] = identity.clone();
+                        }
                         add_executor_target(
                             &mut payload,
                             start_op.as_deref().unwrap_or("noop"),

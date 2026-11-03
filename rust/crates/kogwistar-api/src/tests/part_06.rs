@@ -5110,6 +5110,232 @@
     }
 
     #[tokio::test]
+    async fn sqlite_invalid_worker_identity_pin_is_rejected_before_scheduling() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-invalid-worker-pin-{nonce}.sqlite3"));
+        let workflow_id = "invalid-worker-pin-workflow";
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .put_workflow_design_snapshot(
+                workflow_id,
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({
+                        "nodes": [
+                            {"id":"start","metadata":{
+                                "wf_start":true,
+                                "wf_op":"application.compute",
+                                "wf_environment_id":"python-cpu-v1",
+                                "wf_worker_identity":{"schema_version":99}
+                            }},
+                            {"id":"end","metadata":{"wf_terminal":true}}
+                        ],
+                        "edges": [{"id":"route","source_ids":["start"],"target_ids":["end"],"metadata":{}}]
+                    }))
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        json!({"workflow_id":workflow_id,"conversation_id":"invalid-pin-conv"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let error: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "KOGWISTAR_INVALID_WORKER_IDENTITY");
+        let queued = store
+            .list_projected_lane_messages(LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                inbox_id: Some("workflow-runtime".to_owned()),
+                status: Some("pending".to_owned()),
+                limit: 32,
+                ..LaneMessageFilter::default()
+            })
+            .unwrap();
+        assert!(queued.is_empty(), "invalid pin must not enqueue runtime work");
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sqlite_worker_identity_pin_survives_service_reopen_and_controls_claim() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-worker-pin-reopen-{nonce}.sqlite3"));
+        let workflow_id = "worker-pin-reopen-workflow";
+        let environment_id = "python-cpu-v1";
+        let identity = json!({
+            "schema_version":1,
+            "environment_id":environment_id,
+            "artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "dependency_lock_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        });
+        let identity_recipient = runtime_worker_identity_recipient(
+            environment_id,
+            identity["artifact_sha256"].as_str().unwrap(),
+            identity["dependency_lock_sha256"].as_str().unwrap(),
+        );
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .put_workflow_design_snapshot(
+                workflow_id,
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({
+                        "nodes": [
+                            {"id":"start","metadata":{
+                                "wf_start":true,
+                                "wf_op":"application.compute",
+                                "wf_environment_id":environment_id,
+                                "wf_worker_identity":identity
+                            }},
+                            {"id":"end","metadata":{"wf_terminal":true}}
+                        ],
+                        "edges": [{"id":"route","source_ids":["start"],"target_ids":["end"],"metadata":{}}]
+                    }))
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+
+        let reopen = || {
+            router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: vec!["reader".to_owned()],
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig::default(),
+                },
+                Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+            )
+        };
+        let call = |app: Router, method: &'static str, uri: String, body: Value| async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 32768).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        };
+
+        let (status, submitted) = call(
+            reopen(),
+            "POST",
+            "/api/workflow/runs".to_owned(),
+            json!({"workflow_id":workflow_id,"conversation_id":"identity-reopen-conv"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let run_id = submitted["run_id"].as_str().unwrap().to_owned();
+        let app = reopen();
+        let (status, claim) = call(
+            app,
+            "POST",
+            "/internal/runtime/claim".to_owned(),
+            json!({
+                "claimed_by":"identity-worker",
+                "limit":1,
+                "lease_seconds":60,
+                "recipient_ids":[identity_recipient],
+                "run_id":run_id
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(claim["work"][0]["step_id"], "start");
+        assert_eq!(
+            claim["work"][0]["payload"]["initial_state"]["_rt_node_worker_identities"]["start"],
+            identity
+        );
+        assert_eq!(claim["work"][0]["payload"]["required_worker_identity"], identity);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn sqlite_predicate_snapshot_accepts_only_graph_valid_worker_selection() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
