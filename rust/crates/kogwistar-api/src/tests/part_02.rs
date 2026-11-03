@@ -966,6 +966,48 @@
         let unadvertised_value = serde_json::from_slice::<Value>(&unadvertised_body).unwrap();
         assert_eq!(unadvertised_value["error"]["code"], -32602);
 
+        let negotiated_tool_error = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"negotiated-error","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(negotiated_tool_error.status(), StatusCode::OK);
+        assert_eq!(
+            negotiated_tool_error
+                .headers()
+                .get("content-type")
+                .unwrap(),
+            "text/event-stream; charset=utf-8"
+        );
+        let negotiated_body = to_bytes(negotiated_tool_error.into_body(), 65_536)
+            .await
+            .unwrap();
+        let negotiated_sse = std::str::from_utf8(&negotiated_body).unwrap();
+        let data = negotiated_sse
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let negotiated_value = serde_json::from_str::<Value>(data).unwrap();
+        assert_eq!(negotiated_value["id"], "negotiated-error");
+        assert!(negotiated_value["result"]["isError"].as_bool().unwrap());
+        assert_eq!(negotiated_value["result"]["content"][0]["type"], "text");
+        assert_eq!(
+            negotiated_value["result"]["content"][0]["text"],
+            "Tool not advertised by this application service"
+        );
+        assert!(negotiated_value.get("error").is_none());
+
         let workflow_mcp = app
             .clone()
             .oneshot(

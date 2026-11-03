@@ -121,6 +121,34 @@ fn mcp_tool_success_result(result: Value) -> Value {
     response
 }
 
+async fn mcp_tool_call_error_result(response: Response, id: Value) -> Response {
+    if !response.status().is_success() {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, 1024 * 1024).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Ok(payload) = serde_json::from_slice::<Value>(&body) else {
+        return Response::from_parts(parts, Body::from(body));
+    };
+    let Some(error) = payload.get("error") else {
+        return Response::from_parts(parts, Body::from(body));
+    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("Tool call failed");
+    Json(mcp_result(
+        id,
+        json!({
+            "content": [{"type": "text", "text": message}],
+            "isError": true,
+        }),
+    ))
+    .into_response()
+}
+
 async fn mcp_handler(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -226,6 +254,9 @@ async fn mcp_handler(
     let request_protocol_version = existing_session_version
         .or_else(|| negotiated_initialize_version.map(str::to_owned))
         .or_else(|| incoming_protocol_version.map(str::to_owned));
+    let standard_tool_call = response_mode.is_some()
+        && payload.get("method").and_then(Value::as_str) == Some("tools/call");
+    let tool_call_id = payload.get("id").cloned().unwrap_or(Value::Null);
     let mut response = mcp_dispatch(
         state.clone(),
         headers.clone(),
@@ -234,6 +265,9 @@ async fn mcp_handler(
         response_mode.is_some(),
     )
     .await;
+    if standard_tool_call {
+        response = mcp_tool_call_error_result(response, tool_call_id).await;
+    }
     if response.status().is_success() {
         if let Some(session_id) = session_id_to_return.as_deref() {
             if let Ok(value) = HeaderValue::from_str(session_id) {
