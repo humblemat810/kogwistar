@@ -1608,6 +1608,42 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(read["result"]["nodes"], json!(["n2"]), "response: {read}");
     assert_eq!(read["result"]["edges"], json!(["e1"]));
 
+    let standard = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {}", token("docs", &["read_graph"])))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"neighbors-standard","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"n1","truth_graph":"knowledge"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(standard.status(), StatusCode::OK);
+    assert_eq!(
+        standard.headers().get("content-type").and_then(|value| value.to_str().ok()),
+        Some("text/event-stream; charset=utf-8")
+    );
+    let body = to_bytes(standard.into_body(), 65_536).await.unwrap();
+    let event = std::str::from_utf8(&body)
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("standard MCP response has an SSE data frame");
+    let standard: Value = serde_json::from_str(event).unwrap();
+    assert_eq!(standard["result"]["structuredContent"]["nodes"], json!(["n2"]));
+    assert_eq!(standard["result"]["structuredContent"]["edges"], json!(["e1"]));
+    assert_eq!(
+        serde_json::from_str::<Value>(standard["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap(),
+        standard["result"]["structuredContent"]
+    );
+
     for (tool, arguments, expected) in [
         (
             "kg_find_edges",

@@ -112,6 +112,15 @@ fn map_graph_short_ids(ids: &[Value], map_key: &str) -> Result<Vec<String>, ()> 
     Ok(mapped)
 }
 
+fn mcp_tool_success_result(result: Value) -> Value {
+    let text = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_owned());
+    let mut response = json!({"content": [{"type": "text", "text": text}]});
+    if result.is_object() {
+        response["structuredContent"] = result;
+    }
+    response
+}
+
 async fn mcp_handler(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -217,7 +226,14 @@ async fn mcp_handler(
     let request_protocol_version = existing_session_version
         .or_else(|| negotiated_initialize_version.map(str::to_owned))
         .or_else(|| incoming_protocol_version.map(str::to_owned));
-    let mut response = mcp_dispatch(state.clone(), headers.clone(), uri, payload).await;
+    let mut response = mcp_dispatch(
+        state.clone(),
+        headers.clone(),
+        uri,
+        payload,
+        response_mode.is_some(),
+    )
+    .await;
     if response.status().is_success() {
         if let Some(session_id) = session_id_to_return.as_deref() {
             if let Ok(value) = HeaderValue::from_str(session_id) {
@@ -302,6 +318,7 @@ async fn mcp_dispatch(
     headers: HeaderMap,
     uri: axum::http::Uri,
     payload: Value,
+    standard_mcp: bool,
 ) -> Response {
     if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
         return forbidden_response();
@@ -1486,6 +1503,11 @@ async fn mcp_dispatch(
             }
             result = json!({"id_mapping": id_mapping});
         }
+        let result = if standard_mcp {
+            mcp_tool_success_result(result)
+        } else {
+            result
+        };
         return Json(mcp_result(id, result)).into_response();
     }
     (
