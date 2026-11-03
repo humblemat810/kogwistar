@@ -153,7 +153,8 @@ def test_dual_language_open_tasklets_use_one_bounded_work_unit() -> None:
     assert "every counted leaf row is exactly one unit of work" in worklist
     assert "Target 20 minutes, hard cap 30 minutes" in worklist
     assert "| Active: <=30 min`" in worklist
-    assert "The old ID remains the parent, and the three children each have one backend cell and one oracle." in worklist
+    assert "The audited splits are FW-06-01 (seven durable resource families" in worklist
+    assert "each child has one family/backend cell and one oracle" in worklist
 
     in_progress_rows = [
         line
