@@ -1075,12 +1075,17 @@
 
     #[tokio::test]
     async fn mcp_session_lifecycle_works_over_tcp_transport() {
-        let app = router(ApiState {
-            health: snapshot(),
-            required_roles: Vec::new(),
-            implementation: ImplementationSnapshot::default(),
-            auth: AuthConfig::default(),
-        });
+        let mcp_sessions = Arc::new(McpSessionRegistry::default());
+        let app = router_with_application_and_mcp_sessions(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(UnavailableApplicationService),
+            mcp_sessions.clone(),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -1166,7 +1171,47 @@
             json!({})
         );
 
-        let get_stream = client
+        let session_owner = json!({
+            "sub": "anonymous",
+            "role": "ro",
+            "roles": ["reader"],
+            "ns": "workflow"
+        });
+        mcp_sessions
+            .publish(
+                &session_id,
+                &session_owner,
+                Some("2025-06-18"),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {"message": "before stream"}
+                }),
+            )
+            .unwrap();
+
+        let mut get_stream = client
+            .get(&endpoint)
+            .header("accept", "text/event-stream")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("last-event-id", "0")
+            .header("x-kogwistar-roles", "reader")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get_stream.status(), StatusCode::OK);
+        assert_eq!(
+            get_stream.headers()[header::CONTENT_TYPE],
+            "text/event-stream; charset=utf-8"
+        );
+        let first_frame = get_stream.chunk().await.unwrap().unwrap();
+        let first_frame = std::str::from_utf8(&first_frame).unwrap();
+        assert!(first_frame.contains("event: message"));
+        assert!(first_frame.contains("id: 1"));
+        assert!(first_frame.contains("before stream"));
+
+        let duplicate_get = client
             .get(&endpoint)
             .header("accept", "text/event-stream")
             .header("mcp-protocol-version", "2025-06-18")
@@ -1175,8 +1220,42 @@
             .send()
             .await
             .unwrap();
-        assert_eq!(get_stream.status(), StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(get_stream.headers()[header::ALLOW], "POST, DELETE");
+        assert_eq!(duplicate_get.status(), StatusCode::CONFLICT);
+
+        mcp_sessions
+            .publish(
+                &session_id,
+                &session_owner,
+                Some("2025-06-18"),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {"message": "while connected"}
+                }),
+            )
+            .unwrap();
+        let second_frame = get_stream.chunk().await.unwrap().unwrap();
+        let second_frame = std::str::from_utf8(&second_frame).unwrap();
+        assert!(second_frame.contains("id: 2"));
+        assert!(second_frame.contains("while connected"));
+        drop(get_stream);
+
+        let mut resumed_get = client
+            .get(&endpoint)
+            .header("accept", "text/event-stream")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("last-event-id", "1")
+            .header("x-kogwistar-roles", "reader")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resumed_get.status(), StatusCode::OK);
+        let replayed_frame = resumed_get.chunk().await.unwrap().unwrap();
+        let replayed_frame = std::str::from_utf8(&replayed_frame).unwrap();
+        assert!(replayed_frame.contains("id: 2"));
+        assert!(replayed_frame.contains("while connected"));
+        drop(resumed_get);
 
         let get_stream_without_sse_accept = client
             .get(&endpoint)
@@ -1203,6 +1282,68 @@
         assert_eq!(terminated.status(), StatusCode::OK);
 
         server.abort();
+    }
+
+    #[test]
+    fn mcp_outbound_session_events_are_scoped_bounded_and_resumable() {
+        let registry = McpSessionRegistry::default();
+        let owner = json!({"sub": "client-a"});
+        let session_id = registry
+            .open(owner.clone(), "2025-11-25".to_owned())
+            .unwrap();
+        let message = |index| {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {"index": index}
+            })
+        };
+
+        assert_eq!(
+            registry.publish(&session_id, &json!({"sub": "client-b"}), None, message(0)),
+            Err(McpSessionError::NotFound)
+        );
+        assert_eq!(
+            registry.publish(&session_id, &owner, None, json!({"jsonrpc": "2.0", "id": 1})),
+            Err(McpSessionError::InvalidOutboundMessage)
+        );
+        assert_eq!(
+            registry.publish(
+                &session_id,
+                &owner,
+                None,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {"message": "x".repeat(5000)}
+                })
+            ),
+            Err(McpSessionError::OutboundMessageTooLarge)
+        );
+        assert!(matches!(
+            registry.subscribe_get(&session_id, &owner, None, Some("not-a-sequence")),
+            Err(McpSessionError::InvalidLastEventId)
+        ));
+
+        for index in 0..257 {
+            registry
+                .publish(&session_id, &owner, None, message(index))
+                .unwrap();
+        }
+        assert!(matches!(
+            registry.subscribe_get(&session_id, &owner, None, Some("0")),
+            Err(McpSessionError::EventHistoryUnavailable)
+        ));
+        let resumed = registry
+            .subscribe_get(&session_id, &owner, Some("2025-11-25"), Some("256"))
+            .unwrap();
+        assert_eq!(resumed.replay.len(), 1);
+        assert_eq!(resumed.replay[0].event_id(), "257");
+        assert!(matches!(
+            registry.subscribe_get(&session_id, &owner, None, None),
+            Err(McpSessionError::GetStreamAlreadyActive)
+        ));
+        registry.finish_get(&session_id);
     }
 
     #[tokio::test]

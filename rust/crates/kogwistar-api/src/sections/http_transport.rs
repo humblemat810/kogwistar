@@ -225,6 +225,7 @@ async fn mcp_handler(
             Err(McpSessionError::NotFound) => {
                 return StatusCode::NOT_FOUND.into_response();
             }
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
         }
     } else if !is_initialize && incoming_protocol_version.is_some() {
         return StatusCode::BAD_REQUEST.into_response();
@@ -344,6 +345,7 @@ async fn mcp_delete_handler(
         Ok(()) => StatusCode::OK.into_response(),
         Err(McpSessionError::ProtocolVersionMismatch) => StatusCode::BAD_REQUEST.into_response(),
         Err(McpSessionError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::BAD_REQUEST.into_response(),
     }
 }
 
@@ -375,14 +377,92 @@ async fn mcp_get_handler(State(state): State<Arc<ServerState>>, headers: HeaderM
         .get("mcp-protocol-version")
         .and_then(|value| value.to_str().ok());
     let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
-    match state
-        .mcp_sessions
-        .touch(session_id, &session_owner, protocol_version)
-    {
-        Ok(_) => (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST, DELETE")]).into_response(),
-        Err(McpSessionError::ProtocolVersionMismatch) => StatusCode::BAD_REQUEST.into_response(),
-        Err(McpSessionError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok());
+    let subscription = match state.mcp_sessions.subscribe_get(
+        session_id,
+        &session_owner,
+        protocol_version,
+        last_event_id,
+    ) {
+        Ok(subscription) => subscription,
+        Err(McpSessionError::ProtocolVersionMismatch | McpSessionError::InvalidLastEventId) => {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+        Err(McpSessionError::NotFound) => return StatusCode::NOT_FOUND.into_response(),
+        Err(McpSessionError::GetStreamAlreadyActive) => {
+            return StatusCode::CONFLICT.into_response();
+        }
+        Err(McpSessionError::EventHistoryUnavailable) => {
+            return StatusCode::CONFLICT.into_response();
+        }
+        Err(McpSessionError::InvalidOutboundMessage | McpSessionError::OutboundMessageTooLarge) => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let replay = subscription.replay;
+    let mut receiver = subscription.receiver;
+    let registry = state.mcp_sessions.clone();
+    let session_id = session_id.to_owned();
+    let stream_session_id = session_id.clone();
+    // Python parity: MCPToolRegistry.http_app delegates this session-bound GET SSE
+    // stream to the official StreamableHTTPSessionManager transport.
+    let stream_guard = McpGetStreamGuard::new(registry, stream_session_id);
+    let stream = async_stream::stream! {
+        let _stream_guard = stream_guard;
+        for event in replay {
+            let event_id = event.event_id();
+            let frame = sse_frame("message", event.message(), Some(&event_id));
+            yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(frame));
+        }
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(15),
+            Duration::from_secs(15),
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                event = receiver.recv() => match event {
+                    Ok(event) => {
+                        let event_id = event.event_id();
+                        let frame = sse_frame("message", event.message(), Some(&event_id));
+                        yield Ok(Bytes::from(frame));
+                    }
+                    // A reconnect can replay from Last-Event-ID; do not silently skip messages.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)
+                        | tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                _ = heartbeat.tick() => yield Ok(Bytes::from_static(b": keep-alive\n\n")),
+            }
+        }
+    };
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response.headers_mut().insert(
+        header::CONNECTION,
+        HeaderValue::from_static("keep-alive"),
+    );
+    response.headers_mut().insert(
+        "mcp-session-id",
+        HeaderValue::from_str(session_id.as_str()).unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+    if let Some(protocol_version) = protocol_version {
+        response.headers_mut().insert(
+            "mcp-protocol-version",
+            HeaderValue::from_str(protocol_version)
+                .unwrap_or_else(|_| HeaderValue::from_static("2025-11-25")),
+        );
     }
+    response
 }
 
 async fn mcp_dispatch(
@@ -1775,6 +1855,18 @@ pub fn router_with_application(
     state: ApiState,
     application: Arc<dyn ApplicationService>,
 ) -> Router {
+    router_with_application_and_mcp_sessions(
+        state,
+        application,
+        Arc::new(McpSessionRegistry::default()),
+    )
+}
+
+pub fn router_with_application_and_mcp_sessions(
+    state: ApiState,
+    application: Arc<dyn ApplicationService>,
+    mcp_sessions: Arc<McpSessionRegistry>,
+) -> Router {
     let mut router = Router::new()
         .route("/api/events", get(sse_handler))
         .route(
@@ -1821,7 +1913,7 @@ pub fn router_with_application(
         .with_state(Arc::new(ServerState {
             api: state,
             application,
-            mcp_sessions: Arc::new(McpSessionRegistry::default()),
+            mcp_sessions,
         }))
 }
 

@@ -7,12 +7,28 @@ pub struct ServerState {
 
 const MCP_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 const MCP_MAX_SESSIONS: usize = 10_000;
+const MCP_OUTBOUND_EVENT_CAPACITY: usize = 4;
+const MCP_OUTBOUND_HISTORY_MAX_EVENTS: usize = 64;
+const MCP_OUTBOUND_HISTORY_MAX_BYTES: usize = 16 * 1024;
+const MCP_OUTBOUND_MESSAGE_MAX_BYTES: usize = 4 * 1024;
+
+#[derive(Clone)]
+pub(crate) struct McpOutboundEvent {
+    sequence: u64,
+    message: Value,
+    serialized_size: usize,
+}
 
 #[derive(Clone)]
 struct McpSession {
     owner: Value,
     protocol_version: String,
     last_seen: Instant,
+    outbound: tokio::sync::broadcast::Sender<McpOutboundEvent>,
+    outbound_history: std::collections::VecDeque<McpOutboundEvent>,
+    outbound_history_bytes: usize,
+    next_outbound_sequence: u64,
+    get_stream_active: bool,
 }
 
 #[derive(Default)]
@@ -24,23 +40,71 @@ pub struct McpSessionRegistry {
 pub enum McpSessionError {
     NotFound,
     ProtocolVersionMismatch,
+    GetStreamAlreadyActive,
+    InvalidLastEventId,
+    EventHistoryUnavailable,
+    InvalidOutboundMessage,
+    OutboundMessageTooLarge,
+}
+
+pub(crate) struct McpGetSubscription {
+    pub replay: Vec<McpOutboundEvent>,
+    pub receiver: tokio::sync::broadcast::Receiver<McpOutboundEvent>,
+}
+
+pub(crate) struct McpGetStreamGuard {
+    registry: Arc<McpSessionRegistry>,
+    session_id: String,
+}
+
+impl McpGetStreamGuard {
+    pub fn new(registry: Arc<McpSessionRegistry>, session_id: String) -> Self {
+        Self {
+            registry,
+            session_id,
+        }
+    }
+}
+
+impl Drop for McpGetStreamGuard {
+    fn drop(&mut self) {
+        self.registry.finish_get(&self.session_id);
+    }
+}
+
+impl McpOutboundEvent {
+    pub fn event_id(&self) -> String {
+        self.sequence.to_string()
+    }
+
+    pub fn message(&self) -> &Value {
+        &self.message
+    }
 }
 
 impl McpSessionRegistry {
     pub fn open(&self, owner: Value, protocol_version: String) -> Option<String> {
         let now = Instant::now();
         let mut sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
-        sessions.retain(|_, session| now.duration_since(session.last_seen) < MCP_SESSION_TTL);
+        sessions.retain(|_, session| {
+            session.get_stream_active || now.duration_since(session.last_seen) < MCP_SESSION_TTL
+        });
         if sessions.len() >= MCP_MAX_SESSIONS {
             return None;
         }
         let session_id = uuid::Uuid::new_v4().simple().to_string();
+        let (outbound, _) = tokio::sync::broadcast::channel(MCP_OUTBOUND_EVENT_CAPACITY);
         sessions.insert(
             session_id.clone(),
             McpSession {
                 owner,
                 protocol_version,
                 last_seen: now,
+                outbound,
+                outbound_history: std::collections::VecDeque::new(),
+                outbound_history_bytes: 0,
+                next_outbound_sequence: 1,
+                get_stream_active: false,
             },
         );
         Some(session_id)
@@ -57,7 +121,7 @@ impl McpSessionRegistry {
         let Some(session) = sessions.get_mut(session_id) else {
             return Err(McpSessionError::NotFound);
         };
-        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL {
+        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL && !session.get_stream_active {
             sessions.remove(session_id);
             return Err(McpSessionError::NotFound);
         }
@@ -71,6 +135,129 @@ impl McpSessionRegistry {
         Ok(session.protocol_version.clone())
     }
 
+    pub fn publish(
+        &self,
+        session_id: &str,
+        owner: &Value,
+        protocol_version: Option<&str>,
+        message: Value,
+    ) -> Result<String, McpSessionError> {
+        let serialized = serde_json::to_vec(&message)
+            .map_err(|_| McpSessionError::InvalidOutboundMessage)?;
+        if serialized.len() > MCP_OUTBOUND_MESSAGE_MAX_BYTES {
+            return Err(McpSessionError::OutboundMessageTooLarge);
+        }
+        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || message.get("method").and_then(Value::as_str).is_none()
+            || message.get("result").is_some()
+            || message.get("error").is_some()
+        {
+            return Err(McpSessionError::InvalidOutboundMessage);
+        }
+
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(session) = sessions.get_mut(session_id) else {
+            return Err(McpSessionError::NotFound);
+        };
+        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL && !session.get_stream_active {
+            sessions.remove(session_id);
+            return Err(McpSessionError::NotFound);
+        }
+        if &session.owner != owner {
+            return Err(McpSessionError::NotFound);
+        }
+        if protocol_version.is_some_and(|version| version != session.protocol_version) {
+            return Err(McpSessionError::ProtocolVersionMismatch);
+        }
+        let event = McpOutboundEvent {
+            sequence: session.next_outbound_sequence,
+            message,
+            serialized_size: serialized.len(),
+        };
+        session.next_outbound_sequence = session
+            .next_outbound_sequence
+            .checked_add(1)
+            .ok_or(McpSessionError::InvalidOutboundMessage)?;
+        session.outbound_history.push_back(event.clone());
+        session.outbound_history_bytes += event.serialized_size;
+        while session.outbound_history.len() > MCP_OUTBOUND_HISTORY_MAX_EVENTS
+            || session.outbound_history_bytes > MCP_OUTBOUND_HISTORY_MAX_BYTES
+        {
+            if let Some(evicted) = session.outbound_history.pop_front() {
+                session.outbound_history_bytes -= evicted.serialized_size;
+            }
+        }
+        session.last_seen = now;
+        let event_id = event.event_id();
+        let _ = session.outbound.send(event);
+        Ok(event_id)
+    }
+
+    pub(crate) fn subscribe_get(
+        &self,
+        session_id: &str,
+        owner: &Value,
+        protocol_version: Option<&str>,
+        last_event_id: Option<&str>,
+    ) -> Result<McpGetSubscription, McpSessionError> {
+        let last_sequence = last_event_id
+            .map(|value| value.parse::<u64>().map_err(|_| McpSessionError::InvalidLastEventId))
+            .transpose()?;
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(session) = sessions.get_mut(session_id) else {
+            return Err(McpSessionError::NotFound);
+        };
+        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL && !session.get_stream_active {
+            sessions.remove(session_id);
+            return Err(McpSessionError::NotFound);
+        }
+        if &session.owner != owner {
+            return Err(McpSessionError::NotFound);
+        }
+        if protocol_version.is_some_and(|version| version != session.protocol_version) {
+            return Err(McpSessionError::ProtocolVersionMismatch);
+        }
+        if session.get_stream_active {
+            return Err(McpSessionError::GetStreamAlreadyActive);
+        }
+        if let Some(last_sequence) = last_sequence {
+            if last_sequence >= session.next_outbound_sequence {
+                return Err(McpSessionError::InvalidLastEventId);
+            }
+            if session
+                .outbound_history
+                .front()
+                .is_some_and(|first| last_sequence.saturating_add(1) < first.sequence)
+            {
+                return Err(McpSessionError::EventHistoryUnavailable);
+            }
+        }
+        let receiver = session.outbound.subscribe();
+        let replay = session
+            .outbound_history
+            .iter()
+            .filter(|event| last_sequence.is_some_and(|last| event.sequence > last))
+            .cloned()
+            .collect();
+        session.get_stream_active = true;
+        session.last_seen = now;
+        Ok(McpGetSubscription { replay, receiver })
+    }
+
+    pub fn finish_get(&self, session_id: &str) {
+        if let Some(session) = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(session_id)
+        {
+            session.get_stream_active = false;
+            session.last_seen = Instant::now();
+        }
+    }
+
     pub fn close(
         &self,
         session_id: &str,
@@ -82,7 +269,7 @@ impl McpSessionRegistry {
         let Some(session) = sessions.get(session_id) else {
             return Err(McpSessionError::NotFound);
         };
-        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL {
+        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL && !session.get_stream_active {
             sessions.remove(session_id);
             return Err(McpSessionError::NotFound);
         }
