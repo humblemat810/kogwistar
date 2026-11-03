@@ -231,7 +231,7 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
             assert fixture["schema_version"] == 1
         else:
             assert fixture_path.stem.endswith("-v1")
-            assert "v1" in versions
+            assert 1 in versions or "v1" in versions
         assert _rust_test_consumes_fixture(
             rust_test_source, rust_test_symbol, fixture_path.name
         ), rust_test_path
@@ -241,6 +241,8 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
 
 
 def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
+    assert 1 in _fixture_versions({"contract_version": 1})
+
     python_type_alias = textwrap.dedent("""
     from typing import TypeAlias
     ProviderEvent: TypeAlias = Started | Completed

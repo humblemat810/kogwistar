@@ -792,6 +792,7 @@ fn native_noop(
     })
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-runtime/src/sections/native_operations.rs#native_increment_counter; python=kogwistar/runtime/base_runtime.py#apply_state_update_inplace; fixture=contracts/golden/runtime-native-increment-counter-v1.json; rust_test=rust/crates/kogwistar-runtime/src/tests.rs#native_executor_fails_closed_for_wrong_target_and_unregistered_operations; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_python_worker_increment_counter_matches_shared_native_effect_golden
 fn native_increment_counter(
     request: &RuntimeNativeStepRequest,
 ) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
