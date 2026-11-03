@@ -1550,6 +1550,105 @@ async fn graph_mutation_batch_rolls_back_event_when_projection_fails_when_dsn_av
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn committed_graph_state_survives_reopen_after_injected_graph_failure_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_failure_reopen");
+    let namespace = format!("graph-failure-reopen-{}", std::process::id());
+    let durable_id = "graph-failure-reopen-durable-node";
+    let failed_id = "graph-failure-reopen-failing-node";
+    let tables = Tables::new(&schema)?;
+    let make_mutation = |id: &str| kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": id, "entity_type": "node"}),
+        record: kogwistar_store::GraphRecord {
+            id: id.to_owned(),
+            document: Some("PostgreSQL failure/reopen probe".to_owned()),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+
+    let initial = PostgresStore::from_dsn(&dsn, &schema)?;
+    initial.ensure_schema().await?;
+    initial
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    initial
+        .apply_graph_mutation(make_mutation(durable_id))
+        .await?;
+    drop(initial);
+
+    let setup = PostgresStore::from_dsn(&dsn, &schema)?;
+    setup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE FUNCTION {}.reject_graph_projection() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '{failed_id}' THEN \
+                 RAISE EXCEPTION 'injected graph projection failure'; END IF; RETURN NEW; \
+                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {} \
+                 FOR EACH ROW EXECUTE FUNCTION {}.reject_graph_projection();",
+            tables.quoted_schema,
+            format!("{}.gke_nodes", tables.quoted_schema),
+            tables.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    drop(setup);
+
+    let during_failure = PostgresStore::from_dsn(&dsn, &schema)?;
+    assert!(matches!(
+        during_failure
+            .apply_graph_mutation(make_mutation(failed_id))
+            .await,
+        Err(PostgresStoreError::Backend(_))
+    ));
+    drop(during_failure);
+
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let events = reopened.replay_raw_events(&namespace, 0, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, format!("event-{durable_id}"));
+    assert_eq!(events[0].entity_id, durable_id);
+
+    let projection = reopened
+        .graph_projection_records(GraphProjectionRead {
+            scope: kogwistar_store::GraphScope {
+                namespace: namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![durable_id.to_owned(), failed_id.to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(projection.len(), 1);
+    assert_eq!(projection[0].id, durable_id);
+
+    reopened
+        .client()
+        .await?
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn unit_of_work_reads_acl_truth_from_its_own_transaction() -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
