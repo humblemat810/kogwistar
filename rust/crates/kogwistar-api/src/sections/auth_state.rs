@@ -258,6 +258,15 @@ impl McpSessionRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_active_get(&self, session_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(session_id)
+            .is_some_and(|session| session.get_stream_active)
+    }
+
     pub fn close(
         &self,
         session_id: &str,

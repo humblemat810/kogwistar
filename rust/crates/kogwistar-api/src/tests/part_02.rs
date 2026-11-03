@@ -1284,6 +1284,146 @@
         server.abort();
     }
 
+    #[tokio::test]
+    #[ignore = "manual Python MCP SDK smoke; requires KOGWISTAR_PYTHON with mcp/httpx"]
+    async fn python_mcp_sdk_receives_rust_server_initiated_notification() {
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+
+        let python = std::env::var("KOGWISTAR_PYTHON")
+            .expect("set KOGWISTAR_PYTHON to a Python interpreter with mcp and httpx installed");
+        let mcp_sessions = Arc::new(McpSessionRegistry::default());
+        let app = router_with_application_and_mcp_sessions(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(UnavailableApplicationService),
+            mcp_sessions.clone(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let ready_path = std::env::temp_dir().join(format!(
+            "kogwistar-mcp-sdk-session-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let ready_path_literal = serde_json::to_string(&ready_path.to_string_lossy()).unwrap();
+        let script = format!(
+            r#"
+import asyncio
+from pathlib import Path
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+ENDPOINT = {endpoint:?}
+READY = Path({ready_path_literal})
+received = asyncio.Event()
+
+async def on_message(message):
+    if "rust-sdk-interoperability-marker" in message.model_dump_json(by_alias=True):
+        received.set()
+
+async def record_session(response):
+    session_id = response.headers.get("mcp-session-id")
+    if session_id:
+        READY.write_text(session_id, encoding="utf-8")
+
+async def main():
+    async with httpx.AsyncClient(
+        headers={{"x-kogwistar-roles": "reader"}},
+        event_hooks={{"response": [record_session]}},
+        timeout=15,
+    ) as client:
+        async with streamable_http_client(ENDPOINT, http_client=client) as (read, write):
+            async with ClientSession(read, write, message_handler=on_message) as session:
+                await session.initialize()
+                await asyncio.wait_for(received.wait(), timeout=20)
+                print("python-sdk-server-notification-received")
+
+asyncio.run(main())
+"#
+        );
+        let mut child = Command::new(python)
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("launch configured Python MCP SDK");
+        let deadline = Instant::now() + Duration::from_secs(25);
+        let session_id = loop {
+            if let Ok(value) = std::fs::read_to_string(&ready_path) {
+                break value;
+            }
+            if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                let _ = std::fs::remove_file(&ready_path);
+                server.abort();
+                panic!(
+                    "Python SDK failed before session readiness; stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        let session_owner = json!({
+            "sub": "anonymous",
+            "role": "ro",
+            "roles": ["reader"],
+            "ns": "workflow"
+        });
+        let stream_deadline = Instant::now() + Duration::from_secs(10);
+        while !mcp_sessions.has_active_get(&session_id) && Instant::now() < stream_deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            mcp_sessions.has_active_get(&session_id),
+            "Python MCP SDK did not establish the server-initiated GET stream"
+        );
+        mcp_sessions
+            .publish(
+                &session_id,
+                &session_owner,
+                Some("2025-11-25"),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {
+                        "level": "info",
+                        "logger": "rust-interoperability-smoke",
+                        "data": "rust-sdk-interoperability-marker"
+                    }
+                }),
+            )
+            .unwrap();
+        let child_deadline = Instant::now() + Duration::from_secs(25);
+        while child.try_wait().unwrap().is_none() && Instant::now() < child_deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        if child.try_wait().unwrap().is_none() {
+            let _ = child.kill();
+        }
+        let output = child.wait_with_output().unwrap();
+        let _ = std::fs::remove_file(&ready_path);
+        server.abort();
+        assert!(
+            output.status.success(),
+            "Python SDK smoke failed; stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout)
+            .contains("python-sdk-server-notification-received"));
+    }
+
     #[test]
     fn mcp_outbound_session_events_are_scoped_bounded_and_resumable() {
         let registry = McpSessionRegistry::default();
