@@ -113,6 +113,11 @@ pub struct RuntimeStepExecutePayload {
     /// without this field remains environment-agnostic.
     #[serde(default, skip_serializing_if = "is_no_environment_id")]
     pub op_environment_id: Option<String>,
+    /// Optional run-pinned worker compatibility identity. Kept as JSON here so
+    /// invalid persisted values reach the Python adapter and fail closed rather
+    /// than being silently dropped. This is not proof of the running binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_worker_identity: Option<Value>,
     #[serde(default)]
     pub runtime_routes: Vec<RuntimeStaticRoute>,
     pub join_mask: i64,
@@ -1394,6 +1399,12 @@ impl RuntimeStepExecutePayload {
                 .and_then(|ids| ids.get(&request.node_id))
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            required_worker_identity: state
+                .state
+                .get("_rt_node_worker_identities")
+                .and_then(Value::as_object)
+                .and_then(|identities| identities.get(&request.node_id))
+                .cloned(),
             runtime_routes: state.static_routes.clone(),
             join_mask: request.join_mask,
             token_id: request.token_id,

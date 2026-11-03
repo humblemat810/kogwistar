@@ -1616,6 +1616,54 @@ fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
     }
 
     #[test]
+    fn step_execute_payload_forwards_required_worker_identity() {
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        let mut initial_state = Map::new();
+        initial_state.insert(
+            "_rt_node_worker_identities".to_owned(),
+            json!({
+                "node": {
+                    "schema_version": 1,
+                    "environment_id": "python-cpu-v1",
+                    "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "dependency_lock_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                }
+            }),
+        );
+        start.initial_state = Some(initial_state);
+        start.frontier = Some(RuntimeFrontier {
+            pending: vec![("node".to_owned(), 0, "token".to_owned(), None)],
+            ..RuntimeFrontier::default()
+        });
+        let reduced = reduce_recorded_transition(None, &start).unwrap();
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            &reduced.state,
+            RuntimeStepExecuteRequest {
+                node_id: "node".to_owned(),
+                op: json!("numerical"),
+                join_mask: 0,
+                token_id: "token".to_owned(),
+                parent_token_id: None,
+                step_seq: 1,
+                expected_event_seq: 2,
+                resume_effect: None,
+            },
+        );
+
+        assert_eq!(
+            payload.required_worker_identity,
+            Some(json!({
+                "schema_version": 1,
+                "environment_id": "python-cpu-v1",
+                "artifact_sha256": "a".repeat(64),
+                "dependency_lock_sha256": "b".repeat(64)
+            }))
+        );
+        let serialized = serde_json::to_value(payload).unwrap();
+        assert_eq!(serialized["required_worker_identity"]["schema_version"], 1);
+    }
+
+    #[test]
     fn public_runtime_json_helpers_reject_unknown_root_and_nested_dto_fields() {
         let cases = [
             (
