@@ -1427,7 +1427,7 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
         "label": "Rust semantic retrieval fixture",
         "type": "concept",
         "summary": "A normal graph node used to verify semantic MCP retrieval.",
-        "metadata": {"namespace": "docs", "workspace_id": null, "graph_space": null}
+        "metadata": {"namespace": "docs", "workspace_id": null, "graph_space": null, "doc_id": "semantic-seed-doc"}
     });
     graph_batch["mutations"][0]["scope"] = json!({
         "namespace": "docs", "workspace_id": null, "graph_space": null
@@ -1435,6 +1435,8 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
     graph_batch["mutations"][0]["event_id"] = json!("regular-semantic-event");
     graph_batch["mutations"][0]["payload"] = graph_node.clone();
     graph_batch["mutations"][0]["record"]["id"] = json!(graph_node_id);
+    graph_batch["mutations"][0]["record"]["metadata"]["doc_id"] =
+        json!("semantic-seed-doc");
     graph_batch["mutations"][0]["record"]["document"] =
         json!(serde_json::to_string(&graph_node).unwrap());
     graph_batch["mutations"][0]["record"]["embedding"] = json!([0.0, 0.0, 1.0]);
@@ -1483,6 +1485,71 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
         "{}",
         String::from_utf8_lossy(&graph_write.body)
     );
+    let cross_document_edge_id = "regular-semantic-cross-document-edge";
+    let graph_scope = GraphScope {
+        namespace: "docs".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let cross_document_edge_document = json!({
+        "id": cross_document_edge_id,
+        "relation": "related_to",
+        "source_ids": [graph_node_id],
+        "target_ids": [graph_node_id],
+        "doc_id": "semantic-expansion-doc"
+    });
+    let cross_document_edge = GraphMutation {
+        scope: graph_scope.clone(),
+        table: "gke_edges".to_owned(),
+        entity_kind: "edge".to_owned(),
+        event_id: "regular-semantic-cross-document-edge-event".to_owned(),
+        op: "ADD".to_owned(),
+        payload: cross_document_edge_document.clone(),
+        record: GraphRecord {
+            id: cross_document_edge_id.to_owned(),
+            document: Some(cross_document_edge_document.to_string()),
+            metadata: serde_json::from_value(json!({
+                "namespace": "docs",
+                "doc_id": "semantic-expansion-doc",
+                "source_ids": [graph_node_id],
+                "target_ids": [graph_node_id],
+                "relation": "related_to"
+            }))
+            .unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    let cross_document_edge_acl_metadata = json!({
+        "entity_type": "acl_record",
+        "acl_truth_graph": "knowledge",
+        "acl_target_entity_id": cross_document_edge_id,
+        "acl_target_grain": "edge",
+        "acl_version": 1,
+        "acl_mode": "private",
+        "owner_id": "alice",
+        "tombstoned": false
+    });
+    let cross_document_edge_acl = GraphMutation {
+        scope: graph_scope,
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: "regular-semantic-cross-document-edge-acl-event".to_owned(),
+        op: "ADD".to_owned(),
+        payload: json!({"id": "regular-semantic-cross-document-edge-acl", "metadata": cross_document_edge_acl_metadata}),
+        record: GraphRecord {
+            id: "regular-semantic-cross-document-edge-acl".to_owned(),
+            document: None,
+            metadata: serde_json::from_value(cross_document_edge_acl_metadata).unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    service
+        .store
+        .apply_graph_mutations_atomic(vec![cross_document_edge, cross_document_edge_acl])
+        .await
+        .unwrap();
     let inserted_graph_node = service
         .store
         .graph_projection_records(GraphProjectionRead {
@@ -1638,7 +1705,7 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
                         "jsonrpc": "2.0", "id": 8, "method": "tools/call",
                         "params": {
                             "name": "kg_semantic_seed_then_expand_text",
-                            "arguments": {"text": "find the fixture concept by meaning"}
+                            "arguments": {"text": "find the fixture concept by meaning", "top_k": 1, "hops": 1, "doc_ids": "semantic-seed-doc"}
                         }
                     }))
                     .unwrap(),
@@ -1664,6 +1731,18 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
         serde_json::from_str::<Value>(graph_seed[0].as_str().unwrap()).unwrap()["id"],
         graph_node_id
     );
+    let expanded_edge_ids = graph_semantic["layers"][0]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| {
+            serde_json::from_str::<Value>(edge.as_str().unwrap()).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(expanded_edge_ids, [cross_document_edge_id.to_owned()].into());
 
     let wisdom_nodes = service
         .wisdom_store
