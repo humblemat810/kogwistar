@@ -6649,6 +6649,8 @@
                         ("acl-turn-2", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-2","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
                         ("acl-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot","acl_version":1,"acl_mode":"public"})),
+                        ("foreign-start", json!({"entity_type":"conversation_start","conversation_id":"c-foreign","user_id":"other-user","status":"active"})),
+                        ("acl-foreign-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"foreign-start","acl_version":1,"acl_mode":"public"})),
                     ];
                     let metadatas = nodes
                         .iter()
@@ -6674,7 +6676,7 @@
                             }
                         }).collect::<Vec<_>>(),
                         "metadatas": metadatas,
-                        "embeddings": [null,null,null,null,null,null,null,null,null,null]
+                        "embeddings": [null,null,null,null,null,null,null,null,null,null,null,null]
                     })
                 } else {
                     json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})
@@ -7170,6 +7172,9 @@
                 }
                 "list" => {
                     assert_eq!(payload["conversations"].as_array().unwrap().len(), 1);
+                    assert_eq!(payload["conversations"][0]["id"], "c1");
+                    assert_eq!(payload["conversations"][0]["start_node_id"], "start");
+                    assert_eq!(payload["conversations"][0]["status"], "active");
                     assert_eq!(payload["conversations"][0]["turn_count"], 2);
                 }
                 _ => unreachable!(),

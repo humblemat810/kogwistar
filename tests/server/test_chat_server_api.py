@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jose import jwt
 
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
@@ -909,6 +910,61 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         )
         reopened.raise_for_status()
         assert reopened.json()["turn_count"] == 2
+
+
+def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    now = int(time.time())
+
+    def headers(user_id: str, role: str) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "user_id": user_id,
+                "role": role,
+                "ns": ["conversation"],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        rw_headers = headers("owner-a", "rw")
+        ro_headers = headers("owner-a", "ro")
+
+        created = client.post(
+            "/api/conversations",
+            json={"user_id": "untrusted-body-user", "conversation_id": "owned"},
+            headers=rw_headers,
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["user_id"] == "owner-a"
+        service._conversation_queries.create_conversation(
+            user_id="different-owner", conversation_id="not-visible"
+        )
+
+        listed = client.get("/api/conversations", headers=ro_headers)
+        assert listed.status_code == 200, listed.text
+        assert listed.json() == {
+            "conversations": [
+                {
+                    "id": "owned",
+                    "start_node_id": created.json()["start_node_id"],
+                    "status": "active",
+                    "turn_count": 0,
+                }
+            ]
+        }
 
 
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
