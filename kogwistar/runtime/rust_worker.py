@@ -1017,7 +1017,12 @@ class WorkerResultJournal:
 
 
 class RustRuntimeWorker:
-    """Claim Rust runtime work, execute Python callback, submit durable result."""
+    """Claim Rust runtime work, execute Python callback, submit durable result.
+
+    Identity-pinned work requires an authenticated bearer token whose verified
+    ``kogwistar_worker_identity`` claim matches the configured worker identity.
+    The token issuer is responsible for binding that claim to host registration.
+    """
 
     def __init__(
         self,
@@ -1292,6 +1297,8 @@ class AsyncRustRuntimeWorker:
     synchronous SQLite transaction.  Cancellation or process loss between
     ``begin`` and ``complete`` therefore leaves ``executing`` and a later
     worker fails closed rather than replaying an unknown side effect.
+    Identity-pinned work requires the same verified worker-identity claim as
+    the synchronous adapter.
     """
 
     def __init__(

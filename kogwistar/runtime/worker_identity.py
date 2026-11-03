@@ -1,4 +1,10 @@
-"""Versioned worker build identity contract shared with Rust."""
+"""Versioned worker build identity contract shared with Rust.
+
+Identity-specific lane claims require this value in the API's verified JWT
+claim ``kogwistar_worker_identity``. The trusted issuer must only issue it for
+host-registered artifact and dependency-lock digests; a worker's local copy is
+not itself registration or proof.
+"""
 
 from typing import Literal
 

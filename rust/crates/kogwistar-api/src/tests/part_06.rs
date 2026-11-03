@@ -5209,6 +5209,7 @@
     async fn sqlite_worker_identity_pin_survives_service_reopen_and_controls_claim() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
         use std::time::{SystemTime, UNIX_EPOCH};
         use tower::ServiceExt;
@@ -5231,6 +5232,34 @@
             identity["artifact_sha256"].as_str().unwrap(),
             identity["dependency_lock_sha256"].as_str().unwrap(),
         );
+        let auth = AuthConfig {
+            key: Some("worker-registration-test-secret".to_owned()),
+            issuer: Some("test-worker-registry".to_owned()),
+            audience: Some("kogwistar-runtime".to_owned()),
+            ..AuthConfig::default()
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = |registered_identity: Option<Value>| {
+            let mut claims = json!({
+                "sub":"identity-worker",
+                "role":"reader",
+                "iss":"test-worker-registry",
+                "aud":"kogwistar-runtime",
+                "exp": now + 600
+            });
+            if let Some(identity) = registered_identity {
+                claims[REGISTERED_WORKER_IDENTITY_CLAIM] = identity;
+            }
+            encode(
+                &Header::new(Algorithm::HS256),
+                &claims,
+                &EncodingKey::from_secret(b"worker-registration-test-secret"),
+            )
+            .unwrap()
+        };
         let store = SqliteStore::open(&path).unwrap();
         store
             .replace_named_projection(
@@ -5278,19 +5307,23 @@
                     health: snapshot(),
                     required_roles: vec!["reader".to_owned()],
                     implementation: ImplementationSnapshot::default(),
-                    auth: AuthConfig::default(),
+                    auth: auth.clone(),
                 },
                 Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
             )
         };
-        let call = |app: Router, method: &'static str, uri: String, body: Value| async move {
+        let call = |app: Router,
+                    method: &'static str,
+                    uri: String,
+                    body: Value,
+                    bearer: String| async move {
             let response = app
                 .oneshot(
                     Request::builder()
                         .method(method)
                         .uri(uri)
                         .header("content-type", "application/json")
-                        .header("x-kogwistar-roles", "reader")
+                        .header("authorization", format!("Bearer {bearer}"))
                         .body(Body::from(body.to_string()))
                         .unwrap(),
                 )
@@ -5306,22 +5339,45 @@
             "POST",
             "/api/workflow/runs".to_owned(),
             json!({"workflow_id":workflow_id,"conversation_id":"identity-reopen-conv"}),
+            token(None),
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
         let run_id = submitted["run_id"].as_str().unwrap().to_owned();
-        let app = reopen();
-        let (status, claim) = call(
-            app,
+        let claim_uri = "/internal/runtime/claim".to_owned();
+        let claim_body = json!({
+            "claimed_by":"identity-worker",
+            "limit":1,
+            "lease_seconds":60,
+            "recipient_ids":[identity_recipient],
+            "run_id":run_id
+        });
+        let (status, _) = call(
+            reopen(),
             "POST",
-            "/internal/runtime/claim".to_owned(),
-            json!({
-                "claimed_by":"identity-worker",
-                "limit":1,
-                "lease_seconds":60,
-                "recipient_ids":[identity_recipient],
-                "run_id":run_id
-            }),
+            claim_uri.clone(),
+            claim_body.clone(),
+            token(None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let mut unregistered = identity.clone();
+        unregistered["environment_id"] = json!("other-python-cpu-v1");
+        let (status, _) = call(
+            reopen(),
+            "POST",
+            claim_uri.clone(),
+            claim_body.clone(),
+            token(Some(unregistered)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, claim) = call(
+            reopen(),
+            "POST",
+            claim_uri,
+            claim_body,
+            token(Some(identity.clone())),
         )
         .await;
         assert_eq!(status, StatusCode::OK);

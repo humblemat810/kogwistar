@@ -2169,6 +2169,39 @@ fn effective_runtime_claim_recipients(values: &[String]) -> Result<Vec<String>, 
     Ok(ordered)
 }
 
+const REGISTERED_WORKER_IDENTITY_CLAIM: &str = "kogwistar_worker_identity";
+
+fn runtime_claim_identity_registration_matches(
+    principal: &Value,
+    recipient_ids: &[String],
+) -> Result<(), &'static str> {
+    let identity_recipients = recipient_ids
+        .iter()
+        .filter(|recipient| recipient.starts_with("python-worker-identity-"))
+        .collect::<Vec<_>>();
+    if identity_recipients.is_empty() {
+        return Ok(());
+    }
+    if identity_recipients.len() != 1 {
+        return Err("one registered worker identity recipient is allowed per claim");
+    }
+
+    let registered = principal
+        .get(REGISTERED_WORKER_IDENTITY_CLAIM)
+        .ok_or("authenticated principal has no registered worker identity")?;
+    let identity = worker_identity_attestation_from_str(&registered.to_string())
+        .map_err(|_| "authenticated worker identity registration is invalid")?;
+    let expected_recipient = runtime_worker_identity_recipient(
+        &identity.environment_id,
+        &identity.artifact_sha256,
+        &identity.dependency_lock_sha256,
+    );
+    if identity_recipients[0] != &expected_recipient {
+        return Err("requested worker identity is not registered to this principal");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeSubmitRun {

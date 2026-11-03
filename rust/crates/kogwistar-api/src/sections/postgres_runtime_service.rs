@@ -3994,6 +3994,13 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        if runtime_claim_identity_registration_matches(&request.principal, &recipient_ids).is_err() {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_WORKER_IDENTITY_FORBIDDEN",
+                "identity-specific work requires a matching host-registered worker identity",
+            );
+        }
         match self.claim_runtime_work_items(input, recipient_ids).await {
             Ok(work) => json_effect(StatusCode::OK, json!({"work": work})),
             Err(error) => effect_error(

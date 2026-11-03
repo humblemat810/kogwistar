@@ -5,20 +5,22 @@
 
 ## Completion Snapshot
 
-- **Coarse checklist:** **155/177 PASS (87.6%)**.
-- **Fine worklist:** **13/298 PASS (4.4%)**; **0 IN PROGRESS**, **285 NOT STARTED**, **0 BLOCKED**.
-- **Equal-size tasklet unit:** a counted leaf is exactly one independently decidable acceptance outcome: one contract seam, one operation family, and one backend/transport/runtime cell. It must have one focused runnable check (a parameterized test is allowed only when its cases prove the same invariant) and fit one implementation-and-verification session capped at 90 minutes. Aim for 45-60 minutes; this is a scope cap, not a claim that estimates are exact. Do not combine separate DTO families, error envelopes, lifecycle transitions, resource owners, or backend semantics merely to reduce row count. A matrix can be one leaf only when it exercises one invariant across equivalent cells and the test reports per-cell outcomes.
+- **Coarse checklist:** **156/177 PASS (88.1%)**.
+- **Fine worklist:** **14/327 PASS (4.3%)**; **0 IN PROGRESS**, **313 NOT STARTED**, **0 BLOCKED**.
+- **Tasklet normalization:** The sizing contract below is now explicit. The existing 327-leaf inventory has not yet been fully audited against it; flagged multi-cell leaves remain provisional and must be split before implementation. The 4.0% is raw leaf-status arithmetic, not a claim that the remaining work is uniformly sized or nearly complete.
+- **Equal-size tasklet unit:** one leaf is one independently decidable acceptance assertion for one contract family and one execution cell (operation/backend/runtime only where that dimension can fail independently). Target one focused implementation-and-verification session of about 45 minutes; split before starting if the estimate exceeds 60 minutes. The estimate is a guardrail, not evidence of completion. A tasklet must name one observable behavior, one expected result, and one focused test/check or artifact. A parameterized test is one tasklet only when all cases prove that same invariant under the same contract; list the cases in the evidence, and split cases that have separate implementation or ownership paths. Separate independently passing endpoints, DTO families, error envelopes, lifecycle transitions, resources, backends, runtime modes, and operation families. Never compress them into a matrix leaf. Do not split merely by file, field, or test-case count when one invariant is shared. Word count is not a sizing measure.
 - The fine denominator counts leaf rows only; `PARENT` rows are retained ID/mapping records and are not progress items. When a row is split, preserve its ID as a parent and list all child IDs in its description. The parent remains uncounted and cannot pass; every child starts `NOT STARTED` unless prior evidence independently proves that exact child. Passed leaf IDs/evidence remain unchanged. Report coarse and fine percentages separately; neither percentage estimates schedule or nearness to completion.
 
 ## How To Track
 
 - This is the detailed execution list; the linked checklist remains the sole coarse progress and denominator source. Only counted leaf tasklets contribute to the fine percentage.
-- The baseline is the 23 coarse IDs currently marked `IN PROGRESS`. Every coarse ID must map to fine work below. Fine IDs do not add to the 177-item coarse inventory.
+- The baseline is every coarse ID currently marked `IN PROGRESS` in the linked checklist. Every such coarse ID must map to fine work below. Fine IDs do not add to the 177-item coarse inventory.
 - A `PARENT` row groups leaves and is not countable or completable. CI validates that every parent names at least two existing leaf IDs under the same coarse gate. No task may be worked or reported as complete through a parent row.
 - A fine task reaches `PASS` only when its stated acceptance evidence is recorded here or linked from its referenced test/report. Tests must exercise the named behavior, not merely compile the surrounding code.
 - Close a coarse ID only when its original exit criteria and all mapped required fine tasks pass. Do not reopen a passed coarse ID without a reproduced regression or new required contract.
-- Equal-size acceptance test: a reviewer can state the leaf's single expected result in one sentence, run its focused check, and decide pass/fail without waiting for unrelated leaves. Words such as `all`, `each`, `every`, `remaining`, or `matrix` trigger a scope review; they are acceptable only for one generated artifact or one shared invariant with independently reported cells.
-- Split only independently decidable outcomes. Do not multiply rows by files, fields, or platforms if one invariant and one check cover them. Keep the original ID as an uncounted parent and record its children; never count both parent and children.
+- Equal-size acceptance test: in one sentence, a reviewer can identify the contract, execution cell, behavior, expected result, and focused evidence, then decide pass/fail without interpreting a multi-part report. A leaf with multiple independently decidable outcomes is oversized even if its description is short or its test is parameterized.
+- Words such as `all`, `each`, `every`, `remaining`, `inventory`, `matrix`, `reconcile`, and `cross-backend` are audit flags, not automatically invalid. Keep such a row only when the deliverable is one generated artifact or one assertion of a genuinely shared invariant. Otherwise convert the existing ID to an uncounted `PARENT`, enumerate child leaves at the independent contract-cell boundary, and count only those leaves. Do not add new product scope during decomposition.
+- Do not create rows per file, field, or platform when they are merely implementation details of one invariant. Do create separate rows when a capability family, operation, backend, or runtime cell can independently pass while another fails. Keep the original ID as an uncounted parent and enumerate the children; never count both parent and children. Do not split already-passed evidence unless it fails the same acceptance test or a regression is reproduced.
 
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 
@@ -30,15 +32,36 @@
 | FW-02-02A | DL-02 | PASS | The authenticated Rust `POST /api/add_index_entries` path on SQLite+Chroma was live-tested against disposable Chroma 1.5.9: missing `write_graph` and mismatched storage namespace each return `403` without appending an event; an authorized request and exact retry return `200`, append one event, and project the changed vector metadata. Evidence: `tests::sqlite_search_index_events_project_to_live_chroma_and_survive_reopen` (**1 passed**, Windows); Python route contract remains covered by `tests/server/test_search_index_api_auth.py::test_add_index_entries_requires_write_role_and_keeps_payload`. |
 | FW-02-02B | DL-02 | PASS | Authenticated Rust `POST /api/add_index_entries` was exercised against PostgreSQL/pgvector through the public HTTP router: an authorized request and exact retry both return `200`, with stable event admission. Evidence: `tests::postgres_hybrid_search_is_available_over_authenticated_http` (**1 passed**, live PostgreSQL); durable event replay after service reopen remains covered by `tests::postgres_search_index_events_project_to_pgvector_and_survive_reopen`. In-memory route authorization/idempotency is also covered by `tests::in_memory_search_index_hybrid_is_scoped_and_acl_filtered`. |
 | FW-02-02C | DL-02 | PASS | In-memory hybrid GET uses shared fusion and canonical ACL filtering; missing dependencies expose neither index route nor durable event. Evidence: `in_memory_search_index_hybrid_is_scoped_and_acl_filtered` (**1 passed**), Rust API suite (**284 passed, 33 ignored**), Python search-index/ACL/auth/replay suite (**10 passed**), parity and checklist verification (**5 passed**). |
-| FW-03-01 | DL-03 | NOT STARTED | Map every capability-crosswalk claim to one named Python evidence test and verify no claim lacks Python behavior evidence. |
-| FW-03-01A | DL-03 | NOT STARTED | Map every capability-crosswalk claim to one named Rust evidence test or an explicit `not-verified`/unsupported record. |
+| FW-03-01 | DL-03 | PARENT | Parent scope; children: FW-03-01-DET,FW-03-01-SQLITE,FW-03-01-PG,FW-03-01-PROJ,FW-03-01-QUEUE,FW-03-01-GRAPH,FW-03-01-CHROMA,FW-03-01-WF,FW-03-01-SERVER |
+| FW-03-01-DET | DL-03 | NOT STARTED | Link the deterministic-contracts capability claim to one Python behavior test. |
+| FW-03-01-SQLITE | DL-03 | NOT STARTED | Link the sqlite-meta capability claim to one Python behavior test. |
+| FW-03-01-PG | DL-03 | NOT STARTED | Link the postgres-sequence-event-log capability claim to one Python behavior test. |
+| FW-03-01-PROJ | DL-03 | NOT STARTED | Link the projections-snapshots-run-registry capability claim to one Python behavior test. |
+| FW-03-01-QUEUE | DL-03 | NOT STARTED | Link the queues-leases-lanes capability claim to one Python behavior test. |
+| FW-03-01-GRAPH | DL-03 | NOT STARTED | Link the graph-pgvector capability claim to one Python behavior test. |
+| FW-03-01-CHROMA | DL-03 | NOT STARTED | Link the chroma-adapter capability claim to one Python behavior test. |
+| FW-03-01-WF | DL-03 | NOT STARTED | Link the workflow-runtime capability claim to one Python behavior test. |
+| FW-03-01-SERVER | DL-03 | NOT STARTED | Link the server-rest-sse-mcp-cli capability claim to one Python behavior test. |
+| FW-03-01A | DL-03 | PARENT | Parent scope; children: FW-03-01A-DET,FW-03-01A-SQLITE,FW-03-01A-PG,FW-03-01A-PROJ,FW-03-01A-QUEUE,FW-03-01A-GRAPH,FW-03-01A-CHROMA,FW-03-01A-WF,FW-03-01A-SERVER |
+| FW-03-01A-DET | DL-03 | NOT STARTED | Link the deterministic-contracts capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-SQLITE | DL-03 | NOT STARTED | Link the sqlite-meta capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-PG | DL-03 | NOT STARTED | Link the postgres-sequence-event-log capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-PROJ | DL-03 | NOT STARTED | Link the projections-snapshots-run-registry capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-QUEUE | DL-03 | NOT STARTED | Link the queues-leases-lanes capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-GRAPH | DL-03 | NOT STARTED | Link the graph-pgvector capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-CHROMA | DL-03 | NOT STARTED | Link the chroma-adapter capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-WF | DL-03 | NOT STARTED | Link the workflow-runtime capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-SERVER | DL-03 | NOT STARTED | Link the server-rest-sse-mcp-cli capability claim to one Rust evidence test or explicit unsupported status. |
 | FW-03-01B | DL-03 | NOT STARTED | Add a drift test that rejects missing, stale, or duplicate capability-to-evidence links without treating route advertisement as evidence. |
 | FW-03-03 | DL-03 | NOT STARTED | Reconcile frozen REST inventory method/path entries to one owner and one evidence reference each; report missing and stale mappings. |
 | FW-03-03A | DL-03 | NOT STARTED | For each REST route already implemented in Rust, verify its success response against the Python contract using one paired test per route. |
 | FW-03-03B | DL-03 | NOT STARTED | For each REST route intentionally unsupported in Rust, verify the explicit unsupported response and that no state change occurs. |
 | FW-03-04 | DL-03 | NOT STARTED | Reconcile frozen MCP operation names and schemas to one implementation owner and one evidence reference each. |
 | FW-03-04A | DL-03 | NOT STARTED | Verify Python/Rust request and response parity for each advertised MCP operation, one operation family per test slice. |
-| FW-03-04B | DL-03 | NOT STARTED | Verify authorization denial and stable error semantics for each advertised MCP operation family without executing denied effects. |
+| FW-03-04B | DL-03 | PARENT | Parent scope; children: FW-03-04B-ROOT,FW-03-04B-CONVERSATION,FW-03-04B-WORKFLOW |
+| FW-03-04B-ROOT | DL-03 | NOT STARTED | Verify root MCP operation authorization denial and stable errors without executing denied effects. |
+| FW-03-04B-CONVERSATION | DL-03 | NOT STARTED | Verify conversation MCP operation authorization denial and stable errors without executing denied effects. |
+| FW-03-04B-WORKFLOW | DL-03 | NOT STARTED | Verify workflow MCP operation authorization denial and stable errors without executing denied effects. |
 | FW-03-02 | DL-03 | NOT STARTED | Run conformance tests for currently advertised REST routes and record exact pass/unsupported outcomes; keep untested paths `not-verified`. |
 | FW-03-02A | DL-03 | NOT STARTED | Run conformance tests for currently advertised MCP operations and record exact pass/unsupported outcomes; keep untested paths `not-verified`. |
 | FW-05-01 | DL-05 | PARENT | Parent scope; children: FW-05-01-NODE,FW-05-01-EDGE,FW-05-01-HYPEREDGE |
@@ -58,7 +81,10 @@
 | FW-05-03 | DL-05 | PARENT | Parent scope; children: FW-05-03-NODE,FW-05-03-EDGE |
 | FW-05-03-NODE | DL-05 | NOT STARTED | Verify base Node identity, common fields, lifecycle, and legacy defaults round-trip identically. |
 | FW-05-03-EDGE | DL-05 | NOT STARTED | Verify base Edge identity, common fields, lifecycle, and legacy defaults round-trip identically. |
-| FW-05-03A | DL-05 | NOT STARTED | Complete hyperedge-family DTO parity for identity, participations/endpoints, and invalid endpoint rejection. |
+| FW-05-03A | DL-05 | PARENT | Parent scope; children: FW-05-03A-IDENTITY,FW-05-03A-PARTICIPATION,FW-05-03A-ENDPOINT-REJECT |
+| FW-05-03A-IDENTITY | DL-05 | NOT STARTED | Verify Python/Rust hyperedge identity serialization against one shared fixture. |
+| FW-05-03A-PARTICIPATION | DL-05 | NOT STARTED | Verify Python/Rust hyperedge participation and endpoint serialization against one shared fixture. |
+| FW-05-03A-ENDPOINT-REJECT | DL-05 | NOT STARTED | Verify malformed hyperedge endpoints are rejected before graph effects in both languages. |
 | FW-05-03B | DL-05 | NOT STARTED | Verify graph mutation DTOs reject malformed entity batches before any document, event, or index effect. |
 | FW-05-03C | DL-05 | NOT STARTED | Verify lifecycle and tombstone DTOs preserve redirect and endpoint fields through Python/Rust round trips. |
 | FW-05-04 | DL-05 | PARENT | Parent scope; children: FW-05-04-REQUEST,FW-05-04-EVENT |
@@ -93,7 +119,11 @@
 | FW-06-02A | DL-06 | NOT STARTED | Reopen PostgreSQL after injected failure and verify durable state and idempotent retry. |
 | FW-08-01 | DL-08 | NOT STARTED | Add a live PostgreSQL graph-neighbor read test for tenant/project scope and source-evidence authorization. |
 | FW-08-01A | DL-08 | NOT STARTED | Add a live PostgreSQL graph-snapshot test for edge endpoint dependency filtering and malformed backend records. |
-| FW-08-01B | DL-08 | NOT STARTED | Add a live PostgreSQL conflicting-scope record test and prove it is excluded from every returned shape. |
+| FW-08-01B | DL-08 | PARENT | Parent scope; children: FW-08-01B-NEIGHBOR,FW-08-01B-SNAPSHOT,FW-08-01B-EDGE-DEPENDENCY,FW-08-01B-VECTOR |
+| FW-08-01B-NEIGHBOR | DL-08 | NOT STARTED | Verify a conflicting-scope record is omitted from live PostgreSQL neighbor results. |
+| FW-08-01B-SNAPSHOT | DL-08 | NOT STARTED | Verify a conflicting-scope node is omitted from live PostgreSQL graph snapshots. |
+| FW-08-01B-EDGE-DEPENDENCY | DL-08 | NOT STARTED | Verify PostgreSQL snapshots omit edges whose endpoint has conflicting scope. |
+| FW-08-01B-VECTOR | DL-08 | NOT STARTED | Verify a conflicting-scope record is omitted from live PostgreSQL vector results. |
 | FW-08-03 | DL-08 | NOT STARTED | Verify live SQLite+Chroma public graph reads revalidate canonical scope and ACL after vector/backend response. |
 | FW-08-03A | DL-08 | NOT STARTED | Verify live SQLite+Chroma endpoint dependencies and stale-projection handling on graph reads. |
 | FW-08-04 | DL-08 | NOT STARTED | Verify in-memory authenticated node reads match Python scope/ACL behavior for allowed and denied records. |
@@ -197,7 +227,7 @@
 | FW-14C-03B | DL-14C | PASS | Rust rejects malformed authoritative graph identity pins before run creation or lane scheduling. Evidence: `sqlite_invalid_worker_identity_pin_is_rejected_before_scheduling` returns `409 KOGWISTAR_INVALID_WORKER_IDENTITY` and verifies the runtime queue remains empty; graph-plan and explicit-map validation tests also pass. |
 | FW-14C-03C | DL-14C | PASS | Python and Rust accept the same valid attestation and reject all shared invalid cases (wrong version, noncanonical environment, malformed digest, unknown field). Evidence: `test_worker_identity_attestation_matches_shared_fixture`, Rust `worker_identity_attestation_matches_shared_python_golden_fixture`, and parity annotation verifier pass. |
 | FW-14C-03D | DL-14C | PASS | A valid worker identity survives SQLite service reopen and still controls start-work routing and payload admission. Evidence: `sqlite_worker_identity_pin_survives_service_reopen_and_controls_claim` verifies the persisted identity map, identity-specific claim recipient, and `required_worker_identity` field after reopen. |
-| FW-14C-03E | DL-14C | NOT STARTED | Bind workflow worker identity pins to host-controlled artifact/dependency registrations; reject unregistered or mismatched workers before claim or callback. Self-reported identity matching alone is not trusted attestation. |
+| FW-14C-03E | DL-14C | PASS | Identity-pinned claim recipients require exactly one matching `kogwistar_worker_identity` assertion in the cryptographically verified principal; missing, malformed, or mismatched registrations are rejected before queue claim handling in SQLite and PostgreSQL services. The trusted host JWT issuer must issue this claim only for a registered artifact/dependency-lock tuple. Evidence: SQLite signed-token registration/reopen regression; PostgreSQL rejects an unregistered principal before touching storage; Rust API suite **289 passed, 33 ignored**. This trusts issuer registration policy; it does not attest the live process image. |
 | FW-15-01 | DL-15 | NOT STARTED | Reconcile selector names and precedence rules with the supported-mode manifest. |
 | FW-15-01A | DL-15 | NOT STARTED | Reconcile legacy/default selector behavior with the supported-mode manifest. |
 | FW-15-01B | DL-15 | NOT STARTED | Classify every fallback as intentional compatibility or an error and link the owner/evidence. |
@@ -244,7 +274,10 @@
 | FW-16AC-02B | DL-16AC | NOT STARTED | Verify stale Chroma projection recovery after service restart against live Chroma and label evidence type. |
 | FW-16AM-01 | DL-16AM | NOT STARTED | Inventory public MCP operation names, schemas, and discovery metadata against Python. |
 | FW-16AM-01A | DL-16AM | NOT STARTED | Verify paired request/response and stable error semantics for one advertised MCP operation family. |
-| FW-16AM-01B | DL-16AM | NOT STARTED | Verify authorization behavior for each advertised MCP operation family and reject denied effects. |
+| FW-16AM-01B | DL-16AM | PARENT | Parent scope; children: FW-16AM-01B-ROOT,FW-16AM-01B-CONVERSATION,FW-16AM-01B-WORKFLOW |
+| FW-16AM-01B-ROOT | DL-16AM | NOT STARTED | Verify root MCP authorization rejects a denied operation before effects. |
+| FW-16AM-01B-CONVERSATION | DL-16AM | NOT STARTED | Verify conversation MCP authorization rejects a denied operation before effects. |
+| FW-16AM-01B-WORKFLOW | DL-16AM | NOT STARTED | Verify workflow MCP authorization rejects a denied operation before effects. |
 | FW-16AM-03 | DL-16AM | NOT STARTED | Verify supported server-initiated event type and sequence ordering against Python. |
 | FW-16AM-03A | DL-16AM | NOT STARTED | Verify event replay/resume behavior and explicit unsupported status for unimplemented event types. |
 | FW-16AM-03B | DL-16AM | NOT STARTED | Verify transport negotiation for the declared MCP event transport. |
@@ -252,9 +285,15 @@
 | FW-16AM-04A | DL-16AM | NOT STARTED | Verify public parsing operation behavior and capability advertisement. |
 | FW-16AM-04B | DL-16AM | NOT STARTED | Verify public indexing/backend operation behavior and capability advertisement. |
 | FW-16AM-02 | DL-16AM | NOT STARTED | Verify one remaining server-initiated event family and its production transport behavior. |
-| FW-16AM-02A | DL-16AM | NOT STARTED | Verify ingestion/parsing/indexing operation boundaries against the support matrix. |
+| FW-16AM-02A | DL-16AM | PARENT | Parent scope; children: FW-16AM-02A-INGEST,FW-16AM-02A-PARSE,FW-16AM-02A-INDEX |
+| FW-16AM-02A-INGEST | DL-16AM | NOT STARTED | Verify the ingestion MCP boundary matches the declared support matrix. |
+| FW-16AM-02A-PARSE | DL-16AM | NOT STARTED | Verify the parsing MCP boundary matches the declared support matrix. |
+| FW-16AM-02A-INDEX | DL-16AM | NOT STARTED | Verify the indexing MCP boundary matches the declared support matrix. |
 | FW-16AM-02B | DL-16AM | NOT STARTED | Mark unexercised backend/transport combinations explicitly unsupported in discovery. |
-| FW-16BQ-01 | DL-16BQ | NOT STARTED | Inventory advertised syscall and REST/MCP operations against Python contract and backend support declarations. |
+| FW-16BQ-01 | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-01-SYSCALL,FW-16BQ-01-REST,FW-16BQ-01-MCP |
+| FW-16BQ-01-SYSCALL | DL-16BQ | NOT STARTED | Inventory advertised syscall operations against Python contracts and backend support. |
+| FW-16BQ-01-REST | DL-16BQ | NOT STARTED | Inventory advertised REST operations against Python contracts and backend support. |
+| FW-16BQ-01-MCP | DL-16BQ | NOT STARTED | Inventory advertised MCP operations against Python contracts and backend support. |
 | FW-16BQ-01A | DL-16BQ | NOT STARTED | Verify syscall request/response parity for SQLite+Chroma on one operation family. |
 | FW-16BQ-01B | DL-16BQ | NOT STARTED | Verify syscall request/response parity for PostgreSQL on one operation family. |
 | FW-16BQ-01C | DL-16BQ | NOT STARTED | Verify syscall request/response parity for in-memory on one operation family. |
@@ -340,7 +379,3 @@
 | FW-20A-02 | DL-20A | NOT STARTED | Add batch-versus-per-item graph fixture and verify no duplicated state effects. |
 | FW-20A-02A | DL-20A | NOT STARTED | Add batch-versus-per-item workflow fixture and verify crossing/serialization counts. |
 | FW-20A-02B | DL-20A | NOT STARTED | Add regression assertion for threshold violations without comparing different operation semantics. |
-
-## Current Snapshot
-
-All currently open coarse IDs map to fine rows. **Tasklet sizing result:** 18 over-bundled rows are now non-counted parents with 50 independently counted leaves; replacing those 18 rows adds 32 leaf items (265 to 297). FW-14C-03E is one additional leaf for the host-trusted identity registration already required by DL-14C. The live count at the top of this file is maintained by the validator. Other matrix/inventory rows are one tasklet only when one automated artifact/check reports one shared invariant with per-cell results; otherwise split them before work starts. DL-14C's environment-routing, retry/recovery, worker admission, shared-contract, scheduler-admission, and restart-binding tasklets now pass. FW-14C-03E remains the only identity subtask outstanding: bind workflow pins to host-controlled build/dependency registration. CI validates mapping, parent exclusion, and status counts; it cannot infer semantic completeness or guarantee identical elapsed effort. Record newly discovered requirements only under an existing coarse gate when required by its contract; otherwise pause and update scope explicitly. The completion snapshot at the top is the sole fine-status/count summary; the linked coarse inventory remains authoritative for coarse status.
