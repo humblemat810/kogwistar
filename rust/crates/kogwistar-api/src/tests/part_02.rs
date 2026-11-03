@@ -1893,8 +1893,13 @@ asyncio.run(main())
     async fn dev_token_me_and_logout_share_verified_jwt_contract() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
+        use jsonwebtoken::{EncodingKey, Header, encode};
         use tower::ServiceExt;
 
+        let auth_path = std::env::temp_dir().join(format!(
+            "kogwistar-auth-me-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
         let app = router(ApiState {
             health: snapshot(),
             required_roles: Vec::new(),
@@ -1907,7 +1912,7 @@ asyncio.run(main())
                 issuer: Some("local".to_owned()),
                 audience: None,
                 oidc_providers_json: None,
-                auth_db_url: None,
+                auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             },
         });
         let token_response = app
@@ -1945,8 +1950,66 @@ asyncio.run(main())
         let me_body = to_bytes(me.into_body(), 8192).await.unwrap();
         let me_value = serde_json::from_slice::<Value>(&me_body).unwrap();
         assert_eq!(me_value["email"], "dev@example.com");
+        assert_eq!(me_value["is_active"], true);
         assert_eq!(me_value["role"], "rw");
         assert_eq!(me_value["ns"], json!(["docs", "workflow"]));
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let legacy_token = encode(
+            &Header::default(),
+            &json!({
+                "sub": "dev@example.com",
+                "email": "dev@example.com",
+                "role": "rw",
+                "ns": ["docs", "workflow"],
+                "iat": now,
+                "exp": now + 60,
+                "iss": "local",
+            }),
+            &EncodingKey::from_secret(b"dev-secret"),
+        )
+        .unwrap();
+        let legacy_me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header("authorization", format!("Bearer {legacy_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(legacy_me.status(), StatusCode::OK);
+
+        let auth_db = rusqlite::Connection::open(&auth_path).unwrap();
+        auth_db
+            .execute(
+                "UPDATE users SET is_active = 0 WHERE email = ?1",
+                ["dev@example.com"],
+            )
+            .unwrap();
+        drop(auth_db);
+        let inactive_me = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/me")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(inactive_me.status(), StatusCode::OK);
+        let inactive_body = to_bytes(inactive_me.into_body(), 8192).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&inactive_body).unwrap()["is_active"],
+            false
+        );
 
         let forged = app
             .clone()
@@ -1971,6 +2034,7 @@ asyncio.run(main())
             .await
             .unwrap();
         assert_eq!(logout.status(), StatusCode::OK);
+        let _ = std::fs::remove_file(auth_path);
     }
 
     #[tokio::test]

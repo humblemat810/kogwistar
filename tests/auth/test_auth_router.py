@@ -64,6 +64,28 @@ def test_auth_me_authorized(client):
     assert data["ns"] == "docs"
 
 
+def test_auth_me_reports_current_persisted_activity(client):
+    auth_service = app.state.auth_service
+    user_id = auth_service.resolve_user_from_external(
+        "iss", "inactive-sub", "inactive@example.com"
+    )
+    user = auth_service.repo.get_user(user_id)
+    assert user is not None
+    user.is_active = False
+    auth_service.repo.session.commit()
+    try:
+        token = auth_service.mint_token(user_id)
+        response = client.get(
+            "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["is_active"] is False
+    finally:
+        user.is_active = True
+        auth_service.repo.session.commit()
+
+
 def test_login_dev_mode_redirects_with_token_and_requested_redirect(
     client, monkeypatch
 ):

@@ -435,12 +435,45 @@ async fn dev_token_handler(
         return auth_error(StatusCode::BAD_REQUEST, "role must be one of ['ro', 'rw']");
     }
     let username = input["username"].as_str().unwrap_or("dev");
+    let namespace = input.get("ns").and_then(|value| match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Array(values) => Some(
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+        _ => None,
+    });
+    let auth_store = match AuthStore::from_config(&state.api.auth).await {
+        Ok(store) => store,
+        Err(_) => return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "Auth store failed"),
+    };
+    let user = match auth_store
+        .resolve_external_identity(ResolveExternalIdentity {
+            issuer: "dev".to_owned(),
+            subject: username.to_owned(),
+            email: username.to_owned(),
+            display_name: None,
+            new_user_id: uuid::Uuid::new_v4().to_string(),
+            default_role: role.to_owned(),
+            default_ns: namespace.unwrap_or_else(|| "docs".to_owned()),
+        })
+        .await
+    {
+        Ok(user) => user,
+        Err(_) => return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "Auth store failed"),
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|value| value.as_secs())
         .unwrap_or_default();
     let mut claims = json!({
         "sub": username,
+        "user_id": user.user_id,
+        "email": user.email,
+        "name": user.display_name,
         "ns": normalized_string_or_list(input.get("ns"), json!("docs")),
         "role": role,
         "iat": now,
@@ -480,11 +513,46 @@ async fn auth_me_handler(State(state): State<Arc<ServerState>>, headers: HeaderM
     if user_id.is_empty() {
         return auth_error(StatusCode::UNAUTHORIZED, "Not authenticated");
     }
+    let auth_store = match AuthStore::from_config(&state.api.auth).await {
+        Ok(store) => store,
+        Err(_) => return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "Auth store failed"),
+    };
+    let user = match auth_store.auth_user(user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None)
+            if claims.get("user_id").is_none()
+                && state.api.auth.mode.eq_ignore_ascii_case("dev") =>
+        {
+            // Older Rust dev tokens had no user_id and did not persist their
+            // identity. Resolve that signed legacy identity on first /me use.
+            let subject = claims["sub"].as_str().unwrap_or_default();
+            let email = claims["email"].as_str().unwrap_or(subject);
+            match auth_store
+                .resolve_external_identity(ResolveExternalIdentity {
+                    issuer: claims["iss"].as_str().unwrap_or("local").to_owned(),
+                    subject: subject.to_owned(),
+                    email: email.to_owned(),
+                    display_name: claims["name"].as_str().map(str::to_owned),
+                    new_user_id: uuid::Uuid::new_v4().to_string(),
+                    default_role: claims["role"].as_str().unwrap_or("ro").to_owned(),
+                    default_ns: "docs".to_owned(),
+                })
+                .await
+            {
+                Ok(user) => user,
+                Err(_) => {
+                    return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "Auth store failed");
+                }
+            }
+        }
+        Ok(None) => return auth_error(StatusCode::NOT_FOUND, "User not found"),
+        Err(_) => return auth_error(StatusCode::INTERNAL_SERVER_ERROR, "Auth store failed"),
+    };
     Json(json!({
-        "user_id": user_id,
-        "email": claims["email"].as_str().or_else(|| claims["sub"].as_str()),
-        "display_name": claims["name"],
-        "is_active": true,
+        "user_id": user.user_id,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_active": user.is_active,
         "role": claims["role"],
         "ns": claims["ns"],
     }))
