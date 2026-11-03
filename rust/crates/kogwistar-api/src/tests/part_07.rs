@@ -5887,71 +5887,73 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
         "sub": "sqlite-event-owner", "user_id": "sqlite-event-owner", "role": "rw",
         "ns": ["conversation"], "storage_ns": "conversation",
         "workspace": "workspace-a", "graph_space": "conversation",
-        "capabilities": ["read_graph", "write_graph"]
+        "capabilities": ["read_graph", "write_graph", "workflow.run.write"]
     });
     let run_id = "sqlite-native-provider-event-run";
     let conversation_id = "sqlite-native-provider-event-conversation";
-    let binding = runtime_owner_binding_v1(&principal, &service.capabilities).unwrap();
-    service
-        .store
-        .create_server_run(ServerRunCreate {
-            run_id: run_id.to_owned(),
-            conversation_id: conversation_id.to_owned(),
-            workflow_id: "sqlite-native-provider-event-workflow".to_owned(),
-            user_id: Some("sqlite-event-owner".to_owned()),
-            user_turn_node_id: "turn-1".to_owned(),
-            status: "running".to_owned(),
+    let submitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "workflow_id": "sqlite-native-provider-event-workflow",
+                "conversation_id": conversation_id,
+                "turn_node_id": "turn-1",
+                "start_node_id": "provider-step",
+                "node_ops": {
+                    "provider-step": "rust-native/agent.event.request",
+                    "receive-step": "rust-native/agent.event.receive",
+                    "no-action-step": "rust-native/emit-result",
+                    "done-step": "rust-native/emit-result"
+                },
+                "initial_state": {
+                    "provider_request": {
+                        "contract_version": "v1",
+                        "model": "sqlite-event-model",
+                        "instructions": "fixture only",
+                        "input": "emit one response"
+                    }
+                },
+                "runtime_routes": [
+                    {"source_node_id": "provider-step", "target_node_id": "receive-step", "join_mask": 0},
+                    {
+                        "source_node_id": "receive-step",
+                        "target_node_id": "done-step",
+                        "predicate": "event_is_response_complete",
+                        "join_mask": 0
+                    },
+                    {
+                        "source_node_id": "receive-step",
+                        "target_node_id": "no-action-step",
+                        "predicate": "event_requires_no_action",
+                        "join_mask": 0
+                    }
+                ]
+            }))
+            .unwrap(),
+            principal: principal.clone(),
         })
-        .unwrap();
-    service
-        .store
-        .append_server_run_event(
-            run_id,
-            "run.created",
-            json!({"runtime_owner_binding": binding}).to_string(),
-        )
-        .unwrap();
-    let request = kogwistar_runtime::RuntimeNativeStepRequest {
-        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
-        operation: "agent.event.request".to_owned(),
-        op_version: "v1".to_owned(),
-        run_id: run_id.to_owned(),
-        workflow_id: "sqlite-native-provider-event-workflow".to_owned(),
-        node_id: "provider-step".to_owned(),
-        conversation_id: conversation_id.to_owned(),
-        turn_node_id: Some("turn-1".to_owned()),
-        token_id: run_id.to_owned(),
-        parent_token_id: None,
-        step_seq: 1,
-        state: serde_json::from_value(json!({
-            "provider_request": {
-                "contract_version": "v1",
-                "model": "sqlite-event-model",
-                "instructions": "fixture only",
-                "input": "emit one response"
-            }
-        }))
-        .unwrap(),
-        runtime_routes: Vec::new(),
-        ephemeral_context: Map::from_iter([("_trace_attempt".to_owned(), json!(1))]),
-    };
-    let result = service
-        .execute_sqlite_native_provider_event_request(
-            RecordedWorkerHandoff {
-                message_id: "sqlite-provider-request-handoff".to_owned(),
-                claimed_by: "sqlite-provider-worker#1".to_owned(),
-                run_id: run_id.to_owned(),
-                step_id: "provider-step".to_owned(),
-                correlation_id: run_id.to_owned(),
-            },
-            request,
-        )
-        .await
-        .unwrap();
+        .await;
+    assert_eq!(
+        submitted.status,
+        StatusCode::ACCEPTED.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&submitted.body)
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(service.execute_inline_native_work_once().await.unwrap());
     provider_task.await.unwrap();
-    let effect = result.effect.unwrap();
-    assert_eq!(effect.status, kogwistar_runtime::RuntimeWorkerEffectStatus::Success);
-    assert!(effect.result.as_ref().unwrap()["semantic_event_count"].as_i64().unwrap() > 0);
+    assert_eq!(
+        service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
     let messages = service
         .store
         .list_projected_lane_messages(LaneMessageFilter {
@@ -5982,6 +5984,36 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
             && event.payload_json.contains("response_completed")
     }));
     assert!(!events.iter().any(|event| event.payload_json.contains("text_delta")));
+
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let run = service.store.get_server_run(run_id).unwrap().unwrap();
+    assert_eq!(run.status, "running");
+    let received_lane = service
+        .store
+        .list_projected_lane_messages(LaneMessageFilter {
+            namespace: Some("conversation".to_owned()),
+            inbox_id: Some("agent-provider-events".to_owned()),
+            conversation_id: Some(conversation_id.to_owned()),
+            limit: 20,
+            ..LaneMessageFilter::default()
+        })
+        .unwrap();
+    assert!(received_lane.iter().any(|message| message.status == "claimed"));
+    let receive_transition = service
+        .store
+        .list_server_run_events(run_id, 0, 100)
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            event.event_type == "workflow.recorded_transition.v1"
+                && serde_json::from_str::<Value>(&event.payload_json).is_ok_and(|payload| {
+                    payload["reduced"]["state"]["last_node_id"] == "receive-step"
+                })
+        })
+        .expect("native receive transition is durable");
+    assert!(receive_transition.payload_json.contains("agent_event_current"));
+    assert!(receive_transition.payload_json.contains("agent_event_claim"));
 
     drop(service);
     remove_test_sqlite(&sqlite_path);

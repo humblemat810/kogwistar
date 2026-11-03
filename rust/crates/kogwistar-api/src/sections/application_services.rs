@@ -1094,15 +1094,24 @@ impl ApplicationService for SqliteRunApplicationService {
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
-            let mut result = if work.payload.get("op").and_then(Value::as_str)
-                == Some("agent.event.request")
-            {
+            let operation = work
+                .payload
+                .get("op")
+                .and_then(Value::as_str)
+                .map(|operation| {
+                    kogwistar_runtime::native_operation_for_target(
+                        operation,
+                        work.payload
+                            .get("executor_target")
+                            .and_then(Value::as_str),
+                    )
+                    .unwrap_or(operation)
+                });
+            let mut result = if operation == Some("agent.event.request") {
                 let (handoff, native_request) = native_request_for_claimed_work(&work)?;
                 self.execute_sqlite_native_provider_event_request(handoff, native_request)
                     .await?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("agent.event.receive")
-            {
+            } else if operation == Some("agent.event.receive") {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let principal = self
                     .resolve_inline_native_owner_principal(&handoff.run_id, "read_graph")
@@ -1126,9 +1135,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     context["claim"].clone(),
                 );
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("aa_get_view_and_question")
-            {
+            } else if operation == Some("aa_get_view_and_question") {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let view = self
                     .native_answer_view_context(&native_request, None)
@@ -1153,9 +1160,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_answer_view".to_owned(), view);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("aa_retrieve_candidates")
-            {
+            } else if operation == Some("aa_retrieve_candidates") {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let records = self
                     .native_candidate_context(&native_request, None)
@@ -1179,9 +1184,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_candidate_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("aa_materialize_evidence_pack")
-            {
+            } else if operation == Some("aa_materialize_evidence_pack") {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let records = self
                     .native_evidence_context(&native_request, None)
@@ -1206,8 +1209,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_evidence_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str) == Some("aa_project_pointers")
-            {
+            } else if operation == Some("aa_project_pointers") {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let records = self
                     .native_pointer_context(&native_request, None)
@@ -1233,8 +1235,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_pointer_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str) == Some("link_assistant_turn")
-            {
+            } else if operation == Some("link_assistant_turn") {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;
                 let records = self
                     .native_turn_link_context(&native_request, None)
@@ -1259,15 +1260,11 @@ impl ApplicationService for SqliteRunApplicationService {
                     .ephemeral_context
                     .insert("authorized_turn_records".to_owned(), records);
                 native_result_from_request(handoff, native_request, &self.native_operations)?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("aa_generate_answer_with_citations")
-            {
+            } else if operation == Some("aa_generate_answer_with_citations") {
                 let (handoff, native_request) = native_request_for_claimed_work(&work)?;
                 self.execute_sqlite_native_answer_generation(handoff, native_request)
                     .await?
-            } else if work.payload.get("op").and_then(Value::as_str)
-                == Some("aa_select_used_evidence")
-            {
+            } else if operation == Some("aa_select_used_evidence") {
                 let (handoff, native_request) = native_request_for_claimed_work(&work)?;
                 if crate::native_answer_generation::selection_snapshot_is_enabled(&native_request) {
                     self.persist_sqlite_native_selection_context_snapshot(&native_request)

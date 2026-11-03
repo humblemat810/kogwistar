@@ -551,10 +551,8 @@ impl SqliteRunApplicationService {
                 .as_str()
                 .ok_or_else(|| "provider-event owner has no storage namespace".to_owned())?
                 .to_owned(),
-            workspace_id: principal
-                .get("workspace_id")
-                .or_else(|| principal.get("workspace"))
-                .and_then(Value::as_str)
+            workspace_id: security_scope["workspace"]
+                .as_str()
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             graph_space: Some("conversation".to_owned()),
