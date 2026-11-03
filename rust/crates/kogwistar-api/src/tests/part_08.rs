@@ -2937,6 +2937,41 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             }
         }
     }
+    for (kind, expected_ids) in [
+        ("node", json!([["near-private", "visible-scope"]])),
+        ("edge", json!([["edge-private-endpoint", "edge-scope"]])),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/graph/vector-query")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token("owner-b", &["read_graph"], None)),
+                    )
+                    .body(Body::from(
+                        json!({
+                            "entity_kind": kind,
+                            "query_embeddings": [fixture["query_embeddings"][0]],
+                            "metric": fixture["metric"],
+                            "truth_graph": fixture["truth_graph"],
+                            "n_results": 2,
+                            "include": ["distances"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(result["ids"], expected_ids);
+    }
     let item_node_id = "node-source-span-private";
     let item_grounding_id = format!("{item_node_id}::mention::0");
     let item_span_id = format!("{item_grounding_id}::span::0");
