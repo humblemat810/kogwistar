@@ -5739,6 +5739,256 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
 }
 
 #[tokio::test]
+async fn sqlite_native_provider_event_request_persists_semantic_events() {
+    use crate::native_answer_generation::OpenAiCompatibleChatConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let chroma_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let chroma_endpoint = format!("http://{}", chroma_listener.local_addr().unwrap());
+    let chroma_setup = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = chroma_listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let (header_end, content_length) = loop {
+                let mut chunk = [0_u8; 2048];
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..index]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= index + 4 + content_length {
+                        break (index + 4, content_length);
+                    }
+                }
+            };
+            let request: Value =
+                serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
+            let body = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space": "cosine"}
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: chroma_endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("native-provider-events-nodes"),
+        chroma_config("native-provider-events-edges"),
+    )
+    .await
+    .unwrap();
+    chroma_setup.await.unwrap();
+
+    let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider_address = provider_listener.local_addr().unwrap();
+    let provider_task = tokio::spawn(async move {
+        let (mut stream, _) = provider_listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        let (header_end, content_length) = loop {
+            let mut chunk = [0_u8; 4096];
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let header_end = index + 4;
+                let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .unwrap()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap();
+                if bytes.len() >= header_end + content_length {
+                    break (header_end, content_length);
+                }
+            }
+        };
+        let request: Value =
+            serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
+        assert_eq!(request["model"], "sqlite-event-model");
+        assert_eq!(request["stream"], true);
+        let mut body = String::new();
+        for chunk in [
+            json!({"id":"sqlite-response","choices":[{"delta":{"content":"provider text"},"finish_reason":null}]}).to_string(),
+            json!({"id":"sqlite-response","choices":[{"delta":{},"finish_reason":"stop"}]}).to_string(),
+        ] {
+            body.push_str(&format!("data: {chunk}\r\n\r\n"));
+        }
+        body.push_str("data: [DONE]\r\n\r\n");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let provider = OpenAiCompatibleChatConfig::new(
+        format!("http://{provider_address}/v1/chat/completions"),
+        "sqlite-event-model",
+        None,
+    )
+    .unwrap()
+    .with_streaming(true);
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-native-provider-events-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-native-provider-events-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "sqlite-event-owner".to_owned(),
+        email: "sqlite-event-owner@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "sqlite-event-owner".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "conversation".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+    let owner_auth = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_owner_auth_config(&owner_auth)
+        .await
+        .unwrap()
+        .with_chat_completion_provider(provider);
+
+    let principal = json!({
+        "sub": "sqlite-event-owner", "user_id": "sqlite-event-owner", "role": "rw",
+        "ns": ["conversation"], "storage_ns": "conversation",
+        "workspace": "workspace-a", "graph_space": "conversation",
+        "capabilities": ["read_graph", "write_graph"]
+    });
+    let run_id = "sqlite-native-provider-event-run";
+    let conversation_id = "sqlite-native-provider-event-conversation";
+    let binding = runtime_owner_binding_v1(&principal, &service.capabilities).unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            workflow_id: "sqlite-native-provider-event-workflow".to_owned(),
+            user_id: Some("sqlite-event-owner".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "running".to_owned(),
+        })
+        .unwrap();
+    service
+        .store
+        .append_server_run_event(
+            run_id,
+            "run.created",
+            json!({"runtime_owner_binding": binding}).to_string(),
+        )
+        .unwrap();
+    let request = kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: "agent.event.request".to_owned(),
+        op_version: "v1".to_owned(),
+        run_id: run_id.to_owned(),
+        workflow_id: "sqlite-native-provider-event-workflow".to_owned(),
+        node_id: "provider-step".to_owned(),
+        conversation_id: conversation_id.to_owned(),
+        turn_node_id: Some("turn-1".to_owned()),
+        token_id: run_id.to_owned(),
+        parent_token_id: None,
+        step_seq: 1,
+        state: serde_json::from_value(json!({
+            "provider_request": {
+                "contract_version": "v1",
+                "model": "sqlite-event-model",
+                "instructions": "fixture only",
+                "input": "emit one response"
+            }
+        }))
+        .unwrap(),
+        runtime_routes: Vec::new(),
+        ephemeral_context: Map::from_iter([("_trace_attempt".to_owned(), json!(1))]),
+    };
+    let result = service
+        .execute_sqlite_native_provider_event_request(
+            RecordedWorkerHandoff {
+                message_id: "sqlite-provider-request-handoff".to_owned(),
+                claimed_by: "sqlite-provider-worker#1".to_owned(),
+                run_id: run_id.to_owned(),
+                step_id: "provider-step".to_owned(),
+                correlation_id: run_id.to_owned(),
+            },
+            request,
+        )
+        .await
+        .unwrap();
+    provider_task.await.unwrap();
+    let effect = result.effect.unwrap();
+    assert_eq!(effect.status, kogwistar_runtime::RuntimeWorkerEffectStatus::Success);
+    assert!(effect.result.as_ref().unwrap()["semantic_event_count"].as_i64().unwrap() > 0);
+    let messages = service
+        .store
+        .list_projected_lane_messages(LaneMessageFilter {
+            namespace: Some("conversation".to_owned()),
+            inbox_id: Some("agent-provider-events".to_owned()),
+            conversation_id: Some(conversation_id.to_owned()),
+            limit: 20,
+            ..LaneMessageFilter::default()
+        })
+        .unwrap();
+    assert!(!messages.is_empty());
+    assert!(messages.iter().all(|message| message.status == "pending"));
+    assert!(messages.iter().any(|message| {
+        message
+            .payload_json
+            .as_deref()
+            .is_some_and(|payload| payload.contains("response_completed"))
+    }));
+    assert!(messages.iter().all(|message| {
+        message
+            .payload_json
+            .as_deref()
+            .is_some_and(|payload| !payload.contains("text_delta"))
+    }));
+    let events = service.store.list_server_run_events(run_id, 0, 100).unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == "workflow.provider_event.v1"
+            && event.payload_json.contains("response_completed")
+    }));
+    assert!(!events.iter().any(|event| event.payload_json.contains("text_delta")));
+
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+    remove_test_sqlite(&auth_path);
+}
+
+#[tokio::test]
 async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_atomically() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

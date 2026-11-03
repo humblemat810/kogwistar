@@ -1095,6 +1095,12 @@ impl ApplicationService for SqliteRunApplicationService {
                 return Ok(false);
             };
             let mut result = if work.payload.get("op").and_then(Value::as_str)
+                == Some("agent.event.request")
+            {
+                let (handoff, native_request) = native_request_for_claimed_work(&work)?;
+                self.execute_sqlite_native_provider_event_request(handoff, native_request)
+                    .await?
+            } else if work.payload.get("op").and_then(Value::as_str)
                 == Some("agent.event.receive")
             {
                 let (handoff, mut native_request) = native_request_for_claimed_work(&work)?;

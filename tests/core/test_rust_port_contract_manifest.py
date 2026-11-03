@@ -67,9 +67,9 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
         assert status in {"NOT STARTED", "IN PROGRESS", "PASS", "FAIL", "BLOCKED"}
         if status in {"NOT STARTED", "IN PROGRESS"}:
             task_words = row[3].split()
-            assert len(task_words) <= 45, (
+            assert len(task_words) <= 30, (
                 f"{fine_id} is too broad for one tasklet ({len(task_words)} words); "
-                "split independently verifiable outcomes"
+                "keep one concise acceptance outcome per tasklet"
             )
         fine_by_coarse.setdefault(coarse_id, []).append(status)
 
