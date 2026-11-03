@@ -537,6 +537,94 @@ async def test_mcp_neighbors_hide_private_endpoint_of_visible_edge(monkeypatch, 
     assert async_neighbors == {"nodes": set(), "edges": set()}
 
 
+def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
+    from kogwistar.server import mcp_tools
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "acl_vector_proposals"),
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        embedding_function=build_test_embedding_function("constant", dim=3),
+        acl_enabled=True,
+    )
+    visible_a = build_entity_node(
+        node_id="proposal-visible-a",
+        doc_id="D-proposals",
+        metadata={"visibility": "public"},
+    )
+    visible_b = build_entity_node(
+        node_id="proposal-visible-b",
+        doc_id="D-proposals",
+        metadata={"visibility": "public"},
+    )
+    private = build_entity_node(
+        node_id="proposal-private",
+        doc_id="D-proposals",
+        metadata={"visibility": "private", "owner_agent_id": "proposal-owner"},
+    )
+    private_endpoint = build_entity_node(
+        node_id="proposal-private-endpoint",
+        doc_id="D-proposals",
+        metadata={"visibility": "private", "owner_agent_id": "proposal-owner"},
+    )
+    visible_edge = build_relationship_edge(
+        edge_id="proposal-visible-edge",
+        src=visible_a.id,
+        tgt=visible_b.id,
+        doc_id="D-proposals",
+        metadata={"visibility": "public"},
+    )
+    hidden_endpoint_edge = build_relationship_edge(
+        edge_id="proposal-hidden-endpoint-edge",
+        src=visible_a.id,
+        tgt=private_endpoint.id,
+        doc_id="D-proposals",
+        metadata={"visibility": "public"},
+    )
+
+    owner_token = claims_ctx.set(
+        {
+            "agent_id": "proposal-owner",
+            "sub": "proposal-owner",
+            "role": "rw",
+            "ns": "docs",
+        }
+    )
+    try:
+        for node in (visible_a, visible_b, private, private_endpoint):
+            engine.write.add_node(node)
+        engine.write.add_edge(visible_edge)
+        engine.write.add_edge(hidden_endpoint_edge)
+    finally:
+        claims_ctx.reset(owner_token)
+
+    class _FakeProposer:
+        def __init__(self, _engine):
+            pass
+
+        def generate_merge_candidates(self, **_kwargs):
+            return {
+                ("visible", "visible"): (visible_a, visible_b, 0.1),
+                ("visible", "private"): (visible_a, private, 0.1),
+                ("visible", "hidden-edge"): (visible_a, hidden_endpoint_edge, 0.1),
+            }
+
+    monkeypatch.setattr(mcp_tools, "engine", _FixedResource(engine))
+    monkeypatch.setattr(mcp_tools, "VectorProposer", _FakeProposer)
+
+    with _claims("ro", "docs", sub="proposal-reader"):
+        result = mcp_tools.propose_vector(mcp_tools.ProposeVectorIn())
+
+    assert [pair.model_dump() for pair in result.pairs] == [
+        {
+            "left_id": visible_a.id,
+            "left_kind": "node",
+            "right_id": visible_b.id,
+            "right_kind": "node",
+        }
+    ]
+
+
 def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
     fixture = json.loads(
         (

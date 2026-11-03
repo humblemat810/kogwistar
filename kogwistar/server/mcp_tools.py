@@ -911,8 +911,49 @@ def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
         include_edges=inp.include_edges,
         where=inp.where if isinstance(inp.where, dict) else None,
     )
+    node_ids = {
+        str(getattr(item, "id", ""))
+        for pair in pairs.values()
+        for item in pair[:2]
+        if not isinstance(item, Edge) and getattr(item, "id", None)
+    }
+    edge_ids = {
+        str(getattr(item, "id", ""))
+        for pair in pairs.values()
+        for item in pair[:2]
+        if isinstance(item, Edge) and getattr(item, "id", None)
+    }
+    visible_node_ids = (
+        {
+            str(item.safe_get_id())
+            for item in eng.read.get_nodes(ids=sorted(node_ids), limit=len(node_ids))
+        }
+        if node_ids
+        else set()
+    )
+    visible_edge_ids = (
+        {
+            str(item.safe_get_id())
+            for item in eng.read.get_edges(ids=sorted(edge_ids), limit=len(edge_ids))
+        }
+        if edge_ids
+        else set()
+    )
+
     out = []
     for left_item, right_item, _score in pairs.values():
+        left_visible = (
+            str(left_item.safe_get_id()) in visible_edge_ids
+            if isinstance(left_item, Edge)
+            else str(left_item.safe_get_id()) in visible_node_ids
+        )
+        right_visible = (
+            str(right_item.safe_get_id()) in visible_edge_ids
+            if isinstance(right_item, Edge)
+            else str(right_item.safe_get_id()) in visible_node_ids
+        )
+        if not (left_visible and right_visible):
+            continue
         out.append(
             ProposePair(
                 left_id=getattr(left_item, "id", ""),
