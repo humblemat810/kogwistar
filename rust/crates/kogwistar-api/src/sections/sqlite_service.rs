@@ -5127,6 +5127,236 @@ impl SqliteRunApplicationService {
         json_effect(StatusCode::OK, rust_native_attested(result))
     }
 
+    // Python reference: GraphQuery.semantic_seed_then_expand_text and
+    // server.mcp_tools.kg_semantic_seed_then_expand_text. Keep seed ranking in
+    // Chroma and apply host-owned scope/ACL/lifecycle checks before expansion.
+    async fn chroma_graph_semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Semantic graph retrieval requires read_graph capability",
+            );
+        }
+        let input: SemanticSeedExpandRequest = match serde_json::from_slice(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let top_k = input.top_k.unwrap_or(5);
+        let hops = input.hops.unwrap_or(1);
+        let query_text = input.text.trim();
+        if query_text.is_empty() || query_text.chars().count() > 16_384 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "text must contain 1 to 16384 characters, top_k must be 1 to 1000, and hops must be at most 32",
+            );
+        }
+        if !(1..=1000).contains(&top_k) || hops > 32 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "text must contain 1 to 16384 characters, top_k must be 1 to 1000, and hops must be at most 32",
+            );
+        }
+        let Some(provider) = self.embedding_provider.as_ref() else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+                "Semantic graph retrieval requires a configured embedding provider",
+            );
+        };
+        let profile = provider.profile();
+        if let Err(error) = profile.validate() {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+                error.to_string(),
+            );
+        }
+        let mut vectors = match provider.embed(&[query_text.to_owned()]).await {
+            Ok(vectors) => vectors,
+            Err(_) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "Embedding provider failed",
+                );
+            }
+        };
+        if vectors.len() != 1 {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "Embedding provider returned an unexpected query-vector count",
+            );
+        }
+        let vector = vectors.remove(0);
+        if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "Embedding provider returned an invalid query vector",
+            );
+        }
+        let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+        if vector.iter().any(|value| !value.is_finite()) {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "Embedding query vector exceeds graph storage range",
+            );
+        }
+        let metric = match profile.similarity_metric.to_ascii_lowercase().as_str() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" | "inner" | "inner_product" | "innerproduct" => {
+                DistanceMetric::InnerProduct
+            }
+            _ => {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+                    "Embedding profile has an unsupported similarity metric",
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let namespace = scope_value["storage_namespace"]
+            .as_str()
+            .unwrap_or("default");
+        if !matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|actual| actual == "docs" || actual == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Text semantic graph retrieval requires an authorized docs namespace",
+            );
+        }
+        let mut metadata = MetadataFilter::default();
+        if let Some(workspace) = request
+            .principal
+            .get("workspace_id")
+            .or_else(|| request.principal.get("workspace"))
+            .and_then(Value::as_str)
+        {
+            metadata
+                .equals
+                .insert("workspace_id".to_owned(), json!(workspace));
+        }
+        if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
+            metadata
+                .equals
+                .insert("graph_space".to_owned(), json!(graph_space));
+        }
+        let doc_id = input
+            .doc_ids
+            .as_deref()
+            .filter(|value| !value.trim().is_empty());
+        if let Some(doc_id) = doc_id {
+            metadata
+                .equals
+                .insert("doc_id".to_owned(), json!(doc_id));
+        }
+        let Some(graph) = self.chroma_graph.as_ref() else {
+            return effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite service has no configured graph projection",
+            );
+        };
+        let matched = match graph
+            .vector_query_of_kind_excluding_metadata(
+                namespace,
+                GraphEntityKind::Node,
+                &VectorQuery {
+                    embedding: vector,
+                    limit: top_k,
+                    metadata,
+                    metric,
+                },
+                &BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+            )
+            .await
+        {
+            Ok(matches) => matches,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_VECTOR_QUERY_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let snapshot = match self.chroma_graph_snapshot(request, &self.graph_role).await {
+            Ok(snapshot) => snapshot,
+            Err(response) => return response,
+        };
+        let visible_node_ids = snapshot
+            .nodes()
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let visible_seeds = matched
+            .into_iter()
+            .map(|hit| hit.record)
+            .filter(|record| visible_node_ids.contains(record.id.as_str()))
+            .collect::<Vec<_>>();
+        let seed_ids = visible_seeds
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let seed_documents = visible_seeds
+            .iter()
+            .filter_map(graph_record_document_json)
+            .collect::<Vec<_>>();
+        let layers = graph_k_hop_from_records(
+            &GraphKHopQuery {
+                start_ids: seed_ids,
+                k: hops,
+                doc_id: doc_id.map(str::to_owned),
+            },
+            snapshot.nodes(),
+            snapshot.edges(),
+        )
+        .into_iter()
+        .map(|layer| {
+            let node_documents = layer
+                .nodes
+                .iter()
+                .filter_map(|id| snapshot.nodes().iter().find(|record| &record.id == id))
+                .filter_map(graph_record_document_json)
+                .collect::<BTreeSet<_>>();
+            let edge_documents = layer
+                .edges
+                .iter()
+                .filter_map(|id| snapshot.edges().iter().find(|record| &record.id == id))
+                .filter_map(graph_record_document_json)
+                .collect::<BTreeSet<_>>();
+            json!({
+                "nodes": node_documents.into_iter().collect::<Vec<_>>(),
+                "edges": edge_documents.into_iter().collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"seeds": seed_documents, "layers": layers})),
+        )
+    }
+
     async fn chroma_graph_vector_query_effect(
         &self,
         request: &ApiEffectRequest,

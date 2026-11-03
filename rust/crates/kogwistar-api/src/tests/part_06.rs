@@ -5312,6 +5312,36 @@
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tower::ServiceExt;
 
+        struct TestTextEmbedder;
+        impl EmbeddingProvider for TestTextEmbedder {
+            fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+                static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
+                    std::sync::OnceLock::new();
+                PROFILE.get_or_init(|| kogwistar_engine::embedding::EmbeddingProfile {
+                    provider: "test".to_owned(),
+                    model: "sqlite-semantic-test".to_owned(),
+                    dimension: 2,
+                    similarity_metric: "cosine".to_owned(),
+                    endpoint_fingerprint: None,
+                    max_sequence_length: None,
+                    crop_token_budget: None,
+                    tokenizer_fingerprint: None,
+                    crop_policy: None,
+                    embedding_kind: Some("single_vector".to_owned()),
+                    model_revision: None,
+                    preprocessing_fingerprint: None,
+                    max_image_patches: None,
+                })
+            }
+
+            fn embed<'a>(
+                &'a self,
+                texts: &'a [String],
+            ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+                Box::pin(async move { Ok(texts.iter().map(|_| vec![0.1, 0.2]).collect()) })
+            }
+        }
+
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
@@ -5460,6 +5490,8 @@
         )
         .await
         .unwrap();
+        assert!(!service.supports_mcp_tool("root", "kg_semantic_seed_then_expand_text"));
+        let service = service.with_embedding_provider(Arc::new(TestTextEmbedder));
         let graph = service.chroma_graph.as_ref().unwrap();
         let filter = MetadataFilter::default();
         let (nodes, edges) = tokio::try_join!(
@@ -5513,6 +5545,7 @@
             "kg_find_edges",
             "kg_shortest_path",
             "kg_k_hop",
+            "kg_semantic_seed_then_expand_text",
             "kg_viz_d3_json",
             "kg_viz_cytoscape_json",
         ];
@@ -5660,6 +5693,40 @@
         let mcp_read: Value = serde_json::from_slice(&to_bytes(mcp_read.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(mcp_read["result"]["nodes"], json!(["n2"]));
         assert_eq!(mcp_read["result"]["edges"], json!(["e1"]));
+
+        let semantic_read = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"semantic","method":"tools/call",
+                            "params":{"name":"kg_semantic_seed_then_expand_text","arguments":{
+                                "text":"find related nodes","top_k":3,"hops":1
+                            }}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(semantic_read.status(), StatusCode::OK);
+        let semantic_read: Value = serde_json::from_slice(
+            &to_bytes(semantic_read.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert!(
+            semantic_read["result"]["seeds"].as_array().is_some(),
+            "semantic retrieval should return a structured seed result: {semantic_read}"
+        );
 
         let mcp_proposals = app
             .clone()
@@ -6024,7 +6091,9 @@
         );
         let vector_request = observed
             .iter()
-            .find(|(line, _)| line.contains("collection-nodes/query"))
+            .find(|(line, payload)| {
+                line.contains("collection-nodes/query") && payload["n_results"] == 2
+            })
             .expect("scoped node vector request");
         assert_eq!(vector_request.1["n_results"], 2);
         assert!(vector_request.1["where"].to_string().contains("workspace_id"));

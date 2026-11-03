@@ -1359,9 +1359,12 @@ impl ApplicationService for SqliteRunApplicationService {
                         | "kg_k_hop"
                         | "kg_neighbors"
                         | "kg_shortest_path"
+                        | "kg_semantic_seed_then_expand_text"
                         | "kg_viz_cytoscape_json"
                         | "kg_viz_d3_json"
-                ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()));
+                ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()))
+                && (name != "kg_semantic_seed_then_expand_text"
+                    || self.embedding_provider.is_some());
         }
         name != "workflow.tool_audit"
             && name != "workflow.run_evidence"
@@ -1729,6 +1732,13 @@ impl ApplicationService for SqliteRunApplicationService {
                     }
                     Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE) => {
                         return self.chroma_graph_vector_query_effect(&request).await;
+                    }
+                    Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
+                        if self.embedding_provider.is_some() =>
+                    {
+                        return self
+                            .chroma_graph_semantic_seed_expand_effect(&request)
+                            .await;
                     }
                     Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE) => {
                         return self.chroma_graph_find_edges_effect(&request).await;
