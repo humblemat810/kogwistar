@@ -4805,7 +4805,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         .replay_raw_events("conversation", 0, 50)
         .unwrap()
         .len();
-    let empty_answer = app
+    let whitespace_answer = app
         .clone()
         .oneshot(
             Request::builder()
@@ -4814,6 +4814,20 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(r#"{"text":"  "}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(whitespace_answer.status(), StatusCode::BAD_REQUEST);
+    let empty_answer = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/conversations/conversation-create-contract/turns:answer")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(r#"{"text":""}"#))
                 .unwrap(),
         )
         .await

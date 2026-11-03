@@ -1872,11 +1872,18 @@ impl ApplicationService for SqliteRunApplicationService {
                             );
                         }
                     };
-                if input.text.trim().is_empty() {
+                if input.text.is_empty() {
                     return effect_error(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "KOGWISTAR_INVALID_REQUEST",
                         "text must contain at least one character",
+                    );
+                }
+                if input.text.trim().is_empty() {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "text must be non-empty",
                     );
                 }
                 let effective_user_id = authenticated_run_owner_id(&request.principal)

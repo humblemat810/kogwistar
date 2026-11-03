@@ -871,6 +871,19 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
+        whitespace = client.post(
+            f"/api/conversations/{conversation_id}/turns:answer",
+            json={"user_id": "u-chat", "text": "   "},
+            headers=rw_headers,
+        )
+        assert whitespace.status_code == 400
+        empty = client.post(
+            f"/api/conversations/{conversation_id}/turns:answer",
+            json={"user_id": "u-chat", "text": ""},
+            headers=rw_headers,
+        )
+        assert empty.status_code == 422
+
         submit = client.post(
             f"/api/conversations/{conversation_id}/turns:answer",
             json={"user_id": "u-chat", "text": "hello world"},
