@@ -3871,10 +3871,16 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
 
 #[tokio::test]
 async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let vector_query_count = Arc::new(AtomicUsize::new(0));
+    let vector_query_count_for_server = Arc::clone(&vector_query_count);
     let (stop_chroma, mut stop_chroma_rx) = tokio::sync::oneshot::channel();
     let fake_chroma = tokio::spawn(async move {
         loop {
@@ -3919,6 +3925,8 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                     "metadata": {"hnsw:space":"cosine"}
                 })
             } else if request_line.contains("collection-source-acl-nodes/query") {
+                vector_query_count_for_server.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request["n_results"], 1);
                 let query_filter = request["where"].to_string();
                 assert!(
                     query_filter.contains("\"entity_type\":{\"$ne\":\"acl_record\"}"),
@@ -4052,6 +4060,7 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
     assert_eq!(response.status, StatusCode::OK.as_u16());
     let result: Value = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(result["ids"], json!([[]]));
+    assert_eq!(vector_query_count.load(Ordering::SeqCst), 1);
 
     drop(service);
     let _ = stop_chroma.send(());
