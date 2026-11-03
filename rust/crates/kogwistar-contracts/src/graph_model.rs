@@ -3255,6 +3255,37 @@ mod tests {
     }
 
     #[test]
+    fn persistent_edge_typed_round_trip_matches_python_canonical_wire_json() {
+        let graph_fixture = fixture();
+        let case = graph_fixture["cases"]
+            .as_array()
+            .expect("fixture cases")
+            .iter()
+            .find(|case| case["kind"] == "edge")
+            .expect("Python Edge fixture");
+        let payload_json = |payload: Value| {
+            let edge = GraphModelEnvelope::new(GraphModelClass::Edge, payload)
+                .decode_persistent_v1()
+                .expect("valid persistent Edge DTO");
+            let PersistentGraphEntityV1::Edge(edge) = edge else {
+                panic!("expected Edge DTO");
+            };
+            let serialized = serde_json::to_value(edge).expect("serialize typed Rust Edge DTO");
+            crate::canonical_json(&serialized, false)
+        };
+        let expected = case["canonical_json"]
+            .as_str()
+            .expect("Python canonical Edge JSON");
+        assert_eq!(payload_json(case["payload"].clone()), expected);
+
+        let mut payload_with_non_backend_fields = case["payload"].clone();
+        payload_with_non_backend_fields["local_id"] = serde_json::json!("ne:pending-edge");
+        payload_with_non_backend_fields["mentions"][0]["spans"][0]["chunk_id"] =
+            serde_json::json!("chunk:prompt-only");
+        assert_eq!(payload_json(payload_with_non_backend_fields), expected);
+    }
+
+    #[test]
     fn workflow_runtime_edge_matches_python_metadata_defaults_and_requirements() {
         let contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
