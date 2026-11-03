@@ -12,7 +12,7 @@
     "http_operations": 84,
     "mcp_operations": 62,
     "pending_http_operations": 3,
-    "allowlisted_mcp_operations": 60,
+    "allowlisted_mcp_operations": 62,
     "pending_syscalls": 4
   },
   "http_operations": [
@@ -574,7 +574,7 @@
       "surface": "root",
       "name": "kg_load_persisted",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "root",
@@ -586,7 +586,7 @@
       "surface": "root",
       "name": "kg_propose_bruteforce",
       "python": "frozen-catalog",
-      "rust": "not-allowlisted"
+      "rust": "allowlisted-subject-to-runtime-gates"
     },
     {
       "surface": "root",

@@ -258,6 +258,127 @@
         ));
     }
 
+    #[tokio::test]
+    async fn mcp_session_owner_is_bound_to_configured_oidc_principal_components() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{EncodingKey, Header, encode};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let secret = "mcp-session-owner-secret";
+        let auth = AuthConfig {
+            mode: "oidc".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(secret.to_owned()),
+            jwks_json: None,
+            issuer: None,
+            audience: None,
+            oidc_providers_json: None,
+            auth_db_url: None,
+        };
+        let token = |claims: Value| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &claims,
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let owner_token = token(json!({
+            "sub": "shared-user",
+            "iss": "issuer-a",
+            "client_id": "client-a",
+            "role": "reader",
+            "exp": now + 300,
+        }));
+        let other_client_token = token(json!({
+            "sub": "shared-user",
+            "iss": "issuer-a",
+            "client_id": "client-b",
+            "role": "reader",
+            "exp": now + 300,
+        }));
+        let other_issuer_token = token(json!({
+            "sub": "shared-user",
+            "iss": "issuer-b",
+            "azp": "client-a",
+            "role": "reader",
+            "exp": now + 300,
+        }));
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: vec!["reader".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        });
+
+        let initialize = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {owner_token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"owner-test","version":"1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(initialize.status(), StatusCode::OK);
+        let session_id = initialize.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        for foreign_token in [&other_client_token, &other_issuer_token] {
+            let foreign = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("content-type", "application/json")
+                        .header("mcp-protocol-version", "2025-06-18")
+                        .header("mcp-session-id", &session_id)
+                        .header("authorization", format!("Bearer {foreign_token}"))
+                        .body(Body::from(r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        }
+
+        let owner_ping = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .header("mcp-session-id", session_id)
+                    .header("authorization", format!("Bearer {owner_token}"))
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(owner_ping.status(), StatusCode::OK);
+        let owner_body = to_bytes(owner_ping.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&owner_body).unwrap()["result"],
+            json!({})
+        );
+    }
+
     #[test]
     fn jwks_kid_selection_supports_rotation_and_rejects_unknown_keys() {
         use axum::http::HeaderValue;
