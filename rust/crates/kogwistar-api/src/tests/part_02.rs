@@ -119,6 +119,21 @@
             event.event_type == "workflow.trace.v1"
                 && event.payload_json.contains("runtime.native.step.completed")
         }));
+        let run = service
+            .store
+            .get_server_run("pg-native-run")
+            .await
+            .unwrap()
+            .expect("native result must leave its run durably inspectable");
+        assert_eq!(run.status, "succeeded");
+        let result: Value = serde_json::from_str(
+            run.result_json
+                .as_deref()
+                .expect("terminal native run must persist its result"),
+        )
+        .unwrap();
+        assert_eq!(result["operation"], "emit-result");
+        assert_eq!(result["schema_version"], 1);
 
         drop(service);
         let cleanup_dsn = dsn
