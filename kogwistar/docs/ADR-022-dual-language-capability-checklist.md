@@ -6,7 +6,7 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 ## Scope Accounting
 
-Current inventory: **177 items** (**156 PASS, 21 IN PROGRESS; 88.1% PASS**). The original baseline remains 130 items; 47 later-added IDs are 44 PASS and 3 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
+Current inventory: **177 items** (**156 PASS, 21 IN PROGRESS; 88.1% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
 Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 23 open IDs above and do not change this inventory or denominator.
 

@@ -6,8 +6,8 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **14/529 PASS (2.6%)**; **0 IN PROGRESS**, **515 NOT STARTED**, **0 BLOCKED**.
-- **Tasklet normalization:** The frozen DL-03 inventory is expanded into 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. Other flagged multi-cell leaves remain provisional and must be audited/split before implementation. The 2.6% is raw leaf-status arithmetic, not a claim that remaining work is uniform or nearly complete.
+- **Fine worklist:** **17/537 PASS (3.2%)**; **0 IN PROGRESS**, **520 NOT STARTED**, **0 BLOCKED**.
+- **Tasklet normalization:** The frozen DL-03 inventory is expanded into 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. Inventory/reconciliation is represented by non-counted parent groups, not duplicate leaves. DL-16BQ backend checks and DL-18/DL-20 implementation-mode checks are split into independently passing leaves. Other flagged multi-cell leaves remain provisional and must be audited/split before implementation. The percentage is raw leaf-status arithmetic, not a claim that remaining work is uniform or nearly complete.
 - **Equal-size tasklet unit:** one leaf is one independently decidable acceptance assertion for one contract family and one execution cell (operation/backend/runtime only where that dimension can fail independently). Target one focused implementation-and-verification session of about 45 minutes; split before starting if the estimate exceeds 60 minutes. The estimate is a guardrail, not evidence of completion. A tasklet must name one observable behavior, one expected result, and one focused test/check or artifact. A parameterized test is one tasklet only when all cases prove that same invariant under the same contract; list the cases in the evidence, and split cases that have separate implementation or ownership paths. Separate independently passing endpoints, DTO families, error envelopes, lifecycle transitions, resources, backends, runtime modes, and operation families. Never compress them into a matrix leaf. Do not split merely by file, field, or test-case count when one invariant is shared. Word count is not a sizing measure.
 - The fine denominator counts leaf rows only; `PARENT` rows are retained ID/mapping records and are not progress items. When a row is split, preserve its ID as a parent and list all child IDs in its description. The parent remains uncounted and cannot pass; every child starts `NOT STARTED` unless prior evidence independently proves that exact child. Passed leaf IDs/evidence remain unchanged. Report coarse and fine percentages separately; neither percentage estimates schedule or nearness to completion.
 
@@ -15,7 +15,7 @@
 
 - This is the detailed execution list; the linked checklist remains the sole coarse progress and denominator source. Only counted leaf tasklets contribute to the fine percentage.
 - The baseline is every coarse ID currently marked `IN PROGRESS` in the linked checklist. Every such coarse ID must map to fine work below. Fine IDs do not add to the 177-item coarse inventory.
-- A `PARENT` row groups leaves and is not countable or completable. CI validates that every parent names at least two existing leaf IDs under the same coarse gate. No task may be worked or reported as complete through a parent row.
+- A `PARENT` row groups tasklets or nested parent groups and is not countable or completable. CI validates that every parent resolves to at least two descendant leaf IDs under the same coarse gate and that the hierarchy has no missing references or cycles. No task may be worked or reported as complete through a parent row.
 - A fine task reaches `PASS` only when its stated acceptance evidence is recorded here or linked from its referenced test/report. Tests must exercise the named behavior, not merely compile the surrounding code.
 - Close a coarse ID only when its original exit criteria and all mapped required fine tasks pass. Do not reopen a passed coarse ID without a reproduced regression or new required contract.
 - Equal-size acceptance test: in one sentence, a reviewer can identify the contract, execution cell, behavior, expected result, and focused evidence, then decide pass/fail without interpreting a multi-part report. A leaf with multiple independently decidable outcomes is oversized even if its description is short or its test is parameterized.
@@ -53,7 +53,7 @@
 | FW-03-01A-WF | DL-03 | NOT STARTED | Link the workflow-runtime capability claim to one Rust evidence test or explicit unsupported status. |
 | FW-03-01A-SERVER | DL-03 | NOT STARTED | Link the server-rest-sse-mcp-cli capability claim to one Rust evidence test or explicit unsupported status. |
 | FW-03-01B | DL-03 | NOT STARTED | Add a drift test that rejects missing, stale, or duplicate capability-to-evidence links without treating route advertisement as evidence. |
-| FW-03-03 | DL-03 | NOT STARTED | Reconcile frozen REST inventory method/path entries to one owner and one evidence reference each; report missing and stale mappings. |
+| FW-03-03 | DL-03 | PARENT | Parent scope; children: FW-03-03A |
 | FW-03-03A | DL-03 | PARENT | Parent scope; children: FW-03-03A-HTTP-POST-7437a87e,FW-03-03A-HTTP-GET-3f7c2705,FW-03-03A-HTTP-GET-a8089377,FW-03-03A-HTTP-POST-dc297acc,FW-03-03A-HTTP-GET-d41dac18,FW-03-03A-HTTP-GET-e0dc6609,FW-03-03A-HTTP-POST-06ebeb79,FW-03-03A-HTTP-GET-89c079fb,FW-03-03A-HTTP-GET-b51ee1f1,FW-03-03A-HTTP-GET-7dad12d0,FW-03-03A-HTTP-POST-fe141198,FW-03-03A-HTTP-POST-8d28876a,FW-03-03A-HTTP-POST-46a01a68,FW-03-03A-HTTP-POST-6e72c43d,FW-03-03A-HTTP-POST-ff574d21,FW-03-03A-HTTP-GET-942f076b,FW-03-03A-HTTP-POST-8ecb139e,FW-03-03A-HTTP-GET-c01cb68b,FW-03-03A-HTTP-GET-cc1c09d6,FW-03-03A-HTTP-GET-03070335,FW-03-03A-HTTP-GET-ca3e4d2f,FW-03-03A-HTTP-GET-c4ec1841,FW-03-03A-HTTP-GET-350293cb,FW-03-03A-HTTP-POST-16cb26ff,FW-03-03A-HTTP-GET-40879ca4,FW-03-03A-HTTP-GET-d998dc57,FW-03-03A-HTTP-GET-104a818f,FW-03-03A-HTTP-GET-0276cc44,FW-03-03A-HTTP-GET-3fd6dc44,FW-03-03A-HTTP-POST-2fcd7bac,FW-03-03A-HTTP-GET-db651b56,FW-03-03A-HTTP-GET-8bff2a38,FW-03-03A-HTTP-GET-41cea2c6,FW-03-03A-HTTP-GET-ea066435,FW-03-03A-HTTP-GET-4a869379,FW-03-03A-HTTP-POST-9e09cfbb,FW-03-03A-HTTP-POST-3f800ae0,FW-03-03A-HTTP-GET-504d2035,FW-03-03A-HTTP-GET-c60d5d69,FW-03-03A-HTTP-POST-1d601433,FW-03-03A-HTTP-POST-896a4b9c,FW-03-03A-HTTP-DELETE-f853b4cf,FW-03-03A-HTTP-GET-97f82626,FW-03-03A-HTTP-GET-278647b6,FW-03-03A-HTTP-POST-bb56b3cb,FW-03-03A-HTTP-DELETE-6d2b9489,FW-03-03A-HTTP-POST-97e41d1e,FW-03-03A-HTTP-POST-37b8ab5c,FW-03-03A-HTTP-GET-dd837bed,FW-03-03A-HTTP-POST-40910f93,FW-03-03A-HTTP-GET-43d9f440,FW-03-03A-HTTP-GET-b459552c,FW-03-03A-HTTP-POST-a0f3234d,FW-03-03A-HTTP-GET-f86465af,FW-03-03A-HTTP-POST-8957ad0a,FW-03-03A-HTTP-GET-558a42e7,FW-03-03A-HTTP-GET-9e712d3a,FW-03-03A-HTTP-GET-ea750721,FW-03-03A-HTTP-GET-b9d21d15,FW-03-03A-HTTP-GET-dba824ff,FW-03-03A-HTTP-POST-e6b662c3,FW-03-03A-HTTP-GET-41946228,FW-03-03A-HTTP-GET-b5049323,FW-03-03A-HTTP-GET-8d1191ee,FW-03-03A-HTTP-GET-ea5861b7,FW-03-03A-HTTP-POST-90c5d2e7,FW-03-03A-HTTP-POST-811ebc9d,FW-03-03A-HTTP-GET-afa9f3a7,FW-03-03A-HTTP-POST-a98fb634,FW-03-03A-HTTP-POST-96633587,FW-03-03A-HTTP-GET-893e03e9,FW-03-03A-HTTP-POST-6d273898,FW-03-03A-HTTP-POST-232bd6ed,FW-03-03A-HTTP-POST-33c5e064,FW-03-03A-HTTP-GET-6bc448ee,FW-03-03A-HTTP-GET-00fa121f,FW-03-03A-HTTP-POST-1decd954,FW-03-03A-HTTP-GET-539b217e,FW-03-03A-HTTP-GET-8dae33ec,FW-03-03A-HTTP-GET-9cf87495,FW-03-03A-HTTP-GET-0a257751,FW-03-03A-HTTP-GET-64c0cb0d,FW-03-03A-HTTP-GET-562caaba |
 | FW-03-03A-HTTP-POST-7437a87e | DL-03 | NOT STARTED | Compare the Python and Rust success status/body contract for HTTP POST /api/add_index_entries using paired route tests. |
 | FW-03-03A-HTTP-GET-3f7c2705 | DL-03 | NOT STARTED | Compare the Python and Rust success status/body contract for HTTP GET /api/auth/callback using paired route tests. |
@@ -139,7 +139,7 @@
 | FW-03-03A-HTTP-GET-64c0cb0d | DL-03 | NOT STARTED | Compare the Python and Rust success status/body contract for HTTP GET /viz/d3.bundle using paired route tests. |
 | FW-03-03A-HTTP-GET-562caaba | DL-03 | NOT STARTED | Compare the Python and Rust success status/body contract for HTTP GET /viz/go using paired route tests. |
 | FW-03-03B | DL-03 | NOT STARTED | Verify `DELETE /admin/doc/{doc_id}` returns the declared unsupported response and causes no state change. |
-| FW-03-04 | DL-03 | NOT STARTED | Reconcile frozen MCP operation names and schemas to one implementation owner and one evidence reference each. |
+| FW-03-04 | DL-03 | PARENT | Parent scope; children: FW-03-04A,FW-03-04B |
 | FW-03-04A | DL-03 | PARENT | Parent scope; children: FW-03-04A-MCP-CONVERSATION-ASK,FW-03-04A-MCP-CONVERSATION-CANCEL-RUN,FW-03-04A-MCP-CONVERSATION-CREATE,FW-03-04A-MCP-CONVERSATION-GET-TRANSCRIPT,FW-03-04A-MCP-CONVERSATION-RUN-STATUS,FW-03-04A-MCP-DOCUMENT-ID-FROM-FILE-NAME,FW-03-04A-MCP-KG-FIND-EDGES,FW-03-04A-MCP-KG-K-HOP,FW-03-04A-MCP-KG-LOAD-PERSISTED,FW-03-04A-MCP-KG-NEIGHBORS,FW-03-04A-MCP-KG-PROPOSE-BRUTEFORCE,FW-03-04A-MCP-KG-SEMANTIC-SEED-THEN-EXPAND-TEXT,FW-03-04A-MCP-KG-SHORTEST-PATH,FW-03-04A-MCP-KG-VIZ-CYTOSCAPE-JSON,FW-03-04A-MCP-KG-VIZ-D3-JSON,FW-03-04A-MCP-PROPOSE-VECTOR,FW-03-04A-MCP-WISDOM-KG-UPSERT-GRAPH,FW-03-04A-MCP-WISDOM-SEMANTIC-SEED-THEN-EXPAND,FW-03-04A-MCP-WORKFLOW-BLOCKED-RUNS,FW-03-04A-MCP-WORKFLOW-BUDGET-HISTORY,FW-03-04A-MCP-WORKFLOW-BUDGET-SNAPSHOT,FW-03-04A-MCP-WORKFLOW-CAPABILITIES-SNAPSHOT,FW-03-04A-MCP-WORKFLOW-CAPABILITY-APPROVE,FW-03-04A-MCP-WORKFLOW-CAPABILITY-REVOKE,FW-03-04A-MCP-WORKFLOW-DEAD-LETTER-REPLAY,FW-03-04A-MCP-WORKFLOW-DEAD-LETTERS,FW-03-04A-MCP-WORKFLOW-DESIGN-EDGE-DELETE,FW-03-04A-MCP-WORKFLOW-DESIGN-EDGE-UPSERT,FW-03-04A-MCP-WORKFLOW-DESIGN-HISTORY,FW-03-04A-MCP-WORKFLOW-DESIGN-NODE-DELETE,FW-03-04A-MCP-WORKFLOW-DESIGN-NODE-UPSERT,FW-03-04A-MCP-WORKFLOW-DESIGN-REDO,FW-03-04A-MCP-WORKFLOW-DESIGN-UNDO,FW-03-04A-MCP-WORKFLOW-MESSAGE-ORPHANS-REPAIR,FW-03-04A-MCP-WORKFLOW-OPERATOR-DASHBOARD,FW-03-04A-MCP-WORKFLOW-OPERATOR-INBOX,FW-03-04A-MCP-WORKFLOW-PROCESS-TABLE,FW-03-04A-MCP-WORKFLOW-PROCESS-TIMELINE,FW-03-04A-MCP-WORKFLOW-RUN-CANCEL,FW-03-04A-MCP-WORKFLOW-RUN-CHECKPOINT-GET,FW-03-04A-MCP-WORKFLOW-RUN-EVENTS,FW-03-04A-MCP-WORKFLOW-RUN-EVIDENCE,FW-03-04A-MCP-WORKFLOW-RUN-LINEAGE,FW-03-04A-MCP-WORKFLOW-RUN-REPLAY,FW-03-04A-MCP-WORKFLOW-RUN-RESUME,FW-03-04A-MCP-WORKFLOW-RUN-RESUME-CONTRACT,FW-03-04A-MCP-WORKFLOW-RUN-STATUS,FW-03-04A-MCP-WORKFLOW-RUN-STEPS,FW-03-04A-MCP-WORKFLOW-RUN-SUBMIT,FW-03-04A-MCP-WORKFLOW-SCHEDULER-TIMELINE,FW-03-04A-MCP-WORKFLOW-SERVICE-DECLARE,FW-03-04A-MCP-WORKFLOW-SERVICE-DISABLE,FW-03-04A-MCP-WORKFLOW-SERVICE-ENABLE,FW-03-04A-MCP-WORKFLOW-SERVICE-EVENTS,FW-03-04A-MCP-WORKFLOW-SERVICE-GET,FW-03-04A-MCP-WORKFLOW-SERVICE-HEARTBEAT,FW-03-04A-MCP-WORKFLOW-SERVICE-LIST,FW-03-04A-MCP-WORKFLOW-SERVICE-REPAIR,FW-03-04A-MCP-WORKFLOW-SERVICE-TRIGGER,FW-03-04A-MCP-WORKFLOW-SERVICES-REPAIR,FW-03-04A-MCP-WORKFLOW-TOOL-AUDIT,FW-03-04A-MCP-WORKFLOW-VISIBILITY-SNAPSHOT |
 | FW-03-04A-MCP-CONVERSATION-ASK | DL-03 | NOT STARTED | Compare Python/Rust request and response contract for MCP conversation operation conversation.ask using one shared fixture. |
 | FW-03-04A-MCP-CONVERSATION-CANCEL-RUN | DL-03 | NOT STARTED | Compare Python/Rust request and response contract for MCP conversation operation conversation.cancel_run using one shared fixture. |
@@ -511,9 +511,9 @@
 | FW-16BQ-04 | DL-16BQ | NOT STARTED | Verify native answer/provider event publication and claim on SQLite+Chroma without Python fallback. |
 | FW-16BQ-04A | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-04A-HANDLE,FW-16BQ-04A-ACK,FW-16BQ-04A-TRACE,FW-16BQ-04A-REPLAY |
 | FW-16BQ-04A-HANDLE | DL-16BQ | NOT STARTED | Verify one native provider event is handled on SQLite+Chroma without Python fallback. |
-| FW-16BQ-04A-ACK | DL-16BQ | NOT STARTED | Verify SQLite+Chroma acknowledges only the active provider-event claim. |
-| FW-16BQ-04A-TRACE | DL-16BQ | NOT STARTED | Verify SQLite+Chroma persists causal links from one handled event to its workflow step. |
-| FW-16BQ-04A-REPLAY | DL-16BQ | NOT STARTED | Replay one acknowledged SQLite+Chroma provider event; assert no duplicate graph effect. |
+| FW-16BQ-04A-ACK | DL-16BQ | PASS | `sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_atomically` rejects the wrong claimant without consuming the message and acknowledges only the matching active claim (**1 passed**). |
+| FW-16BQ-04A-TRACE | DL-16BQ | PASS | `sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_atomically` verifies the handled event is linked to its workflow step in the conversation graph and records the handled trace (**1 passed**). |
+| FW-16BQ-04A-REPLAY | DL-16BQ | PASS | `sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_atomically` retries the exact committed effect and asserts unchanged graph-event and handled-trace counts (**1 passed**). |
 | FW-16BQ-04B | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-04B-PUBLISH,FW-16BQ-04B-HANDLE,FW-16BQ-04B-ACK,FW-16BQ-04B-REPLAY |
 | FW-16BQ-04B-PUBLISH | DL-16BQ | NOT STARTED | Verify PostgreSQL atomically publishes one provider event with its conversation graph records. |
 | FW-16BQ-04B-HANDLE | DL-16BQ | NOT STARTED | Verify one native provider event is handled on PostgreSQL without Python fallback. |
@@ -522,9 +522,18 @@
 | FW-16BQ-05 | DL-16BQ | NOT STARTED | Verify SQLite+Chroma restart/retry and canonical digest for one advertised syscall path. |
 | FW-16BQ-05A | DL-16BQ | NOT STARTED | Verify PostgreSQL restart/retry and canonical digest for one advertised syscall path. |
 | FW-16BQ-05B | DL-16BQ | NOT STARTED | Verify supported interpreter/runtime cells and list untested/unsupported combinations. |
-| FW-16BQ-02 | DL-16BQ | NOT STARTED | Verify cross-backend ACL parity for one shared operation fixture. |
-| FW-16BQ-02A | DL-16BQ | NOT STARTED | Verify cross-backend event/worker state parity for one shared operation fixture. |
-| FW-16BQ-02B | DL-16BQ | NOT STARTED | Verify cross-backend final graph-state digest on the declared interpreter matrix. |
+| FW-16BQ-02 | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-02-PG,FW-16BQ-02-SQLITE-CHROMA,FW-16BQ-02-MEMORY |
+| FW-16BQ-02-PG | DL-16BQ | NOT STARTED | Verify PostgreSQL ACL parity for the frozen shared operation fixture. |
+| FW-16BQ-02-SQLITE-CHROMA | DL-16BQ | NOT STARTED | Verify SQLite+Chroma ACL parity for the frozen shared operation fixture. |
+| FW-16BQ-02-MEMORY | DL-16BQ | NOT STARTED | Verify in-memory ACL parity for the frozen shared operation fixture. |
+| FW-16BQ-02A | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-02A-PG,FW-16BQ-02A-SQLITE-CHROMA,FW-16BQ-02A-MEMORY |
+| FW-16BQ-02A-PG | DL-16BQ | NOT STARTED | Verify PostgreSQL event/worker state parity for the frozen shared operation fixture. |
+| FW-16BQ-02A-SQLITE-CHROMA | DL-16BQ | NOT STARTED | Verify SQLite+Chroma event/worker state parity for the frozen shared operation fixture. |
+| FW-16BQ-02A-MEMORY | DL-16BQ | NOT STARTED | Verify in-memory event/worker state parity for the frozen shared operation fixture. |
+| FW-16BQ-02B | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-02B-PG,FW-16BQ-02B-SQLITE-CHROMA,FW-16BQ-02B-MEMORY |
+| FW-16BQ-02B-PG | DL-16BQ | NOT STARTED | Verify PostgreSQL final graph digest for the frozen operation trace. |
+| FW-16BQ-02B-SQLITE-CHROMA | DL-16BQ | NOT STARTED | Verify SQLite+Chroma final graph digest for the frozen operation trace. |
+| FW-16BQ-02B-MEMORY | DL-16BQ | NOT STARTED | Verify in-memory final graph digest for the frozen operation trace. |
 | FW-17-01 | DL-17 | NOT STARTED | Run and record required CPython 3.12 CI cells for the declared platform set. |
 | FW-17-01A | DL-17 | NOT STARTED | Run and record required CPython 3.13/3.14 CI cells for the declared platform set. |
 | FW-17-01B | DL-17 | NOT STARTED | Run and record required PyPy 3.11 cells; retain best-effort status where a cell is not required. |
@@ -540,7 +549,10 @@
 | FW-17-02B | DL-17 | NOT STARTED | Verify published metadata and documented support matrix match the tested consumer cells. |
 | FW-18-01 | DL-18 | NOT STARTED | Freeze one deterministic balanced mixed read/write trace and expected read visibility. |
 | FW-18-01A | DL-18 | NOT STARTED | Freeze one deterministic read-heavy trace and expected read visibility. |
-| FW-18-01B | DL-18 | NOT STARTED | Verify final canonical digest parity for the balanced trace across measured implementations. |
+| FW-18-01B | DL-18 | PARENT | Parent scope; children: FW-18-01B-PYTHON,FW-18-01B-MIXED,FW-18-01B-RUST |
+| FW-18-01B-PYTHON | DL-18 | NOT STARTED | Verify the Python implementation's final digest for the balanced trace against its frozen expected digest. |
+| FW-18-01B-MIXED | DL-18 | NOT STARTED | Verify the mixed Python/Rust implementation's final digest for the balanced trace against its frozen expected digest. |
+| FW-18-01B-RUST | DL-18 | NOT STARTED | Verify the Rust-native implementation's final digest for the balanced trace against its frozen expected digest. |
 | FW-18-03 | DL-18 | NOT STARTED | Verify seeded workload and expected per-read visibility at the small fixture size. |
 | FW-18-03A | DL-18 | NOT STARTED | Verify seeded workload and expected per-read visibility at the larger fixture size. |
 | FW-18-03B | DL-18 | NOT STARTED | Verify Python and Rust trace consumers agree on final digest for both fixture sizes. |
@@ -569,7 +581,10 @@
 | FW-20-03B | DL-20 | NOT STARTED | Add indexing and worker-transfer stage timing counters and verify attribution. |
 | FW-20-04 | DL-20 | NOT STARTED | Repeat resource-matched Python versus mixed endpoint comparison and verify identical digest. |
 | FW-20-04A | DL-20 | NOT STARTED | Repeat resource-matched Rust-native endpoint comparison and verify identical digest. |
-| FW-20-04B | DL-20 | NOT STARTED | Report latency tails and sample variation for all three modes under matched resources. |
+| FW-20-04B | DL-20 | PARENT | Parent scope; children: FW-20-04B-PYTHON,FW-20-04B-MIXED,FW-20-04B-RUST |
+| FW-20-04B-PYTHON | DL-20 | NOT STARTED | Report Python-mode p95/p99 latency and sample variation from the matched-resource endpoint run. |
+| FW-20-04B-MIXED | DL-20 | NOT STARTED | Report mixed-mode p95/p99 latency and sample variation from the matched-resource endpoint run. |
+| FW-20-04B-RUST | DL-20 | NOT STARTED | Report Rust-native p95/p99 latency and sample variation from the matched-resource endpoint run. |
 | FW-20-02 | DL-20 | NOT STARTED | Repeat endpoint comparison with correctness digest and enough samples for Python/mixed modes. |
 | FW-20-02A | DL-20 | NOT STARTED | Repeat endpoint comparison with correctness digest and enough samples for Rust-native mode. |
 | FW-20-02B | DL-20 | NOT STARTED | State performance conclusions only where confidence/variation evidence supports them. |

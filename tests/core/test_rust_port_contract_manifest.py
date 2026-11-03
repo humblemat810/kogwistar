@@ -61,7 +61,7 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
             match = re.fullmatch(r"Parent scope; children: (FW-[A-Za-z0-9,-]+)", row[3])
             assert match is not None, f"{fine_id} must enumerate its non-counted leaf children"
             child_ids = match.group(1).split(",")
-            assert len(child_ids) >= 2 and len(set(child_ids)) == len(child_ids)
+            assert child_ids and len(set(child_ids)) == len(child_ids)
             parents[fine_id] = (coarse_id, child_ids)
             continue
         assert status in {"NOT STARTED", "IN PROGRESS", "PASS", "FAIL", "BLOCKED"}
@@ -73,12 +73,25 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
             )
         fine_by_coarse.setdefault(coarse_id, []).append(status)
 
-    for parent_id, (parent_coarse_id, child_ids) in parents.items():
+    rows_by_id = {row[0]: row for row in fine_rows}
+
+    def descendant_leaves(parent_id: str, ancestry: frozenset[str] = frozenset()) -> set[str]:
+        assert parent_id not in ancestry, f"parent hierarchy contains a cycle at {parent_id}"
+        parent_coarse_id, child_ids = parents[parent_id]
+        leaves: set[str] = set()
         for child_id in child_ids:
-            child = next((row for row in fine_rows if row[0] == child_id), None)
+            child = rows_by_id.get(child_id)
             assert child is not None, f"{parent_id} references missing child {child_id}"
-            assert child[2] != "PARENT", f"{parent_id} must reference leaf tasklets, not another parent"
             assert child[1] == parent_coarse_id, f"{child_id} must stay under {parent_coarse_id}"
+            if child[2] == "PARENT":
+                leaves.update(descendant_leaves(child_id, ancestry | {parent_id}))
+            else:
+                leaves.add(child_id)
+        assert len(leaves) >= 2, f"{parent_id} must group at least two descendant tasklets"
+        return leaves
+
+    for parent_id in parents:
+        descendant_leaves(parent_id)
 
     open_coarse = {
         coarse_id
