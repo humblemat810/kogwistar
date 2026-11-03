@@ -21,6 +21,17 @@ pub struct PostgresRunApplicationService {
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct LoadPersistedGraphRequest {
+    doc_ids: Vec<String>,
+    #[serde(default)]
+    insertion_method: Option<String>,
+    #[serde(default = "default_true")]
+    #[serde(rename = "sid")]
+    _sid: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GraphVisualizationRequest {
     #[serde(default)]
     doc_id: Option<String>,

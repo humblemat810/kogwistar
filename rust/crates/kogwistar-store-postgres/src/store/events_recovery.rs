@@ -1,6 +1,25 @@
 use super::super::*;
 
 impl PostgresStore {
+    /// Read latest entity events in one transaction for a bounded candidate set.
+    pub async fn latest_entity_events(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        entity_ids: &[String],
+    ) -> PostgresStoreResult<std::collections::BTreeMap<String, RawEntityEvent>> {
+        let namespace = namespace.to_owned();
+        let entity_kind = entity_kind.to_owned();
+        let entity_ids = entity_ids.to_vec();
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.latest_entity_events(&namespace, &entity_kind, &entity_ids)
+                    .await
+            })
+        })
+        .await
+    }
+
     pub async fn alloc_event_seq(&self, namespace: &str) -> PostgresStoreResult<i64> {
         require_namespace(namespace)?;
         let namespace = namespace.to_owned();

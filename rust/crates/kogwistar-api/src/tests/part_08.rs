@@ -2181,6 +2181,258 @@ fn postgres_graph_type_stores_follow_python_schema_partitioning() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses disposable PostgreSQL schemas"]
+async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract() {
+    use axum::{body::Body, http::Request};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_load_persisted_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_schema().await.unwrap();
+    service
+        .store
+        .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+        .await
+        .unwrap();
+
+    let scope = GraphScope {
+        namespace: "docs".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let public_acl = |id: &str, grain: &str, target: &str, item: Option<&str>| {
+        let mut metadata = serde_json::Map::from_iter([
+            ("entity_type".to_owned(), json!("acl_record")),
+            ("acl_truth_graph".to_owned(), json!("knowledge")),
+            ("acl_target_grain".to_owned(), json!(grain)),
+            ("acl_target_entity_id".to_owned(), json!(target)),
+            ("acl_version".to_owned(), json!(1)),
+            ("acl_mode".to_owned(), json!("public")),
+        ]);
+        if let Some(item) = item {
+            metadata.insert("acl_target_item_id".to_owned(), json!(item));
+        }
+        let document = serde_json::to_string(&metadata).unwrap();
+        GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("{id}-event"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":id,"metadata":metadata}),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: Some(document),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 2,
+        }
+    };
+    let mention_document = |id: &str| {
+        json!({
+            "id": id,
+            "mentions": [{"spans": [{"doc_id":"doc-a","insertion_method":"parser"}]}]
+        })
+    };
+    for id in ["node-a", "node-b"] {
+        let document = mention_document(id);
+        service
+            .store
+            .apply_graph_mutation(GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("{id}-event"),
+                op: "ADD".to_owned(),
+                payload: document.clone(),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(document.to_string()),
+                    metadata: serde_json::Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 2,
+            })
+            .await
+            .unwrap();
+        service
+            .store
+            .apply_graph_mutation(public_acl(&format!("acl-{id}"), "node", id, None))
+            .await
+            .unwrap();
+        let grounding_id = format!("{id}::mention::0");
+        let span_id = format!("{grounding_id}::span::0");
+        service
+            .store
+            .apply_graph_mutation(public_acl(
+                &format!("acl-{grounding_id}"), "grounding", id, Some(&grounding_id),
+            ))
+            .await
+            .unwrap();
+        service
+            .store
+            .apply_graph_mutation(public_acl(
+                &format!("acl-{span_id}"), "span", id, Some(&span_id),
+            ))
+            .await
+            .unwrap();
+    }
+    let edge_document = json!({
+        "id":"edge-a",
+        "mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}],
+        "source_ids":["node-a"],
+        "target_ids":["node-b"],
+        "doc_id":"doc-a"
+    });
+    service
+        .store
+        .apply_graph_mutation(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: "edge-a-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: edge_document.clone(),
+            record: GraphRecord {
+                id: "edge-a".to_owned(),
+                document: Some(edge_document.to_string()),
+                metadata: serde_json::Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 2,
+        })
+        .await
+        .unwrap();
+    service
+        .store
+        .apply_graph_mutation(public_acl("acl-edge-a", "edge", "edge-a", None))
+        .await
+        .unwrap();
+    let edge_grounding = "edge-a::mention::0";
+    let edge_span = "edge-a::mention::0::span::0";
+    service
+        .store
+        .apply_graph_mutation(public_acl(
+            "acl-edge-grounding",
+            "grounding",
+            "edge-a",
+            Some(edge_grounding),
+        ))
+        .await
+        .unwrap();
+    service
+        .store
+        .apply_graph_mutation(public_acl(
+            "acl-edge-span",
+            "span",
+            "edge-a",
+            Some(edge_span),
+        ))
+        .await
+        .unwrap();
+
+    let bearer = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"graph-reader","role":"ro","ns":["docs"],"storage_ns":"docs",
+            "capabilities":["read_graph"],"exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(b"load-persisted-mcp-test"),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some("load-persisted-mcp-test".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    assert!(service.supports_mcp_tool_for_principal(
+        "root",
+        "kg_load_persisted",
+        &json!({"sub":"graph-reader","role":"ro","ns":["docs"],"storage_ns":"docs","capabilities":["read_graph"]})
+    ));
+    let call = |id: &str, inp: Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(json!({
+                "jsonrpc":"2.0","id":id,"method":"tools/call",
+                "params":{"name":"kg_load_persisted","arguments":{"inp":inp}}
+            }).to_string()))
+            .unwrap()
+    };
+    let short_response = app
+        .clone()
+        .oneshot(call("short", json!({"doc_ids":["doc-a"]})))
+        .await
+        .unwrap();
+    assert_eq!(short_response.status(), StatusCode::OK);
+    let short_body = axum::body::to_bytes(short_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let short_json: Value = serde_json::from_slice(&short_body).unwrap();
+    assert!(short_json.get("result").is_some(), "MCP response: {short_json}");
+    let map_key = crate::short_id_store::short_id_map_key_for_bearer(Some(&bearer));
+    let decode_ids = |values: &[Value]| {
+        values
+            .iter()
+            .map(|value| {
+                crate::short_id_store::canonical_id_for(
+                    ".shortids",
+                    &map_key,
+                    value.as_str().unwrap(),
+                )
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(decode_ids(short_json["result"]["node_ids"].as_array().unwrap()), ["node-a", "node-b"]);
+    assert_eq!(decode_ids(short_json["result"]["edge_ids"].as_array().unwrap()), ["edge-a"]);
+
+    let canonical_response = app
+        .clone()
+        .oneshot(call(
+            "canonical",
+            json!({"doc_ids":["doc-a"],"insertion_method":"parser","sid":false}),
+        ))
+        .await
+        .unwrap();
+    let canonical_body = axum::body::to_bytes(canonical_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let canonical_json: Value = serde_json::from_slice(&canonical_body).unwrap();
+    assert_eq!(canonical_json["result"]["node_ids"], json!(["node-a", "node-b"]));
+    assert_eq!(canonical_json["result"]["edge_ids"], json!(["edge-a"]));
+
+    drop(app);
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .await
+        .unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses disposable PostgreSQL schemas"]
 async fn postgres_graph_mutation_batch_uses_configured_graph_type_store() {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");

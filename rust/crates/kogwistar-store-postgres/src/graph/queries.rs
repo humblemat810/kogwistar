@@ -27,6 +27,41 @@ pub(crate) async fn graph_projection_records_with_lock<C>(
 where
     C: GenericClient + Sync,
 {
+    graph_projection_records_with_columns(
+        client,
+        tables,
+        read,
+        after_id,
+        keyset_page,
+        for_update,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn graph_metadata_projection_records<C>(
+    client: &C,
+    tables: &Tables,
+    read: GraphProjectionRead,
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
+    graph_projection_records_with_columns(client, tables, read, None, false, false, false).await
+}
+
+async fn graph_projection_records_with_columns<C>(
+    client: &C,
+    tables: &Tables,
+    read: GraphProjectionRead,
+    after_id: Option<String>,
+    keyset_page: bool,
+    for_update: bool,
+    has_embedding: bool,
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
     let table = graph_table(tables, &read.table)?;
     let (filter_sql, mut values) = graph_filter_sql(&read.scope, &read.metadata, 1)?;
     let mut clauses = vec![filter_sql];
@@ -63,10 +98,15 @@ where
         "id ASC"
     };
     let locking = if for_update { " FOR UPDATE" } else { "" };
+    let embedding_column = if has_embedding {
+        "embedding::TEXT"
+    } else {
+        "NULL::TEXT"
+    };
     let rows = client
         .query(
             &format!(
-                "SELECT id, document, metadata::TEXT, embedding::TEXT FROM {table} WHERE {} ORDER BY {ordering} LIMIT ${}::TEXT::BIGINT{locking}",
+                "SELECT id, document, metadata::TEXT, {embedding_column} FROM {table} WHERE {} ORDER BY {ordering} LIMIT ${}::TEXT::BIGINT{locking}",
                 clauses.join(" AND "),
                 values.len()
             ),

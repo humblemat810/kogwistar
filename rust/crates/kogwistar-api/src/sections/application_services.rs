@@ -857,6 +857,9 @@ impl ApplicationService for PostgresRunApplicationService {
         if surface == "root" && name == "document_id_from_file_name" {
             return DocumentStore::supports_document_projection_lookup(&self.store);
         }
+        if surface == "root" && name == "kg_load_persisted" {
+            return self.graph_authority_capability().supports_single_mutation();
+        }
         rust_mcp_tool_supported(surface, name)
             && name != "propose_vector"
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
@@ -886,6 +889,22 @@ impl ApplicationService for PostgresRunApplicationService {
         principal: &Value,
     ) -> bool {
         if name == "document_id_from_file_name" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "docs" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
+        if name == "kg_load_persisted" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")
@@ -937,6 +956,7 @@ impl ApplicationService for PostgresRunApplicationService {
         }
         let graph_read_namespace = match name {
             "kg_find_edges"
+            | "kg_load_persisted"
             | "kg_k_hop"
             | "kg_neighbors"
             | "kg_shortest_path"
@@ -1299,6 +1319,9 @@ impl ApplicationService for SqliteRunApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         if surface == "root" && name == "document_id_from_file_name" {
             return DocumentStore::supports_document_projection_lookup(&self.store);
+        }
+        if surface == "root" && name == "kg_load_persisted" {
+            return false;
         }
         if name == "workflow.operator_inbox" && self.chroma_graph.is_none() {
             return false;

@@ -101,6 +101,17 @@ async fn sse_handler(
         .into_response()
 }
 
+fn map_graph_short_ids(ids: &[Value], map_key: &str) -> Result<Vec<String>, ()> {
+    let mut mapped = ids.iter()
+        .map(|value| {
+            let canonical_id = value.as_str().filter(|id| !id.trim().is_empty()).ok_or(())?;
+            crate::short_id_store::short_id_for(".shortids", map_key, canonical_id).map_err(|_| ())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    mapped.sort();
+    Ok(mapped)
+}
+
 async fn mcp_handler(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
@@ -180,6 +191,18 @@ async fn mcp_handler(
                     .expect("document lookup arguments serialize"),
                 principal: principal.clone(),
             }),
+            "kg_load_persisted" => arguments
+                .get("inp")
+                .and_then(Value::as_object)
+                .filter(|_| arguments.len() == 1)
+                .map(|input| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE.to_owned(),
+                    body: serde_json::to_vec(input)
+                        .expect("load persisted arguments serialize"),
+                    principal: principal.clone(),
+                }),
             "conversation.create" => {
                 let user_id = arguments
                     .get("user_id")
@@ -1103,6 +1126,40 @@ async fn mcp_handler(
             .into_response();
         }
         let mut result = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
+        if tool_name == "kg_load_persisted"
+            && arguments
+                .get("inp")
+                .and_then(|input| input.get("sid"))
+                .and_then(Value::as_bool)
+                != Some(false)
+        {
+            let Some(nodes) = result.get("node_ids").and_then(Value::as_array) else {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Invalid persisted graph response from Rust application service"},
+                }))
+                .into_response();
+            };
+            let Some(edges) = result.get("edge_ids").and_then(Value::as_array) else {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Invalid persisted graph response from Rust application service"},
+                }))
+                .into_response();
+            };
+            let map_key = crate::short_id_store::short_id_map_key_for_bearer(bearer_token(&headers));
+            let mapped_nodes = match map_graph_short_ids(nodes, &map_key) {
+                Ok(ids) => ids,
+                Err(()) => return Json(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Could not persist graph ID mappings"}})).into_response(),
+            };
+            let mapped_edges = match map_graph_short_ids(edges, &map_key) {
+                Ok(ids) => ids,
+                Err(()) => return Json(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Could not persist graph ID mappings"}})).into_response(),
+            };
+            result = json!({"node_ids": mapped_nodes, "edge_ids": mapped_edges});
+        }
         if matches!(tool_name, "conversation.create" | "conversation.ask") {
             result = result.get("result").cloned().unwrap_or(result);
         } else if tool_name == "conversation.get_transcript" {

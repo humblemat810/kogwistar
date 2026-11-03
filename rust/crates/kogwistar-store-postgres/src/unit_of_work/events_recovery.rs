@@ -1,6 +1,64 @@
 use super::*;
 
 impl PostgresUnitOfWork<'_> {
+    /// Read the latest canonical event for each requested entity in this UoW.
+    pub async fn latest_entity_events(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        entity_ids: &[String],
+    ) -> PostgresStoreResult<std::collections::BTreeMap<String, RawEntityEvent>> {
+        require_namespace(namespace)?;
+        if !matches!(entity_kind, "node" | "edge") {
+            return Err(PostgresStoreError::Backend(
+                "latest entity event lookup requires node or edge kind".to_owned(),
+            ));
+        }
+        if entity_ids.is_empty() {
+            return Ok(std::collections::BTreeMap::new());
+        }
+        if entity_ids.iter().any(|id| id.trim().is_empty()) {
+            return Err(PostgresStoreError::Backend(
+                "latest entity event lookup requires non-empty entity IDs".to_owned(),
+            ));
+        }
+        let rows = self
+            .transaction
+            .query(
+                &format!(
+                    "SELECT namespace, seq, event_id, entity_kind, entity_id, op, \
+                            payload_json, created_at::text \
+                     FROM {} WHERE namespace=$1 AND entity_kind=$2 AND entity_id=ANY($3) \
+                     ORDER BY entity_id ASC, seq DESC",
+                    self.tables.entity_events
+                ),
+                &[&namespace, &entity_kind, &entity_ids],
+            )
+            .await
+            .map_err(backend)?;
+        let mut latest = std::collections::BTreeMap::new();
+        for row in rows {
+            let entity_id: String = row.try_get(4).map_err(backend)?;
+            if latest.contains_key(&entity_id) {
+                continue;
+            }
+            latest.insert(
+                entity_id.clone(),
+                RawEntityEvent {
+                    namespace: row.try_get(0).map_err(backend)?,
+                    seq: row.try_get(1).map_err(backend)?,
+                    event_id: row.try_get(2).map_err(backend)?,
+                    entity_kind: row.try_get(3).map_err(backend)?,
+                    entity_id,
+                    op: row.try_get(5).map_err(backend)?,
+                    payload_json: row.try_get(6).map_err(backend)?,
+                    created_at: row.try_get(7).map_err(backend)?,
+                },
+            );
+        }
+        Ok(latest)
+    }
+
     pub async fn alloc_event_seq(&mut self, namespace: &str) -> PostgresStoreResult<i64> {
         require_namespace(namespace)?;
         allocate_event_seq(&self.transaction, &self.tables, namespace).await

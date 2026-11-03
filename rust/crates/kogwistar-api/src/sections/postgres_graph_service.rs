@@ -22,12 +22,275 @@ fn graph_record_string_ids(record: &GraphRecord, field: &str) -> Vec<String> {
         .collect()
 }
 
+fn graph_record_string_id(record: &GraphRecord, field: &str) -> Option<String> {
+    let document = record
+        .document
+        .as_deref()
+        .and_then(|document| serde_json::from_str::<Value>(document).ok());
+    record
+        .metadata
+        .get(field)
+        .or_else(|| document.as_ref().and_then(|document| document.get(field)))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
 enum NativeEvidenceRecordError {
     Rejected,
     Unavailable,
 }
 
 impl PostgresRunApplicationService {
+    // PYTHON_PARITY: kogwistar/server/mcp_tools.py::_load_persisted_graph
+    async fn graph_load_persisted_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Persisted graph lookup requires read_graph capability",
+            );
+        }
+        let input = match serde_json::from_slice::<LoadPersistedGraphRequest>(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    format!("Invalid persisted graph lookup request: {error}"),
+                );
+            }
+        };
+        if input.doc_ids.is_empty()
+            || input.doc_ids.len() > 1000
+            || input.doc_ids.iter().any(|doc| doc.trim().is_empty())
+            || input
+                .insertion_method
+                .as_ref()
+                .is_some_and(|method| method.trim().is_empty())
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "doc_ids must contain 1 to 1000 non-empty IDs and insertion_method must be non-empty when provided",
+            );
+        }
+
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let docs = input.doc_ids.clone();
+        let insertion_method = input.insertion_method.clone();
+        let namespace = scope.namespace.clone();
+        let result = self
+            .store
+            .transaction(move |uow| {
+                Box::pin(async move {
+                    let indexes = GraphIndexTableNames::default();
+                    let mut node_ids = BTreeSet::new();
+                    let mut edge_ids = BTreeSet::new();
+                    let mut valid_stage1_nodes = BTreeMap::new();
+                    let mut valid_stage1_edges = BTreeMap::new();
+                    for doc_id in &docs {
+                        let index_filter = |with_method: bool| {
+                            let mut equals = BTreeMap::new();
+                            equals.insert("doc_id".to_owned(), json!(doc_id));
+                            if with_method {
+                                if let Some(method) = insertion_method.as_ref() {
+                                    equals.insert("insertion_method".to_owned(), json!(method));
+                                }
+                            }
+                            MetadataFilter { equals }
+                        };
+                        let node_table = if insertion_method.is_some() {
+                            &indexes.node_refs
+                        } else {
+                            &indexes.node_docs
+                        };
+                        let edge_table = if insertion_method.is_some() {
+                            &indexes.edge_refs
+                        } else {
+                            &indexes.edge_endpoints
+                        };
+                        let node_rows = uow
+                            .graph_metadata_projection_records(GraphProjectionRead {
+                                scope: scope.clone(),
+                                table: node_table.clone(),
+                                ids: None,
+                                metadata: index_filter(insertion_method.is_some()),
+                                limit: 100_001,
+                            })
+                            .await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                        let edge_rows = uow
+                            .graph_metadata_projection_records(GraphProjectionRead {
+                                scope: scope.clone(),
+                                table: edge_table.clone(),
+                                ids: None,
+                                metadata: index_filter(insertion_method.is_some()),
+                                limit: 100_001,
+                            })
+                            .await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                        if node_rows.len() > 100_000 || edge_rows.len() > 100_000 {
+                            return Err(PostgresStoreError::Backend(
+                                "document join-index result exceeds 100000 records".to_owned(),
+                            ));
+                        }
+                        for row in node_rows {
+                            if let Some(id) = graph_record_string_id(&row, "node_id") {
+                                node_ids.insert(id);
+                            }
+                        }
+                        for row in edge_rows {
+                            if let Some(id) = graph_record_string_id(&row, "edge_id") {
+                                edge_ids.insert(id);
+                            }
+                        }
+                    }
+
+                    if insertion_method.is_none() {
+                        for (kind, ids, valid_rows) in [
+                            ("node", &mut node_ids, &mut valid_stage1_nodes),
+                            ("edge", &mut edge_ids, &mut valid_stage1_edges),
+                        ] {
+                            let staged = uow
+                                .stage1_graph_projections_for_documents(&namespace, kind, &docs)
+                                .await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                            let staged = staged.into_iter().filter(|row| {
+                                row.materialization_status == "pending"
+                                    && row.metadata.get("doc_id").and_then(Value::as_str)
+                                        .is_some_and(|doc_id| docs.iter().any(|requested| requested == doc_id))
+                            }).collect::<Vec<_>>();
+                            let entity_ids = staged.iter().map(|row| row.entity_id.clone()).collect::<Vec<_>>();
+                            let latest = uow.latest_entity_events(&namespace, kind, &entity_ids)
+                                .await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                            for row in staged {
+                                let Some(event) = latest.get(&row.entity_id) else { continue };
+                                let payload = serde_json::from_str::<Value>(&event.payload_json)
+                                    .map_err(|error| PostgresStoreError::Backend(format!("invalid canonical event payload: {error}")))?;
+                                let canonical = read_canonical_entity_revision(&[EntityEvent {
+                                    namespace: event.namespace.clone(), seq: event.seq,
+                                    event_id: event.event_id.clone(), entity_kind: event.entity_kind.clone(),
+                                    entity_id: event.entity_id.clone(), op: event.op.clone(), payload,
+                                }], &namespace, kind, &row.entity_id)
+                                    .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                                let Some(canonical) = canonical.filter(|revision| {
+                                    !revision.is_deleted() && revision.revision == row.revision
+                                }) else { continue };
+                                let canonical_payload = kogwistar_engine::canonical_revision::canonical_revision_job_payload(&canonical);
+                                let expected = serde_json::from_str::<Value>(&canonical_payload)
+                                    .ok().and_then(|value| value.get("source_fingerprint").and_then(Value::as_str).map(str::to_owned));
+                                if expected.as_deref() != Some(row.source_fingerprint.as_str()) { continue; }
+                                ids.insert(row.entity_id.clone());
+                                valid_rows.insert(row.entity_id.clone(), row);
+                            }
+                        }
+                    }
+
+                    if node_ids.len().saturating_add(edge_ids.len()) > 100_000 {
+                        return Err(PostgresStoreError::Backend(
+                            "persisted graph result exceeds 100000 entities".to_owned(),
+                        ));
+                    }
+                    let read = |table: &str, ids: &[String]| GraphProjectionRead {
+                        scope: scope.clone(), table: table.to_owned(),
+                        ids: Some(ids.to_vec()),
+                        metadata: MetadataFilter::default(), limit: ids.len(),
+                    };
+                    let node_ids_vec = node_ids.iter().cloned().collect::<Vec<_>>();
+                    let edge_ids_vec = edge_ids.iter().cloned().collect::<Vec<_>>();
+                    let mut nodes = if node_ids_vec.is_empty() {
+                        Vec::new()
+                    } else {
+                        uow.graph_projection_records(read(&indexes.nodes, &node_ids_vec)).await
+                            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?
+                    };
+                    let edges = if edge_ids_vec.is_empty() {
+                        Vec::new()
+                    } else {
+                        uow.graph_projection_records(read(&indexes.edges, &edge_ids_vec)).await
+                            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?
+                    };
+                    let found_node_ids = nodes.iter().map(|record| record.id.clone()).collect::<BTreeSet<_>>();
+                    for (entity_id, row) in valid_stage1_nodes {
+                        if node_ids.contains(&entity_id) && !found_node_ids.contains(&entity_id) {
+                            nodes.push(GraphRecord { id: row.entity_id, document: Some(row.document), metadata: row.metadata, embedding: None });
+                        }
+                    }
+                    let found_edge_ids = edges.iter().map(|record| record.id.clone()).collect::<BTreeSet<_>>();
+                    let mut all_edges = edges;
+                    for (entity_id, row) in valid_stage1_edges {
+                        if edge_ids.contains(&entity_id) && !found_edge_ids.contains(&entity_id) {
+                            all_edges.push(GraphRecord { id: row.entity_id, document: Some(row.document), metadata: row.metadata, embedding: None });
+                        }
+                    }
+                    let endpoint_ids = all_edges.iter().flat_map(|edge| {
+                        graph_record_string_ids(edge, "source_ids").into_iter()
+                            .chain(graph_record_string_ids(edge, "target_ids"))
+                    }).collect::<BTreeSet<_>>();
+                    let selected_node_ids = node_ids.iter().cloned().collect::<BTreeSet<_>>();
+                    let extra_endpoint_ids = endpoint_ids.difference(&selected_node_ids).cloned().collect::<Vec<_>>();
+                    if !extra_endpoint_ids.is_empty() {
+                        nodes.extend(uow.graph_projection_records(read(&indexes.nodes, &extra_endpoint_ids)).await
+                            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?);
+                    }
+                    let acl_ids = nodes.iter().chain(all_edges.iter()).map(|record| record.id.clone()).collect::<BTreeSet<_>>();
+                    let mut acl_index = GraphAclIndex::default();
+                    let acl_entity_ids = acl_ids.into_iter().collect::<Vec<_>>();
+                    for batch in acl_entity_ids.chunks(10_000) {
+                        let acl_records = uow.graph_acl_records_for_entities(
+                            &scope, "knowledge", batch,
+                        ).await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                        acl_index.extend_from_records(&acl_records, "knowledge");
+                    }
+                    let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
+                        &nodes, &all_edges, &acl_index, &acl_principal,
+                    );
+                    let node_ids = visible_nodes.iter().filter(|record| selected_node_ids.contains(&record.id))
+                        .filter(|record| !matches!(record.metadata.get("lifecycle_status").and_then(Value::as_str), Some("deleted" | "tombstoned")))
+                        .map(|record| record.id.clone()).collect::<BTreeSet<_>>();
+                    let selected_edge_ids = edge_ids;
+                    let edge_ids = visible_edges.iter().filter(|record| selected_edge_ids.contains(&record.id))
+                        .filter(|record| !matches!(record.metadata.get("lifecycle_status").and_then(Value::as_str), Some("deleted" | "tombstoned")))
+                        .map(|record| record.id.clone()).collect::<BTreeSet<_>>();
+                    Ok((node_ids.into_iter().collect::<Vec<_>>(), edge_ids.into_iter().collect::<Vec<_>>()))
+                })
+            })
+            .await;
+        match result {
+            Ok((node_ids, edge_ids)) => json_effect(StatusCode::OK, rust_native_attested(json!({
+                "node_ids": node_ids,
+                "edge_ids": edge_ids,
+            }))),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
     // PYTHON_PARITY: kogwistar/server/bootstrap.py::build_graph_engine(graph_type=...)
     fn graph_store_for_type(&self, graph_type: &str) -> &PostgresStore {
         match graph_type.to_ascii_lowercase().as_str() {
