@@ -1500,33 +1500,55 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
 
     @implementation_selection_bound
     def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
-        return self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
+        node_ids = self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
+        if not node_ids:
+            return []
+        visible = self.get_nodes(ids=node_ids, limit=None)
+        return sorted(_acl_entity_id(node) for node in visible)
 
     @implementation_selection_bound
     def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
-        return self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
+        edge_ids = self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
+        if not edge_ids:
+            return []
+        visible = self.get_edges(ids=edge_ids, limit=None)
+        return sorted(_acl_entity_id(edge) for edge in visible)
 
     @implementation_selection_bound
     def edges_by_doc(self, doc_id: str, where: dict[str, JsonValue] | None = None) -> list[str]:
-        return self._raw.edges_by_doc(doc_id, where=where)
+        edge_ids = self._raw.edges_by_doc(doc_id, where=where)
+        if not edge_ids:
+            return []
+        visible = self.get_edges(ids=edge_ids, limit=None)
+        return sorted(_acl_entity_id(edge) for edge in visible)
 
     @implementation_selection_bound
     def list_edges_with_ref_filter(
         self, doc_id: str, where: dict[str, JsonValue] | None = None
     ) -> list[Edge]:
-        return self._raw.list_edges_with_ref_filter(doc_id, where=where)
+        edge_ids = self.edges_by_doc(doc_id, where=where)
+        if not edge_ids:
+            return []
+        return self.get_edges(ids=edge_ids, limit=None)
 
     @implementation_selection_bound
     def nodes_by_doc(
         self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[str]:
-        return self._raw.nodes_by_doc(doc_id, where=where)
+        node_ids = self._raw.nodes_by_doc(doc_id, where=where)
+        if not node_ids:
+            return []
+        visible = self.get_nodes(ids=node_ids, limit=None)
+        return sorted(_acl_entity_id(node) for node in visible)
 
     @implementation_selection_bound
     def list_nodes_with_ref_filter(
         self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[Node]:
-        return self._raw.list_nodes_with_ref_filter(doc_id, where=where)
+        node_ids = self.nodes_by_doc(doc_id, where=where)
+        if not node_ids:
+            return []
+        return self.get_nodes(ids=node_ids, limit=None)
 
     @implementation_selection_bound
     def ids_with_insertion_method(
@@ -1537,12 +1559,19 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         ids: Sequence[str] | None = None,
         doc_id: str | None = None,
     ) -> list[str]:
-        return self._raw.ids_with_insertion_method(
+        entity_ids = self._raw.ids_with_insertion_method(
             kind=kind,
             insertion_method=insertion_method,
             ids=ids,
             doc_id=doc_id,
         )
+        if not entity_ids:
+            return []
+        if kind == "node":
+            visible = self.get_nodes(ids=entity_ids, limit=None)
+        else:
+            visible = self.get_edges(ids=entity_ids, limit=None)
+        return sorted(_acl_entity_id(item) for item in visible)
 
     @implementation_selection_bound
     def extract_reference_contexts(

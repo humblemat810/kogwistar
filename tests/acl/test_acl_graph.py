@@ -330,6 +330,55 @@ def test_acceptance_scope_isolation_and_user_specific_visible_sets(tmp_path):
     }
 
 
+def test_document_id_enumeration_applies_acl_visibility(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    doc_id = "doc::enumeration::shared"
+    visible = _mk_node(node_id="enumeration-visible", doc_id=doc_id)
+    visible.metadata.update({"visibility": "public"})
+    visible.mentions[0].spans[0].insertion_method = "test"
+    hidden = _mk_node(node_id="enumeration-hidden", doc_id=doc_id)
+    hidden.metadata.update({"visibility": "private", "owner_agent_id": "owner-b"})
+    hidden.mentions[0].spans[0].insertion_method = "test"
+    visible_edge = _mk_edge(
+        edge_id="enumeration-visible-edge",
+        src=visible.id,
+        tgt=visible.id,
+        doc_id=doc_id,
+    )
+    visible_edge.metadata.update({"visibility": "public"})
+    visible_edge.mentions[0].spans[0].insertion_method = "test"
+    hidden_edge = _mk_edge(
+        edge_id="enumeration-hidden-edge",
+        src=visible.id,
+        tgt=visible.id,
+        doc_id=doc_id,
+    )
+    hidden_edge.metadata.update({"visibility": "private", "owner_agent_id": "owner-b"})
+    hidden_edge.mentions[0].spans[0].insertion_method = "test"
+
+    writer = claims_ctx.set({"agent_id": "owner-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(visible)
+        engine.write.add_node(hidden)
+        engine.write.add_edge(visible_edge)
+        engine.write.add_edge(hidden_edge)
+    finally:
+        claims_ctx.reset(writer)
+
+    reader = claims_ctx.set({"agent_id": "reader", "ns": "knowledge"})
+    try:
+        assert engine.read.node_ids_by_doc(doc_id) == [visible.id]
+        assert engine.read.edge_ids_by_doc(doc_id) == [visible_edge.id]
+        assert engine.read.nodes_by_doc(doc_id) == [visible.id]
+        assert engine.read.edges_by_doc(doc_id) == [visible_edge.id]
+        assert engine.read.node_ids_by_doc(doc_id, insertion_method="test") == [visible.id]
+        assert engine.read.edge_ids_by_doc(doc_id, insertion_method="test") == [visible_edge.id]
+        assert engine.read.node_ids_by_doc("missing-document") == []
+        assert engine.read.edge_ids_by_doc("missing-document") == []
+    finally:
+        claims_ctx.reset(reader)
+
+
 def test_normal_acl_read_uses_authenticated_group_claims(tmp_path):
     engine = _mk_acl_fake_engine(tmp_path)
     group_node = _mk_node(node_id="accept-group-visible", doc_id="doc::group::visible")
