@@ -7,7 +7,7 @@
 
 - **Coarse checklist:** **154/177 PASS (87.0%)**.
 - **Fine worklist:** **3/47 PASS (6.4%)**; **1 IN PROGRESS**, **43 NOT STARTED**.
-- The route-protocol regression is now closed as one bounded task, while the live-Chroma route smoke is tracked separately. This is a one-time correction for that distinct deliverable, not newly discovered product scope. A granularity audit of the other rows remains open; do not claim the list is fully leaf-level until that audit is complete. Fine tasks are a breakdown of the 23 open coarse gates, not new coarse items.
+- The fine list is a fixed working decomposition of the 23 open coarse gates, not a second expanding scope list. Do not split rows merely by backend or implementation detail; revise a row only when evidence shows it contains independently closable acceptance outcomes. Granularity for the other rows remains under audit, but that audit must first refine existing rows without increasing the denominator unless a distinct required outcome cannot fit their acceptance criteria.
 
 ## How To Track
 
@@ -73,4 +73,4 @@
 
 ## Current Snapshot
 
-The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 47 counted tasks; 3 are `PASS`, 1 is `IN PROGRESS`, and 43 are `NOT STARTED`. DL-02's protocol/authorization route contract is closed; live Chroma HTTP route evidence is separately active. Granularity for the other coarse gates remains under audit; refine broad rows before starting them, then freeze the denominator. Keep the completion snapshot at the top synchronized whenever either list changes, and keep the linked coarse inventory as the authority for coarse status.
+The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 47 counted tasks; 3 are `PASS`, 1 is `IN PROGRESS`, and 43 are `NOT STARTED`. DL-02's SQLite+Chroma read-route protocol/authorization contract is closed; live Chroma HTTP evidence is separately active. Keep the fine denominator fixed during the remaining granularity audit unless an existing acceptance criterion proves to contain a distinct required outcome that cannot be verified within that row. Keep the completion snapshot synchronized whenever status changes, and keep the linked coarse inventory as the authority for coarse status.
