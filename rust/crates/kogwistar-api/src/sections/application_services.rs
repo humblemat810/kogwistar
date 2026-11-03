@@ -1487,6 +1487,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     &self.capabilities,
                     &self.store,
                     index_store,
+                    "nodes_index",
                     Some(fts),
                     Some(provider),
                 )

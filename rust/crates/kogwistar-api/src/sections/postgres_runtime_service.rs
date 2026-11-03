@@ -6241,6 +6241,7 @@ impl PostgresRunApplicationService {
                 &self.capabilities,
                 &self.store,
                 &self.store,
+                "gke_node_index",
                 self.search_index_fts.as_deref(),
                 self.embedding_provider.as_deref(),
             )

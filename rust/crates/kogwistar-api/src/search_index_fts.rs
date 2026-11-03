@@ -368,6 +368,7 @@ pub(crate) async fn search_index_upsert_effect<E, V>(
     capabilities: &crate::SharedCapabilityState,
     event_store: &E,
     vector_store: &V,
+    vector_index: &str,
     fts: Option<&std::sync::Mutex<Connection>>,
     provider: Option<&dyn EmbeddingProvider>,
 ) -> crate::ApiEffectResponse
@@ -420,6 +421,7 @@ where
         fts,
         provider,
         namespace,
+        vector_index,
         &input.index,
     )
     .await
@@ -449,16 +451,18 @@ pub async fn admit_search_index_entries<E, V>(
     fts: &std::sync::Mutex<Connection>,
     provider: &dyn EmbeddingProvider,
     namespace: &str,
+    vector_index: &str,
     entries: &[SearchIndexEntryV1],
 ) -> StoreResult<SearchIndexAdmissionSummary>
 where
     E: EventReadStore + EventWriteStore,
     V: NodeIndexStore,
 {
-    if namespace.trim().is_empty() || entries.len() > 1000 {
+    if namespace.trim().is_empty() || vector_index.trim().is_empty() || entries.len() > 1000 {
         return Err(StoreError::InvalidEntityEventPayload {
-            message: "search-index admission requires a namespace and at most 1000 entries"
-                .to_owned(),
+            message:
+                "search-index admission requires namespace, vector index, and at most 1000 entries"
+                    .to_owned(),
         });
     }
     let mut target_seq = 0;
@@ -523,6 +527,7 @@ where
             fts,
             provider,
             namespace,
+            vector_index,
             "search-index-fts-vector-v1",
             1000,
         )
@@ -553,6 +558,7 @@ pub async fn replay_search_index_events<E, V>(
     fts: &std::sync::Mutex<Connection>,
     provider: &dyn EmbeddingProvider,
     namespace: &str,
+    vector_index: &str,
     consumer: &str,
     batch_limit: usize,
 ) -> StoreResult<SearchIndexReplaySummary>
@@ -664,7 +670,7 @@ where
             })?;
         }
         vector_store
-            .upsert_node_index("nodes_index", records)
+            .upsert_node_index(vector_index, records)
             .await?;
     }
 
@@ -1030,6 +1036,7 @@ mod tests {
                 &fts,
                 &provider,
                 "workspace",
+                "nodes_index",
                 std::slice::from_ref(&item),
             )
             .await
@@ -1056,6 +1063,7 @@ mod tests {
             &fts,
             &provider,
             "workspace",
+            "nodes_index",
             std::slice::from_ref(&item),
         )
         .await
@@ -1078,6 +1086,7 @@ mod tests {
             &fts,
             &provider,
             "workspace",
+            "nodes_index",
             std::slice::from_ref(&item),
         )
         .await
@@ -1102,6 +1111,7 @@ mod tests {
             &fts,
             &provider,
             "workspace",
+            "nodes_index",
             std::slice::from_ref(&revised),
         )
         .await
@@ -1172,6 +1182,7 @@ mod tests {
             &capabilities,
             &store,
             &store,
+            "nodes_index",
             None,
             None,
         )
@@ -1195,6 +1206,7 @@ mod tests {
             &capabilities,
             &store,
             &store,
+            "nodes_index",
             None,
             None,
         )
@@ -1220,6 +1232,7 @@ mod tests {
             &capabilities,
             &store,
             &store,
+            "nodes_index",
             None,
             None,
         )
@@ -1246,6 +1259,7 @@ mod tests {
             &capabilities,
             &store,
             &store,
+            "nodes_index",
             Some(&fts),
             Some(&provider),
         )
