@@ -6,9 +6,9 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **19/536 PASS (3.5%)**; **0 IN PROGRESS**, **517 NOT STARTED**, **0 BLOCKED**.
-- **Tasklet normalization:** The frozen DL-03 inventory is expanded into 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. Inventory/reconciliation is represented by non-counted parent groups, not duplicate leaves. DL-16BQ backend checks and DL-18/DL-20 implementation-mode checks are split into independently passing leaves. The PostgreSQL Rust-native answer smoke verifies provider-event publication and handling; its transport test now negotiates Streamable HTTP and inspects the structured MCP result. Other flagged multi-cell leaves remain provisional and must be audited/split before implementation. The percentage is raw leaf-status arithmetic, not a claim that remaining work is uniform or nearly complete.
-- **Equal-size tasklet unit:** one leaf is one independently decidable acceptance assertion for one contract family and one execution cell (operation/backend/runtime only where that dimension can fail independently). Target one focused implementation-and-verification session of about 45 minutes; split before starting if the estimate exceeds 60 minutes. The estimate is a guardrail, not evidence of completion. A tasklet must name one observable behavior, one expected result, and one focused test/check or artifact. A parameterized test is one tasklet only when all cases prove that same invariant under the same contract; list the cases in the evidence, and split cases that have separate implementation or ownership paths. Separate independently passing endpoints, DTO families, error envelopes, lifecycle transitions, resources, backends, runtime modes, and operation families. Never compress them into a matrix leaf. Do not split merely by file, field, or test-case count when one invariant is shared. Word count is not a sizing measure.
+- **Fine worklist:** **19/646 PASS (2.9%)**; **0 IN PROGRESS**, **627 NOT STARTED**, **0 BLOCKED**.
+- **Tasklet normalization:** The frozen DL-03 inventory is expanded into 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. Inventory/reconciliation is represented by non-counted parent groups, not duplicate leaves. This pass decomposes native executor operation/backend cells, independent CI/runtime cells, transaction-owner families, selector capability cells, graph-role ACL cells, derived model families, and transport-versus-authorization latency stages. An inventory remains one tasklet only when it produces one generated manifest and one completeness assertion; manual coverage work is split by resource or capability family. The PostgreSQL Rust-native answer smoke verifies provider-event publication and handling; its transport test negotiates Streamable HTTP and inspects the structured MCP result. The percentage is raw leaf-status arithmetic, not a claim that remaining work is uniform or nearly complete.
+- **Equal-size tasklet unit:** one countable leaf is one independently decidable behavior for one contract family and one execution cell (operation/backend/runtime/transport only where that dimension can fail independently). Target one focused implementation-and-verification session, normally 30–60 minutes; split before starting if it is expected to exceed 60 minutes. Each leaf names one observable behavior, one expected result, and one focused test/check or single generated artifact. A parameterized test is one tasklet only if all cases prove the same invariant through the same implementation path; independently failing paths become separate leaves. Separate independently passing endpoints, DTO families, error envelopes, lifecycle transitions, resources, backends, runtime/platform cells, latency stages, and operation families. Do not split by file, field, or test-case count when one invariant is shared. Word count is only a lint bound, not the sizing measure.
 - The fine denominator counts leaf rows only; `PARENT` rows are retained ID/mapping records and are not progress items. When a row is split, preserve its ID as a parent and list all child IDs in its description. The parent remains uncounted and cannot pass; every child starts `NOT STARTED` unless prior evidence independently proves that exact child. Passed leaf IDs/evidence remain unchanged. Report coarse and fine percentages separately; neither percentage estimates schedule or nearness to completion.
 
 ## How To Track
@@ -304,7 +304,12 @@
 | FW-05-02A | DL-05 | NOT STARTED | Verify additive schema-version evolution remains accepted in both languages for the declared compatible DTOs. |
 | FW-05-02B | DL-05 | NOT STARTED | Verify unsupported schema versions and unknown fields fail consistently before effects. |
 | FW-06-01 | DL-06 | NOT STARTED | Inventory canonical durable resources and their Python transaction owner, one resource family per evidence row. |
-| FW-06-01A | DL-06 | NOT STARTED | Inventory Rust and mixed-mode write entry points and map each to its declared transaction owner. |
+| FW-06-01A | DL-06 | PARENT | Parent scope; children: FW-06-01A-GRAPH,FW-06-01A-WORKFLOW,FW-06-01A-WORKER,FW-06-01A-ACL,FW-06-01A-INDEX |
+| FW-06-01A-GRAPH | DL-06 | NOT STARTED | Map Rust and mixed-mode graph mutation entry points to their declared transaction owner. |
+| FW-06-01A-WORKFLOW | DL-06 | NOT STARTED | Map Rust and mixed-mode workflow/run writes to their declared transaction owner. |
+| FW-06-01A-WORKER | DL-06 | NOT STARTED | Map Rust and mixed-mode worker claim/result writes to their declared transaction owner. |
+| FW-06-01A-ACL | DL-06 | NOT STARTED | Map Rust and mixed-mode ACL mutations to their declared transaction owner. |
+| FW-06-01A-INDEX | DL-06 | NOT STARTED | Map Rust and mixed-mode indexing/job writes to their declared transaction owner. |
 | FW-06-01B | DL-06 | NOT STARTED | Mark resources with explicitly weaker backend guarantees and verify those guarantees are stated in the backend contract. |
 | FW-06-03 | DL-06 | NOT STARTED | Verify SQLite single-writer ownership for event journal and graph projection with a concurrent-writer test. |
 | FW-06-03A | DL-06 | PARENT | Parent scope; children: FW-06-03A-GRAPH,FW-06-03A-RUN,FW-06-03A-WORKER,FW-06-03A-ACL,FW-06-03A-INDEX |
@@ -384,7 +389,7 @@
 | FW-12-04A | DL-12 | NOT STARTED | Verify Python-only MCP HTTP transport authorization and response/error shape without Rust import. |
 | FW-12-02 | DL-12 | NOT STARTED | Verify Python-only indexing emits durable job state through a public interface. |
 | FW-12-02A | DL-12 | NOT STARTED | Verify Python-only retrieval and visualization read back the indexed result on supported backends. |
-| FW-13-01 | DL-13 | NOT STARTED | Inventory advertised native operation kinds and map each kind to its Rust handler and shared parity fixture. |
+| FW-13-01 | DL-13 | NOT STARTED | Generate a native-operation inventory and one drift assertion for handler/version/fixture mappings. |
 | FW-13-01A | DL-13 | NOT STARTED | Verify one advertised native operation's output against the Python/shared fixture contract. |
 | FW-13-01B | DL-13 | NOT STARTED | Verify unknown native operation kinds fail closed before durable or graph effects. |
 | FW-13-03 | DL-13 | NOT STARTED | Verify versioned native dispatch and legacy routing defaults for valid operations. |
@@ -393,9 +398,28 @@
 | FW-13-04 | DL-13 | NOT STARTED | Verify native executor durable completion and final digest after SQLite service restart. |
 | FW-13-04A | DL-13 | NOT STARTED | Verify native executor durable completion and final digest after PostgreSQL service restart. |
 | FW-13-04B | DL-13 | NOT STARTED | Verify native executor error routing and recovery for one injected backend failure. |
-| FW-13-02 | DL-13 | NOT STARTED | Run the native executor supported-operation matrix on SQLite and record tested cells. |
-| FW-13-02A | DL-13 | NOT STARTED | Run the native executor supported-operation matrix on PostgreSQL and record tested cells. |
-| FW-13-02B | DL-13 | NOT STARTED | Run the native executor supported-operation matrix on in-memory and record tested cells. |
+| FW-13-02 | DL-13 | PARENT | Parent scope; children: FW-13-02-SQLITE,FW-13-02A,FW-13-02B |
+| FW-13-02-SQLITE | DL-13 | PARENT | Parent scope; children: FW-13-02-SQLITE-NOOP,FW-13-02-SQLITE-COUNTER,FW-13-02-SQLITE-RESULT,FW-13-02-SQLITE-REQUEST,FW-13-02-SQLITE-RECEIVE,FW-13-02-SQLITE-ACK |
+| FW-13-02-SQLITE-NOOP | DL-13 | NOT STARTED | Verify native `noop` result and durable final state on SQLite against the shared fixture. |
+| FW-13-02-SQLITE-COUNTER | DL-13 | NOT STARTED | Verify native `increment-counter` result and durable final state on SQLite against the shared fixture. |
+| FW-13-02-SQLITE-RESULT | DL-13 | NOT STARTED | Verify native `emit-result` output and durable completion on SQLite against its contract. |
+| FW-13-02-SQLITE-REQUEST | DL-13 | NOT STARTED | Verify native provider-event request behavior and durable result on SQLite. |
+| FW-13-02-SQLITE-RECEIVE | DL-13 | NOT STARTED | Verify native provider-event receive routing and durable result on SQLite. |
+| FW-13-02-SQLITE-ACK | DL-13 | NOT STARTED | Verify native provider-event acknowledgement effect and durable result on SQLite. |
+| FW-13-02A | DL-13 | PARENT | Parent scope; children: FW-13-02A-NOOP,FW-13-02A-COUNTER,FW-13-02A-RESULT,FW-13-02A-REQUEST,FW-13-02A-RECEIVE,FW-13-02A-ACK |
+| FW-13-02A-NOOP | DL-13 | NOT STARTED | Verify native `noop` result and durable final state on PostgreSQL against the shared fixture. |
+| FW-13-02A-COUNTER | DL-13 | NOT STARTED | Verify native `increment-counter` result and durable final state on PostgreSQL against the shared fixture. |
+| FW-13-02A-RESULT | DL-13 | NOT STARTED | Verify native `emit-result` output and durable completion on PostgreSQL against its contract. |
+| FW-13-02A-REQUEST | DL-13 | NOT STARTED | Verify native provider-event request behavior and durable result on PostgreSQL. |
+| FW-13-02A-RECEIVE | DL-13 | NOT STARTED | Verify native provider-event receive routing and durable result on PostgreSQL. |
+| FW-13-02A-ACK | DL-13 | NOT STARTED | Verify native provider-event acknowledgement effect and durable result on PostgreSQL. |
+| FW-13-02B | DL-13 | PARENT | Parent scope; children: FW-13-02B-NOOP,FW-13-02B-COUNTER,FW-13-02B-RESULT,FW-13-02B-REQUEST,FW-13-02B-RECEIVE,FW-13-02B-ACK |
+| FW-13-02B-NOOP | DL-13 | NOT STARTED | Verify native `noop` result and final state in-memory against the shared fixture. |
+| FW-13-02B-COUNTER | DL-13 | NOT STARTED | Verify native `increment-counter` result and final state in-memory against the shared fixture. |
+| FW-13-02B-RESULT | DL-13 | NOT STARTED | Verify native `emit-result` output and completion in-memory against its contract. |
+| FW-13-02B-REQUEST | DL-13 | NOT STARTED | Verify native provider-event request behavior and result in-memory. |
+| FW-13-02B-RECEIVE | DL-13 | NOT STARTED | Verify native provider-event receive routing and result in-memory. |
+| FW-13-02B-ACK | DL-13 | NOT STARTED | Verify native provider-event acknowledgement effect and result in-memory. |
 | FW-14-01 | DL-14 | NOT STARTED | Freeze the mixed-language mode combinations currently claimed by the support matrix. |
 | FW-14-01A | DL-14 | NOT STARTED | Run one paired mixed-mode operation test and verify scope fields at the Python/Rust seam. |
 | FW-14-01B | DL-14 | NOT STARTED | Add drift protection that rejects an advertised mixed combination without an executable evidence reference. |
@@ -434,16 +458,32 @@
 | FW-14C-03E | DL-14C | PASS | Identity-pinned claim recipients require exactly one matching `kogwistar_worker_identity` assertion in the cryptographically verified principal; missing, malformed, or mismatched registrations are rejected before queue claim handling in SQLite and PostgreSQL services. The trusted host JWT issuer must issue this claim only for a registered artifact/dependency-lock tuple. Evidence: SQLite signed-token registration/reopen regression; PostgreSQL rejects an unregistered principal before touching storage; Rust API suite **289 passed, 33 ignored**. This trusts issuer registration policy; it does not attest the live process image. |
 | FW-15-01 | DL-15 | NOT STARTED | Reconcile selector names and precedence rules with the supported-mode manifest. |
 | FW-15-01A | DL-15 | NOT STARTED | Reconcile legacy/default selector behavior with the supported-mode manifest. |
-| FW-15-01B | DL-15 | NOT STARTED | Classify every fallback as intentional compatibility or an error and link the owner/evidence. |
+| FW-15-01B | DL-15 | NOT STARTED | Generate one fallback inventory and assert each entry has a compatibility/error class and owner evidence. |
 | FW-15-03 | DL-15 | NOT STARTED | Verify selector behavior for one advertised backend and operation combination against the manifest. |
-| FW-15-03A | DL-15 | NOT STARTED | Verify selector behavior for each remaining advertised backend/operation combination and report unsupported cells. |
+| FW-15-03A | DL-15 | PARENT | Parent scope; children: FW-15-03A-DETERMINISTIC-CONTRACTS,FW-15-03A-SQLITE-META,FW-15-03A-POSTGRES-EVENT-LOG,FW-15-03A-PROJECTIONS,FW-15-03A-QUEUES,FW-15-03A-GRAPH-PGVECTOR,FW-15-03A-CHROMA,FW-15-03A-WORKFLOW-RUNTIME,FW-15-03A-SERVER |
+| FW-15-03A-DETERMINISTIC-CONTRACTS | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for deterministic contracts. |
+| FW-15-03A-SQLITE-META | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for SQLite metadata. |
+| FW-15-03A-POSTGRES-EVENT-LOG | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for PostgreSQL event storage. |
+| FW-15-03A-PROJECTIONS | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for projections and snapshots. |
+| FW-15-03A-QUEUES | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for queues, leases, and lanes. |
+| FW-15-03A-GRAPH-PGVECTOR | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for graph and pgvector operations. |
+| FW-15-03A-CHROMA | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for the Chroma adapter. |
+| FW-15-03A-WORKFLOW-RUNTIME | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for workflow runtime operations. |
+| FW-15-03A-SERVER | DL-15 | NOT STARTED | Verify selector choices and explicit unsupported cells for REST, SSE, MCP, and CLI. |
 | FW-15-03B | DL-15 | NOT STARTED | Add drift assertion that blocks a supported-mode manifest entry without a matching runtime selector. |
 | FW-15-02 | DL-15 | NOT STARTED | Verify missing Rust extension fails before effects for one Rust-selected REST operation. |
 | FW-15-02A | DL-15 | NOT STARTED | Verify unsupported backend fails before effects for one Rust-selected graph operation. |
-| FW-15-02B | DL-15 | NOT STARTED | Verify missing-extension and unsupported-backend failures for the remaining Rust-selected operation classes. |
+| FW-15-02B | DL-15 | PARENT | Parent scope; children: FW-15-02B-DETERMINISTIC-CONTRACTS,FW-15-02B-SQLITE-META,FW-15-02B-POSTGRES-EVENT-LOG,FW-15-02B-QUEUES,FW-15-02B-GRAPH-PGVECTOR,FW-15-02B-WORKFLOW-RUNTIME,FW-15-02B-SERVER |
+| FW-15-02B-DETERMINISTIC-CONTRACTS | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for deterministic contracts. |
+| FW-15-02B-SQLITE-META | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for SQLite metadata. |
+| FW-15-02B-POSTGRES-EVENT-LOG | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for PostgreSQL event storage. |
+| FW-15-02B-QUEUES | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for queues, leases, and lanes. |
+| FW-15-02B-GRAPH-PGVECTOR | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for graph and pgvector operations. |
+| FW-15-02B-WORKFLOW-RUNTIME | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for workflow runtime operations. |
+| FW-15-02B-SERVER | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for REST, SSE, MCP, and CLI. |
 | FW-15C-01 | DL-15C | NOT STARTED | Verify transaction-owner guard on one workflow continuation write path. |
 | FW-15C-01A | DL-15C | NOT STARTED | Verify transaction-owner guard on one callback state-changing path and reject cross-authority writes. |
-| FW-15C-01B | DL-15C | NOT STARTED | Verify remaining state-changing call sites are inventoried and each maps to a negative guard test. |
+| FW-15C-01B | DL-15C | NOT STARTED | Generate one guarded-write call-site inventory and assert every entry maps to a negative ownership test. |
 | FW-15C-03 | DL-15C | NOT STARTED | Verify async adapter atomicity with transactional UoW. |
 | FW-15C-03A | DL-15C | NOT STARTED | Verify async adapter without transactional UoW fails closed before partial effects. |
 | FW-15C-04 | DL-15C | NOT STARTED | Verify nested framework invocation preserves selected transaction ownership. |
@@ -451,24 +491,84 @@
 | FW-15C-04B | DL-15C | NOT STARTED | Verify retained framework handles cannot write after owner context ends. |
 | FW-15C-02 | DL-15C | NOT STARTED | Verify async transactional backend commits or rolls back its declared atomic unit. |
 | FW-15C-02A | DL-15C | NOT STARTED | Verify async non-transactional backend reports weaker semantics and rejects unsupported atomic operations. |
-| FW-16-01 | DL-16 | NOT STARTED | Add derived Node-family round-trip coverage for exact type, wire tag, and extension fields. |
-| FW-16-01A | DL-16 | NOT STARTED | Add derived Edge-family round-trip coverage for exact type, wire tag, endpoints, and lifecycle fields. |
-| FW-16-01B | DL-16 | NOT STARTED | Verify malformed derived-family payloads reject before graph mutation. |
-| FW-16-03 | DL-16 | NOT STARTED | Inventory production derived Node families and define their Python/Rust identity and field contracts. |
-| FW-16-03A | DL-16 | NOT STARTED | Inventory production derived Edge families and define their Python/Rust identity, endpoint, and lifecycle contracts. |
-| FW-16-03B | DL-16 | NOT STARTED | Verify extension fields are explicitly represented or intentionally excluded in every derived-family wire contract. |
+| FW-16-01 | DL-16 | PARENT | Parent scope; children: FW-16-01-NODE,FW-16-01-ACL-NODE,FW-16-01-CONVERSATION-NODE,FW-16-01-WORKFLOW-NODE,FW-16-01-RUN-NODE,FW-16-01-STEP-NODE,FW-16-01-CHECKPOINT-NODE,FW-16-01-COMPLETED-NODE,FW-16-01-CANCELLED-NODE,FW-16-01-FAILED-NODE,FW-16-01-LLM-NODE,FW-16-01-LLM-EXTRACTION-NODE,FW-16-01-FLATTENED-NODE,FW-16-01-ASSOC-FLATTENED-NODE |
+| FW-16-01-NODE | DL-16 | NOT STARTED | Round-trip the base Node type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-ACL-NODE | DL-16 | NOT STARTED | Round-trip ACLNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-CONVERSATION-NODE | DL-16 | NOT STARTED | Round-trip ConversationNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-WORKFLOW-NODE | DL-16 | NOT STARTED | Round-trip WorkflowNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-RUN-NODE | DL-16 | NOT STARTED | Round-trip WorkflowRunNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-STEP-NODE | DL-16 | NOT STARTED | Round-trip WorkflowStepExecNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-CHECKPOINT-NODE | DL-16 | NOT STARTED | Round-trip WorkflowCheckpointNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-COMPLETED-NODE | DL-16 | NOT STARTED | Round-trip WorkflowCompletedNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-CANCELLED-NODE | DL-16 | NOT STARTED | Round-trip WorkflowCancelledNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-FAILED-NODE | DL-16 | NOT STARTED | Round-trip WorkflowFailedNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-LLM-NODE | DL-16 | NOT STARTED | Round-trip LLMNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-LLM-EXTRACTION-NODE | DL-16 | NOT STARTED | Round-trip LLMNodeExtraction type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-FLATTENED-NODE | DL-16 | NOT STARTED | Round-trip FlattenedLLMNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01-ASSOC-FLATTENED-NODE | DL-16 | NOT STARTED | Round-trip AssocFlattenedLLMNode type, wire tag, and extension fields across Python and Rust. |
+| FW-16-01A | DL-16 | PARENT | Parent scope; children: FW-16-01A-EDGE,FW-16-01A-ACL-EDGE,FW-16-01A-CONVERSATION-EDGE,FW-16-01A-WORKFLOW-EDGE,FW-16-01A-WORKFLOW-RUNTIME-EDGE,FW-16-01A-LLM-EDGE,FW-16-01A-LLM-EXTRACTION-EDGE,FW-16-01A-FLATTENED-EDGE,FW-16-01A-ASSOC-FLATTENED-EDGE |
+| FW-16-01A-EDGE | DL-16 | NOT STARTED | Round-trip base Edge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-ACL-EDGE | DL-16 | NOT STARTED | Round-trip ACLEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-CONVERSATION-EDGE | DL-16 | NOT STARTED | Round-trip ConversationEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-WORKFLOW-EDGE | DL-16 | NOT STARTED | Round-trip WorkflowEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-WORKFLOW-RUNTIME-EDGE | DL-16 | NOT STARTED | Round-trip WorkflowRuntimeEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-LLM-EDGE | DL-16 | NOT STARTED | Round-trip LLMEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-LLM-EXTRACTION-EDGE | DL-16 | NOT STARTED | Round-trip LLMEdgeExtraction type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-FLATTENED-EDGE | DL-16 | NOT STARTED | Round-trip FlattenedLLMEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01A-ASSOC-FLATTENED-EDGE | DL-16 | NOT STARTED | Round-trip AssocFlattenedLLMEdge type, endpoints, lifecycle, and extension fields across Python and Rust. |
+| FW-16-01B | DL-16 | PARENT | Parent scope; children: FW-16-01B-NODE,FW-16-01B-EDGE |
+| FW-16-01B-NODE | DL-16 | NOT STARTED | Reject malformed derived Node payloads before graph mutation in both implementations. |
+| FW-16-01B-EDGE | DL-16 | NOT STARTED | Reject malformed derived Edge payloads before graph mutation in both implementations. |
+| FW-16-03 | DL-16 | NOT STARTED | Generate one production Node-family inventory and assert each maps to a Python/Rust identity and field contract. |
+| FW-16-03A | DL-16 | NOT STARTED | Generate one production Edge-family inventory and assert each maps to identity, endpoint, and lifecycle contracts. |
+| FW-16-03B | DL-16 | NOT STARTED | Add one generated wire-contract assertion for explicit inclusion or exclusion of derived-family extension fields. |
 | FW-16-04 | DL-16 | NOT STARTED | Verify shared canonical payload and digest parity for one derived family on the native path. |
 | FW-16-04A | DL-16 | NOT STARTED | Verify recovery parity for one derived family on the native path. |
 | FW-16-04B | DL-16 | NOT STARTED | Verify shared payload, digest, and invalid-input rejection for one derived family on the mixed path. |
-| FW-16-02 | DL-16 | NOT STARTED | Verify shared payload and digest parity for derived Node families on advertised paths. |
-| FW-16-02A | DL-16 | NOT STARTED | Verify shared payload and digest parity for derived Edge families on advertised paths. |
-| FW-16-02B | DL-16 | NOT STARTED | Verify restart/recovery parity and invalid-payload rejection for derived families. |
+| FW-16-02 | DL-16 | PARENT | Parent scope; children: FW-16-02-NODE,FW-16-02-ACL-NODE,FW-16-02-CONVERSATION-NODE,FW-16-02-WORKFLOW-NODE,FW-16-02-RUN-NODE,FW-16-02-STEP-NODE,FW-16-02-CHECKPOINT-NODE,FW-16-02-COMPLETED-NODE,FW-16-02-CANCELLED-NODE,FW-16-02-FAILED-NODE,FW-16-02-LLM-NODE,FW-16-02-LLM-EXTRACTION-NODE,FW-16-02-FLATTENED-NODE,FW-16-02-ASSOC-FLATTENED-NODE |
+| FW-16-02-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for the base Node family on advertised paths. |
+| FW-16-02-ACL-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for ACLNode on advertised paths. |
+| FW-16-02-CONVERSATION-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for ConversationNode on advertised paths. |
+| FW-16-02-WORKFLOW-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowNode on advertised paths. |
+| FW-16-02-RUN-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowRunNode on advertised paths. |
+| FW-16-02-STEP-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowStepExecNode on advertised paths. |
+| FW-16-02-CHECKPOINT-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowCheckpointNode on advertised paths. |
+| FW-16-02-COMPLETED-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowCompletedNode on advertised paths. |
+| FW-16-02-CANCELLED-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowCancelledNode on advertised paths. |
+| FW-16-02-FAILED-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowFailedNode on advertised paths. |
+| FW-16-02-LLM-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for LLMNode on advertised paths. |
+| FW-16-02-LLM-EXTRACTION-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for LLMNodeExtraction on advertised paths. |
+| FW-16-02-FLATTENED-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for FlattenedLLMNode on advertised paths. |
+| FW-16-02-ASSOC-FLATTENED-NODE | DL-16 | NOT STARTED | Verify shared payload and digest parity for AssocFlattenedLLMNode on advertised paths. |
+| FW-16-02A | DL-16 | PARENT | Parent scope; children: FW-16-02A-EDGE,FW-16-02A-ACL-EDGE,FW-16-02A-CONVERSATION-EDGE,FW-16-02A-WORKFLOW-EDGE,FW-16-02A-WORKFLOW-RUNTIME-EDGE,FW-16-02A-LLM-EDGE,FW-16-02A-LLM-EXTRACTION-EDGE,FW-16-02A-FLATTENED-EDGE,FW-16-02A-ASSOC-FLATTENED-EDGE |
+| FW-16-02A-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for the base Edge family on advertised paths. |
+| FW-16-02A-ACL-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for ACLEdge on advertised paths. |
+| FW-16-02A-CONVERSATION-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for ConversationEdge on advertised paths. |
+| FW-16-02A-WORKFLOW-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowEdge on advertised paths. |
+| FW-16-02A-WORKFLOW-RUNTIME-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for WorkflowRuntimeEdge on advertised paths. |
+| FW-16-02A-LLM-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for LLMEdge on advertised paths. |
+| FW-16-02A-LLM-EXTRACTION-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for LLMEdgeExtraction on advertised paths. |
+| FW-16-02A-FLATTENED-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for FlattenedLLMEdge on advertised paths. |
+| FW-16-02A-ASSOC-FLATTENED-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for AssocFlattenedLLMEdge on advertised paths. |
+| FW-16-02B | DL-16 | PARENT | Parent scope; children: FW-16-02B-NODE-RECOVERY,FW-16-02B-EDGE-RECOVERY,FW-16-02B-NODE-INVALID,FW-16-02B-EDGE-INVALID |
+| FW-16-02B-NODE-RECOVERY | DL-16 | NOT STARTED | Verify Node-family restart and recovery preserves the canonical payload and digest. |
+| FW-16-02B-EDGE-RECOVERY | DL-16 | NOT STARTED | Verify Edge-family restart and recovery preserves endpoints, payload, and digest. |
+| FW-16-02B-NODE-INVALID | DL-16 | NOT STARTED | Verify malformed derived Node payloads are rejected before graph mutation. |
+| FW-16-02B-EDGE-INVALID | DL-16 | NOT STARTED | Verify malformed derived Edge payloads are rejected before graph mutation. |
 | FW-16AC-01 | DL-16AC | NOT STARTED | Verify node ACL outcomes for public, owner, private, scope, and shared/group visibility against Python fixtures. |
 | FW-16AC-01A | DL-16AC | NOT STARTED | Verify edge ACL outcomes for public, owner, private, scope, and shared/group visibility against Python fixtures. |
 | FW-16AC-01B | DL-16AC | NOT STARTED | Verify latest-version selection and no-record denial for node and edge reads. |
 | FW-16AC-01C | DL-16AC | NOT STARTED | Verify tombstone and redirect filtering for node and edge reads against Python. |
-| FW-16AC-03 | DL-16AC | NOT STARTED | Verify node ACL decisions for each graph role and same-string cross-kind IDs. |
-| FW-16AC-03A | DL-16AC | NOT STARTED | Verify edge ACL decisions for each graph role and same-string cross-kind IDs. |
+| FW-16AC-03 | DL-16AC | PARENT | Parent scope; children: FW-16AC-03-KNOWLEDGE,FW-16AC-03-CONVERSATION,FW-16AC-03-WORKFLOW,FW-16AC-03-WISDOM |
+| FW-16AC-03-KNOWLEDGE | DL-16AC | NOT STARTED | Verify node ACL decisions and same-string edge-ID isolation in the knowledge graph. |
+| FW-16AC-03-CONVERSATION | DL-16AC | NOT STARTED | Verify node ACL decisions and same-string edge-ID isolation in the conversation graph. |
+| FW-16AC-03-WORKFLOW | DL-16AC | NOT STARTED | Verify node ACL decisions and same-string edge-ID isolation in the workflow graph. |
+| FW-16AC-03-WISDOM | DL-16AC | NOT STARTED | Verify node ACL decisions and same-string edge-ID isolation in the wisdom graph. |
+| FW-16AC-03A | DL-16AC | PARENT | Parent scope; children: FW-16AC-03A-KNOWLEDGE,FW-16AC-03A-CONVERSATION,FW-16AC-03A-WORKFLOW,FW-16AC-03A-WISDOM |
+| FW-16AC-03A-KNOWLEDGE | DL-16AC | NOT STARTED | Verify edge ACL decisions and same-string node-ID isolation in the knowledge graph. |
+| FW-16AC-03A-CONVERSATION | DL-16AC | NOT STARTED | Verify edge ACL decisions and same-string node-ID isolation in the conversation graph. |
+| FW-16AC-03A-WORKFLOW | DL-16AC | NOT STARTED | Verify edge ACL decisions and same-string node-ID isolation in the workflow graph. |
+| FW-16AC-03A-WISDOM | DL-16AC | NOT STARTED | Verify edge ACL decisions and same-string node-ID isolation in the wisdom graph. |
 | FW-16AC-03B | DL-16AC | NOT STARTED | Verify shared/group and latest-version decisions remain scoped to selected graph role. |
 | FW-16AC-04 | DL-16AC | NOT STARTED | Verify source-evidence authorization and tombstone/redirect behavior on graph reads. |
 | FW-16AC-04A | DL-16AC | NOT STARTED | Verify edge endpoint dependency filtering for authorized and denied endpoint cases. |
@@ -535,17 +635,34 @@
 | FW-16BQ-02B-SQLITE-CHROMA | DL-16BQ | NOT STARTED | Verify SQLite+Chroma final graph digest for the frozen operation trace. |
 | FW-16BQ-02B-MEMORY | DL-16BQ | NOT STARTED | Verify in-memory final graph digest for the frozen operation trace. |
 | FW-17-01 | DL-17 | NOT STARTED | Run and record required CPython 3.12 CI cells for the declared platform set. |
-| FW-17-01A | DL-17 | NOT STARTED | Run and record required CPython 3.13/3.14 CI cells for the declared platform set. |
+| FW-17-01A | DL-17 | PARENT | Parent scope; children: FW-17-01A-CP313,FW-17-01A-CP314 |
+| FW-17-01A-CP313 | DL-17 | NOT STARTED | Run required CPython 3.13 Python-authority CI cells and record outcomes. |
+| FW-17-01A-CP314 | DL-17 | NOT STARTED | Run required CPython 3.14 Python-authority CI cells and record outcomes. |
 | FW-17-01B | DL-17 | NOT STARTED | Run and record required PyPy 3.11 cells; retain best-effort status where a cell is not required. |
-| FW-17-01C | DL-17 | NOT STARTED | Verify Rust toolchain/platform CI cells and clearly distinguish required versus best-effort. |
+| FW-17-01C | DL-17 | PARENT | Parent scope; children: FW-17-01C-LINUX,FW-17-01C-WINDOWS,FW-17-01C-MACOS |
+| FW-17-01C-LINUX | DL-17 | NOT STARTED | Verify required Rust toolchain and CI result on Linux; label optional jobs. |
+| FW-17-01C-WINDOWS | DL-17 | NOT STARTED | Verify required Rust toolchain and CI result on Windows; label optional jobs. |
+| FW-17-01C-MACOS | DL-17 | NOT STARTED | Verify required Rust toolchain and CI result on macOS; label optional jobs. |
 | FW-17-03 | DL-17 | NOT STARTED | Verify published wheel metadata and dependency installation on CPython required cells. |
-| FW-17-03A | DL-17 | NOT STARTED | Verify native extension loading on each supported CPython/platform cell. |
+| FW-17-03A | DL-17 | PARENT | Parent scope; children: FW-17-03A-312-LINUX,FW-17-03A-312-WINDOWS,FW-17-03A-312-MACOS,FW-17-03A-313-LINUX,FW-17-03A-313-WINDOWS,FW-17-03A-313-MACOS,FW-17-03A-314-LINUX,FW-17-03A-314-WINDOWS,FW-17-03A-314-MACOS |
+| FW-17-03A-312-LINUX | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.12 Linux. |
+| FW-17-03A-312-WINDOWS | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.12 Windows. |
+| FW-17-03A-312-MACOS | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.12 macOS. |
+| FW-17-03A-313-LINUX | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.13 Linux. |
+| FW-17-03A-313-WINDOWS | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.13 Windows. |
+| FW-17-03A-313-MACOS | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.13 macOS. |
+| FW-17-03A-314-LINUX | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.14 Linux. |
+| FW-17-03A-314-WINDOWS | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.14 Windows. |
+| FW-17-03A-314-MACOS | DL-17 | NOT STARTED | Verify native extension import and smoke behavior on CPython 3.14 macOS. |
 | FW-17-03B | DL-17 | NOT STARTED | Verify package installation/import behavior on the required PyPy 3.11 cell. |
 | FW-17-04 | DL-17 | NOT STARTED | Run downstream pinned-consumer feature tests for the Python implementation path. |
 | FW-17-04A | DL-17 | NOT STARTED | Run downstream pinned-consumer regression tests for the Rust/mixed implementation paths. |
 | FW-17-04B | DL-17 | NOT STARTED | Reconcile CI, package metadata, and support documentation after downstream runs. |
 | FW-17-02 | DL-17 | NOT STARTED | Run pinned-consumer feature tests against the declared package version. |
-| FW-17-02A | DL-17 | NOT STARTED | Run pinned-consumer regression tests for each advertised implementation path. |
+| FW-17-02A | DL-17 | PARENT | Parent scope; children: FW-17-02A-PYTHON,FW-17-02A-MIXED,FW-17-02A-RUST |
+| FW-17-02A-PYTHON | DL-17 | NOT STARTED | Run pinned-consumer regression for the Python implementation path. |
+| FW-17-02A-MIXED | DL-17 | NOT STARTED | Run pinned-consumer regression for the mixed Python/Rust implementation path. |
+| FW-17-02A-RUST | DL-17 | NOT STARTED | Run pinned-consumer regression for the Rust-native implementation path. |
 | FW-17-02B | DL-17 | NOT STARTED | Verify published metadata and documented support matrix match the tested consumer cells. |
 | FW-18-01 | DL-18 | NOT STARTED | Freeze one deterministic balanced mixed read/write trace and expected read visibility. |
 | FW-18-01A | DL-18 | NOT STARTED | Freeze one deterministic read-heavy trace and expected read visibility. |
@@ -573,12 +690,27 @@
 | FW-19-04B | DL-19 | NOT STARTED | Report medians, tail latency, and sample variation for the added runtime/recovery cells. |
 | FW-19-02 | DL-19 | NOT STARTED | Add one supported-runtime replay/recovery cell and verify digest parity. |
 | FW-19-02A | DL-19 | NOT STARTED | Report median and tail latency for replay/recovery samples. |
-| FW-20-01 | DL-20 | NOT STARTED | Attribute endpoint latency to transport and authentication/authorization stages on one representative request. |
-| FW-20-01A | DL-20 | NOT STARTED | Attribute endpoint latency to graph storage and indexing stages on one representative request. |
-| FW-20-01B | DL-20 | NOT STARTED | Attribute endpoint latency to worker transfer and aggregate those timings across representative sizes/backends. |
+| FW-20-01 | DL-20 | PARENT | Parent scope; children: FW-20-01-TRANSPORT,FW-20-01-AUTHORIZATION |
+| FW-20-01-TRANSPORT | DL-20 | NOT STARTED | Attribute representative endpoint latency to request transport and response serialization. |
+| FW-20-01-AUTHORIZATION | DL-20 | NOT STARTED | Attribute representative endpoint latency to authentication and authorization stages. |
+| FW-20-01A | DL-20 | PARENT | Parent scope; children: FW-20-01A-GRAPH-STORAGE,FW-20-01A-INDEXING |
+| FW-20-01A-GRAPH-STORAGE | DL-20 | NOT STARTED | Attribute representative endpoint latency to canonical graph storage. |
+| FW-20-01A-INDEXING | DL-20 | NOT STARTED | Attribute representative endpoint latency to semantic indexing. |
+| FW-20-01B | DL-20 | PARENT | Parent scope; children: FW-20-01B-SQLITE-SMALL,FW-20-01B-SQLITE-LARGE,FW-20-01B-CHROMA-SMALL,FW-20-01B-CHROMA-LARGE,FW-20-01B-POSTGRES-SMALL,FW-20-01B-POSTGRES-LARGE |
+| FW-20-01B-SQLITE-SMALL | DL-20 | NOT STARTED | Attribute worker-transfer latency for the small fixture on SQLite persistence. |
+| FW-20-01B-SQLITE-LARGE | DL-20 | NOT STARTED | Attribute worker-transfer latency for the large fixture on SQLite persistence. |
+| FW-20-01B-CHROMA-SMALL | DL-20 | NOT STARTED | Attribute worker-transfer latency for the small fixture with Chroma projection. |
+| FW-20-01B-CHROMA-LARGE | DL-20 | NOT STARTED | Attribute worker-transfer latency for the large fixture with Chroma projection. |
+| FW-20-01B-POSTGRES-SMALL | DL-20 | NOT STARTED | Attribute worker-transfer latency for the small fixture on PostgreSQL/pgvector. |
+| FW-20-01B-POSTGRES-LARGE | DL-20 | NOT STARTED | Attribute worker-transfer latency for the large fixture on PostgreSQL/pgvector. |
 | FW-20-03 | DL-20 | NOT STARTED | Add ingress/transport stage timing and operation counter without changing request semantics. |
-| FW-20-03A | DL-20 | NOT STARTED | Add authentication/authorization and graph-storage stage timing counters. |
-| FW-20-03B | DL-20 | NOT STARTED | Add indexing and worker-transfer stage timing counters and verify attribution. |
+| FW-20-03A | DL-20 | PARENT | Parent scope; children: FW-20-03A-AUTHENTICATION,FW-20-03A-AUTHORIZATION,FW-20-03A-GRAPH-STORAGE |
+| FW-20-03A-AUTHENTICATION | DL-20 | NOT STARTED | Add an authentication-stage timing counter with a focused attribution test. |
+| FW-20-03A-AUTHORIZATION | DL-20 | NOT STARTED | Add an authorization-stage timing counter with a focused attribution test. |
+| FW-20-03A-GRAPH-STORAGE | DL-20 | NOT STARTED | Add a canonical graph-storage timing counter with a focused attribution test. |
+| FW-20-03B | DL-20 | PARENT | Parent scope; children: FW-20-03B-INDEXING,FW-20-03B-WORKER-TRANSFER |
+| FW-20-03B-INDEXING | DL-20 | NOT STARTED | Add an indexing-stage timing counter and verify attribution. |
+| FW-20-03B-WORKER-TRANSFER | DL-20 | NOT STARTED | Add a worker-transfer timing counter and verify attribution. |
 | FW-20-04 | DL-20 | NOT STARTED | Repeat resource-matched Python versus mixed endpoint comparison and verify identical digest. |
 | FW-20-04A | DL-20 | NOT STARTED | Repeat resource-matched Rust-native endpoint comparison and verify identical digest. |
 | FW-20-04B | DL-20 | PARENT | Parent scope; children: FW-20-04B-PYTHON,FW-20-04B-MIXED,FW-20-04B-RUST |
@@ -590,10 +722,14 @@
 | FW-20-02B | DL-20 | NOT STARTED | State performance conclusions only where confidence/variation evidence supports them. |
 | FW-20A-01 | DL-20A | NOT STARTED | Join FFI and serialized-byte counters for one representative graph trace. |
 | FW-20A-01A | DL-20A | NOT STARTED | Join worker-dispatch and transaction counters for one representative workflow/storage trace. |
-| FW-20A-01B | DL-20A | NOT STARTED | Add the joined counters to representative indexing and MCP traces. |
+| FW-20A-01B | DL-20A | PARENT | Parent scope; children: FW-20A-01B-INDEXING,FW-20A-01B-MCP |
+| FW-20A-01B-INDEXING | DL-20A | NOT STARTED | Add joined performance counters to one representative indexing trace. |
+| FW-20A-01B-MCP | DL-20A | NOT STARTED | Add joined performance counters to one representative MCP trace. |
 | FW-20A-03 | DL-20A | NOT STARTED | Verify counters join to one trace/run identity and count no duplicate state effects. |
 | FW-20A-03A | DL-20A | NOT STARTED | Verify ingress, worker, FFI, serialization, and transaction ownership fields correlate for one mixed trace. |
-| FW-20A-04 | DL-20A | NOT STARTED | Add small/large batch-versus-item fixtures and verify equal final-state digest. |
+| FW-20A-04 | DL-20A | PARENT | Parent scope; children: FW-20A-04-SMALL,FW-20A-04-LARGE |
+| FW-20A-04-SMALL | DL-20A | NOT STARTED | Compare batch and per-item small fixtures and assert identical final-state digests. |
+| FW-20A-04-LARGE | DL-20A | NOT STARTED | Compare batch and per-item large fixtures and assert identical final-state digests. |
 | FW-20A-04A | DL-20A | NOT STARTED | Define regression thresholds for crossings, serialized bytes, and latency using measured baseline. |
 | FW-20A-02 | DL-20A | NOT STARTED | Add batch-versus-per-item graph fixture and verify no duplicated state effects. |
 | FW-20A-02A | DL-20A | NOT STARTED | Add batch-versus-per-item workflow fixture and verify crossing/serialization counts. |
