@@ -851,6 +851,125 @@ async fn postgres_concurrent_acl_mutations_keep_event_and_truth_projection_order
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_graph_writes_keep_coalesced_index_intent_current_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_index_intent_writer_race");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    first_store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let scope = GraphScope {
+        namespace: format!("graph-index-writer-race-{}", std::process::id()),
+        workspace_id: Some("workspace".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let batch = |writer: &str| {
+        let mut metadata = Map::new();
+        metadata.insert("writer".to_owned(), serde_json::json!(writer));
+        kogwistar_store::GraphMutationBatch {
+            mutations: vec![kogwistar_store::GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("graph-event-{writer}"),
+                op: "REPLACE".to_owned(),
+                payload: serde_json::json!({"id":"shared-node", "writer":writer}),
+                record: GraphRecord {
+                    id: "shared-node".to_owned(),
+                    document: Some(serde_json::json!({"writer":writer}).to_string()),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }],
+            index_jobs: vec![kogwistar_store::NewIndexJob {
+                job_id: format!("index-job-{writer}"),
+                namespace: scope.namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: "shared-node".to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some(serde_json::json!({"writer":writer}).to_string()),
+                max_retries: 3,
+            }],
+        }
+    };
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store
+            .apply_graph_mutations_with_index_jobs_atomic(batch("first"))
+            .await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store
+            .apply_graph_mutations_with_index_jobs_atomic(batch("second"))
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert!(
+        first?
+            .first()
+            .is_some_and(|result| result.inserted && result.mutated)
+    );
+    assert!(
+        second?
+            .first()
+            .is_some_and(|result| result.inserted && result.mutated)
+    );
+
+    let events = first_store
+        .replay_raw_events(&scope.namespace, 0, 10)
+        .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq + 1, events[1].seq);
+    let final_event: serde_json::Value = serde_json::from_str(&events[1].payload_json)?;
+    let records = first_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["shared-node".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].metadata["writer"], final_event["writer"]);
+
+    let jobs = first_store
+        .list_index_jobs(Some(&scope.namespace), None, None, None, None, 10)
+        .await?;
+    assert_eq!(jobs.len(), 1, "matching pending intents coalesce");
+    assert_eq!(jobs[0].status, "PENDING");
+    let final_intent: serde_json::Value =
+        serde_json::from_str(jobs[0].payload_json.as_deref().expect("intent payload"))?;
+    assert_eq!(final_intent["writer"], final_event["writer"]);
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 #[test]
 fn physical_graph_purge_requires_canonical_tombstone() {
     let active = Map::new();
