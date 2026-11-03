@@ -405,6 +405,63 @@ fn canonical_graph_batch_rejects_payload_scope_when_scope_dimension_is_absent() 
 }
 
 #[test]
+fn committed_canonical_graph_state_survives_reopen_after_injected_batch_failure() {
+    let (store, path) = store("canonical-graph-failure-reopen");
+    store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![mutation("durable-event", "durable-node")],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    drop(store);
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_reopened_stage1_projection
+             BEFORE INSERT ON stage1_node_projections
+             WHEN NEW.key = 'node:failed-node'
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected post-reopen Stage-1 failure');
+             END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let reopened = SqliteStore::open(&path).unwrap();
+    let failed = reopened.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+        mutations: vec![mutation("failed-event", "failed-node")],
+        index_jobs: Vec::new(),
+    });
+    assert!(
+        failed.is_err(),
+        "the injected failure must reach the write path"
+    );
+    drop(reopened);
+
+    let recovered = SqliteStore::open(&path).unwrap();
+    let events = recovered.replay_raw_events("conversation", 0, 10).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, "durable-event");
+    assert_eq!(
+        recovered
+            .get_stage1_node_projection("conversation", "node:durable-node")
+            .unwrap()
+            .expect("the committed Stage-1 projection remains durable")
+            .payload["id"],
+        "durable-node"
+    );
+    assert!(
+        recovered
+            .get_stage1_node_projection("conversation", "node:failed-node")
+            .unwrap()
+            .is_none()
+    );
+    drop(recovered);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     let (store, path) = store("canonical-edge-projection-kind");
     let mut edge = mutation("edge-event-1", "edge-1");

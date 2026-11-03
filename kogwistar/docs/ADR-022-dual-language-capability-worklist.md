@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **51/714 PASS (7.1%)**; **0 IN PROGRESS**, **663 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **52/714 PASS (7.3%)**; **0 IN PROGRESS**, **662 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. The prior sizing pass converted composite rows into non-counting parents and atomic children; it did not change coarse IDs or valid PASS evidence. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not expand this inventory to improve a percentage.
 - **Equal-size unit (S=1):** a counted leaf is exactly one independently decidable contract verdict in one fixed execution cell. Record four parts before work starts: (1) one observable invariant, (2) one execution cell, (3) one binary expected result, and (4) one focused test/check command. The cell names only dimensions that affect this check: operation/capability, implementation path, backend, runtime/platform, transport, and fixture size. Paired Python/Rust execution is one leaf only when both sides decide the same invariant and yield one parity verdict; otherwise they are separate cells. Multiple examples may remain together only when they test the same invariant and yield the same verdict.
 - **Effort bound and start gate:** S=1 targets 20 minutes and is capped at 30 minutes of active work, normally one bounded edit and one focused verification command. CI/runtime waiting is excluded, but the command and expected result must be recorded. A leaf cannot move to `IN PROGRESS` until its four parts and time estimate are recorded. If it requires another verdict, another execution cell, a second focused command, or more than 30 active minutes, stop before implementing it: retain its ID as an uncounted `PARENT` and list the smallest independently passable children. Each child gets a separate cell and oracle. Do not split by file, field, or data example alone.
@@ -333,7 +333,7 @@
 | FW-06-05A | DL-06 | PASS | The SQLite+Chroma integration test injects post-commit projection/ack failures, then retries without duplicate events (**1 passed**). |
 | FW-06-05B | DL-06 | PASS | `canonical_graph_batch_rolls_back_event_when_projection_job_insert_fails` fails the second entity's intent and asserts full batch rollback (**1 passed**). |
 | FW-06-02 | DL-06 | PARENT | Parent scope; children: FW-06-02-REOPEN,FW-06-02-RETRY |
-| FW-06-02-REOPEN | DL-06 | NOT STARTED | Reopen SQLite after an injected failure and verify the committed canonical state is durable. |
+| FW-06-02-REOPEN | DL-06 | PASS | A committed graph event/projection survived reopen and a later injected Stage-1 write failure; after another reopen the failed event/projection were absent. Evidence: `tests::graph_mutations::committed_canonical_graph_state_survives_reopen_after_injected_batch_failure` (**1 passed**). |
 | FW-06-02-RETRY | DL-06 | NOT STARTED | Retry the same SQLite operation after reopen and verify it does not duplicate authoritative effects. |
 | FW-06-02A | DL-06 | PARENT | Parent scope; children: FW-06-02A-REOPEN,FW-06-02A-RETRY |
 | FW-06-02A-REOPEN | DL-06 | NOT STARTED | Reopen PostgreSQL after an injected failure and verify the committed canonical state is durable. |
