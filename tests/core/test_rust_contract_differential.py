@@ -511,12 +511,13 @@ def test_python_and_rust_preserve_shared_legacy_graph_defaults(monkeypatch) -> N
             assert python_payload["level_from_root"] == 3
             assert python_payload["metadata"]["level_from_root"] == 3
 
-        _rust.validate_graph_model_family(
-            json.dumps(
-                {"schema_version": 1, "model_class": kind, "payload": payload},
-                ensure_ascii=False,
-            )
+        wire = json.dumps(
+            {"schema_version": 1, "model_class": kind, "payload": payload},
+            ensure_ascii=False,
         )
+        _rust.validate_graph_model_family(wire)
+        rust_decoded = json.loads(_rust.decode_persistent_graph_model_v2(wire))
+        assert rust_decoded["entity"] == python_payload, case_id
 
 
 @pytest.mark.requires_rust

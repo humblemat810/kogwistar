@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **99/740 PASS (13.4%)**; **0 IN PROGRESS**, **641 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **101/740 PASS (13.6%)**; **0 IN PROGRESS**, **639 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -287,8 +287,8 @@
 | FW-05-01C-REST | DL-05 | NOT STARTED | Add one REST request/response DTO fixture; Python and Rust canonical payloads must match. |
 | FW-05-01C-MCP | DL-05 | NOT STARTED | Add one MCP request/response DTO fixture; Python and Rust canonical payloads must match. |
 | FW-05-03 | DL-05 | PARENT | Parent scope; children: FW-05-03-NODE,FW-05-03-EDGE |
-| FW-05-03-NODE | DL-05 | NOT STARTED | Verify base Node identity, common fields, lifecycle, and legacy defaults round-trip identically. |
-| FW-05-03-EDGE | DL-05 | NOT STARTED | Verify base Edge identity, common fields, lifecycle, and legacy defaults round-trip identically. |
+| FW-05-03-NODE | DL-05 | PASS | Python/Rust persistent Node outputs match for legacy defaults, deleted-status normalization, metadata-level fallback, and top-level-level precedence. Evidence: `tests/core/test_rust_contract_differential.py::test_python_and_rust_preserve_shared_legacy_graph_defaults` (**1 passed**, eight Node/Edge cases); Rust `cargo test -p kogwistar-contracts persistent_graph_legacy_defaults_match_shared_compatibility_fixture --lib` (**1 passed**). |
+| FW-05-03-EDGE | DL-05 | PASS | Python/Rust persistent Edge outputs match for legacy defaults, deleted-status normalization, metadata-level fallback, and top-level-level precedence. Evidence: `tests/core/test_rust_contract_differential.py::test_python_and_rust_preserve_shared_legacy_graph_defaults` (**1 passed**, eight Node/Edge cases); Rust `cargo test -p kogwistar-contracts persistent_graph_legacy_defaults_match_shared_compatibility_fixture --lib` (**1 passed**). |
 | FW-05-03A | DL-05 | PARENT | Parent scope; children: FW-05-03A-IDENTITY,FW-05-03A-PARTICIPATION,FW-05-03A-ENDPOINT-REJECT |
 | FW-05-03A-IDENTITY | DL-05 | NOT STARTED | Verify Python/Rust hyperedge identity serialization against one shared fixture. |
 | FW-05-03A-PARTICIPATION | DL-05 | NOT STARTED | Verify Python/Rust hyperedge participation and endpoint serialization against one shared fixture. |
