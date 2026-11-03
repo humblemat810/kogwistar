@@ -61,6 +61,32 @@ impl GraphMutationStore for PostgresStore {
 }
 
 impl DocumentStore for PostgresStore {
+    fn supports_document_projection_lookup(&self) -> bool {
+        true
+    }
+
+    async fn document_projection_ids(
+        &self,
+        scope: GraphScope,
+        ids: Vec<String>,
+    ) -> StoreResult<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = ids.len();
+        let rows = self
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_documents".to_owned(),
+                ids: Some(ids),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit,
+            })
+            .await
+            .map_err(trait_error)?;
+        Ok(rows.into_iter().map(|row| row.id).collect())
+    }
+
     fn document_authority_capability(&self) -> DocumentAuthorityCapability {
         DocumentAuthorityCapability::ProjectionUpsert
     }

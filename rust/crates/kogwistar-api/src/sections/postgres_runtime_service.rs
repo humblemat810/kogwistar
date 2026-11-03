@@ -6105,6 +6105,11 @@ impl PostgresRunApplicationService {
         {
             return self.latest_snapshot_effect(&request).await;
         }
+        if request.method == "POST"
+            && request.path_and_query == INTERNAL_DOCUMENT_LOOKUP_ROUTE
+        {
+            return document_id_lookup_effect(&request, &self.store, &self.capabilities).await;
+        }
         if is_document_projection_route(&request.method, &request.path_and_query) {
             let public_upsert =
                 request.path_and_query.split('?').next() == Some(PUBLIC_DOCUMENT_UPSERT_ROUTE);

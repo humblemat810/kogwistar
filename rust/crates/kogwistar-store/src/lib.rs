@@ -2124,6 +2124,23 @@ impl DocumentAuthorityCapability {
 /// The default is fail-closed so stores without Python-compatible document
 /// semantics cannot accidentally advertise the public document route.
 pub trait DocumentStore: Send + Sync {
+    fn supports_document_projection_lookup(&self) -> bool {
+        false
+    }
+
+    fn document_projection_ids(
+        &self,
+        _scope: GraphScope,
+        _ids: Vec<String>,
+    ) -> impl Future<Output = StoreResult<Vec<String>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "document projection lookup is not supported by this store".to_owned(),
+            })
+        }
+    }
+
     fn upsert_document_projection(
         &self,
         _write: DocumentProjectionUpsert,

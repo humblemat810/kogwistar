@@ -172,6 +172,14 @@ async fn mcp_handler(
             .and_then(Value::as_str)
             .unwrap_or_default();
         let request = match tool_name {
+            "document_id_from_file_name" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_DOCUMENT_LOOKUP_ROUTE.to_owned(),
+                body: serde_json::to_vec(&arguments)
+                    .expect("document lookup arguments serialize"),
+                principal: principal.clone(),
+            }),
             "conversation.create" => {
                 let user_id = arguments
                     .get("user_id")
@@ -1129,6 +1137,46 @@ async fn mcp_handler(
                 "conversation_id": conversation_id,
                 "turns": turns,
             });
+        } else if tool_name == "document_id_from_file_name" {
+            let Some(ids) = result.get("ids").and_then(Value::as_array) else {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Invalid document lookup response from Rust application service"},
+                }))
+                .into_response();
+            };
+            let map_key = crate::short_id_store::short_id_map_key_for_bearer(
+                bearer_token(&headers),
+            );
+            let mut id_mapping = Vec::with_capacity(ids.len());
+            for value in ids {
+                let Some(file_name) = value.as_str() else {
+                    return Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32000, "message": "Invalid document ID in Rust application response"},
+                    }))
+                    .into_response();
+                };
+                let short_id = match crate::short_id_store::short_id_for(
+                    ".shortids",
+                    &map_key,
+                    file_name,
+                ) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {"code": -32000, "message": "Could not persist document ID mapping"},
+                        }))
+                        .into_response();
+                    }
+                };
+                id_mapping.push(json!({"file_name": file_name, "id": short_id}));
+            }
+            result = json!({"id_mapping": id_mapping});
         }
         return Json(mcp_result(id, result)).into_response();
     }

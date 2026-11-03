@@ -94,3 +94,48 @@ fn source_document_write_participates_in_the_sqlite_unit_of_work() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn document_projection_lookup_is_scoped_and_preserves_requested_order() {
+    let (store, path) = store("source-document-lookup");
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    for id in ["doc-b", "doc-a"] {
+        store
+            .upsert_source_document_projection(source_document(
+                scope.clone(),
+                id,
+                "authoritative text",
+            ))
+            .unwrap();
+    }
+
+    assert!(DocumentStore::supports_document_projection_lookup(&store));
+    let found = block_on(DocumentStore::document_projection_ids(
+        &store,
+        scope.clone(),
+        vec!["doc-a".to_owned(), "missing".to_owned(), "doc-b".to_owned()],
+    ))
+    .unwrap();
+    assert_eq!(found, ["doc-a", "doc-b"]);
+
+    let other_scope = GraphScope {
+        namespace: "tenant-b".to_owned(),
+        ..scope
+    };
+    assert!(
+        block_on(DocumentStore::document_projection_ids(
+            &store,
+            other_scope,
+            vec!["doc-a".to_owned()],
+        ))
+        .unwrap()
+        .is_empty()
+    );
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}

@@ -896,6 +896,183 @@
         assert_eq!(ocr.status, StatusCode::NOT_IMPLEMENTED);
     }
 
+    #[tokio::test]
+    async fn internal_document_lookup_requires_read_authority_and_uses_principal_scope() {
+        let nonce = uuid::Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!("kogwistar-document-lookup-{nonce}.sqlite3"));
+        let store = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+        let scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: None,
+        };
+        DocumentStore::upsert_document_projection(
+            &store,
+            DocumentProjectionUpsert {
+                scope,
+                record: GraphRecord {
+                    id: "doc-1".to_owned(),
+                    document: Some("fixture source".to_owned()),
+                    metadata: Default::default(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
+        let request = |principal: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_DOCUMENT_LOOKUP_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"file_name":"doc-1"})).unwrap(),
+            principal,
+        };
+
+        let denied = document_id_lookup_effect(
+            &request(json!({
+                "sub":"reader",
+                "role":"ro",
+                "ns":["docs"],
+                "storage_ns":"docs",
+                "workspace":"workspace-a",
+                "capabilities":[]
+            })),
+            &store,
+            &capabilities,
+        )
+        .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
+
+        let found = document_id_lookup_effect(
+            &request(json!({
+                "sub":"reader",
+                "role":"ro",
+                "ns":["docs"],
+                "storage_ns":"docs",
+                "workspace":"workspace-a",
+                "capabilities":["read_graph"]
+            })),
+            &store,
+            &capabilities,
+        )
+        .await;
+        assert_eq!(found.status, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&found.body).unwrap()["ids"], json!(["doc-1"]));
+
+        let outside_scope = document_id_lookup_effect(
+            &request(json!({
+                "sub":"reader",
+                "role":"ro",
+                "ns":["docs"],
+                "storage_ns":"other-docs",
+                "workspace":"workspace-a",
+                "capabilities":["read_graph"]
+            })),
+            &store,
+            &capabilities,
+        )
+        .await;
+        assert_eq!(outside_scope.status, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&outside_scope.body).unwrap()["ids"], json!([]));
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sqlite_document_id_mcp_returns_python_compatible_short_id_mapping() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
+        let nonce = uuid::Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!("kogwistar-document-mcp-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let bearer = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"document-reader",
+                "role":"ro",
+                "ns":["docs"],
+                "storage_ns":"docs",
+                "capabilities":["read_graph"],
+                "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(b"document-mcp-test-secret"),
+        )
+        .unwrap();
+        let scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        DocumentStore::upsert_document_projection(
+            &service.store,
+            DocumentProjectionUpsert {
+                scope,
+                record: GraphRecord {
+                    id: "source-document-1".to_owned(),
+                    document: Some("source text".to_owned()),
+                    metadata: Default::default(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("document-mcp-test-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"lookup","method":"tools/call","params":{"name":"document_id_from_file_name","arguments":{"file_name":"source-document-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        let mapping = &payload["result"]["id_mapping"][0];
+        assert_eq!(mapping["file_name"], "source-document-1");
+        let short_id = mapping["id"].as_str().unwrap();
+        assert!(short_id.starts_with("<sid>"));
+        let map_key = crate::short_id_store::short_id_map_key_for_bearer(Some(&bearer));
+        assert_eq!(
+            crate::short_id_store::canonical_id_for(".shortids", &map_key, short_id).unwrap(),
+            "source-document-1"
+        );
+
+        drop(service);
+        let short_id_root = std::path::Path::new(".shortids");
+        let _ = std::fs::remove_file(short_id_root.join(format!("{map_key}.json")));
+        let _ = std::fs::remove_file(short_id_root.join(format!("{map_key}.lock")));
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn internal_graph_mutation_contract_requires_atomic_versioned_batches() {
         let body: Value = serde_json::from_str(include_str!(concat!(

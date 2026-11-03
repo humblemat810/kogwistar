@@ -1,7 +1,81 @@
 const INTERNAL_DOCUMENT_PROJECTION_ROUTE: &str = "/internal/document/projection";
+const INTERNAL_DOCUMENT_LOOKUP_ROUTE: &str = "/internal/document/lookup";
 const PUBLIC_DOCUMENT_UPSERT_ROUTE: &str = "/api/document";
 const PUBLIC_GRAPH_UPSERT_ROUTE: &str = "/api/graph/upsert";
 const PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE: &str = "/api/document.upsert_tree";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentLookupRequest {
+    file_name: String,
+}
+
+async fn document_id_lookup_effect<S: DocumentStore>(
+    request: &ApiEffectRequest,
+    store: &S,
+    capabilities: &SharedCapabilityState,
+) -> ApiEffectResponse {
+    if !capability_allowed(request, capabilities, "read_graph", &["read_graph"]) {
+        return effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Document lookup requires read_graph capability",
+        );
+    }
+    if !store.supports_document_projection_lookup() {
+        return effect_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "KOGWISTAR_DOCUMENT_LOOKUP_UNSUPPORTED",
+            "The configured document store does not support scoped document lookup",
+        );
+    }
+    let input = match serde_json::from_slice::<DocumentLookupRequest>(&request.body) {
+        Ok(input) if !input.file_name.trim().is_empty() => input,
+        Ok(_) => {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "file_name must be a non-empty string",
+            );
+        }
+        Err(error) => {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
+        }
+    };
+    let security_scope = security_scope_value(&request.principal);
+    let scope = GraphScope {
+        namespace: security_scope["storage_namespace"]
+            .as_str()
+            .unwrap_or("default")
+            .to_owned(),
+        workspace_id: request
+            .principal
+            .get("workspace_id")
+            .or_else(|| request.principal.get("workspace"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        graph_space: request
+            .principal
+            .get("graph_space")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    };
+    match store
+        .document_projection_ids(scope, vec![input.file_name])
+        .await
+    {
+        Ok(ids) => json_effect(StatusCode::OK, json!({"ids": ids})),
+        Err(error) => effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_STORE_ERROR",
+            error.to_string(),
+        ),
+    }
+}
 
 fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
     method == "POST"

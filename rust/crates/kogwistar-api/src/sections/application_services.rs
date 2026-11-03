@@ -854,6 +854,9 @@ impl ApplicationService for PostgresRunApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        if surface == "root" && name == "document_id_from_file_name" {
+            return DocumentStore::supports_document_projection_lookup(&self.store);
+        }
         rust_mcp_tool_supported(surface, name)
             && name != "propose_vector"
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
@@ -882,6 +885,22 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "document_id_from_file_name" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "docs" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "workflow.operator_inbox" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1278,6 +1297,9 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        if surface == "root" && name == "document_id_from_file_name" {
+            return DocumentStore::supports_document_projection_lookup(&self.store);
+        }
         if name == "workflow.operator_inbox" && self.chroma_graph.is_none() {
             return false;
         }
@@ -1327,6 +1349,22 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "document_id_from_file_name" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "docs" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "workflow.operator_inbox" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1501,6 +1539,11 @@ impl ApplicationService for SqliteRunApplicationService {
                 && self.supports_http_operation("GET", "/api/search_index_hybrid")
             {
                 return self.sqlite_search_index_hybrid_effect(&request).await;
+            }
+            if request.method == "POST"
+                && request.path_and_query == INTERNAL_DOCUMENT_LOOKUP_ROUTE
+            {
+                return document_id_lookup_effect(&request, &self.store, &self.capabilities).await;
             }
             if request.method == "POST"
                 && self.chroma_graph.is_some()

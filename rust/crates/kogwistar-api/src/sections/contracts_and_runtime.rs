@@ -203,7 +203,8 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
         ),
         "root" => matches!(
             name,
-            "kg_find_edges"
+            "document_id_from_file_name"
+                | "kg_find_edges"
                 | "kg_k_hop"
                 | "kg_neighbors"
                 | "kg_semantic_seed_then_expand_text"
