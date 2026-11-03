@@ -1037,3 +1037,67 @@ async fn postgres_concurrent_run_starts_have_one_transaction_owner_when_dsn_avai
         .map_err(backend)?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_lane_claims_have_one_worker_owner_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("concurrent_lane_claim");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store
+        .project_lane_message(runtime_lane("claim-run", "shared-lane-message"))
+        .await?;
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store
+            .claim_projected_lane_messages("runtime", "python-workers", "worker-first", 1, 60)
+            .await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store
+            .claim_projected_lane_messages("runtime", "python-workers", "worker-second", 1, 60)
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    let first = first?;
+    let second = second?;
+    assert_eq!(first.len() + second.len(), 1);
+    let winner = first
+        .first()
+        .or_else(|| second.first())
+        .expect("exactly one consumer must claim the pending message");
+    assert!(matches!(
+        winner.claimed_by.as_deref(),
+        Some("worker-first" | "worker-second")
+    ));
+
+    let persisted = first_store
+        .get_projected_lane_message("shared-lane-message")
+        .await?
+        .expect("the claimed lane message remains durable");
+    assert_eq!(persisted.status, "claimed");
+    assert_eq!(persisted.claimed_by, winner.claimed_by);
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
