@@ -84,6 +84,23 @@ def _test_hs256_token(secret: str, claims: dict[str, object]) -> str:
     return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
+def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
+    content_type = response.headers.get("content-type", "")
+    if content_type.startswith("application/json"):
+        payload = response.json()
+    else:
+        assert content_type.startswith("text/event-stream"), content_type
+        data_lines = [
+            line.removeprefix("data: ")
+            for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        assert len(data_lines) == 1, response.text
+        payload = json.loads(data_lines[0])
+    assert isinstance(payload, dict)
+    return payload
+
+
 def _start_fake_chroma_collections() -> tuple[
     ThreadingHTTPServer, str, list[str], list[dict[str, Any]]
 ]:
@@ -2290,7 +2307,10 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         assert status.json()["status"] == "succeeded", status.text
         run_events_response = httpx.post(
             f"{base_url}/mcp/workflow",
-            headers=headers,
+            headers={
+                **headers,
+                "accept": "application/json, text/event-stream",
+            },
             json={
                 "jsonrpc": "2.0",
                 "id": "python-answer-run-events",
@@ -2307,7 +2327,8 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             timeout=10,
         )
         assert run_events_response.status_code == 200, run_events_response.text
-        run_events = run_events_response.json()["result"]["events"]
+        run_events_result = _mcp_response_payload(run_events_response)["result"]
+        run_events = run_events_result["structuredContent"]["events"]
         python_worker_traces = [
             event["payload"]["trace"]
             for event in run_events
@@ -2564,7 +2585,14 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         if backend == "pg" and persistence_target == "python-worker":
             assert not embedding_requests
         if backend == "sqlite-chroma":
-            assert sum("/collections" in path and "/upsert" not in path for path in chroma_requests) == 2
+            created_collections = {
+                payload["name"] for payload in chroma_payloads if "name" in payload
+            }
+            assert created_collections == {
+                "python-answer-nodes",
+                "python-answer-edges",
+                "nodes_index",
+            }
     finally:
         if process.poll() is None:
             process.terminate()
@@ -3975,7 +4003,10 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         ]
         mcp_events = httpx.post(
             f"{base_url}/mcp/workflow",
-            headers=headers,
+            headers={
+                **headers,
+                "accept": "application/json, text/event-stream",
+            },
             json={
                 "jsonrpc": "2.0",
                 "id": "native-run-events",
@@ -3988,7 +4019,8 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             timeout=10,
         )
         assert mcp_events.status_code == 200, mcp_events.text
-        event_list = mcp_events.json()["result"]["events"]
+        mcp_result = _mcp_response_payload(mcp_events)["result"]
+        event_list = mcp_result["structuredContent"]["events"]
         assert any(event["event_type"] == "run.created" for event in event_list)
         native_traces = [
             event["payload"]["trace"]
