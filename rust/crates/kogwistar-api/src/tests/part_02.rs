@@ -1032,6 +1032,112 @@
     }
 
     #[tokio::test]
+    async fn mcp_session_lifecycle_works_over_tcp_transport() {
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig::default(),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let endpoint = format!("http://{address}/mcp");
+        let accept = "application/json, text/event-stream";
+        let initialize = client
+            .post(&endpoint)
+            .header("accept", accept)
+            .header("content-type", "application/json")
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "rust-tcp-contract", "version": "1"}
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(initialize.status(), StatusCode::OK);
+        assert_eq!(
+            initialize.headers()["content-type"],
+            "text/event-stream; charset=utf-8"
+        );
+        let session_id = initialize.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let initialize_body = initialize.text().await.unwrap();
+        let initialize_data = initialize_body
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(initialize_data).unwrap()["result"]["protocolVersion"],
+            "2025-06-18"
+        );
+
+        let initialized = client
+            .post(&endpoint)
+            .header("accept", accept)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(initialized.status(), StatusCode::ACCEPTED);
+        assert_eq!(initialized.headers()["mcp-session-id"], session_id);
+
+        let ping = client
+            .post(&endpoint)
+            .header("accept", accept)
+            .header("content-type", "application/json")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("x-kogwistar-roles", "reader")
+            .json(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ping.status(), StatusCode::OK);
+        assert_eq!(ping.headers()["mcp-session-id"], session_id);
+        let ping_body = ping.text().await.unwrap();
+        let ping_data = ping_body
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(ping_data).unwrap()["result"],
+            json!({})
+        );
+
+        let terminated = client
+            .delete(&endpoint)
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("x-kogwistar-roles", "reader")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(terminated.status(), StatusCode::OK);
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn dev_token_me_and_logout_share_verified_jwt_contract() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
