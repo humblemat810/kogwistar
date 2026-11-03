@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kogwistar_store::{
     DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
@@ -275,7 +275,7 @@ impl VectorCollectionStore for ChromaVectorCollectionStore {
             metric: self.metric,
         };
         graph_store
-            .vector_query_in_collection(&self.http, namespace, query, None)
+            .vector_query_in_collection(&self.http, namespace, query, &BTreeMap::new(), None)
             .await
     }
 }
@@ -396,7 +396,7 @@ impl GraphReadStore for ChromaGraphStore {
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.legacy_http()?;
-        self.vector_query_in_collection(http, namespace, query, None)
+        self.vector_query_in_collection(http, namespace, query, &BTreeMap::new(), None)
             .await
     }
 
@@ -408,7 +408,7 @@ impl GraphReadStore for ChromaGraphStore {
     ) -> StoreResult<Vec<VectorMatch>> {
         records::validate_namespace(namespace)?;
         let http = self.http_for_kind(kind)?;
-        self.vector_query_in_collection(http, namespace, query, None)
+        self.vector_query_in_collection(http, namespace, query, &BTreeMap::new(), None)
             .await
     }
 
@@ -425,8 +425,14 @@ impl GraphReadStore for ChromaGraphStore {
             return Err(Self::backend_error("invalid numeric metadata bound"));
         }
         let http = self.http_for_kind(kind)?;
-        self.vector_query_in_collection(http, namespace, query, Some((field, maximum)))
-            .await
+        self.vector_query_in_collection(
+            http,
+            namespace,
+            query,
+            &BTreeMap::new(),
+            Some((field, maximum)),
+        )
+        .await
     }
 }
 
@@ -544,6 +550,7 @@ impl ChromaGraphStore {
         http: &ChromaHttpStore,
         namespace: &str,
         query: &VectorQuery,
+        metadata_not_equals: &BTreeMap<String, Value>,
         numeric_lte: Option<(&str, f64)>,
     ) -> StoreResult<Vec<VectorMatch>> {
         if query.metric != self.metric {
@@ -565,9 +572,10 @@ impl ChromaGraphStore {
                 Some(json!({
                     "query_embeddings": [query.embedding],
                     "n_results": u32::try_from(query.limit).unwrap_or(u32::MAX),
-                    "where": records::query_where_with_numeric_lte(
+                    "where": records::query_where_with_exclusions(
                         namespace,
                         &query.metadata,
+                        metadata_not_equals,
                         numeric_lte,
                     ),
                     "include": ["documents", "metadatas", "embeddings", "distances"]
@@ -581,6 +589,24 @@ impl ChromaGraphStore {
             item.distance = normalize_chroma_distance(query.metric, item.distance);
         }
         Ok(matches)
+    }
+}
+
+impl ChromaGraphStore {
+    /// Run a kind-scoped query with host-owned exclusions applied by Chroma
+    /// before its top-k limit. This is used for internal graph records that
+    /// must not consume user-facing semantic retrieval slots.
+    pub async fn vector_query_of_kind_excluding_metadata(
+        &self,
+        namespace: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+        metadata_not_equals: &BTreeMap<String, Value>,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        records::validate_namespace(namespace)?;
+        let http = self.http_for_kind(kind)?;
+        self.vector_query_in_collection(http, namespace, query, metadata_not_equals, None)
+            .await
     }
 }
 

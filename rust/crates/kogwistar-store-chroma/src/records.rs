@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use kogwistar_store::{GraphRecord, StoreError};
 use serde_json::{Map, Value, json};
 
@@ -43,12 +45,13 @@ pub(crate) fn query_where(namespace: &str, filter: &kogwistar_store::MetadataFil
     // PYTHON_PARITY: kogwistar/engine_core/subsystems/write.py::WriteSubsystem._attach_graph_namespace
     // Python projections carry their graph namespace in metadata; retain the
     // reserved key alternative for records written by this Rust projection.
-    query_where_with_numeric_lte(namespace, filter, None)
+    query_where_with_exclusions(namespace, filter, &BTreeMap::new(), None)
 }
 
-pub(crate) fn query_where_with_numeric_lte(
+pub(crate) fn query_where_with_exclusions(
     namespace: &str,
     filter: &kogwistar_store::MetadataFilter,
+    metadata_not_equals: &BTreeMap<String, Value>,
     numeric_lte: Option<(&str, f64)>,
 ) -> Value {
     let mut clauses = vec![json!({
@@ -62,6 +65,11 @@ pub(crate) fn query_where_with_numeric_lte(
             .equals
             .iter()
             .map(|(key, value)| json!({key: {"$eq": chroma_filter_value(value)}})),
+    );
+    clauses.extend(
+        metadata_not_equals
+            .iter()
+            .map(|(key, value)| json!({key: {"$ne": chroma_filter_value(value)}})),
     );
     if let Some((field, maximum)) = numeric_lte {
         clauses.push(json!({field: {"$lte": maximum}}));
@@ -204,7 +212,12 @@ mod tests {
         let filter = kogwistar_store::MetadataFilter {
             equals: [("kind".to_owned(), json!("node"))].into(),
         };
-        let query = query_where("workspace-a", &filter);
+        let query = query_where_with_exclusions(
+            "workspace-a",
+            &filter,
+            &BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
+            None,
+        );
         assert_eq!(
             query["$and"][0]["$or"][0][NAMESPACE_KEY]["$eq"],
             "workspace-a"
@@ -214,6 +227,7 @@ mod tests {
             "workspace-a"
         );
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
+        assert_eq!(query["$and"][2]["entity_type"]["$ne"], "acl_record");
     }
 
     #[test]
@@ -246,8 +260,12 @@ mod tests {
         let filter = kogwistar_store::MetadataFilter {
             equals: [("kind".to_owned(), json!("node"))].into(),
         };
-        let query =
-            query_where_with_numeric_lte("workspace-a", &filter, Some(("level_from_root", 2.0)));
+        let query = query_where_with_exclusions(
+            "workspace-a",
+            &filter,
+            &BTreeMap::new(),
+            Some(("level_from_root", 2.0)),
+        );
         assert_eq!(query["$and"][1]["kind"]["$eq"], "node");
         assert_eq!(query["$and"][2]["level_from_root"]["$lte"], 2.0);
     }

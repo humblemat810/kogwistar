@@ -3776,6 +3776,11 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                     "metadata": {"hnsw:space":"cosine"}
                 })
             } else if request_line.contains("collection-source-acl-nodes/query") {
+                let query_filter = request["where"].to_string();
+                assert!(
+                    query_filter.contains("\"entity_type\":{\"$ne\":\"acl_record\"}"),
+                    "ACL helper exclusion must be pushed into vector top-k: {query_filter}"
+                );
                 let original = json!({
                     "entity_type":"node",
                     "label":"node-source-span-private",

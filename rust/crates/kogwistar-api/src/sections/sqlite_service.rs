@@ -4904,7 +4904,7 @@ impl SqliteRunApplicationService {
         let mut matches_by_query = Vec::with_capacity(input.query_embeddings.len());
         for embedding in &input.query_embeddings {
             match graph
-                .vector_query_of_kind(
+                .vector_query_of_kind_excluding_metadata(
                     namespace,
                     kind,
                     &VectorQuery {
@@ -4913,6 +4913,7 @@ impl SqliteRunApplicationService {
                         metadata: metadata.clone(),
                         metric: input.metric,
                     },
+                    &BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
                 )
                 .await
             {
