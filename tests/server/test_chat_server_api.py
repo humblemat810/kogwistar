@@ -942,8 +942,23 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         reopened = client.get(
             f"/api/conversations/{conversation_id}", headers=ro_headers
         )
+        assert reopened.status_code == 200
         reopened.raise_for_status()
-        assert reopened.json()["turn_count"] == 2
+        conversation_summary = reopened.json()
+        assert set(conversation_summary) == {
+            "conversation_id",
+            "user_id",
+            "status",
+            "start_node_id",
+            "tail_node_id",
+            "turn_count",
+        }
+        assert conversation_summary["conversation_id"] == conversation_id
+        assert conversation_summary["user_id"] == "u-chat"
+        assert conversation_summary["status"] == "active"
+        assert conversation_summary["start_node_id"]
+        assert conversation_summary["tail_node_id"]
+        assert conversation_summary["turn_count"] == 2
 
 
 def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
