@@ -3955,7 +3955,61 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                     "embeddings":[[[1.0,0.0]]],
                     "distances":[[0.0]]
                 })
+            } else if request_line.contains("collection-source-acl-edges/query") {
+                vector_query_count_for_server.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request["n_results"], 1);
+                let original = json!({
+                    "entity_type":"edge",
+                    "source_ids":["private-endpoint"],
+                    "target_ids":["public-endpoint"],
+                    "source_edge_ids":[],
+                    "target_edge_ids":[],
+                    "mentions":[]
+                });
+                json!({
+                    "ids":[["edge-with-private-endpoint"]],
+                    "documents":[["edge-with-private-endpoint"]],
+                    "metadatas":[[{
+                        "_kogwistar_namespace":"docs",
+                        "_kogwistar_original_metadata":original.to_string()
+                    }]],
+                    "embeddings":[[[1.0,0.0]]],
+                    "distances":[[0.0]]
+                })
             } else if request_line.contains("collection-source-acl-nodes/get") {
+                if let Some(ids) = request.get("ids").and_then(Value::as_array) {
+                    let nodes = [
+                        (
+                            "private-endpoint",
+                            json!({
+                                "entity_type":"node",
+                                "label":"private-endpoint",
+                                "mentions":[]
+                            }),
+                        ),
+                        (
+                            "public-endpoint",
+                            json!({
+                                "entity_type":"node",
+                                "label":"public-endpoint",
+                                "mentions":[]
+                            }),
+                        ),
+                    ];
+                    let matching = nodes
+                        .iter()
+                        .filter(|(id, _)| ids.iter().any(|requested| requested == id))
+                        .collect::<Vec<_>>();
+                    json!({
+                        "ids":matching.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                        "documents":matching.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                        "metadatas":matching.iter().map(|(_, original)| json!({
+                            "_kogwistar_namespace":"docs",
+                            "_kogwistar_original_metadata":original.to_string()
+                        })).collect::<Vec<_>>(),
+                        "embeddings":vec![Value::Null; matching.len()]
+                    })
+                } else {
                 let records = [
                     (
                         "acl-source-node",
@@ -3993,16 +4047,51 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                             "owner_id":"bob"
                         }),
                     ),
+                    (
+                        "acl-edge-public",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"edge-with-private-endpoint",
+                            "acl_target_grain":"edge",
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        }),
+                    ),
+                    (
+                        "acl-private-endpoint",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"private-endpoint",
+                            "acl_target_grain":"node",
+                            "acl_version":1,
+                            "acl_mode":"private",
+                            "owner_id":"bob"
+                        }),
+                    ),
+                    (
+                        "acl-public-endpoint",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"public-endpoint",
+                            "acl_target_grain":"node",
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        }),
+                    ),
                 ];
                 json!({
                     "ids": records.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                    "documents": [null, null, null],
+                    "documents": vec![Value::Null; records.len()],
                     "metadatas": records.iter().map(|(_, original)| json!({
                         "_kogwistar_namespace":"docs",
                         "_kogwistar_original_metadata":original.to_string()
                     })).collect::<Vec<_>>(),
-                    "embeddings": [null, null, null]
+                    "embeddings": vec![Value::Null; records.len()]
                 })
+                }
             } else {
                 json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
             };
@@ -4061,6 +4150,33 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
     let result: Value = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(result["ids"], json!([[]]));
     assert_eq!(vector_query_count.load(Ordering::SeqCst), 1);
+
+    let edge_response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/graph/vector-query".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "entity_kind":"edge",
+                "query_embeddings":[[1.0,0.0]],
+                "metric":"cosine",
+                "truth_graph":"knowledge",
+                "n_results":1,
+                "include":["distances"]
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"alice",
+                "role":"ro",
+                "storage_ns":"docs",
+                "capabilities":["read_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(edge_response.status, StatusCode::OK.as_u16());
+    let edge_result: Value = serde_json::from_slice(&edge_response.body).unwrap();
+    assert_eq!(edge_result["ids"], json!([[]]));
+    assert_eq!(vector_query_count.load(Ordering::SeqCst), 2);
 
     drop(service);
     let _ = stop_chroma.send(());
