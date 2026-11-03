@@ -28,6 +28,9 @@ tower.workspace = true
 tokio-postgres.workspace = true
 url.workspace = true
 uuid.workspace = true
+fs2.workspace = true
+thiserror.workspace = true
+winapi.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

@@ -1,6 +1,7 @@
 import importlib
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -217,3 +218,22 @@ def test_concurrent_mapper_instances_share_persisted_allocations(tmp_path):
     assert shortids.ShortIdMapper("shared-token", root_dir=str(root)).l2s_id(
         values[0]
     ) == mapping[values[0]]
+
+
+def test_shared_python_rust_short_id_state_fixture_continues_legacy_mapping(tmp_path):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "short-id-state-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    root = tmp_path / "shortids"
+    root.mkdir()
+    mapper = shortids.ShortIdMapper(fixture["run_id"], root_dir=str(root))
+    assert mapper._file().stem == fixture["file_key"]
+    mapper._file().write_text(json.dumps(fixture["state"]), encoding="utf-8")
+    mapper.state = mapper._load()
+
+    assert mapper.l2s_id(fixture["next_entity"]) == fixture["expected_alias"]
+    assert mapper.s2l_id("<sid>2") == "node-b"
