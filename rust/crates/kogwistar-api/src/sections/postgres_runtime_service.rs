@@ -5373,6 +5373,17 @@ impl PostgresRunApplicationService {
                 "The selected Rust store does not own document projections",
             );
         }
+        let write = match embed_document_projection(write, self.embedding_provider.as_deref()).await
+        {
+            Ok(write) => write,
+            Err(()) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "The configured embedding provider returned an invalid result or failed",
+                );
+            }
+        };
         match self.store.upsert_document_projection(write).await {
             Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
             Err(error) => effect_error(

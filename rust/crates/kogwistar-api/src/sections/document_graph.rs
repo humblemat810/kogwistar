@@ -238,6 +238,32 @@ fn document_projection_write(
     })
 }
 
+async fn embed_document_projection(
+    mut write: DocumentProjectionUpsert,
+    provider: Option<&dyn EmbeddingProvider>,
+) -> Result<DocumentProjectionUpsert, ()> {
+    let Some(provider) = provider else {
+        return Ok(write);
+    };
+    let profile = provider.profile();
+    profile.validate().map_err(|_| ())?;
+    let text = write.record.document.as_ref().ok_or(())?.clone();
+    let vectors = provider.embed(std::slice::from_ref(&text)).await.map_err(|_| ())?;
+    if vectors.len() != 1 || vectors[0].len() != profile.dimension {
+        return Err(());
+    }
+    let vector = vectors[0]
+        .iter()
+        .map(|value| {
+            let value = *value as f32;
+            value.is_finite().then_some(value).ok_or(())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    write.record.embedding = Some(vector);
+    write.embedding_dim = profile.dimension;
+    Ok(write)
+}
+
 fn graph_upsert_request(
     request: &ApiEffectRequest,
 ) -> Result<GraphExtractionRequestV1, ApiEffectResponse> {
