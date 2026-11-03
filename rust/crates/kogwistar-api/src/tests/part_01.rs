@@ -120,6 +120,37 @@
         }
     }
 
+    #[test]
+    fn configured_search_index_fts_sidecar_reopens() {
+        let nonce = uuid::Uuid::new_v4();
+        let graph_path = std::env::temp_dir().join(format!(
+            "kogwistar-search-index-graph-{nonce}.sqlite3"
+        ));
+        let index_path = std::env::temp_dir().join(format!(
+            "kogwistar-search-index-sidecar-{nonce}.sqlite3"
+        ));
+        let service = SqliteRunApplicationService::open(&graph_path)
+            .expect("open SQLite graph service")
+            .with_search_index_path(&index_path)
+            .expect("configure persistent FTS sidecar");
+        assert!(index_path.exists());
+        drop(service);
+
+        let reopened = crate::search_index_fts::open_index(&index_path)
+            .expect("reopen configured FTS sidecar");
+        let table_count: i64 = reopened
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='semantic_index_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query FTS schema");
+        assert_eq!(table_count, 1);
+        drop(reopened);
+        remove_test_sqlite(&index_path);
+        remove_test_sqlite(&graph_path);
+    }
+
     fn snapshot() -> HealthSnapshot {
         HealthSnapshot {
             backend: "pg".to_owned(),

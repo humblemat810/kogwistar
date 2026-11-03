@@ -576,6 +576,7 @@ impl PostgresRunApplicationService {
             native_operations,
             owner_auth_store: None,
             embedding_provider: None,
+            search_index_fts: None,
             embedding_storage_scope,
             conversation_embedding_storage_scope,
             workflow_embedding_storage_scope,
@@ -1498,6 +1499,16 @@ impl PostgresRunApplicationService {
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    /// Configure the local FTS sidecar used by the hybrid search index.
+    /// Vector data remains in the selected graph backend's node-index store.
+    ///
+    pub fn with_search_index_path(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        let connection = crate::search_index_fts::open_index(path)
+            .map_err(|error| format!("could not open search-index FTS database: {error}"))?;
+        self.search_index_fts = Some(Arc::new(Mutex::new(connection)));
+        Ok(self)
     }
 
     /// Configure a Rust-native OpenAI-compatible structured-answer provider.

@@ -10,6 +10,7 @@ pub struct PostgresRunApplicationService {
     native_operations: kogwistar_runtime::NativeOperationRegistry,
     owner_auth_store: Option<Arc<AuthStore>>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
     embedding_storage_scope: Result<String, String>,
     conversation_embedding_storage_scope: Result<String, String>,
     workflow_embedding_storage_scope: Result<String, String>,

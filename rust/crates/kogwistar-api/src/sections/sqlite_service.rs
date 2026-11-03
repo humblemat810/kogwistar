@@ -4,6 +4,7 @@ pub struct SqliteRunApplicationService {
     graph_role: String,
     chroma_graph: Option<kogwistar_store_chroma::ChromaGraphStore>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
     owner_auth_store: Option<AuthStore>,
     max_queue: usize,
@@ -1073,6 +1074,7 @@ impl SqliteRunApplicationService {
                 graph_role: "knowledge".to_owned(),
                 chroma_graph: None,
                 embedding_provider: None,
+                search_index_fts: None,
                 chat_completion_provider: None,
                 owner_auth_store: None,
                 max_queue: runtime_max_queue(),
@@ -2315,6 +2317,16 @@ impl SqliteRunApplicationService {
     pub fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    /// Configure the local FTS sidecar used by the hybrid search index.
+    /// Vector data remains in the selected graph backend's node-index store.
+    ///
+    pub fn with_search_index_path(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        let connection = crate::search_index_fts::open_index(path)
+            .map_err(|error| format!("could not open search-index FTS database: {error}"))?;
+        self.search_index_fts = Some(Arc::new(Mutex::new(connection)));
+        Ok(self)
     }
 
     /// Configure the explicit Rust-native structured-answer provider.
