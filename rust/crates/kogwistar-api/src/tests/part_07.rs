@@ -2910,6 +2910,39 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
             effect: Some(effect),
         };
 
+    let mut wrong_claim_effect = ack_effect.clone();
+    wrong_claim_effect.provider_event_acknowledgements[0].claimed_by =
+        "wrong-claimer".to_owned();
+    let wrong_claim = service
+        .apply_runtime_result_input(
+            request(wrong_claim_effect),
+            None,
+            None,
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        )
+        .await;
+    assert_eq!(wrong_claim.status, StatusCode::CONFLICT.as_u16());
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message(&format!("msg:{event_id}"))
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "claimed"
+    );
+    assert_eq!(
+        service
+            .store
+            .read_recorded_runtime_state(run_id, workflow_id, conversation_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_step_seq,
+        1
+    );
+
     let (fault_setup, fault_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
         .await
         .unwrap();
