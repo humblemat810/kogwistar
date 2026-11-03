@@ -4867,9 +4867,20 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     assert_eq!(send_message.status(), StatusCode::ACCEPTED);
     let send_response: Value =
         serde_json::from_slice(&to_bytes(send_message.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(send_response.as_object().unwrap().len(), 5);
+    assert_eq!(
+        send_response["conversation_id"],
+        "conversation-create-contract"
+    );
     assert_eq!(send_response["workflow_id"], workflow_id);
     assert_eq!(send_response["status"], "queued");
     let run_id = send_response["run_id"].as_str().unwrap();
+    assert!(!run_id.is_empty());
+    assert!(
+        send_response["user_turn_node_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
     assert_eq!(
         service
             .store

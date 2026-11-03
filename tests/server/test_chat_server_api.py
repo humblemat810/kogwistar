@@ -894,7 +894,20 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
             headers=rw_headers,
         )
         assert submit.status_code == 202
-        run_id = submit.json()["run_id"]
+        submit_body = submit.json()
+        assert set(submit_body) == {
+            "run_id",
+            "conversation_id",
+            "workflow_id",
+            "status",
+            "user_turn_node_id",
+        }
+        assert submit_body["conversation_id"] == conversation_id
+        assert submit_body["workflow_id"] == "debug.rag.v1"
+        assert submit_body["status"] == "queued"
+        run_id = submit_body["run_id"]
+        assert run_id
+        assert submit_body["user_turn_node_id"]
 
         final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
         assert final_run["assistant_turn_node_id"]
