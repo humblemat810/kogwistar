@@ -2588,6 +2588,124 @@
             },
             Arc::new(route_service),
         );
+        let mut routed_request = request.clone();
+        routed_request.index[0].aliases.push("route-updated".to_owned());
+        let denied_tokens = [
+            jsonwebtoken::encode(
+                &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
+                    "sub":"missing-writer-capability",
+                    "storage_ns":namespace,
+                    "ns":[namespace],
+                    "workspace_id":"workspace-live",
+                    "graph_space":"facts",
+                    "role":"rw",
+                    "capabilities":[],
+                    "exp":now + 300
+                }),
+                &jsonwebtoken::EncodingKey::from_secret(
+                    b"sqlite-live-chroma-search-secret",
+                ),
+            )
+            .unwrap(),
+            jsonwebtoken::encode(
+                &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
+                    "sub":"foreign-storage-namespace",
+                    "storage_ns":format!("foreign-{suffix}"),
+                    "ns":[namespace],
+                    "workspace_id":"workspace-live",
+                    "graph_space":"facts",
+                    "role":"rw",
+                    "capabilities":["write_graph"],
+                    "exp":now + 300
+                }),
+                &jsonwebtoken::EncodingKey::from_secret(
+                    b"sqlite-live-chroma-search-secret",
+                ),
+            )
+            .unwrap(),
+        ];
+        for denied_token in denied_tokens {
+            let denied = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/api/add_index_entries")
+                        .header("authorization", format!("Bearer {denied_token}"))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            serde_json::to_vec(&routed_request).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), axum::http::StatusCode::FORBIDDEN);
+        }
+        assert_eq!(
+            EventReadStore::replay_events(&reopened_store, &namespace, 0, 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "denied writes must not append events"
+        );
+        let writer_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"live-writer",
+                "storage_ns":namespace,
+                "ns":[namespace],
+                "workspace_id":"workspace-live",
+                "graph_space":"facts",
+                "role":"rw",
+                "capabilities":["write_graph"],
+                "exp":now + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(b"sqlite-live-chroma-search-secret"),
+        )
+        .unwrap();
+        for _ in 0..2 {
+            let write = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/api/add_index_entries")
+                        .header("authorization", format!("Bearer {writer_token}"))
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(
+                            serde_json::to_vec(&routed_request).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(write.status(), axum::http::StatusCode::OK);
+        }
+        let replayed = EventReadStore::replay_events(&reopened_store, &namespace, 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(replayed.len(), 2, "retrying the same public write is idempotent");
+        let routed_key = kogwistar_contracts::make_search_index_key(
+            &routed_request.index[0].node_id,
+            &routed_request.index[0].canonical_title,
+            &routed_request.index[0].provision,
+        );
+        let routed_vector = reopened_vector
+            .get_node_index("nodes_index", &[format!("idx:{routed_key}")])
+            .await
+            .unwrap();
+        assert_eq!(routed_vector.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                routed_vector[0].metadata["aliases"].as_str().unwrap()
+            )
+            .unwrap(),
+            json!(["approval", "authorization", "route-updated"])
+        );
         let encoded_query = url::form_urlencoded::byte_serialize(
             format!("uniquepermit{suffix}").as_bytes(),
         )

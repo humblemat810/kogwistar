@@ -740,6 +740,14 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         Arc::new(service)
     } else {
         let mut service = InMemoryGraphApplicationService::default();
+        let search_index_path = std::path::PathBuf::from(environment(
+            "KOGWISTAR_PERSIST_DIRECTORY",
+            ".kogwistar",
+        ))
+        .join("index.db");
+        service = service
+            .with_search_index_path(search_index_path)
+            .map_err(std::io::Error::other)?;
         let embedding_provider = embedding_provider_from_settings(
             std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
                 .ok()

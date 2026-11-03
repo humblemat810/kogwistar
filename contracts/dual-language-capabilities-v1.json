@@ -150,8 +150,7 @@
   "rust_server_gaps": {
     "status": "intentionally-deferred",
     "pending_routes": [
-      ["DELETE", "/admin/doc/{doc_id}"],
-      ["POST", "/api/add_index_entries"]
+      ["DELETE", "/admin/doc/{doc_id}"]
     ],
     "pending_syscalls": [
       "send_message",

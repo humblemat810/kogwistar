@@ -412,6 +412,170 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     );
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#search_index_upsert_effect; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_search_index_upsert_is_authenticated_and_idempotent; python_test=tests/server/test_search_index_api_auth.py#test_add_index_entries_requires_write_role_and_keeps_payload
+#[tokio::test]
+async fn in_memory_search_index_upsert_is_authenticated_and_idempotent() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use kogwistar_store::{EventReadStore, NodeIndexStore};
+    use tower::ServiceExt;
+
+    struct FixedEmbeddingProvider;
+    impl EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
+                std::sync::OnceLock::new();
+            PROFILE.get_or_init(|| kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "in-memory-search-index-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            })
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6, 0.8]).collect()) })
+        }
+    }
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/search-index-entry-v1.json"
+    )))
+    .unwrap();
+    let mut request: kogwistar_contracts::SearchIndexUpsertV1 =
+        serde_json::from_value(fixture["request"].clone()).unwrap();
+    request.index.truncate(1);
+    request.index[0].node_id = "in-memory-index-node".to_owned();
+    request.index[0].canonical_title = "In-Memory Search Permit".to_owned();
+    request.index[0].keywords = vec!["inmemorypermit".to_owned()];
+
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let index_path = std::env::temp_dir().join(format!("search-index-memory-{suffix}.sqlite3"));
+    let service = InMemoryGraphApplicationService::default()
+        .with_embedding_provider(Arc::new(FixedEmbeddingProvider))
+        .with_search_index_path(&index_path)
+        .unwrap();
+    assert!(service.supports_http_operation("POST", "/api/add_index_entries"));
+
+    let secret = "in-memory-search-index-test-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |role: &str, capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"index-writer",
+                "role":role,
+                "ns":["docs"],
+                "storage_ns":"docs",
+                "capabilities":capabilities,
+                "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service.clone()),
+    );
+    let body = serde_json::to_vec(&request).unwrap();
+
+    for (role, capabilities) in [("rw", &[][..]), ("ro", &["write_graph"][..])] {
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/add_index_entries")
+                    .header("authorization", format!("Bearer {}", token(role, capabilities)))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    for _ in 0..2 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/add_index_entries")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token("rw", &["write_graph"])),
+                    )
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &to_bytes(response.into_body(), 65_536).await.unwrap(),
+            )
+            .unwrap(),
+            json!({"ok":true})
+        );
+    }
+
+    let events = EventReadStore::replay_events(&service.store, "docs", 0, 10)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1, "an HTTP retry must not duplicate the event");
+    assert_eq!(events[0].op, "search_index.upsert");
+    let key = kogwistar_contracts::make_search_index_key(
+        &request.index[0].node_id,
+        &request.index[0].canonical_title,
+        &request.index[0].provision,
+    );
+    let vector = NodeIndexStore::get_node_index(
+        &service.store,
+        "nodes_index",
+        &[format!("idx:{key}")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(vector.len(), 1);
+    assert_eq!(vector[0].metadata["target_node_id"], request.index[0].node_id);
+
+    drop(service);
+    let _ = std::fs::remove_file(index_path);
+}
+
 #[test]
 fn inline_graph_mutation_scope_uses_current_owner_scope() {
     let principal = json!({
@@ -4108,7 +4272,7 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
         service.embedding_provider.as_ref().unwrap().as_ref(),
         &namespace,
         "gke_node_index",
-        &[entry],
+        &[entry.clone()],
     )
     .await
     .unwrap();
@@ -4166,6 +4330,45 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
         },
         Arc::new(service),
     );
+
+    let mut routed_entry = entry.clone();
+    routed_entry.aliases.push("http-route-revision".to_owned());
+    let writer_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"writer",
+            "role":"rw",
+            "ns":[namespace],
+            "storage_ns":namespace,
+            "workspace_id":"workspace-a",
+            "graph_space":"knowledge",
+            "capabilities":["write_graph"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let write = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/add_index_entries")
+                    .header("authorization", format!("Bearer {writer_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"index":[routed_entry.clone()]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(write.status(), StatusCode::OK);
+        let payload: Value =
+            serde_json::from_slice(&to_bytes(write.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(payload, json!({"ok":true}));
+    }
 
     for (query, resolve_node) in [("review", false), ("review", true)] {
         let response = app

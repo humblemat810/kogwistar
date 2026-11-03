@@ -474,22 +474,6 @@
             "path": "/admin/doc/{doc_id}"
           }
         ]
-      },
-      {
-        "name": "derived-index-admission",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "graph-pgvector",
-          "queues-leases-lanes"
-        ],
-        "exit_evidence": "derived-index fingerprint/reconcile parity, lease/retry/replay, rollback, and public route conformance",
-        "operations": [
-          {
-            "method": "POST",
-            "path": "/api/add_index_entries"
-          }
-        ]
       }
     ],
     "syscall_group": {

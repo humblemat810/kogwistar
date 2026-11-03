@@ -4,6 +4,7 @@ struct InMemoryGraphApplicationService {
     store: InMemoryStore,
     capabilities: SharedCapabilityState,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
 }
 
 impl Default for InMemoryGraphApplicationService {
@@ -12,6 +13,7 @@ impl Default for InMemoryGraphApplicationService {
             store: InMemoryStore::default(),
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
             embedding_provider: None,
+            search_index_fts: None,
         }
     }
 }
@@ -36,6 +38,13 @@ impl InMemoryGraphApplicationService {
     fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    fn with_search_index_path(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        let connection = crate::search_index_fts::open_index(path)
+            .map_err(|error| format!("could not open search-index FTS database: {error}"))?;
+        self.search_index_fts = Some(Arc::new(Mutex::new(connection)));
+        Ok(self)
     }
 
     fn authorized_graph_scope(
@@ -1094,6 +1103,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
         let route = path.split('?').next();
+        if method == "POST" && route == Some("/api/add_index_entries") {
+            return self.embedding_provider.is_some()
+                && self.search_index_fts.is_some()
+                && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, "/api/add_index_entries"));
+        }
         method == "POST"
             && (route != Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
                 || self.embedding_provider.is_some())
@@ -1119,6 +1133,31 @@ impl ApplicationService for InMemoryGraphApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST"
+                && request.path_and_query.split('?').next() == Some("/api/add_index_entries")
+                && self.supports_http_operation("POST", "/api/add_index_entries")
+            {
+                let (Some(fts), Some(provider)) = (
+                    self.search_index_fts.as_deref(),
+                    self.embedding_provider.as_deref(),
+                ) else {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_SEARCH_INDEX_UNAVAILABLE",
+                        "Search-index event, FTS, vector, or embedding services are not configured",
+                    );
+                };
+                return crate::search_index_fts::search_index_upsert_effect(
+                    &request,
+                    &self.capabilities,
+                    &self.store,
+                    &self.store,
+                    "nodes_index",
+                    Some(fts),
+                    Some(provider),
+                )
+                .await;
+            }
             if request.method != "POST" {
                 return unavailable_effect(request);
             }

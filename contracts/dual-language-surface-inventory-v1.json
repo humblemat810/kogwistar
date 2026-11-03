@@ -11,7 +11,7 @@
   "counts": {
     "http_operations": 84,
     "mcp_operations": 62,
-    "pending_http_operations": 2,
+    "pending_http_operations": 1,
     "allowlisted_mcp_operations": 62,
     "pending_syscalls": 4
   },
@@ -26,7 +26,7 @@
       "method": "POST",
       "path": "/api/add_index_entries",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "GET",

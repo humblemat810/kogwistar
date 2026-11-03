@@ -490,6 +490,7 @@ type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
 const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/search_index_hybrid"),
+    ("POST", "/api/add_index_entries"),
     ("POST", "/api/document"),
     ("POST", "/api/graph/upsert"),
     ("POST", "/api/document.upsert_tree"),
