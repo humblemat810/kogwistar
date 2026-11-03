@@ -2162,6 +2162,136 @@
 
     #[tokio::test]
     #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_search_index_events_project_to_live_chroma_and_survive_reopen; python=kogwistar/engine_core/search_index/service.py#SearchIndexService.upsert_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_search_index_events_project_to_live_chroma_and_survive_reopen; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
+    async fn sqlite_search_index_events_project_to_live_chroma_and_survive_reopen() {
+        use kogwistar_store::{EventReadStore, NodeIndexStore};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let namespace = format!("search-index-{suffix}");
+        let root = std::env::temp_dir().join(format!("kogwistar-search-live-{suffix}"));
+        std::fs::create_dir_all(&root).unwrap();
+        let store_path = root.join("metadata.sqlite3");
+        let fts_path = root.join("index.sqlite3");
+        let config = kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint,
+            collection: "nodes_index".to_owned(),
+            metric: DistanceMetric::Cosine,
+            ..Default::default()
+        };
+        let provider = FixedEmbeddingProvider {
+            profile: kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-search-index-v1".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+            vector: vec![0.6, 0.8],
+            calls: Arc::new(Mutex::new(Vec::new())),
+            fail: None,
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/search-index-entry-v1.json"
+        ))
+        .unwrap();
+        let mut request: kogwistar_contracts::SearchIndexUpsertV1 =
+            serde_json::from_value(fixture["request"].clone()).unwrap();
+        request.index.truncate(1);
+        request.index[0].node_id = format!("node-{suffix}");
+        request.index[0].canonical_title = format!("UniquePermit-{suffix}");
+        request.index[0].keywords = vec![format!("uniquepermit{suffix}")];
+
+        let store = SqliteStore::open(&store_path).unwrap();
+        let vector_store = kogwistar_store_chroma::ChromaVectorCollectionStore::connect(config.clone())
+            .await
+            .unwrap();
+        let fts = std::sync::Mutex::new(crate::search_index_fts::open_index(&fts_path).unwrap());
+        let admitted = crate::search_index_fts::admit_search_index_entries(
+            &store,
+            &vector_store,
+            &fts,
+            &provider,
+            &namespace,
+            &request.index,
+        )
+        .await
+        .unwrap();
+        assert_eq!(admitted.entries_admitted, 1);
+        assert_eq!(admitted.events_projected, 1);
+        assert_eq!(
+            EventReadStore::replay_events(&store, &namespace, 0, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let key = kogwistar_contracts::make_search_index_key(
+            &request.index[0].node_id,
+            &request.index[0].canonical_title,
+            &request.index[0].provision,
+        );
+        let records = vector_store
+            .get_node_index("nodes_index", &[format!("idx:{key}")])
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].embedding.as_deref(), Some([0.6_f32, 0.8_f32].as_slice()));
+        assert_eq!(records[0].metadata["target_node_id"], request.index[0].node_id);
+        assert!(crate::search_index_fts::search_fts(
+            &fts.lock().unwrap(),
+            &format!("uniquepermit{suffix}"),
+            5,
+        )
+        .unwrap()
+        .iter()
+        .any(|hit| hit.node_id == request.index[0].node_id));
+
+        drop(fts);
+        drop(vector_store);
+        drop(store);
+        let reopened_store = SqliteStore::open(&store_path).unwrap();
+        let reopened_vector = kogwistar_store_chroma::ChromaVectorCollectionStore::connect(config)
+            .await
+            .unwrap();
+        let reopened_fts = std::sync::Mutex::new(crate::search_index_fts::open_index(&fts_path).unwrap());
+        assert_eq!(
+            EventReadStore::replay_events(&reopened_store, &namespace, 0, 10)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "SQLite remains the durable source of truth across reopen"
+        );
+        let hits = crate::search_index_fts::hybrid_search(
+            &reopened_fts,
+            &reopened_vector,
+            "nodes_index",
+            &provider,
+            &format!("uniquepermit{suffix}"),
+            5,
+        )
+        .await
+        .unwrap();
+        assert!(hits.iter().any(|hit| hit.node_id == request.index[0].node_id));
+
+        drop(reopened_fts);
+        drop(reopened_vector);
+        drop(reopened_store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
     async fn sqlite_chroma_native_worker_promotes_to_real_chroma_after_restart() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
