@@ -1561,9 +1561,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     required=True,
                 )
                 result = adapter.add_node(node, doc_id=doc_id)
-            _enqueue_embedding_job_if_supported(
-                adapter, entity_kind="node", entity_id=node.safe_get_id()
-            )
+                _enqueue_embedding_job_if_supported(
+                    adapter, entity_kind="node", entity_id=node.safe_get_id()
+                )
             return result
         if doc_id is not None:
             node.doc_id = doc_id
@@ -1672,9 +1672,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     required=True,
                 )
                 result = adapter.add_edge(edge, doc_id=doc_id)
-            _enqueue_embedding_job_if_supported(
-                adapter, entity_kind="edge", entity_id=edge.safe_get_id()
-            )
+                _enqueue_embedding_job_if_supported(
+                    adapter, entity_kind="edge", entity_id=edge.safe_get_id()
+                )
             return result
         if doc_id is not None:
             edge.doc_id = doc_id

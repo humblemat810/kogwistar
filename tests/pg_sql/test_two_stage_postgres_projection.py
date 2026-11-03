@@ -325,6 +325,79 @@ def test_postgres_two_stage_event_and_stage1_admission_roll_back_together(
     )
 
 
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+def test_postgres_two_stage_rust_admission_rolls_back_index_job_with_graph(
+    sa_engine, pg_schema, monkeypatch, entity_kind: str
+) -> None:
+    _require_postgres(sa_engine, pg_schema)
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "rust")
+    engine = _engine(sa_engine, pg_schema)
+    entity_id = f"rust-index-admission-{entity_kind}"
+    if entity_kind == "edge":
+        engine.write.add_node(
+            build_entity_node(node_id="rust-index-source", doc_id="d1", embedding=None)
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="rust-index-target", doc_id="d1", embedding=None)
+        )
+
+    adapter = engine.two_stage_projection_adapter
+    enqueue = adapter.enqueue_embedding_job
+
+    def fail_after_enqueue(
+        *, entity_kind: str, entity_id: str, op: str
+    ) -> None:
+        enqueue(entity_kind=entity_kind, entity_id=entity_id, op=op)
+        raise RuntimeError("injected embedding-job admission failure")
+
+    monkeypatch.setattr(adapter, "enqueue_embedding_job", fail_after_enqueue)
+    try:
+        with pytest.raises(
+            RuntimeError, match="injected embedding-job admission failure"
+        ):
+            if entity_kind == "node":
+                engine.write.add_node(
+                    build_entity_node(node_id=entity_id, doc_id="d1", embedding=None)
+                )
+            else:
+                engine.write.add_edge(
+                    build_relationship_edge(
+                        edge_id=entity_id,
+                        src="rust-index-source",
+                        tgt="rust-index-target",
+                        doc_id="d1",
+                        embedding=None,
+                    )
+                )
+
+        assert not any(
+            event[1] == entity_kind and event[2] == entity_id
+            for event in engine.metadata.iter_entity_events(
+                namespace=engine.namespace, from_seq=1
+            )
+        )
+        assert (
+            engine.backend.stage1_projection_get(
+                namespace=engine.namespace,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            is None
+        )
+        assert engine.metadata.list_index_jobs(
+            namespace=engine.namespace,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+        ) == []
+    finally:
+        engine.close()
+
+
 def test_postgres_two_stage_delete_before_promotion_cleans_stage1(
     sa_engine, pg_schema
 ) -> None:
