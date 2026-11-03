@@ -2,6 +2,99 @@
 pub struct ServerState {
     pub api: ApiState,
     pub application: Arc<dyn ApplicationService>,
+    pub mcp_sessions: Arc<McpSessionRegistry>,
+}
+
+const MCP_SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+const MCP_MAX_SESSIONS: usize = 10_000;
+
+#[derive(Clone)]
+struct McpSession {
+    owner: Value,
+    protocol_version: String,
+    last_seen: Instant,
+}
+
+#[derive(Default)]
+pub struct McpSessionRegistry {
+    sessions: Mutex<HashMap<String, McpSession>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpSessionError {
+    NotFound,
+    ProtocolVersionMismatch,
+}
+
+impl McpSessionRegistry {
+    pub fn open(&self, owner: Value, protocol_version: String) -> Option<String> {
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        sessions.retain(|_, session| now.duration_since(session.last_seen) < MCP_SESSION_TTL);
+        if sessions.len() >= MCP_MAX_SESSIONS {
+            return None;
+        }
+        let session_id = uuid::Uuid::new_v4().simple().to_string();
+        sessions.insert(
+            session_id.clone(),
+            McpSession {
+                owner,
+                protocol_version,
+                last_seen: now,
+            },
+        );
+        Some(session_id)
+    }
+
+    pub fn touch(
+        &self,
+        session_id: &str,
+        owner: &Value,
+        protocol_version: Option<&str>,
+    ) -> Result<String, McpSessionError> {
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(session) = sessions.get_mut(session_id) else {
+            return Err(McpSessionError::NotFound);
+        };
+        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL {
+            sessions.remove(session_id);
+            return Err(McpSessionError::NotFound);
+        }
+        if &session.owner != owner {
+            return Err(McpSessionError::NotFound);
+        }
+        if protocol_version.is_some_and(|version| version != session.protocol_version) {
+            return Err(McpSessionError::ProtocolVersionMismatch);
+        }
+        session.last_seen = now;
+        Ok(session.protocol_version.clone())
+    }
+
+    pub fn close(
+        &self,
+        session_id: &str,
+        owner: &Value,
+        protocol_version: Option<&str>,
+    ) -> Result<(), McpSessionError> {
+        let now = Instant::now();
+        let mut sessions = self.sessions.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(session) = sessions.get(session_id) else {
+            return Err(McpSessionError::NotFound);
+        };
+        if now.duration_since(session.last_seen) >= MCP_SESSION_TTL {
+            sessions.remove(session_id);
+            return Err(McpSessionError::NotFound);
+        }
+        if &session.owner != owner {
+            return Err(McpSessionError::NotFound);
+        }
+        if protocol_version.is_some_and(|version| version != session.protocol_version) {
+            return Err(McpSessionError::ProtocolVersionMismatch);
+        }
+        sessions.remove(session_id);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -127,6 +220,19 @@ fn request_principal(headers: &HeaderMap, config: &AuthConfig) -> Value {
         "ro"
     };
     json!({"sub": "anonymous", "role": role, "roles": roles, "ns": "workflow"})
+}
+
+fn request_mcp_session_owner(headers: &HeaderMap, config: &AuthConfig) -> Value {
+    let principal = request_principal(headers, config);
+    if config.configured() {
+        json!({
+            "client_id": principal.get("client_id").or_else(|| principal.get("azp")),
+            "issuer": principal.get("iss"),
+            "subject": principal.get("sub"),
+        })
+    } else {
+        principal
+    }
 }
 
 fn has_required_role(headers: &HeaderMap, required_roles: &[String], config: &AuthConfig) -> bool {

@@ -753,6 +753,10 @@
             .unwrap();
         assert_eq!(initialize.status(), StatusCode::OK);
         assert_eq!(initialize.headers()["mcp-protocol-version"], "2025-06-18");
+        let session_id = initialize.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
         let initialize_body = to_bytes(initialize.into_body(), 4096).await.unwrap();
         let initialize_value: Value = serde_json::from_slice(&initialize_body).unwrap();
         assert_eq!(initialize_value["result"]["protocolVersion"], "2025-06-18");
@@ -761,6 +765,24 @@
             false
         );
 
+        let invalid_initialize = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":17,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(invalid_initialize.status(), StatusCode::BAD_REQUEST);
+        assert!(!invalid_initialize.headers().contains_key("mcp-session-id"));
+
         let initialized = app
             .clone()
             .oneshot(
@@ -768,6 +790,8 @@
                     .method("POST")
                     .uri("/mcp")
                     .header("content-type", "application/json")
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .header("mcp-session-id", &session_id)
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
@@ -785,8 +809,9 @@
                     .method("POST")
                     .uri("/mcp")
                     .header("content-type", "application/json")
-                    .header("accept", "text/event-stream")
+                    .header("accept", "application/json, text/event-stream")
                     .header("mcp-protocol-version", "2025-06-18")
+                    .header("mcp-session-id", &session_id)
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::from(r#"{"jsonrpc":"2.0","id":11,"method":"ping"}"#))
                     .unwrap(),
@@ -798,11 +823,46 @@
             ping_sse.headers()["content-type"],
             "text/event-stream; charset=utf-8"
         );
+        assert_eq!(ping_sse.headers()["mcp-session-id"], session_id);
         assert_eq!(ping_sse.headers()["mcp-protocol-version"], "2025-06-18");
         let ping_sse_body = to_bytes(ping_sse.into_body(), 4096).await.unwrap();
         assert!(String::from_utf8(ping_sse_body.to_vec())
             .unwrap()
             .contains("data: {\"jsonrpc\":\"2.0\",\"id\":11,\"result\":{}}"));
+
+        let other_session_owner = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .header("mcp-session-id", &session_id)
+                    .header("x-kogwistar-roles", "reader,writer")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":15,"method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_session_owner.status(), StatusCode::NOT_FOUND);
+
+        let owner_after_foreign_probe = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .header("mcp-session-id", &session_id)
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":18,"method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(owner_after_foreign_probe.status(), StatusCode::OK);
 
         let rejected_accept = app
             .clone()
@@ -851,6 +911,38 @@
             .await
             .unwrap();
         assert_eq!(unknown_session.status(), StatusCode::NOT_FOUND);
+
+        let terminated_session = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/mcp")
+                    .header("mcp-session-id", &session_id)
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(terminated_session.status(), StatusCode::OK);
+        let request_after_termination = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .header("mcp-session-id", &session_id)
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(r#"{"jsonrpc":"2.0","id":16,"method":"ping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(request_after_termination.status(), StatusCode::NOT_FOUND);
 
         let unadvertised_mcp_call = app
             .clone()

@@ -139,17 +139,16 @@ async fn mcp_handler(
             });
             (accepts_json, accepts_sse)
         });
-    if response_mode.is_some_and(|(json, sse)| !json && !sse) {
+    if response_mode.is_some_and(|(json, sse)| !json || !sse) {
         return StatusCode::NOT_ACCEPTABLE.into_response();
     }
-    if headers.contains_key("mcp-session-id") {
-        return StatusCode::NOT_FOUND.into_response();
-    }
     let is_initialize = payload.get("method").and_then(Value::as_str) == Some("initialize");
+    let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
+    let incoming_protocol_version = headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok());
     if !is_initialize
-        && headers
-            .get("mcp-protocol-version")
-            .and_then(|value| value.to_str().ok())
+        && incoming_protocol_version
             .is_some_and(|version| {
                 !matches!(
                     version,
@@ -159,31 +158,75 @@ async fn mcp_handler(
     {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    let initialize_version = (payload.get("method").and_then(Value::as_str) == Some("initialize"))
-        .then(|| {
-            payload
-                .pointer("/params/protocolVersion")
-                .and_then(Value::as_str)
-                .unwrap_or("2025-11-25")
-        });
-    let request_protocol_version = initialize_version
-        .map(|version| match version {
-            "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => version,
-            _ => "2025-11-25",
-        })
-        .or_else(|| {
-            headers
-        .get("mcp-protocol-version")
+
+    let requested_initialize_version = is_initialize.then(|| {
+        payload
+            .pointer("/params/protocolVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("2025-11-25")
+    });
+    let negotiated_initialize_version = requested_initialize_version.map(|version| match version {
+        "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => version,
+        _ => "2025-11-25",
+    });
+    let incoming_session_id = headers
+        .get("mcp-session-id")
         .and_then(|value| value.to_str().ok())
-                .filter(|version| {
-                    matches!(
-                        *version,
-                        "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25"
-                    )
-                })
-        })
         .map(str::to_owned);
-    let mut response = mcp_dispatch(state, headers.clone(), uri, payload).await;
+    let mut existing_session_version = None;
+    if let Some(session_id) = incoming_session_id.as_deref() {
+        let requested_session_version = incoming_protocol_version.or(negotiated_initialize_version);
+        match state.mcp_sessions.touch(
+            session_id,
+            &session_owner,
+            requested_session_version,
+        ) {
+            Ok(version) => existing_session_version = Some(version),
+            Err(McpSessionError::ProtocolVersionMismatch) => {
+                return StatusCode::BAD_REQUEST.into_response();
+            }
+            Err(McpSessionError::NotFound) => {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+        }
+    } else if !is_initialize && incoming_protocol_version.is_some() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let mut session_id_to_return = incoming_session_id;
+    let mut created_new_session = false;
+    if is_initialize && session_id_to_return.is_none() {
+        let protocol_version = negotiated_initialize_version.unwrap_or("2025-11-25");
+        let Some(session_id) = state
+            .mcp_sessions
+            .open(session_owner.clone(), protocol_version.to_owned())
+        else {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "error": {"code": -32603, "message": "MCP session capacity reached"}
+                })),
+            )
+                .into_response();
+        };
+        session_id_to_return = Some(session_id);
+        created_new_session = true;
+    }
+    let request_protocol_version = existing_session_version
+        .or_else(|| negotiated_initialize_version.map(str::to_owned))
+        .or_else(|| incoming_protocol_version.map(str::to_owned));
+    let mut response = mcp_dispatch(state.clone(), headers.clone(), uri, payload).await;
+    if response.status().is_success() {
+        if let Some(session_id) = session_id_to_return.as_deref() {
+            if let Ok(value) = HeaderValue::from_str(session_id) {
+                response.headers_mut().insert("mcp-session-id", value);
+            }
+        }
+    } else if created_new_session && let Some(session_id) = session_id_to_return.as_deref() {
+        let _ = state.mcp_sessions.close(session_id, &session_owner, None);
+    }
     if let Some(protocol_version) = request_protocol_version {
         response.headers_mut().insert(
             "mcp-protocol-version",
@@ -191,15 +234,14 @@ async fn mcp_handler(
                 .unwrap_or_else(|_| HeaderValue::from_static("2025-11-25")),
         );
     }
-    if response_mode.is_none_or(|(json, sse)| json || !sse)
-        || response.status() != StatusCode::OK
-    {
+    if response_mode.is_none() || response.status() != StatusCode::OK {
         return response;
     }
     let protocol_version = response
         .headers()
         .get("mcp-protocol-version")
         .cloned();
+    let session_id = response.headers().get("mcp-session-id").cloned();
     let Ok(body) = axum::body::to_bytes(response.into_body(), usize::MAX).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -209,7 +251,11 @@ async fn mcp_handler(
     sse.extend_from_slice(b"\n\n");
     let mut response = (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")],
+        [
+            (header::CONTENT_TYPE, "text/event-stream; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache, no-transform"),
+            (header::CONNECTION, "keep-alive"),
+        ],
         sse,
     )
         .into_response();
@@ -218,7 +264,37 @@ async fn mcp_handler(
             .headers_mut()
             .insert("mcp-protocol-version", protocol_version);
     }
+    if let Some(session_id) = session_id {
+        response.headers_mut().insert("mcp-session-id", session_id);
+    }
     response
+}
+
+async fn mcp_delete_handler(
+    State(state): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
+        return forbidden_response();
+    }
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let protocol_version = headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok());
+    let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
+    match state
+        .mcp_sessions
+        .close(session_id, &session_owner, protocol_version)
+    {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(McpSessionError::ProtocolVersionMismatch) => StatusCode::BAD_REQUEST.into_response(),
+        Err(McpSessionError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn mcp_dispatch(
@@ -241,6 +317,30 @@ async fn mcp_dispatch(
         _ => "root",
     };
     if method == "initialize" {
+        let valid_params = payload
+            .get("params")
+            .and_then(Value::as_object)
+            .is_some_and(|params| {
+                params.get("protocolVersion").is_some_and(Value::is_string)
+                    && params.get("capabilities").is_some_and(Value::is_object)
+                    && params.get("clientInfo").and_then(Value::as_object).is_some_and(
+                        |client| {
+                            client.get("name").is_some_and(Value::is_string)
+                                && client.get("version").is_some_and(Value::is_string)
+                        },
+                    )
+            });
+        if !valid_params {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32602, "message": "Invalid initialize parameters"}
+                })),
+            )
+                .into_response();
+        }
         let requested_version = payload
             .pointer("/params/protocolVersion")
             .and_then(Value::as_str)
@@ -1583,9 +1683,15 @@ pub fn router_with_application(
 ) -> Router {
     let mut router = Router::new()
         .route("/api/events", get(sse_handler))
-        .route("/mcp", post(mcp_handler))
-        .route("/mcp/conversation", post(mcp_handler))
-        .route("/mcp/workflow", post(mcp_handler));
+        .route("/mcp", post(mcp_handler).delete(mcp_delete_handler))
+        .route(
+            "/mcp/conversation",
+            post(mcp_handler).delete(mcp_delete_handler),
+        )
+        .route(
+            "/mcp/workflow",
+            post(mcp_handler).delete(mcp_delete_handler),
+        );
     for path in INTERNAL_APPLICATION_EFFECT_ROUTES {
         router = router.route(path, post(application_effect_handler));
     }
@@ -1612,6 +1718,7 @@ pub fn router_with_application(
         .with_state(Arc::new(ServerState {
             api: state,
             application,
+            mcp_sessions: Arc::new(McpSessionRegistry::default()),
         }))
 }
 
