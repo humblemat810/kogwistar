@@ -1607,6 +1607,89 @@ asyncio.run(main())
         registry.finish_get(&session_id);
     }
 
+    #[test]
+    fn mcp_session_registry_expires_idle_sessions_but_preserves_active_streams() {
+        let registry = McpSessionRegistry::default();
+        let owner = json!({"sub": "client-a"});
+        let idle_session = registry
+            .open(owner.clone(), "2025-11-25".to_owned())
+            .unwrap();
+        {
+            let mut sessions = registry
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            sessions.get_mut(&idle_session).unwrap().last_seen =
+                Instant::now() - MCP_SESSION_TTL;
+        }
+        assert_eq!(
+            registry.touch(&idle_session, &owner, None),
+            Err(McpSessionError::NotFound)
+        );
+        assert!(!registry
+            .sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains_key(&idle_session));
+
+        let active_session = registry
+            .open(owner.clone(), "2025-11-25".to_owned())
+            .unwrap();
+        let _subscription = registry
+            .subscribe_get(&active_session, &owner, None, None)
+            .unwrap();
+        {
+            let mut sessions = registry
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            sessions.get_mut(&active_session).unwrap().last_seen =
+                Instant::now() - MCP_SESSION_TTL;
+        }
+        assert_eq!(
+            registry.touch(&active_session, &owner, None),
+            Ok("2025-11-25".to_owned())
+        );
+        registry.finish_get(&active_session);
+    }
+
+    #[test]
+    fn mcp_session_registry_enforces_capacity_and_reclaims_expired_slots() {
+        let registry = McpSessionRegistry::default();
+        let owner = json!({"sub": "bounded-client"});
+        let sessions = (0..MCP_MAX_SESSIONS)
+            .map(|_| {
+                registry
+                    .open(owner.clone(), "2025-11-25".to_owned())
+                    .expect("all slots below the configured cap should be admitted")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            registry.open(owner.clone(), "2025-11-25".to_owned()),
+            None,
+            "an additional live session must be rejected at capacity"
+        );
+        {
+            let mut active = registry
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            active.get_mut(&sessions[0]).unwrap().last_seen = Instant::now() - MCP_SESSION_TTL;
+        }
+        assert!(registry
+            .open(owner, "2025-11-25".to_owned())
+            .is_some());
+        assert_eq!(
+            registry
+                .sessions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .len(),
+            MCP_MAX_SESSIONS
+        );
+    }
+
     #[tokio::test]
     async fn dev_token_me_and_logout_share_verified_jwt_contract() {
         use axum::body::{Body, to_bytes};
