@@ -7,11 +7,18 @@
 
 - This is the detailed execution list; the linked checklist remains the sole coarse progress and denominator source.
 - The baseline is the 23 coarse IDs currently marked `IN PROGRESS`. Every coarse ID must map to fine work below. Fine IDs do not add to the 177-item coarse inventory.
+- This is a first-pass decomposition of all open coarse gates, not yet a proven exhaustive leaf-level inventory of every code/test action. Rows marked as broad inventory or matrix work must be expanded into concrete child tasks before that row is started; do not silently treat an umbrella row as a completed implementation plan.
 - A fine task reaches `PASS` only when its stated acceptance evidence is recorded here or linked from its referenced test/report. Tests must exercise the named behavior, not merely compile the surrounding code.
 - Close a coarse ID only when its original exit criteria and all mapped required fine tasks pass. Do not reopen a passed coarse ID without a reproduced regression or new required contract.
 - Keep tasks at this slice size. If a task proves unexpectedly broad, split it only after recording the concrete blocker and preserve the original fine ID as a parent; do not expand scope speculatively.
 
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
+
+## Dual Progress Reporting
+
+- **Coarse completion:** coarse checklist `PASS` count divided by its fixed total. Current: **154/177 = 87.0%**.
+- **Fine completion:** fine task `PASS` count divided by the current fine-task total. Current: **0/46 = 0.0%**. This is closure progress for the newly established residual-work tracker, not a claim that none of the underlying code or tests exist.
+- Report both numbers together. Do not average them, combine their denominators, or treat fine tasks as new coarse checklist items. When a parent work package is split, preserve the parent as a non-counted heading and count only its active child tasks in the fine denominator.
 
 | Fine ID | Coarse ID | Status | Bounded task and acceptance evidence |
 | --- | --- | --- | --- |
@@ -64,4 +71,4 @@
 
 ## Current Snapshot
 
-The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 46 bounded tasks, initially `NOT STARTED`; this is a tracking baseline, not a claim that implementation progress regressed. Update this snapshot only when task statuses change, and keep the linked coarse inventory as the single overall completion report.
+The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 46 tasks, initially `NOT STARTED`. Mapping coverage is complete, but leaf-level exhaustiveness is not yet verified; refine umbrella inventory/matrix tasks before starting them. The fine 0/46 snapshot is a tracking baseline, not a claim that implementation progress regressed. Update the two percentages whenever either list changes, and keep the linked coarse inventory as the authority for coarse status.
