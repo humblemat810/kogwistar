@@ -489,6 +489,7 @@ struct CapabilityState {
 type SharedCapabilityState = Arc<Mutex<CapabilityState>>;
 
 const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
+    ("GET", "/api/search_index_hybrid"),
     ("POST", "/api/document"),
     ("POST", "/api/graph/upsert"),
     ("POST", "/api/document.upsert_tree"),

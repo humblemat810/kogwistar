@@ -2118,7 +2118,7 @@
         assert!(postgres.supports_http_operation("POST", "/api/document.upsert_tree"));
         assert!(!sqlite.supports_http_operation("POST", "/api/document.upsert_tree"));
 
-        assert!(!configured_postgres
+        assert!(configured_postgres
             .supports_http_operation("GET", "/api/search_index_hybrid"));
 
         for service in [

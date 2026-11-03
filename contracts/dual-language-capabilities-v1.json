@@ -151,7 +151,6 @@
     "status": "intentionally-deferred",
     "pending_routes": [
       ["DELETE", "/admin/doc/{doc_id}"],
-      ["GET", "/api/search_index_hybrid"],
       ["POST", "/api/add_index_entries"]
     ],
     "pending_syscalls": [

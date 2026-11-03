@@ -476,21 +476,6 @@
         ]
       },
       {
-        "name": "graph-hybrid-search",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "graph-pgvector"
-        ],
-        "exit_evidence": "Python SearchIndexService FTS/vector fusion and score normalization parity, resolve_node behavior, scoped authorization, durable index admission, and frozen OpenAPI conformance",
-        "operations": [
-          {
-            "method": "GET",
-            "path": "/api/search_index_hybrid"
-          }
-        ]
-      },
-      {
         "name": "derived-index-admission",
         "owner": "python",
         "status": "intentionally-deferred",
