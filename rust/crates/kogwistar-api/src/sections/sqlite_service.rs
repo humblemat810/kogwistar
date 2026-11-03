@@ -5175,61 +5175,11 @@ impl SqliteRunApplicationService {
                 "Semantic graph retrieval requires a configured embedding provider",
             );
         };
-        let profile = provider.profile();
-        if let Err(error) = profile.validate() {
-            return effect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
-                error.to_string(),
-            );
-        }
-        let mut vectors = match provider.embed(&[query_text.to_owned()]).await {
-            Ok(vectors) => vectors,
-            Err(_) => {
-                return effect_error(
-                    StatusCode::BAD_GATEWAY,
-                    "KOGWISTAR_EMBEDDING_FAILED",
-                    "Embedding provider failed",
-                );
-            }
-        };
-        if vectors.len() != 1 {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "Embedding provider returned an unexpected query-vector count",
-            );
-        }
-        let vector = vectors.remove(0);
-        if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "Embedding provider returned an invalid query vector",
-            );
-        }
-        let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
-        if vector.iter().any(|value| !value.is_finite()) {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "Embedding query vector exceeds graph storage range",
-            );
-        }
-        let metric = match profile.similarity_metric.to_ascii_lowercase().as_str() {
-            "cosine" => DistanceMetric::Cosine,
-            "l2" => DistanceMetric::L2,
-            "ip" | "inner" | "inner_product" | "innerproduct" => {
-                DistanceMetric::InnerProduct
-            }
-            _ => {
-                return effect_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "KOGWISTAR_EMBEDDING_UNAVAILABLE",
-                    "Embedding profile has an unsupported similarity metric",
-                );
-            }
-        };
+        let (vector, _embedding_dim, metric) =
+            match semantic_query_embedding(provider.as_ref(), query_text).await {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
         let scope_value = security_scope_value(&request.principal);
         let namespace = scope_value["storage_namespace"]
             .as_str()

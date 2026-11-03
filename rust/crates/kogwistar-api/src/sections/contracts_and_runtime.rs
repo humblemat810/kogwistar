@@ -739,7 +739,24 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         }
         Arc::new(service)
     } else {
-        Arc::new(InMemoryGraphApplicationService::default())
+        let mut service = InMemoryGraphApplicationService::default();
+        let embedding_provider = embedding_provider_from_settings(
+            std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_DIMENSION")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT")
+                .ok()
+                .as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        if let Some(provider) = embedding_provider {
+            service = service.with_embedding_provider(provider);
+        }
+        Arc::new(service)
     };
     if inline_embedding_worker && !embedding_worker_available {
         return Err(std::io::Error::new(

@@ -3,6 +3,7 @@
 struct InMemoryGraphApplicationService {
     store: InMemoryStore,
     capabilities: SharedCapabilityState,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl Default for InMemoryGraphApplicationService {
@@ -10,6 +11,7 @@ impl Default for InMemoryGraphApplicationService {
         Self {
             store: InMemoryStore::default(),
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+            embedding_provider: None,
         }
     }
 }
@@ -24,10 +26,16 @@ impl InMemoryGraphApplicationService {
                 | "kg_neighbors"
                 | "kg_propose_bruteforce"
                 | "kg_shortest_path"
+                | "kg_semantic_seed_then_expand_text"
                 | "kg_viz_cytoscape_json"
                 | "kg_viz_d3_json"
                 | "propose_vector"
         )
+    }
+
+    fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedding_provider = Some(provider);
+        self
     }
 
     fn authorized_graph_scope(
@@ -95,6 +103,9 @@ impl InMemoryGraphApplicationService {
         }
         if request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
             return self.graph_vector_query_effect(request).await;
+        }
+        if request.path_and_query == GRAPH_SEMANTIC_SEED_EXPAND_ROUTE {
+            return self.graph_semantic_seed_expand_effect(request).await;
         }
         if request.path_and_query == INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE {
             return self.graph_vector_proposal_effect(request).await;
@@ -236,6 +247,162 @@ impl InMemoryGraphApplicationService {
             _ => return unavailable_effect(request.clone()),
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_semantic_seed_expand_effect; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; fixture=contracts/golden/graph-acl-traversal-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_contract; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
+    async fn graph_semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let scope = match self.authorized_graph_scope(request) {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let input: SemanticSeedExpandRequest = match serde_json::from_slice(&request.body) {
+            Ok(input) => input,
+            Err(error) => return invalid_graph_request(error.to_string()),
+        };
+        let query_text = input.text.trim();
+        let top_k = input.top_k.unwrap_or(5);
+        let hops = input.hops.unwrap_or(1);
+        if query_text.is_empty()
+            || query_text.chars().count() > 16_384
+            || !(1..=1000).contains(&top_k)
+            || hops > 32
+            || input
+                .doc_ids
+                .as_ref()
+                .is_some_and(|doc_id| doc_id.trim().is_empty())
+        {
+            return invalid_graph_request(
+                "text must contain 1 to 16384 characters, top_k must be 1 to 1000, hops must be at most 32, and doc_ids must be non-empty when provided".to_owned(),
+            );
+        }
+        let Some(provider) = self.embedding_provider.as_ref() else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+                "Semantic graph retrieval requires a configured embedding provider",
+            );
+        };
+        let (embedding, _embedding_dim, metric) =
+            match semantic_query_embedding(provider.as_ref(), query_text).await {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
+        let mut metadata = BTreeMap::new();
+        if let Some(workspace_id) = scope.workspace_id.as_ref() {
+            metadata.insert("workspace_id".to_owned(), json!(workspace_id));
+        }
+        if let Some(graph_space) = scope.graph_space.as_ref() {
+            metadata.insert("graph_space".to_owned(), json!(graph_space));
+        }
+        if let Some(doc_id) = input.doc_ids.as_ref() {
+            metadata.insert("doc_id".to_owned(), json!(doc_id));
+        }
+        let query = VectorQuery {
+            embedding,
+            limit: 10_000,
+            metadata: MetadataFilter { equals: metadata },
+            metric,
+        };
+        let (all_nodes, all_edges, mut query_matches) = match self
+            .store
+            .graph_node_edge_vector_snapshot(&scope, 10_001, "gke_nodes", &[query])
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_VECTOR_QUERY_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        if all_nodes.len() > 10_000 || all_edges.len() > 10_000 {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                "in-memory graph snapshot exceeds the 10000-record bound",
+            );
+        }
+        let scope_value = security_scope_value(&request.principal);
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
+            &all_nodes,
+            &all_edges,
+            "knowledge",
+            &principal,
+        );
+        let visible_node_ids = visible_nodes
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let matches = query_matches.pop().unwrap_or_default();
+        let visible_seeds = matches
+            .into_iter()
+            .filter(|matched| {
+                matched
+                    .record
+                    .metadata
+                    .get("entity_type")
+                    .and_then(Value::as_str)
+                    != Some("acl_record")
+                    && !matched
+                        .record
+                        .metadata
+                        .get("lifecycle_status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+            })
+            .take(top_k)
+            .map(|matched| matched.record)
+            .filter(|record| visible_node_ids.contains(record.id.as_str()))
+            .collect::<Vec<_>>();
+        let seed_ids = visible_seeds
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        let seeds = visible_seeds
+            .iter()
+            .filter_map(graph_record_document_json)
+            .collect::<Vec<_>>();
+        let layers = graph_k_hop_from_records(
+            &GraphKHopQuery {
+                start_ids: seed_ids,
+                k: hops,
+                doc_id: input.doc_ids,
+            },
+            &visible_nodes,
+            &visible_edges,
+        )
+        .into_iter()
+        .map(|layer| {
+            let nodes = layer
+                .nodes
+                .iter()
+                .filter_map(|id| visible_nodes.iter().find(|record| &record.id == id))
+                .filter_map(graph_record_document_json)
+                .collect::<BTreeSet<_>>();
+            let edges = layer
+                .edges
+                .iter()
+                .filter_map(|id| visible_edges.iter().find(|record| &record.id == id))
+                .filter_map(graph_record_document_json)
+                .collect::<BTreeSet<_>>();
+            json!({
+                "nodes": nodes.into_iter().collect::<Vec<_>>(),
+                "edges": edges.into_iter().collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"seeds": seeds, "layers": layers})),
+        )
     }
 
     // PYTHON_PARITY: kogwistar/server/mcp_tools.py::_load_persisted_graph
@@ -903,7 +1070,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-        surface == "root" && Self::supports_graph_tool(name)
+        surface == "root"
+            && Self::supports_graph_tool(name)
+            && (name != "kg_semantic_seed_then_expand_text" || self.embedding_provider.is_some())
     }
 
     fn supports_mcp_tool_for_principal(
@@ -928,14 +1097,18 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        let route = path.split('?').next();
         method == "POST"
+            && (route != Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
+                || self.embedding_provider.is_some())
             && matches!(
-                path.split('?').next(),
+                route,
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
                     | Some(INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE)
                     | Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
                     | Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
+                    | Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
                     | Some(INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
@@ -961,6 +1134,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | INTERNAL_GRAPH_NEIGHBORS_ROUTE
                     | INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE
                     | INTERNAL_GRAPH_VECTOR_QUERY_ROUTE
+                    | GRAPH_SEMANTIC_SEED_EXPAND_ROUTE
                     | INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE
                     | INTERNAL_GRAPH_FIND_EDGES_ROUTE
                     | INTERNAL_GRAPH_SHORTEST_PATH_ROUTE

@@ -21,6 +21,66 @@ fn graph_record_document_json(record: &GraphRecord) -> Option<String> {
     serde_json::to_string(&document).ok()
 }
 
+async fn semantic_query_embedding(
+    provider: &dyn EmbeddingProvider,
+    text: &str,
+) -> Result<(Vec<f32>, usize, DistanceMetric), ApiEffectResponse> {
+    let profile = provider.profile();
+    if let Err(error) = profile.validate() {
+        return Err(effect_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+            error.to_string(),
+        ));
+    }
+    let mut vectors = match provider.embed(&[text.to_owned()]).await {
+        Ok(vectors) => vectors,
+        Err(_) => {
+            return Err(effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "Embedding provider failed",
+            ));
+        }
+    };
+    if vectors.len() != 1 {
+        return Err(effect_error(
+            StatusCode::BAD_GATEWAY,
+            "KOGWISTAR_EMBEDDING_FAILED",
+            "Embedding provider returned an unexpected query-vector count",
+        ));
+    }
+    let vector = vectors.remove(0);
+    if vector.len() != profile.dimension || vector.iter().any(|value| !value.is_finite()) {
+        return Err(effect_error(
+            StatusCode::BAD_GATEWAY,
+            "KOGWISTAR_EMBEDDING_FAILED",
+            "Embedding provider returned an invalid query vector",
+        ));
+    }
+    let vector = vector.into_iter().map(|value| value as f32).collect::<Vec<_>>();
+    if vector.iter().any(|value| !value.is_finite()) {
+        return Err(effect_error(
+            StatusCode::BAD_GATEWAY,
+            "KOGWISTAR_EMBEDDING_FAILED",
+            "Embedding query vector exceeds graph storage range",
+        ));
+    }
+    let metric = match profile.similarity_metric.to_ascii_lowercase().as_str() {
+        "cosine" => DistanceMetric::Cosine,
+        "l2" => DistanceMetric::L2,
+        "ip" | "inner" | "inner_product" | "innerproduct" => DistanceMetric::InnerProduct,
+        _ => {
+            return Err(effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
+                "Embedding profile has an unsupported similarity metric",
+            ));
+        }
+    };
+    Ok((vector, profile.dimension, metric))
+}
+
 impl PostgresRunApplicationService {
     async fn wisdom_semantic_seed_expand_effect(
         &self,
@@ -91,67 +151,12 @@ impl PostgresRunApplicationService {
                 "Wisdom semantic retrieval requires a configured embedding provider",
             );
         };
-        let profile = provider.profile();
-        if let Err(error) = profile.validate() {
-            return effect_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "KOGWISTAR_EMBEDDING_UNAVAILABLE",
-                error.to_string(),
-            );
-        }
         let query_text = input.text.trim().to_owned();
-        let mut vectors = match provider.embed(std::slice::from_ref(&query_text)).await {
-            Ok(vectors) => vectors,
-            Err(_) => {
-                return effect_error(
-                    StatusCode::BAD_GATEWAY,
-                    "KOGWISTAR_EMBEDDING_FAILED",
-                    "Embedding provider failed",
-                );
-            }
-        };
-        if vectors.len() != 1 {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "Embedding provider returned an unexpected query-vector count",
-            );
-        }
-        let query_embedding = vectors.remove(0);
-        if query_embedding.len() != profile.dimension
-            || query_embedding.iter().any(|value| !value.is_finite())
-        {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "Embedding provider returned an invalid query vector",
-            );
-        }
-        let query_embedding = query_embedding
-            .into_iter()
-            .map(|value| value as f32)
-            .collect::<Vec<_>>();
-        if query_embedding.iter().any(|value| !value.is_finite()) {
-            return effect_error(
-                StatusCode::BAD_GATEWAY,
-                "KOGWISTAR_EMBEDDING_FAILED",
-                "Embedding query vector exceeds graph storage range",
-            );
-        }
-        let metric = match profile.similarity_metric.to_ascii_lowercase().as_str() {
-            "cosine" => DistanceMetric::Cosine,
-            "l2" => DistanceMetric::L2,
-            "ip" | "inner" | "inner_product" | "innerproduct" => {
-                DistanceMetric::InnerProduct
-            }
-            _ => {
-                return effect_error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "KOGWISTAR_EMBEDDING_UNAVAILABLE",
-                    "Embedding profile has an unsupported similarity metric",
-                );
-            }
-        };
+        let (query_embedding, embedding_dim, metric) =
+            match semantic_query_embedding(provider.as_ref(), &query_text).await {
+                Ok(result) => result,
+                Err(response) => return response,
+            };
         let scope_value = security_scope_value(&request.principal);
         let scope = GraphScope {
             namespace: scope_value["storage_namespace"]
@@ -194,7 +199,7 @@ impl PostgresRunApplicationService {
                         metadata: MetadataFilter { equals: metadata },
                         metric,
                     },
-                    embedding_dim: profile.dimension,
+                    embedding_dim,
                 }],
                 BTreeMap::from([("entity_type".to_owned(), json!("acl_record"))]),
             )

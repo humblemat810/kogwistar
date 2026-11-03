@@ -42,6 +42,137 @@ fn failed_inline_graph_effect_clears_provider_event_side_effects() {
     assert_eq!(effect.errors, ["owner authorization failed"]);
 }
 
+#[tokio::test]
+async fn in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_contract() {
+    struct FixedEmbeddingProvider;
+    impl EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
+                std::sync::OnceLock::new();
+            PROFILE.get_or_init(|| kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "in-memory-semantic-test".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            })
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move { Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect()) })
+        }
+    }
+
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("facts".to_owned()),
+    };
+    let inactive = InMemoryGraphApplicationService::default();
+    assert!(!inactive.supports_mcp_tool("root", "kg_semantic_seed_then_expand_text"));
+    assert!(!inactive.supports_http_operation("POST", GRAPH_SEMANTIC_SEED_EXPAND_ROUTE));
+
+    let service = InMemoryGraphApplicationService::default()
+        .with_embedding_provider(Arc::new(FixedEmbeddingProvider));
+    assert!(service.supports_mcp_tool("root", "kg_semantic_seed_then_expand_text"));
+    assert!(service.supports_http_operation("POST", GRAPH_SEMANTIC_SEED_EXPAND_ROUTE));
+    service
+        .store
+        .apply_graph_mutations_atomic(vec![
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "semantic-seed-node-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"semantic-seed-node","label":"matching"}),
+                record: GraphRecord {
+                    id: "semantic-seed-node".to_owned(),
+                    document: Some(r#"{"id":"semantic-seed-node","label":"matching"}"#.to_owned()),
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                    ]),
+                    embedding: Some(vec![1.0, 0.0]),
+                },
+                embedding_dim: 2,
+            },
+            GraphMutation {
+                scope,
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "semantic-seed-acl-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"semantic-seed-node-acl"}),
+                record: GraphRecord {
+                    id: "semantic-seed-node-acl".to_owned(),
+                    document: None,
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("acl_truth_graph".to_owned(), json!("knowledge")),
+                        ("acl_target_grain".to_owned(), json!("node")),
+                        ("acl_target_entity_id".to_owned(), json!("semantic-seed-node")),
+                        ("acl_version".to_owned(), json!(1)),
+                        ("acl_mode".to_owned(), json!("public")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+        ])
+        .await
+        .unwrap();
+
+    let response = ApplicationService::execute(
+        &service,
+        ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: GRAPH_SEMANTIC_SEED_EXPAND_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({
+                "text":"matching",
+                "top_k":1,
+                "hops":0
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"reader",
+                "role":"rw",
+                "ns":["docs"],
+                "storage_ns":"tenant-a",
+                "workspace_id":"workspace-a",
+                "graph_space":"facts",
+                "capabilities":["read_graph"]
+            }),
+        },
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let body: Value = serde_json::from_slice(&response.body).unwrap();
+    let seed: Value = serde_json::from_str(body["seeds"][0].as_str().unwrap()).unwrap();
+    assert_eq!(seed["id"], "semantic-seed-node");
+}
+
 #[test]
 fn inline_graph_mutation_scope_uses_current_owner_scope() {
     let principal = json!({
