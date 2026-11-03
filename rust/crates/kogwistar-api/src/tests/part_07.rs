@@ -2773,7 +2773,7 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         .last()
         .unwrap()
         .seq;
-    let receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
+    let mut receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
         executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
         operation: "agent.event.receive".to_owned(),
         op_version: "v1".to_owned(),
@@ -2786,7 +2786,18 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         parent_token_id: None,
         step_seq: 1,
         state: Map::new(),
-        runtime_routes: Vec::new(),
+        runtime_routes: vec![kogwistar_runtime::RuntimeStaticRoute {
+            edge_id: "receive-to-ack".to_owned(),
+            source_node_id: "receive-step".to_owned(),
+            target_node_id: "ack-step".to_owned(),
+            aliases: Vec::new(),
+            join_mask: 0,
+            predicate: Some("event_requires_no_action".to_owned()),
+            multiplicity: "one".to_owned(),
+            is_default: false,
+            priority: 100,
+            source_fanout: false,
+        }],
         ephemeral_context: Map::new(),
     };
     let receive_principal = service
@@ -2806,6 +2817,31 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
     );
     assert_eq!(claim["event"]["trace"]["attempt"], 1);
 
+    receive_request.ephemeral_context.insert(
+        "authorized_provider_event".to_owned(),
+        claim["event"].clone(),
+    );
+    receive_request.ephemeral_context.insert(
+        "authorized_provider_event_claim".to_owned(),
+        claim["claim"].clone(),
+    );
+    let received = native_result_from_request(
+        RecordedWorkerHandoff {
+            message_id: "provider-receive-handoff".to_owned(),
+            claimed_by: "rust-native-worker#1".to_owned(),
+            run_id: run_id.to_owned(),
+            step_id: "receive-step".to_owned(),
+            correlation_id: run_id.to_owned(),
+        },
+        receive_request,
+        &kogwistar_runtime::NativeOperationRegistry::default(),
+    )
+    .unwrap();
+    let receive_effect = received.effect.expect("native receive returns a workflow effect");
+    assert_eq!(receive_effect.successors.len(), 1);
+    assert_eq!(receive_effect.successors[0].node_id, "ack-step");
+    assert!(receive_effect.provider_event_acknowledgements.is_empty());
+
     let handler: kogwistar_runtime::RecordedRuntimeTransition = serde_json::from_value(json!({
         "contract_version": 1,
         "transition_id": "causal-handler-step",
@@ -2817,17 +2853,12 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         "step_seq": 1,
         "node_id": "handler-step",
         "token_id": run_id,
-        "state_update": [["u", {
-            "agent_event_current": claim["event"],
-            "agent_event_claim": claim["claim"],
-            "agent_event_handling_step_seq": 1,
-            "agent_event_route": "no_action"
-        }]],
+        "state_update": receive_effect.state_update,
         "frontier": {
             "pending": [["ack-step", 0, run_id, null]],
             "suspended": [], "join_node_ids": [], "join_outstanding": [], "join_waiters": {}
         },
-        "result": {"handled": true}
+        "result": receive_effect.result
     }))
     .unwrap();
     service
