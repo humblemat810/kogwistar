@@ -3,6 +3,77 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn stage1_document_lookup_is_namespace_and_kind_scoped() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("stage1_document_lookup");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let tables = Tables::new(&schema)?;
+    let client = store.client().await?;
+    for (namespace, kind, id, doc_id) in [
+        ("scope-a", "node", "node-a", "doc-a"),
+        ("scope-a", "edge", "edge-a", "doc-a"),
+        ("scope-a", "node", "node-b", "doc-b"),
+        ("scope-b", "node", "node-c", "doc-a"),
+    ] {
+        let metadata = serde_json::json!({"doc_id": doc_id}).to_string();
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {} (namespace, entity_kind, entity_id, document, metadata, \
+                     source_fingerprint, revision, materialization_status, updated_at_ms) \
+                     VALUES ($1,$2,$3,$4,$5::text::jsonb,'fingerprint',1,'pending',1)",
+                    tables.stage1_projections
+                ),
+                &[
+                    &namespace,
+                    &kind,
+                    &id,
+                    &format!(r#"{{"id":"{id}"}}"#),
+                    &metadata,
+                ],
+            )
+            .await
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!("Stage-1 fixture insert: {error:?}"))
+            })?;
+    }
+    drop(client);
+
+    let node_rows = store
+        .stage1_graph_projections_for_documents(
+            "scope-a",
+            "node",
+            &["doc-a".to_owned(), "doc-b".to_owned()],
+        )
+        .await?;
+    assert_eq!(
+        node_rows
+            .iter()
+            .map(|row| row.entity_id.as_str())
+            .collect::<Vec<_>>(),
+        ["node-a", "node-b"]
+    );
+    let edge_rows = store
+        .stage1_graph_projections_for_documents("scope-a", "edge", &["doc-a".to_owned()])
+        .await?;
+    assert_eq!(edge_rows.len(), 1);
+    assert_eq!(edge_rows[0].entity_id, "edge-a");
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn rust_bootstrap_adds_scope_arbiter_without_changing_python_id_primary_key()
 -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")

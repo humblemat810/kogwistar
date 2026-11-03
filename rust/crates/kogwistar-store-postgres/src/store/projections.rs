@@ -1,6 +1,61 @@
 use super::super::*;
 
 impl PostgresStore {
+    // Python counterpart: kogwistar/engine_core/two_stage_postgres.py::stage1_query,
+    // consumed by kogwistar/engine_core/subsystems/read.py::node_ids_by_doc and
+    // ids_with_insertion_method. Revision fencing remains the caller's duty.
+    /// Read Stage-1 candidates whose host-authored metadata references one of
+    /// the requested documents. Callers must still fence each candidate against
+    /// the canonical event revision before exposing it as current graph state.
+    pub async fn stage1_graph_projections_for_documents(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        doc_ids: &[String],
+    ) -> PostgresStoreResult<Vec<Stage1GraphProjection>> {
+        require_namespace(namespace)?;
+        if !matches!(entity_kind, "node" | "edge") {
+            return Err(PostgresStoreError::Backend(
+                "Stage-1 document lookup requires node or edge kind".to_owned(),
+            ));
+        }
+        if doc_ids.is_empty() || doc_ids.iter().any(|id| id.trim().is_empty()) {
+            return Err(PostgresStoreError::Backend(
+                "Stage-1 document lookup requires non-empty document IDs".to_owned(),
+            ));
+        }
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                &format!(
+                    "SELECT namespace, entity_kind, entity_id, document, metadata::TEXT, \
+                            source_fingerprint, revision, materialization_status \
+                     FROM {} WHERE namespace=$1 AND entity_kind=$2 \
+                       AND metadata->>'doc_id' = ANY($3) \
+                     ORDER BY entity_id ASC",
+                    self.tables.stage1_projections
+                ),
+                &[&namespace, &entity_kind, &doc_ids],
+            )
+            .await
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|row| {
+                let metadata_json: String = row.try_get(4).map_err(backend)?;
+                Ok(Stage1GraphProjection {
+                    namespace: row.try_get(0).map_err(backend)?,
+                    entity_kind: row.try_get(1).map_err(backend)?,
+                    entity_id: row.try_get(2).map_err(backend)?,
+                    document: row.try_get(3).map_err(backend)?,
+                    metadata: serde_json::from_str(&metadata_json)?,
+                    source_fingerprint: row.try_get(5).map_err(backend)?,
+                    revision: row.try_get(6).map_err(backend)?,
+                    materialization_status: row.try_get(7).map_err(backend)?,
+                })
+            })
+            .collect()
+    }
+
     /// Read Python-compatible Stage-1 content for native PostgreSQL workers.
     pub async fn stage1_graph_projection(
         &self,
