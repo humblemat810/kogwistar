@@ -967,6 +967,62 @@ def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
         }
 
 
+def test_conversation_create_uses_authenticated_owner_and_persists_start_node(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "owner-create",
+            "user_id": "owner-create",
+            "role": "rw",
+            "ns": ["conversation"],
+            "iat": now,
+            "exp": now + 3600,
+            "iss": "local",
+        },
+        TEST_JWT_SECRET,
+        algorithm=TEST_JWT_ALG,
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        created = client.post(
+            "/api/conversations",
+            json={
+                "user_id": "spoofed-owner",
+                "conversation_id": "created-by-owner",
+                "start_node_id": "created-start-node",
+            },
+            headers=headers,
+        )
+
+    assert created.status_code == 200, created.text
+    result = created.json()
+    assert result["conversation_id"] == "created-by-owner"
+    assert result["start_node_id"] == "created-start-node"
+    assert result["user_id"] == "owner-create"
+    assert result["turn_count"] == 0
+
+    nodes = conversation_engine.read.get_nodes(
+        where={"conversation_id": "created-by-owner"},
+        node_type=ConversationNode,
+        limit=10,
+    )
+    starts = [
+        node
+        for node in nodes
+        if node.metadata.get("entity_type") == "conversation_start"
+    ]
+    assert len(starts) == 1
+    assert starts[0].id == "created-start-node"
+    assert starts[0].user_id == "owner-create"
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
