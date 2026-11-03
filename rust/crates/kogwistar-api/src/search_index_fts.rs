@@ -10,10 +10,11 @@ use kogwistar_contracts::{
 };
 use kogwistar_engine::embedding::EmbeddingProvider;
 use kogwistar_store::{
-    DistanceMetric, EventReadStore, EventWriteStore, GraphRecord, NodeIndexStore, StoreError,
-    StoreResult, VectorMatch, VectorQuery,
+    DistanceMetric, EventReadStore, EventWriteStore, GraphRecord, NewEntityEvent, NodeIndexStore,
+    StoreError, StoreResult, VectorMatch, VectorQuery,
 };
 use rusqlite::{Connection, OptionalExtension, params};
+use sha2::{Digest, Sha256};
 
 const INDEX_TABLE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS semantic_index (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -349,11 +350,122 @@ pub struct SearchIndexReplaySummary {
     pub new_cursor: i64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchIndexAdmissionSummary {
+    pub entries_admitted: usize,
+    pub events_projected: usize,
+    pub last_event_seq: i64,
+}
+
+/// Durably admit search-index entries, then project through their event
+/// sequence. Stable event IDs make retries of the same namespace/entry
+/// idempotent while a changed entry creates a new authoritative event.
+///
+/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#admit_search_index_entries; python=kogwistar/engine_core/search_index/service.py#SearchIndexService.upsert_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_admission_is_durable_idempotent_and_retryable; python_test=tests/core/test_search_index_contract.py#test_search_index_entries_match_shared_rust_golden_fixture
+pub async fn admit_search_index_entries<E, V>(
+    event_store: &E,
+    vector_store: &V,
+    fts: &std::sync::Mutex<Connection>,
+    provider: &dyn EmbeddingProvider,
+    namespace: &str,
+    entries: &[SearchIndexEntryV1],
+) -> StoreResult<SearchIndexAdmissionSummary>
+where
+    E: EventReadStore + EventWriteStore,
+    V: NodeIndexStore,
+{
+    if namespace.trim().is_empty() || entries.len() > 1000 {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: "search-index admission requires a namespace and at most 1000 entries"
+                .to_owned(),
+        });
+    }
+    let mut target_seq = 0;
+    for entry in entries {
+        if entry.node_id.trim().is_empty() || entry.canonical_title.trim().is_empty() {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "search-index entry requires a node id and canonical title".to_owned(),
+            });
+        }
+        let payload =
+            serde_json::to_value(entry).map_err(|error| StoreError::InvalidEntityEventPayload {
+                message: format!("search-index entry could not be serialized: {error}"),
+            })?;
+        let payload_bytes = serde_json::to_vec(&payload).map_err(|error| {
+            StoreError::InvalidEntityEventPayload {
+                message: format!("search-index event payload could not be serialized: {error}"),
+            }
+        })?;
+        let mut digest = Sha256::new();
+        digest.update(namespace.as_bytes());
+        digest.update([0]);
+        digest.update(&payload_bytes);
+        let event_id = format!("search-index-v1-{:x}", digest.finalize());
+        let entity_id =
+            make_search_index_key(&entry.node_id, &entry.canonical_title, &entry.provision);
+        let appended = event_store
+            .append_entity_event(
+                namespace,
+                NewEntityEvent {
+                    event_id,
+                    entity_kind: "search_index".to_owned(),
+                    entity_id: entity_id.clone(),
+                    op: "search_index.upsert".to_owned(),
+                    payload: payload.clone(),
+                },
+            )
+            .await?;
+        if appended.event.entity_kind != "search_index"
+            || appended.event.entity_id != entity_id
+            || appended.event.op != "search_index.upsert"
+            || appended.event.payload != payload
+        {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "idempotent search-index event identity conflicts with its payload"
+                    .to_owned(),
+            });
+        }
+        target_seq = target_seq.max(appended.event.seq);
+    }
+
+    let mut events_projected = 0;
+    while target_seq > 0 {
+        let prior = event_store
+            .replay_cursor(namespace, "search-index-fts-vector-v1")
+            .await?;
+        if prior.last_seq >= target_seq {
+            break;
+        }
+        let replay = replay_search_index_events(
+            event_store,
+            vector_store,
+            fts,
+            provider,
+            namespace,
+            "search-index-fts-vector-v1",
+            1000,
+        )
+        .await?;
+        if replay.new_cursor <= prior.last_seq {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "search-index replay made no progress toward the admitted events"
+                    .to_owned(),
+            });
+        }
+        events_projected += replay.events_read;
+    }
+    Ok(SearchIndexAdmissionSummary {
+        entries_admitted: entries.len(),
+        events_projected,
+        last_event_seq: target_seq,
+    })
+}
+
 /// Replay canonical search-index events into the disposable FTS and vector
 /// projections. The cursor advances only after both projections succeed;
 /// therefore a failure between writes safely retries idempotent upserts.
 ///
-/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#replay_search_index_events; python=kogwistar/engine_core/subsystems/persist.py#PersistSubsystem.replay_namespace; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_event_replay_projects_before_advancing_cursor; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
+/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#replay_search_index_events; python=kogwistar/engine_core/subsystems/persist.py#PersistSubsystem.replay_namespace; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_admission_is_durable_idempotent_and_retryable; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
 pub async fn replay_search_index_events<E, V>(
     event_store: &E,
     vector_store: &V,
@@ -584,8 +696,8 @@ mod tests {
     use kogwistar_contracts::SearchIndexUpsertV1;
     use kogwistar_engine::embedding::{EmbeddingFuture, EmbeddingProfile, EmbeddingProvider};
     use kogwistar_store::{
-        EventReadStore, EventWriteStore, GraphRecord, NewEntityEvent, NodeIndexStore, StoreError,
-        StoreResult, VectorMatch, VectorQuery,
+        EventReadStore, GraphRecord, NodeIndexStore, StoreError, StoreResult, VectorMatch,
+        VectorQuery,
     };
     use kogwistar_store_memory::InMemoryStore;
     use serde_json::Value;
@@ -791,7 +903,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_index_event_replay_projects_before_advancing_cursor() {
+    async fn search_index_admission_is_durable_idempotent_and_retryable() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/search-index-entry-v1.json"
@@ -806,19 +918,6 @@ mod tests {
             &item.provision,
         );
         let event_store = InMemoryStore::default();
-        EventWriteStore::append_entity_event(
-            &event_store,
-            "workspace",
-            NewEntityEvent {
-                event_id: "search-index-event-1".to_owned(),
-                entity_kind: "search_index".to_owned(),
-                entity_id: key.clone(),
-                op: "search_index.upsert".to_owned(),
-                payload: serde_json::to_value(&item).expect("entry serializes"),
-            },
-        )
-        .await
-        .expect("append canonical search-index event");
         let vector_store = FailOnceNodeIndexStore {
             inner: InMemoryStore::default(),
             fail_next: Arc::new(AtomicBool::new(true)),
@@ -844,14 +943,13 @@ mod tests {
         };
 
         assert!(
-            super::replay_search_index_events(
+            super::admit_search_index_entries(
                 &event_store,
                 &vector_store,
                 &fts,
                 &provider,
                 "workspace",
-                "search-index-fts-vector-v1",
-                10,
+                std::slice::from_ref(&item),
             )
             .await
             .is_err()
@@ -871,20 +969,19 @@ mod tests {
             1
         );
 
-        let replay = super::replay_search_index_events(
+        let replay = super::admit_search_index_entries(
             &event_store,
             &vector_store,
             &fts,
             &provider,
             "workspace",
-            "search-index-fts-vector-v1",
-            10,
+            std::slice::from_ref(&item),
         )
         .await
-        .expect("retry both projections");
-        assert_eq!(replay.entries_projected, 1);
-        assert_eq!(replay.prior_cursor, 0);
-        assert_eq!(replay.new_cursor, 1);
+        .expect("retry event admission and both projections");
+        assert_eq!(replay.entries_admitted, 1);
+        assert_eq!(replay.events_projected, 1);
+        assert_eq!(replay.last_event_seq, 1);
         let vector_id = format!("idx:{key}");
         assert_eq!(
             vector_store
@@ -894,18 +991,26 @@ mod tests {
                 .len(),
             1
         );
-        let repeated = super::replay_search_index_events(
+        let repeated = super::admit_search_index_entries(
             &event_store,
             &vector_store,
             &fts,
             &provider,
             "workspace",
-            "search-index-fts-vector-v1",
-            10,
+            std::slice::from_ref(&item),
         )
         .await
-        .expect("replay after cursor is idempotently empty");
-        assert_eq!(repeated.events_read, 0);
+        .expect("repeated admission is idempotent");
+        assert_eq!(repeated.entries_admitted, 1);
+        assert_eq!(repeated.events_projected, 0);
+        assert_eq!(
+            EventReadStore::replay_events(&event_store, "workspace", 0, 10)
+                .await
+                .expect("read durable events")
+                .len(),
+            1,
+            "same namespace and entry must not append duplicate events"
+        );
     }
 
     fn fixture() -> (SearchIndexUpsertV1, Value) {
