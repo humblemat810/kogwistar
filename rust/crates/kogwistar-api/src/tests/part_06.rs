@@ -5409,6 +5409,7 @@
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n2","acl_target_item_id":"n2::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"n3","acl_version":1,"acl_mode":"public"}),
                     ];
                     let source_doc = |doc_id: &str, with_mention: bool| {
                         if !with_mention {
@@ -5416,9 +5417,9 @@
                         }
                         json!({"mentions":[{"spans":[{"doc_id":doc_id,"insertion_method":"parser"}]}]}).to_string()
                     };
-                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span"];
+                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation"];
                     json!({"ids":ids,
-                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
+                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
                         "metadatas":metas.into_iter().enumerate().map(|(index, m)| {
                             let workspace = if index == 4 || index == 9 {"workspace-b"} else {"workspace-a"};
                             let mut original = m.as_object().unwrap().clone();
@@ -5429,8 +5430,8 @@
                                 original.insert("doc_ids".to_owned(), json!([doc_id]));
                             }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
-                        }).collect::<Vec<_>>().into_iter().chain((12..18).map(|_| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\"}"}))).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
+                        }).collect::<Vec<_>>(),
+                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
                 } else {
                     json!({"ids":["e1"],
                         "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#],
@@ -5466,12 +5467,19 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 18, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 19, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
         assert_eq!(visible_nodes.len(), 4, "ACL-visible nodes: {visible_nodes:?}");
         assert_eq!(visible_edges.len(), 1, "ACL-visible edges: {visible_edges:?}");
+        let (conversation_nodes, _) =
+            graph_records_visible_by_acl(&nodes, &edges, "conversation", &principal);
+        assert_eq!(
+            conversation_nodes.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(),
+            ["n3"],
+            "the shared Chroma projection applies the selected graph role's ACL truth"
+        );
         assert_eq!(
             graph_neighbors_from_records("n1", &visible_nodes, &visible_edges, None).nodes,
             ["n2".to_owned()].into()
@@ -5542,6 +5550,26 @@
                 auth,
             },
             Arc::new(service.clone()),
+        );
+        let conversation_visualization = app.clone().oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/viz/d3.json?graph_type=conversation")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::empty())
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(conversation_visualization.status(), StatusCode::OK);
+        let conversation_visualization: Value = serde_json::from_slice(
+            &to_bytes(conversation_visualization.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert!(
+            conversation_visualization["nodes"].to_string().contains("n3"),
+            "selected graph role should use conversation ACL truth: {conversation_visualization}"
+        );
+        assert!(
+            !conversation_visualization["nodes"].to_string().contains("n1"),
+            "knowledge-only record must not pass conversation ACL: {conversation_visualization}"
         );
         let listing = app.clone().oneshot(
             Request::builder()
