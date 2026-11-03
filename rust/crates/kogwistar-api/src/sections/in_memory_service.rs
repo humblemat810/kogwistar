@@ -1103,6 +1103,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
         let route = path.split('?').next();
+        if method == "GET" && route == Some("/api/search_index_hybrid") {
+            return self.embedding_provider.is_some() && self.search_index_fts.is_some();
+        }
         if method == "POST" && route == Some("/api/add_index_entries") {
             return self.embedding_provider.is_some()
                 && self.search_index_fts.is_some()
@@ -1133,6 +1136,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "GET"
+                && request.path_and_query.split('?').next() == Some("/api/search_index_hybrid")
+                && self.supports_http_operation("GET", "/api/search_index_hybrid")
+            {
+                return self.search_index_hybrid_effect(&request).await;
+            }
             if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/add_index_entries")
                 && self.supports_http_operation("POST", "/api/add_index_entries")
@@ -1182,5 +1191,96 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 unavailable_effect(request)
             }
         })
+    }
+}
+
+impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#search_index_hybrid_effect; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
+    async fn search_index_hybrid_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Search-index query requires read_graph capability",
+            );
+        }
+        let (query, limit, resolve_node) =
+            match crate::search_index_fts::parse_hybrid_search_query(&request.path_and_query) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        error,
+                    );
+                }
+            };
+        let (Some(provider), Some(fts)) = (
+            self.embedding_provider.as_ref(),
+            self.search_index_fts.as_ref(),
+        ) else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_SEARCH_INDEX_UNAVAILABLE",
+                "Search-index embedding or FTS storage is not configured",
+            );
+        };
+        let hits = match crate::search_index_fts::hybrid_search(
+            fts,
+            &self.store,
+            "nodes_index",
+            provider.as_ref(),
+            &query,
+            limit,
+        )
+        .await
+        {
+            Ok(hits) => hits,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_SEARCH_INDEX_ERROR",
+                    error,
+                );
+            }
+        };
+        let scope = match self.authorized_graph_scope(request) {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let (nodes, _) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (visible_nodes, _) = graph_records_visible_by_acl(&nodes, &[], "knowledge", &principal);
+        let candidate_ids = hits
+            .iter()
+            .map(|hit| hit.node_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let canonical_nodes = visible_nodes
+            .into_iter()
+            .filter(|record| candidate_ids.contains(record.id.as_str()))
+            .collect::<Vec<_>>();
+        json_effect(
+            StatusCode::OK,
+            crate::search_index_fts::project_hybrid_search_result(
+                &query,
+                &hits,
+                &canonical_nodes,
+                resolve_node,
+                limit,
+            ),
+        )
     }
 }

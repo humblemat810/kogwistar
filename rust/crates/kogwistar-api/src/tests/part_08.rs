@@ -412,13 +412,15 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     );
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#search_index_upsert_effect; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_search_index_upsert_is_authenticated_and_idempotent; python_test=tests/server/test_search_index_api_auth.py#test_add_index_entries_requires_write_role_and_keeps_payload
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
 #[tokio::test]
-async fn in_memory_search_index_upsert_is_authenticated_and_idempotent() {
+async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-    use kogwistar_store::{EventReadStore, NodeIndexStore};
+    use kogwistar_store::{
+        EventReadStore, GraphMutation, GraphMutationStore, GraphRecord, NodeIndexStore, VectorMatch,
+    };
     use tower::ServiceExt;
 
     struct FixedEmbeddingProvider;
@@ -462,6 +464,88 @@ async fn in_memory_search_index_upsert_is_authenticated_and_idempotent() {
     request.index[0].node_id = "in-memory-index-node".to_owned();
     request.index[0].canonical_title = "In-Memory Search Permit".to_owned();
     request.index[0].keywords = vec!["inmemorypermit".to_owned()];
+    let mut private_entry = request.index[0].clone();
+    private_entry.node_id = "in-memory-private-index-node".to_owned();
+    private_entry.canonical_title = "Private In-Memory Search Permit".to_owned();
+    request.index.push(private_entry);
+
+    let hybrid_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/search-index-hybrid-v1.json"
+    )))
+    .unwrap();
+    let lexical = hybrid_fixture["lexical_hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| crate::search_index_fts::LexicalIndexHit {
+            index_key: hit["index_key"].as_str().unwrap().to_owned(),
+            node_id: hit["node_id"].as_str().unwrap().to_owned(),
+            canonical_title: hit["canonical_title"].as_str().unwrap().to_owned(),
+            provision: hit["provision"].as_str().unwrap().to_owned(),
+            document_id: hit["document_id"].as_str().map(str::to_owned),
+            bm25_score: hit["bm25_score"].as_f64().unwrap(),
+        })
+        .collect::<Vec<_>>();
+    let vectors = hybrid_fixture["vector_hits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| VectorMatch {
+            record: GraphRecord {
+                id: hit["id"].as_str().unwrap().to_owned(),
+                document: None,
+                metadata: serde_json::from_value(hit["metadata"].clone()).unwrap(),
+                embedding: None,
+            },
+            distance: hit["distance"].as_f64().unwrap(),
+        })
+        .collect::<Vec<_>>();
+    let fused = crate::search_index_fts::fuse_hybrid_hits(&lexical, &vectors);
+    let expected_fused = hybrid_fixture["expected"].as_array().unwrap();
+    assert_eq!(fused.len(), expected_fused.len());
+    for (actual, expected) in fused.iter().zip(expected_fused) {
+        assert_eq!(actual.index_key, expected["index_key"]);
+        assert_eq!(actual.node_id, expected["node_id"]);
+        assert_eq!(actual.hybrid_score, expected["hybrid_score"].as_f64().unwrap());
+    }
+
+    let unconfigured = InMemoryGraphApplicationService::default();
+    assert!(!unconfigured.supports_http_operation("POST", "/api/add_index_entries"));
+    let unavailable = unconfigured
+        .execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/add_index_entries".to_owned(),
+        body: serde_json::to_vec(&request).unwrap(),
+        principal: json!({"sub":"index-writer","role":"rw","capabilities":["write_graph"]}),
+        })
+        .await;
+    assert_eq!(unavailable.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+    assert!(EventReadStore::replay_events(&unconfigured.store, "docs", 0, 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(!unconfigured.supports_http_operation("GET", "/api/search_index_hybrid"));
+    let unavailable_query = unconfigured
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/search_index_hybrid?q=permit".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"reader",
+                "role":"ro",
+                "ns":["docs"],
+                "storage_ns":"docs",
+                "capabilities":["read_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(
+        unavailable_query.status,
+        StatusCode::NOT_IMPLEMENTED.as_u16()
+    );
 
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let index_path = std::env::temp_dir().join(format!("search-index-memory-{suffix}.sqlite3"));
@@ -469,7 +553,58 @@ async fn in_memory_search_index_upsert_is_authenticated_and_idempotent() {
         .with_embedding_provider(Arc::new(FixedEmbeddingProvider))
         .with_search_index_path(&index_path)
         .unwrap();
+    let scope = GraphScope {
+        namespace: "docs".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let node_mutation = |id: &str, metadata: Value, document: Option<String>| GraphMutation {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: json!({"id":id,"metadata":metadata}),
+        record: GraphRecord {
+            id: id.to_owned(),
+            document,
+            metadata: serde_json::from_value(metadata).unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    let mut mutations = Vec::new();
+    for (id, mode, owner) in [
+        ("in-memory-index-node", "public", None),
+        ("in-memory-private-index-node", "private", Some("other-user")),
+    ] {
+        mutations.push(node_mutation(
+            id,
+            json!({
+                "entity_type":"node",
+                "label":id,
+                "lifecycle_status":"active"
+            }),
+            Some(format!("Canonical source for {id}")),
+        ));
+        let mut acl = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"knowledge",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":id,
+            "acl_version":1,
+            "acl_mode":mode
+        });
+        if let Some(owner) = owner {
+            acl["acl_owner_id"] = json!(owner);
+        }
+        mutations.push(node_mutation(&format!("acl-{id}"), acl, None));
+    }
+    GraphMutationStore::apply_graph_mutations_atomic(&service.store, mutations)
+        .await
+        .unwrap();
     assert!(service.supports_http_operation("POST", "/api/add_index_entries"));
+    assert!(service.supports_http_operation("GET", "/api/search_index_hybrid"));
 
     let secret = "in-memory-search-index-test-secret";
     let auth = AuthConfig {
@@ -555,8 +690,18 @@ async fn in_memory_search_index_upsert_is_authenticated_and_idempotent() {
     let events = EventReadStore::replay_events(&service.store, "docs", 0, 10)
         .await
         .unwrap();
-    assert_eq!(events.len(), 1, "an HTTP retry must not duplicate the event");
-    assert_eq!(events[0].op, "search_index.upsert");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.entity_kind == "search_index" && event.op == "search_index.upsert")
+            .count(),
+        2,
+        "an HTTP retry must not duplicate search-index events"
+    );
+    let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
+    let lexical_hits = crate::search_index_fts::search_fts(&fts, "permit", 10).unwrap();
+    assert_eq!(lexical_hits.len(), 2, "both entries should enter the FTS projection");
+    drop(fts);
     let key = kogwistar_contracts::make_search_index_key(
         &request.index[0].node_id,
         &request.index[0].canonical_title,
@@ -571,6 +716,35 @@ async fn in_memory_search_index_upsert_is_authenticated_and_idempotent() {
     .unwrap();
     assert_eq!(vector.len(), 1);
     assert_eq!(vector[0].metadata["target_node_id"], request.index[0].node_id);
+
+    let search = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/search_index_hybrid?q=permit&limit=10&resolve_node=true")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("rw", &["read_graph"])),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(search.status(), StatusCode::OK);
+    let search_payload: Value = serde_json::from_slice(
+        &to_bytes(search.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    let results = search_payload["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "private indexed nodes must be ACL-filtered: {search_payload}"
+    );
+    assert_eq!(results[0]["node_id"], "in-memory-index-node");
+    assert_eq!(results[0]["documents"], "Canonical source for in-memory-index-node");
 
     drop(service);
     let _ = std::fs::remove_file(index_path);
@@ -4145,7 +4319,7 @@ async fn in_memory_mcp_acl_traversal_matches_shared_python_contract() {
     }
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#search_index_hybrid_effect; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_hybrid_search_is_available_over_authenticated_http; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#postgres_hybrid_search_is_available_over_authenticated_http; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#hybrid_fusion_matches_shared_python_golden_fixture; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses an isolated PostgreSQL schema"]
 async fn postgres_hybrid_search_is_available_over_authenticated_http() {
