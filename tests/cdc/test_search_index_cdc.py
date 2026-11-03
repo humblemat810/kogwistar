@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -121,15 +122,13 @@ def test_search_index_mutation_is_rejected_inside_worker_callback(temp_engine_di
 
 
 def test_search_index_replay(temp_engine_dir):
-    engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
-    item = IndexingItem(
-        node_id="replayed-node",
-        canonical_title="Replay Title",
-        keywords=[],
-        aliases=[],
-        provision="manual",
-        doc_id="doc-replay",
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/search-index-entry-v1.json"
     )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
+    item = IndexingItem.model_validate(fixture["request"]["index"][0])
     engine.search_index.upsert_entries([item])
 
     index_db_path = os.path.join(temp_engine_dir, "index.db")
@@ -152,16 +151,16 @@ def test_search_index_replay(temp_engine_dir):
     )
     delete_fn(ids=[f"idx:{index_key}"])
 
-    search_res = engine.search_index.search_hybrid("Replay", limit=5)
+    search_res = engine.search_index.search_hybrid("Permit", limit=5)
     assert len(search_res["results"]) == 0
 
     # Replay from the persisted entity event log into the projection.
     _replay_search_index_events(engine)
 
-    search_res2 = engine.search_index.search_hybrid("Replay", limit=5)
+    search_res2 = engine.search_index.search_hybrid("Permit", limit=5)
     assert len(search_res2["results"]) > 0
-    assert search_res2["results"][0]["node_id"] == "replayed-node"
-    assert search_res2["results"][0]["canonical_title"] == "Replay Title"
+    assert search_res2["results"][0]["node_id"] == item.node_id
+    assert search_res2["results"][0]["canonical_title"] == item.canonical_title
 
 
 def test_search_index_retrieval(temp_engine_dir):

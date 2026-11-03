@@ -5,9 +5,14 @@
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
-use kogwistar_contracts::{SearchIndexEntryV1, make_search_index_key};
+use kogwistar_contracts::{
+    SearchIndexEntryV1, build_search_index_embedding_text, make_search_index_key,
+};
 use kogwistar_engine::embedding::EmbeddingProvider;
-use kogwistar_store::{DistanceMetric, NodeIndexStore, VectorMatch, VectorQuery};
+use kogwistar_store::{
+    DistanceMetric, EventReadStore, EventWriteStore, GraphRecord, NodeIndexStore, StoreError,
+    StoreResult, VectorMatch, VectorQuery,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const INDEX_TABLE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS semantic_index (
@@ -336,6 +341,154 @@ pub fn upsert_entries(
     transaction.commit()
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchIndexReplaySummary {
+    pub events_read: usize,
+    pub entries_projected: usize,
+    pub prior_cursor: i64,
+    pub new_cursor: i64,
+}
+
+/// Replay canonical search-index events into the disposable FTS and vector
+/// projections. The cursor advances only after both projections succeed;
+/// therefore a failure between writes safely retries idempotent upserts.
+///
+/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#replay_search_index_events; python=kogwistar/engine_core/subsystems/persist.py#PersistSubsystem.replay_namespace; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_event_replay_projects_before_advancing_cursor; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
+pub async fn replay_search_index_events<E, V>(
+    event_store: &E,
+    vector_store: &V,
+    fts: &std::sync::Mutex<Connection>,
+    provider: &dyn EmbeddingProvider,
+    namespace: &str,
+    consumer: &str,
+    batch_limit: usize,
+) -> StoreResult<SearchIndexReplaySummary>
+where
+    E: EventReadStore + EventWriteStore,
+    V: NodeIndexStore,
+{
+    if namespace.trim().is_empty() || consumer.trim().is_empty() || batch_limit == 0 {
+        return Err(StoreError::InvalidEntityEventPayload {
+            message: "search-index replay requires namespace, consumer, and positive batch limit"
+                .to_owned(),
+        });
+    }
+    let cursor = event_store.replay_cursor(namespace, consumer).await?;
+    let events = event_store
+        .replay_events(namespace, cursor.last_seq, batch_limit)
+        .await?;
+    let mut entries = Vec::new();
+    for event in &events {
+        if event.entity_kind != "search_index" {
+            continue;
+        }
+        if !event.op.eq_ignore_ascii_case("UPSERT")
+            && !event.op.eq_ignore_ascii_case("search_index.upsert")
+        {
+            return Err(StoreError::UnsupportedEntityEventOperation {
+                op: event.op.clone(),
+            });
+        }
+        let entry: SearchIndexEntryV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| {
+                StoreError::InvalidEntityEventPayload {
+                    message: format!("invalid search-index event payload: {error}"),
+                }
+            })?;
+        if entry.node_id.trim().is_empty()
+            || entry.canonical_title.trim().is_empty()
+            || event.entity_id
+                != make_search_index_key(&entry.node_id, &entry.canonical_title, &entry.provision)
+        {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: "search-index event identity does not match its payload".to_owned(),
+            });
+        }
+        entries.push(entry);
+    }
+
+    let mut records = Vec::with_capacity(entries.len());
+    if !entries.is_empty() {
+        let texts = entries
+            .iter()
+            .map(build_search_index_embedding_text)
+            .collect::<Vec<_>>();
+        let embeddings = provider
+            .embed(&texts)
+            .await
+            .map_err(|error| StoreError::Backend {
+                backend: "search-index-embedding".to_owned(),
+                message: error.to_string(),
+            })?;
+        if embeddings.len() != entries.len()
+            || embeddings.iter().any(|vector| {
+                vector.len() != provider.profile().dimension
+                    || vector.iter().any(|component| !component.is_finite())
+            })
+        {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message:
+                    "search-index embedding provider returned invalid vector dimensions or values"
+                        .to_owned(),
+            });
+        }
+        for (entry, (document, embedding)) in entries.iter().zip(texts.into_iter().zip(embeddings))
+        {
+            let embedding = embedding
+                .into_iter()
+                .map(|value| value as f32)
+                .collect::<Vec<_>>();
+            if embedding.iter().any(|value| !value.is_finite()) {
+                return Err(StoreError::InvalidEntityEventPayload {
+                    message: "search-index embedding cannot be represented as f32".to_owned(),
+                });
+            }
+            let key =
+                make_search_index_key(&entry.node_id, &entry.canonical_title, &entry.provision);
+            records.push(GraphRecord {
+                id: format!("idx:{key}"),
+                document: Some(document),
+                metadata: serde_json::from_value(serde_json::json!({
+                    "index_key": key,
+                    "target_node_id": entry.node_id,
+                    "canonical_title": entry.canonical_title,
+                    "provision": entry.provision,
+                    "keywords": serde_json::to_string(&entry.keywords).expect("string vec serializes"),
+                    "aliases": serde_json::to_string(&entry.aliases).expect("string vec serializes"),
+                    "doc_id": entry.doc_id,
+                }))
+                .map_err(|error| StoreError::InvalidEntityEventPayload {
+                    message: error.to_string(),
+                })?,
+                embedding: Some(embedding),
+            });
+        }
+        {
+            let mut connection = fts.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            upsert_entries(&mut connection, &entries).map_err(|error| StoreError::Backend {
+                backend: "search-index-fts".to_owned(),
+                message: error.to_string(),
+            })?;
+        }
+        vector_store
+            .upsert_node_index("nodes_index", records)
+            .await?;
+    }
+
+    let new_cursor = events.last().map_or(cursor.last_seq, |event| event.seq);
+    if new_cursor > cursor.last_seq {
+        event_store
+            .advance_replay_cursor(namespace, consumer, new_cursor)
+            .await?;
+    }
+    Ok(SearchIndexReplaySummary {
+        events_read: events.len(),
+        entries_projected: entries.len(),
+        prior_cursor: cursor.last_seq,
+        new_cursor,
+    })
+}
+
 pub fn search_fts(
     connection: &Connection,
     query: &str,
@@ -430,11 +583,17 @@ mod tests {
     };
     use kogwistar_contracts::SearchIndexUpsertV1;
     use kogwistar_engine::embedding::{EmbeddingFuture, EmbeddingProfile, EmbeddingProvider};
-    use kogwistar_store::{GraphRecord, NodeIndexStore, VectorMatch};
+    use kogwistar_store::{
+        EventReadStore, EventWriteStore, GraphRecord, NewEntityEvent, NodeIndexStore, StoreError,
+        StoreResult, VectorMatch, VectorQuery,
+    };
     use kogwistar_store_memory::InMemoryStore;
     use serde_json::Value;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
 
     struct FixedEmbeddingProvider {
         profile: EmbeddingProfile,
@@ -447,6 +606,44 @@ mod tests {
 
         fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingFuture<'a> {
             Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6_f64, 0.8_f64]).collect()) })
+        }
+    }
+
+    #[derive(Clone)]
+    struct FailOnceNodeIndexStore {
+        inner: InMemoryStore,
+        fail_next: Arc<AtomicBool>,
+    }
+
+    impl NodeIndexStore for FailOnceNodeIndexStore {
+        async fn upsert_node_index(
+            &self,
+            index: &str,
+            records: Vec<GraphRecord>,
+        ) -> StoreResult<()> {
+            if self.fail_next.swap(false, Ordering::SeqCst) {
+                return Err(StoreError::Backend {
+                    backend: "test-vector-index".to_owned(),
+                    message: "injected projection failure".to_owned(),
+                });
+            }
+            self.inner.upsert_node_index(index, records).await
+        }
+
+        async fn get_node_index(
+            &self,
+            index: &str,
+            ids: &[String],
+        ) -> StoreResult<Vec<GraphRecord>> {
+            self.inner.get_node_index(index, ids).await
+        }
+
+        async fn query_node_index(
+            &self,
+            index: &str,
+            query: &VectorQuery,
+        ) -> StoreResult<Vec<VectorMatch>> {
+            self.inner.query_node_index(index, query).await
         }
     }
 
@@ -591,6 +788,124 @@ mod tests {
         assert!(hit.fts_score > 0.0);
         assert!(hit.vec_score > 0.0);
         assert!(hit.hybrid_score > 0.0);
+    }
+
+    #[tokio::test]
+    async fn search_index_event_replay_projects_before_advancing_cursor() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/search-index-entry-v1.json"
+        )))
+        .expect("search-index entry fixture");
+        let request: SearchIndexUpsertV1 =
+            serde_json::from_value(fixture["request"].clone()).expect("fixture request");
+        let item = request.index[0].clone();
+        let key = kogwistar_contracts::make_search_index_key(
+            &item.node_id,
+            &item.canonical_title,
+            &item.provision,
+        );
+        let event_store = InMemoryStore::default();
+        EventWriteStore::append_entity_event(
+            &event_store,
+            "workspace",
+            NewEntityEvent {
+                event_id: "search-index-event-1".to_owned(),
+                entity_kind: "search_index".to_owned(),
+                entity_id: key.clone(),
+                op: "search_index.upsert".to_owned(),
+                payload: serde_json::to_value(&item).expect("entry serializes"),
+            },
+        )
+        .await
+        .expect("append canonical search-index event");
+        let vector_store = FailOnceNodeIndexStore {
+            inner: InMemoryStore::default(),
+            fail_next: Arc::new(AtomicBool::new(true)),
+        };
+        let connection = open_index(":memory:").expect("open lexical index");
+        let fts = Mutex::new(connection);
+        let provider = FixedEmbeddingProvider {
+            profile: EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-test-embedding".to_owned(),
+                dimension: 2,
+                similarity_metric: "COSINE".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+        };
+
+        assert!(
+            super::replay_search_index_events(
+                &event_store,
+                &vector_store,
+                &fts,
+                &provider,
+                "workspace",
+                "search-index-fts-vector-v1",
+                10,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            EventReadStore::replay_cursor(&event_store, "workspace", "search-index-fts-vector-v1")
+                .await
+                .expect("read cursor")
+                .last_seq,
+            0,
+            "failed vector projection must not advance the canonical event cursor"
+        );
+        assert_eq!(
+            search_fts(&fts.lock().expect("FTS lock"), &item.canonical_title, 10)
+                .expect("FTS entry remains idempotently retryable")
+                .len(),
+            1
+        );
+
+        let replay = super::replay_search_index_events(
+            &event_store,
+            &vector_store,
+            &fts,
+            &provider,
+            "workspace",
+            "search-index-fts-vector-v1",
+            10,
+        )
+        .await
+        .expect("retry both projections");
+        assert_eq!(replay.entries_projected, 1);
+        assert_eq!(replay.prior_cursor, 0);
+        assert_eq!(replay.new_cursor, 1);
+        let vector_id = format!("idx:{key}");
+        assert_eq!(
+            vector_store
+                .get_node_index("nodes_index", &[vector_id])
+                .await
+                .expect("read vector projection")
+                .len(),
+            1
+        );
+        let repeated = super::replay_search_index_events(
+            &event_store,
+            &vector_store,
+            &fts,
+            &provider,
+            "workspace",
+            "search-index-fts-vector-v1",
+            10,
+        )
+        .await
+        .expect("replay after cursor is idempotently empty");
+        assert_eq!(repeated.events_read, 0);
     }
 
     fn fixture() -> (SearchIndexUpsertV1, Value) {

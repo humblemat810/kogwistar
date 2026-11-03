@@ -206,7 +206,7 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         seen_rust_targets.add(rust_identity)
         rust_source = rust_file.read_text(encoding="utf-8")
         assert re.search(
-            rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(rust_symbol)}\s*\(",
+            rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(rust_symbol)}(?:\s*<[^>]*>)?\s*\(",
             rust_source,
         )
 
