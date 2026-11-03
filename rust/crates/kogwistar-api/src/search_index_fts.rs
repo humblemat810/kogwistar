@@ -3,8 +3,10 @@
 //! PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#upsert_entries; python=kogwistar/engine_core/search_index/service.py#SearchIndexService.upsert_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#rust_fts_projection_matches_python_index_schema; python_test=tests/core/test_search_index_contract.py#test_search_index_entries_match_shared_rust_golden_fixture
 
 use std::path::Path;
+use std::{collections::HashMap, sync::Arc};
 
 use kogwistar_contracts::{SearchIndexEntryV1, make_search_index_key};
+use kogwistar_store::VectorMatch;
 use rusqlite::{Connection, OptionalExtension, params};
 
 const INDEX_TABLE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS semantic_index (
@@ -47,6 +49,156 @@ pub struct LexicalIndexHit {
     pub provision: String,
     pub document_id: Option<String>,
     pub bm25_score: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct HybridSearchHit {
+    pub index_key: String,
+    pub node_id: String,
+    pub canonical_title: String,
+    pub provision: String,
+    pub document_id: Option<String>,
+    pub fts_score: f64,
+    pub vec_score: f64,
+    pub hybrid_score: f64,
+}
+
+/// Combine Python-compatible FTS and vector candidates before the caller applies
+/// canonical graph ACL filtering. Ranking weights and tie order match Python.
+///
+/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#fuse_hybrid_hits; python=kogwistar/engine_core/search_index/service.py#SearchIndexService._fuse_hybrid_rows; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#hybrid_fusion_matches_shared_python_golden_fixture; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
+pub fn fuse_hybrid_hits(
+    lexical: &[LexicalIndexHit],
+    vectors: &[VectorMatch],
+) -> Vec<HybridSearchHit> {
+    let lexical_scores = normalized_scores(
+        lexical
+            .iter()
+            .map(|hit| (hit.index_key.as_str(), hit.bm25_score)),
+    );
+    let vector_scores = normalized_scores(
+        vectors
+            .iter()
+            .filter_map(|item| vector_index_key(item).map(|key| (Arc::from(key), item.distance))),
+    );
+
+    let mut hits = Vec::with_capacity(lexical.len() + vectors.len());
+    let mut positions = HashMap::<String, usize>::new();
+    for item in lexical {
+        let hit = HybridSearchHit {
+            index_key: item.index_key.clone(),
+            node_id: item.node_id.clone(),
+            canonical_title: item.canonical_title.clone(),
+            provision: item.provision.clone(),
+            document_id: item.document_id.clone(),
+            fts_score: lexical_scores
+                .get(item.index_key.as_str())
+                .copied()
+                .unwrap_or(0.0),
+            vec_score: 0.0,
+            hybrid_score: 0.0,
+        };
+        if let Some(position) = positions.get(&hit.index_key).copied() {
+            hits[position] = hit;
+        } else {
+            positions.insert(hit.index_key.clone(), hits.len());
+            hits.push(hit);
+        }
+    }
+
+    for item in vectors {
+        let Some(index_key) = vector_index_key(item) else {
+            continue;
+        };
+        let vec_score = vector_scores
+            .get(index_key.as_str())
+            .copied()
+            .unwrap_or(0.0);
+        if let Some(position) = positions.get(index_key.as_str()).copied() {
+            hits[position].vec_score = vec_score;
+        } else {
+            let metadata = &item.record.metadata;
+            let node_id = metadata
+                .get("target_node_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let canonical_title = metadata
+                .get("canonical_title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let provision = metadata
+                .get("provision")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            positions.insert(index_key.clone(), hits.len());
+            hits.push(HybridSearchHit {
+                index_key,
+                node_id: node_id.to_owned(),
+                canonical_title: canonical_title.to_owned(),
+                provision: provision.to_owned(),
+                document_id: metadata
+                    .get("doc_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                fts_score: 0.0,
+                vec_score,
+                hybrid_score: 0.0,
+            });
+        }
+    }
+
+    for hit in &mut hits {
+        hit.hybrid_score = 0.6 * hit.fts_score + 0.4 * hit.vec_score;
+    }
+    hits.sort_by(|left, right| right.hybrid_score.total_cmp(&left.hybrid_score));
+    hits
+}
+
+fn vector_index_key(item: &VectorMatch) -> Option<String> {
+    let metadata = &item.record.metadata;
+    if let Some(key) = metadata
+        .get("index_key")
+        .and_then(serde_json::Value::as_str)
+    {
+        return Some(key.to_owned());
+    }
+    let node_id = metadata
+        .get("target_node_id")
+        .and_then(serde_json::Value::as_str)?;
+    let title = metadata
+        .get("canonical_title")
+        .and_then(serde_json::Value::as_str)?;
+    let provision = metadata
+        .get("provision")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    Some(make_search_index_key(node_id, title, provision))
+}
+
+fn normalized_scores<K>(values: impl Iterator<Item = (K, f64)>) -> HashMap<Arc<str>, f64>
+where
+    K: Into<Arc<str>>,
+{
+    let values = values.collect::<Vec<_>>();
+    let Some(minimum) = values.iter().map(|(_, score)| *score).reduce(f64::min) else {
+        return HashMap::new();
+    };
+    let maximum = values
+        .iter()
+        .map(|(_, score)| *score)
+        .reduce(f64::max)
+        .unwrap_or(minimum);
+    values
+        .into_iter()
+        .map(|(key, score)| {
+            let normalized = if maximum == minimum {
+                1.0
+            } else {
+                ((maximum - score) / (maximum - minimum)).clamp(0.0, 1.0)
+            };
+            (key.into(), normalized)
+        })
+        .collect()
 }
 
 pub fn open_index(path: impl AsRef<Path>) -> rusqlite::Result<Connection> {
@@ -151,8 +303,9 @@ pub fn search_fts(
 
 #[cfg(test)]
 mod tests {
-    use super::{open_index, search_fts, upsert_entries};
+    use super::{fuse_hybrid_hits, open_index, search_fts, upsert_entries};
     use kogwistar_contracts::SearchIndexUpsertV1;
+    use kogwistar_store::{GraphRecord, VectorMatch};
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -212,6 +365,59 @@ mod tests {
         }
         let hits = search_fts(&connection, "permit", 10).expect("FTS query");
         assert!(hits.iter().any(|hit| hit.node_id == "node-42"));
+    }
+
+    #[test]
+    fn hybrid_fusion_matches_shared_python_golden_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/search-index-hybrid-v1.json"
+        )))
+        .expect("shared hybrid-search fixture is valid JSON");
+        let lexical = fixture["lexical_hits"]
+            .as_array()
+            .expect("fixture lexical hits")
+            .iter()
+            .map(|hit| super::LexicalIndexHit {
+                index_key: hit["index_key"].as_str().unwrap().to_owned(),
+                node_id: hit["node_id"].as_str().unwrap().to_owned(),
+                canonical_title: hit["canonical_title"].as_str().unwrap().to_owned(),
+                provision: hit["provision"].as_str().unwrap().to_owned(),
+                document_id: hit["document_id"].as_str().map(str::to_owned),
+                bm25_score: hit["bm25_score"].as_f64().unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let vectors = fixture["vector_hits"]
+            .as_array()
+            .expect("fixture vector hits")
+            .iter()
+            .map(|hit| VectorMatch {
+                record: GraphRecord {
+                    id: hit["id"].as_str().unwrap().to_owned(),
+                    document: None,
+                    metadata: serde_json::from_value(hit["metadata"].clone()).unwrap(),
+                    embedding: None,
+                },
+                distance: hit["distance"].as_f64().unwrap(),
+            })
+            .collect::<Vec<_>>();
+        let fused = fuse_hybrid_hits(&lexical, &vectors);
+        let expected = fixture["expected"].as_array().unwrap();
+        assert_eq!(fused.len(), expected.len());
+        for (actual, expected) in fused.iter().zip(expected) {
+            assert_eq!(actual.index_key, expected["index_key"]);
+            assert_eq!(actual.node_id, expected["node_id"]);
+            assert_eq!(actual.fts_score, expected["fts_score"].as_f64().unwrap());
+            assert_eq!(actual.vec_score, expected["vec_score"].as_f64().unwrap());
+            assert_eq!(
+                actual.hybrid_score,
+                expected["hybrid_score"].as_f64().unwrap()
+            );
+            assert_eq!(
+                actual.document_id.as_deref(),
+                expected["document_id"].as_str()
+            );
+        }
     }
 
     #[test]

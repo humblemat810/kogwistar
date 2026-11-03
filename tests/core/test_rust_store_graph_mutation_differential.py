@@ -824,21 +824,15 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
 
         # Rust and Python must observe the same Python-compatible node-index rows.
         rust_meta = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+        shared_record = schema_contract["node_index_record"]
         rust_meta.node_index_upsert(
-            records=[
-                {
-                    "id": "idx:rust-write",
-                    "document": "rust-visible vector",
-                    "metadata": {"category": "interop", "target_node_id": "rust-node"},
-                    "embedding": [0.0, 1.0, 0.0],
-                }
-            ]
+            records=[shared_record]
         )
         rust_written = python_index_backend.node_index_get(
-            ids=["idx:rust-write"], include=["documents", "metadatas"]
+            ids=[shared_record["id"]], include=["documents", "metadatas"]
         )
-        assert rust_written["documents"] == ["rust-visible vector"]
-        assert rust_written["metadatas"][0]["target_node_id"] == "rust-node"
+        assert rust_written["documents"] == [shared_record["document"]]
+        assert rust_written["metadatas"][0] == shared_record["metadata"]
 
         python_index_backend.node_index_upsert(
             ids=["idx:python-write"],
@@ -850,9 +844,14 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
         assert rust_written[0]["document"] == "python-written vector"
         assert rust_written[0]["metadata"]["target_node_id"] == "python-node"
         rust_matches = rust_meta.node_index_query(
-            embedding=[0.0, 1.0, 0.0], limit=5, metadata={"category": "interop"}
+            embedding=schema_contract["node_index_query"]["embedding"],
+            limit=schema_contract["node_index_query"]["limit"],
+            metadata=schema_contract["node_index_query"]["metadata"],
+            metric=schema_contract["node_index_query"]["metric"],
         )
-        assert rust_matches[0]["record"]["id"] == "idx:rust-write"
+        assert rust_matches[0]["record"]["id"] == schema_contract[
+            "node_index_query"
+        ]["expected_ids"][0]
         assert rust_matches[0]["distance"] == pytest.approx(0.0)
         l2_matches = rust_meta.node_index_query(
             embedding=[0.0, 1.0, 0.0],
@@ -860,7 +859,7 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
             metadata={"category": "interop"},
             metric="l2",
         )
-        assert l2_matches[0]["record"]["id"] == "idx:rust-write"
+        assert l2_matches[0]["record"]["id"] == shared_record["id"]
         assert l2_matches[0]["distance"] == pytest.approx(0.0)
         ip_matches = rust_meta.node_index_query(
             embedding=[0.0, 1.0, 0.0],
@@ -868,7 +867,7 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
             metadata={"category": "interop"},
             metric="ip",
         )
-        assert ip_matches[0]["record"]["id"] == "idx:rust-write"
+        assert ip_matches[0]["record"]["id"] == shared_record["id"]
         assert ip_matches[0]["distance"] == pytest.approx(-1.0)
 
         assert _rust(

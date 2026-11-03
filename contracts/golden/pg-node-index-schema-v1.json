@@ -3,5 +3,18 @@
   "table": "gke_node_index",
   "embedding_column": "embedding",
   "vector_type": "vector(3)",
-  "primary_key_columns": ["id"]
+  "primary_key_columns": ["id"],
+  "node_index_record": {
+    "id": "idx:shared-roundtrip",
+    "document": "shared fixture vector",
+    "metadata": {"category": "interop", "target_node_id": "node-shared"},
+    "embedding": [0.0, 1.0, 0.0]
+  },
+  "node_index_query": {
+    "embedding": [0.0, 1.0, 0.0],
+    "limit": 5,
+    "metadata": {"category": "interop"},
+    "metric": "cosine",
+    "expected_ids": ["idx:shared-roundtrip"]
+  }
 }

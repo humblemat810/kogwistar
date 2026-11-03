@@ -1,6 +1,8 @@
 // Domain-focused tests; shared fixtures live in the parent test module.
 use super::*;
-use kogwistar_store::{DistanceMetric, MetadataFilter, VectorCollectionStore, VectorQuery};
+use kogwistar_store::{
+    DistanceMetric, GraphRecord, MetadataFilter, VectorCollectionStore, VectorQuery,
+};
 
 #[test]
 fn node_document_ids_match_python_sorted_unique_projection() {
@@ -365,6 +367,81 @@ async fn postgres_named_vector_collections_are_scoped_ranked_and_not_graph_entit
         .get(0);
     assert_eq!(canonical_node_count, 0);
     client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn node_index_operations_match_shared_python_fixture() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("node_index_shared_fixture");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/pg-node-index-schema-v1.json"
+    )))?;
+    let record_fixture = &fixture["node_index_record"];
+    let record = GraphRecord {
+        id: record_fixture["id"].as_str().unwrap().to_owned(),
+        document: record_fixture["document"].as_str().map(str::to_owned),
+        metadata: serde_json::from_value(record_fixture["metadata"].clone())?,
+        embedding: Some(
+            record_fixture["embedding"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect(),
+        ),
+    };
+    store
+        .upsert_node_index("gke_node_index", vec![record.clone()])
+        .await?;
+    let retrieved = store
+        .get_node_index("gke_node_index", std::slice::from_ref(&record.id))
+        .await?;
+    assert_eq!(retrieved, vec![record]);
+
+    let query_contract = &fixture["node_index_query"];
+    let query = VectorQuery {
+        embedding: query_contract["embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap() as f32)
+            .collect(),
+        limit: query_contract["limit"].as_u64().unwrap() as usize,
+        metadata: MetadataFilter {
+            equals: serde_json::from_value(query_contract["metadata"].clone())?,
+            ..MetadataFilter::default()
+        },
+        metric: DistanceMetric::Cosine,
+    };
+    let matches = store.query_node_index("gke_node_index", &query).await?;
+    let actual_ids = matches
+        .iter()
+        .map(|item| item.record.id.as_str())
+        .collect::<Vec<_>>();
+    let expected_ids = query_contract["expected_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual_ids, expected_ids);
+    let tables = Tables::new(&schema)?;
+    store
+        .client()
+        .await?
         .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
         .await
         .map_err(backend)?;

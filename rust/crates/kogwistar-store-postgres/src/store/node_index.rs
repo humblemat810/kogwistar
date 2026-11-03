@@ -4,7 +4,7 @@ use kogwistar_store::{DistanceMetric, GraphRecord, VectorMatch, VectorQuery};
 impl PostgresStore {
     /// Upsert records into Python's Chroma-shaped node-index table.
     ///
-    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/node_index.rs#upsert_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend.node_index_upsert
+    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/node_index.rs#upsert_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend.node_index_upsert; fixture=contracts/golden/pg-node-index-schema-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#node_index_operations_match_shared_python_fixture; python_test=tests/core/test_rust_store_graph_mutation_differential.py#test_graph_mutation_fresh_rust_schema_and_validation_rollback
     pub async fn upsert_node_index(
         &self,
         table_name: &str,
@@ -52,7 +52,7 @@ impl PostgresStore {
 
     /// Read Python-compatible node-index records by ID, retaining request order.
     ///
-    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/node_index.rs#get_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend.node_index_get; rust_test=tests/core/test_rust_store_graph_mutation_differential.py#test_graph_mutation_fresh_rust_schema_and_validation_rollback
+    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/node_index.rs#get_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend.node_index_get; fixture=contracts/golden/pg-node-index-schema-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#node_index_operations_match_shared_python_fixture; python_test=tests/core/test_rust_store_graph_mutation_differential.py#test_graph_mutation_fresh_rust_schema_and_validation_rollback
     pub async fn get_node_index(
         &self,
         table_name: &str,
@@ -99,7 +99,7 @@ impl PostgresStore {
     /// Query the Python-compatible node-index table using pgvector ordering.
     /// The result is storage-only; callers must apply graph ACL and scope checks.
     ///
-    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/node_index.rs#query_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend.node_index_query; rust_test=tests/core/test_rust_store_graph_mutation_differential.py#test_graph_mutation_fresh_rust_schema_and_validation_rollback
+    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/node_index.rs#query_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend.node_index_query; fixture=contracts/golden/pg-node-index-schema-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#node_index_operations_match_shared_python_fixture; python_test=tests/core/test_rust_store_graph_mutation_differential.py#test_graph_mutation_fresh_rust_schema_and_validation_rollback
     pub async fn query_node_index(
         &self,
         table_name: &str,
