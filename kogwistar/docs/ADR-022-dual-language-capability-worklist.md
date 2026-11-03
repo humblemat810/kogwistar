@@ -6,19 +6,19 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **155/177 PASS (87.6%)**.
-- **Fine worklist:** **8/265 PASS (3.0%)**; **0 IN PROGRESS**, **257 NOT STARTED**.
-- **Equal-size tasklet unit:** one counted leaf is one independently reviewable vertical slice, sized for one focused implementation-and-verification session (target: 60-90 minutes). It has one primary behavior or artifact, one observable acceptance result, and one focused runnable check. Related assertions may jointly prove that one invariant; independent outcomes may not be bundled. A leaf may span only one operation family and one backend/transport/runtime cell, or address one isolated cross-cutting contract whose scope is mechanically bounded. A leaf expected to exceed 90 minutes is a parent scope and must be split before work starts; work expected to take under 30 minutes may be combined only with another change on the same seam and acceptance result. Estimates are planning bounds, not claims that every task takes identical wall time.
-- The fine denominator counts leaves only, never parent scopes. Preserve already-passed evidence and IDs; split only rows that violate the unit, replace the counted parent with its children, and record the exact parent-to-child mapping. A split changes the denominator but not the coarse denominator or earned progress: a passed parent may be replaced only by children whose acceptance is fully supported by that parent's evidence, otherwise the children start open. Report coarse and fine percentages separately; neither percentage estimates schedule or nearness to completion.
+- **Fine worklist:** **8/297 PASS (2.7%)**; **0 IN PROGRESS**, **289 NOT STARTED**.
+- **Equal-size tasklet unit:** a counted leaf is exactly one independently decidable acceptance outcome: one contract seam, one operation family, and one backend/transport/runtime cell. It must have one focused runnable check (a parameterized test is allowed only when its cases prove the same invariant) and fit one implementation-and-verification session capped at 90 minutes. Aim for 45-60 minutes; this is a scope cap, not a claim that estimates are exact. Do not combine separate DTO families, error envelopes, lifecycle transitions, resource owners, or backend semantics merely to reduce row count. A matrix can be one leaf only when it exercises one invariant across equivalent cells and the test reports per-cell outcomes.
+- The fine denominator counts leaf rows only; `PARENT` rows are retained ID/mapping records and are not progress items. When a row is split, preserve its ID as a parent and list all child IDs in its description. The parent remains uncounted and cannot pass; every child starts `NOT STARTED` unless prior evidence independently proves that exact child. Passed leaf IDs/evidence remain unchanged. Report coarse and fine percentages separately; neither percentage estimates schedule or nearness to completion.
 
 ## How To Track
 
 - This is the detailed execution list; the linked checklist remains the sole coarse progress and denominator source. Only counted leaf tasklets contribute to the fine percentage.
 - The baseline is the 23 coarse IDs currently marked `IN PROGRESS`. Every coarse ID must map to fine work below. Fine IDs do not add to the 177-item coarse inventory.
-- A parent scope groups related leaves and is not itself countable or completable. If an open row names multiple backends, operation families, runtime/platform cells, or independent failure modes, treat it as a parent and split it into leaves before work begins. Do not mark a parent `PASS` in place of its children.
+- A `PARENT` row groups leaves and is not countable or completable. CI validates that every parent names at least two existing leaf IDs under the same coarse gate. No task may be worked or reported as complete through a parent row.
 - A fine task reaches `PASS` only when its stated acceptance evidence is recorded here or linked from its referenced test/report. Tests must exercise the named behavior, not merely compile the surrounding code.
 - Close a coarse ID only when its original exit criteria and all mapped required fine tasks pass. Do not reopen a passed coarse ID without a reproduced regression or new required contract.
-- Equal-size acceptance test: a reviewer can state the leaf's single expected result in one sentence, run its named focused check, and decide pass/fail without waiting for unrelated leaves. “All/every/each/across/matrix” wording is a split warning, not sufficient tasklet scope by itself. A matrix is split only where cells have independent evidence; do not multiply rows by files or dimensions that do not change the acceptance result.
-- If a leaf proves unexpectedly broad, preserve its original ID as a non-counted parent, split only its demonstrated independent outcomes, and report the parent/child mapping and revised denominator. Never keep an oversized parent counted alongside its children.
+- Equal-size acceptance test: a reviewer can state the leaf's single expected result in one sentence, run its focused check, and decide pass/fail without waiting for unrelated leaves. Words such as `all`, `each`, `every`, `remaining`, or `matrix` trigger a scope review; they are acceptable only for one generated artifact or one shared invariant with independently reported cells.
+- Split only independently decidable outcomes. Do not multiply rows by files, fields, or platforms if one invariant and one check cover them. Keep the original ID as an uncounted parent and record its children; never count both parent and children.
 
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 
@@ -41,17 +41,35 @@
 | FW-03-04B | DL-03 | NOT STARTED | Verify authorization denial and stable error semantics for each advertised MCP operation family without executing denied effects. |
 | FW-03-02 | DL-03 | NOT STARTED | Run conformance tests for currently advertised REST routes and record exact pass/unsupported outcomes; keep untested paths `not-verified`. |
 | FW-03-02A | DL-03 | NOT STARTED | Run conformance tests for currently advertised MCP operations and record exact pass/unsupported outcomes; keep untested paths `not-verified`. |
-| FW-05-01 | DL-05 | NOT STARTED | Add paired Pydantic/Serde valid-input fixtures for remaining graph entity DTOs and compare canonical outputs. |
-| FW-05-01A | DL-05 | NOT STARTED | Add paired invalid-input fixtures for remaining graph entity DTOs and verify both languages reject before effects. |
-| FW-05-01B | DL-05 | NOT STARTED | Add paired persistence DTO fixtures for valid and invalid payloads, comparing canonical serialization and rejection behavior. |
-| FW-05-01C | DL-05 | NOT STARTED | Add paired REST/MCP request and response DTO fixtures for valid and invalid payloads, comparing canonical serialization. |
-| FW-05-03 | DL-05 | NOT STARTED | Complete Node and Edge base-family DTO parity for identity, common fields, lifecycle, and legacy defaults. |
+| FW-05-01 | DL-05 | PARENT | Parent scope; children: FW-05-01-NODE,FW-05-01-EDGE,FW-05-01-HYPEREDGE |
+| FW-05-01-NODE | DL-05 | NOT STARTED | Add paired valid Node DTO fixture; Python and Rust canonical JSON outputs must match exactly. |
+| FW-05-01-EDGE | DL-05 | NOT STARTED | Add paired valid Edge DTO fixture; Python and Rust canonical JSON outputs must match exactly. |
+| FW-05-01-HYPEREDGE | DL-05 | NOT STARTED | Add paired valid Hyperedge DTO fixture; Python and Rust canonical JSON outputs must match exactly. |
+| FW-05-01A | DL-05 | PARENT | Parent scope; children: FW-05-01A-NODE,FW-05-01A-EDGE,FW-05-01A-HYPEREDGE |
+| FW-05-01A-NODE | DL-05 | NOT STARTED | Add invalid Node DTO cases; both validators reject them before any graph effect. |
+| FW-05-01A-EDGE | DL-05 | NOT STARTED | Add invalid Edge DTO cases; both validators reject them before any graph effect. |
+| FW-05-01A-HYPEREDGE | DL-05 | NOT STARTED | Add invalid Hyperedge DTO cases; both validators reject them before any graph effect. |
+| FW-05-01B | DL-05 | PARENT | Parent scope; children: FW-05-01B-VALID,FW-05-01B-INVALID |
+| FW-05-01B-VALID | DL-05 | NOT STARTED | Add one valid persistence DTO fixture; Python and Rust canonical serialization must match. |
+| FW-05-01B-INVALID | DL-05 | NOT STARTED | Add one invalid persistence DTO fixture; Python and Rust must reject before effects. |
+| FW-05-01C | DL-05 | PARENT | Parent scope; children: FW-05-01C-REST,FW-05-01C-MCP |
+| FW-05-01C-REST | DL-05 | NOT STARTED | Add one REST request/response DTO fixture; Python and Rust canonical payloads must match. |
+| FW-05-01C-MCP | DL-05 | NOT STARTED | Add one MCP request/response DTO fixture; Python and Rust canonical payloads must match. |
+| FW-05-03 | DL-05 | PARENT | Parent scope; children: FW-05-03-NODE,FW-05-03-EDGE |
+| FW-05-03-NODE | DL-05 | NOT STARTED | Verify base Node identity, common fields, lifecycle, and legacy defaults round-trip identically. |
+| FW-05-03-EDGE | DL-05 | NOT STARTED | Verify base Edge identity, common fields, lifecycle, and legacy defaults round-trip identically. |
 | FW-05-03A | DL-05 | NOT STARTED | Complete hyperedge-family DTO parity for identity, participations/endpoints, and invalid endpoint rejection. |
 | FW-05-03B | DL-05 | NOT STARTED | Verify graph mutation DTOs reject malformed entity batches before any document, event, or index effect. |
 | FW-05-03C | DL-05 | NOT STARTED | Verify lifecycle and tombstone DTOs preserve redirect and endpoint fields through Python/Rust round trips. |
-| FW-05-04 | DL-05 | NOT STARTED | Compare provider request/event DTO canonical serialization and stable errors across Python and Rust. |
-| FW-05-04A | DL-05 | NOT STARTED | Compare persistence and transaction error-envelope DTOs, including stable error codes and details. |
-| FW-05-04B | DL-05 | NOT STARTED | Compare REST/MCP error envelopes and identify/document intentionally Python-only payload shapes. |
+| FW-05-04 | DL-05 | PARENT | Parent scope; children: FW-05-04-REQUEST,FW-05-04-EVENT |
+| FW-05-04-REQUEST | DL-05 | NOT STARTED | Compare provider request DTO canonical serialization and stable validation errors. |
+| FW-05-04-EVENT | DL-05 | NOT STARTED | Compare provider event DTO canonical serialization and stable validation errors. |
+| FW-05-04A | DL-05 | PARENT | Parent scope; children: FW-05-04A-PERSISTENCE,FW-05-04A-TRANSACTION |
+| FW-05-04A-PERSISTENCE | DL-05 | NOT STARTED | Compare persistence error code and detail fields for one shared error fixture. |
+| FW-05-04A-TRANSACTION | DL-05 | NOT STARTED | Compare transaction error code and detail fields for one shared error fixture. |
+| FW-05-04B | DL-05 | PARENT | Parent scope; children: FW-05-04B-REST,FW-05-04B-MCP |
+| FW-05-04B-REST | DL-05 | NOT STARTED | Compare REST error envelope fields for one shared invalid-request fixture. |
+| FW-05-04B-MCP | DL-05 | NOT STARTED | Compare MCP error envelope fields for one shared invalid-request fixture. |
 | FW-05-02 | DL-05 | NOT STARTED | Verify identifier and source-span boundary cases with shared valid/invalid fixtures and matching offsets. |
 | FW-05-02A | DL-05 | NOT STARTED | Verify additive schema-version evolution remains accepted in both languages for the declared compatible DTOs. |
 | FW-05-02B | DL-05 | NOT STARTED | Verify unsupported schema versions and unknown fields fail consistently before effects. |
@@ -59,7 +77,12 @@
 | FW-06-01A | DL-06 | NOT STARTED | Inventory Rust and mixed-mode write entry points and map each to its declared transaction owner. |
 | FW-06-01B | DL-06 | NOT STARTED | Mark resources with explicitly weaker backend guarantees and verify those guarantees are stated in the backend contract. |
 | FW-06-03 | DL-06 | NOT STARTED | Verify SQLite single-writer ownership for event journal and graph projection with a concurrent-writer test. |
-| FW-06-03A | DL-06 | NOT STARTED | Verify PostgreSQL transaction ownership for graph, workflow/run, worker journal, ACL, and index-job intent with an overlapping-writer test. |
+| FW-06-03A | DL-06 | PARENT | Parent scope; children: FW-06-03A-GRAPH,FW-06-03A-RUN,FW-06-03A-WORKER,FW-06-03A-ACL,FW-06-03A-INDEX |
+| FW-06-03A-GRAPH | DL-06 | NOT STARTED | Verify PostgreSQL graph mutation has one transaction owner under an overlapping-writer test. |
+| FW-06-03A-RUN | DL-06 | NOT STARTED | Verify PostgreSQL workflow/run mutation has one transaction owner under an overlapping-writer test. |
+| FW-06-03A-WORKER | DL-06 | NOT STARTED | Verify PostgreSQL worker-journal mutation has one transaction owner under an overlapping-writer test. |
+| FW-06-03A-ACL | DL-06 | NOT STARTED | Verify PostgreSQL ACL mutation has one transaction owner under an overlapping-writer test. |
+| FW-06-03A-INDEX | DL-06 | NOT STARTED | Verify PostgreSQL index-job intent has one transaction owner under an overlapping-writer test. |
 | FW-06-03B | DL-06 | NOT STARTED | Verify in-memory authority serialization/ownership for one conflicting write pair and document its process-local boundary. |
 | FW-06-04 | DL-06 | NOT STARTED | Verify Chroma projection is eventual and SQLite metadata/events remain canonical when projection is unavailable. |
 | FW-06-04A | DL-06 | NOT STARTED | Verify Chroma projection replay repairs a stale/missing vector without claiming Chroma multi-writer ACID. |
@@ -75,21 +98,37 @@
 | FW-08-03A | DL-08 | NOT STARTED | Verify live SQLite+Chroma endpoint dependencies and stale-projection handling on graph reads. |
 | FW-08-04 | DL-08 | NOT STARTED | Verify in-memory authenticated node reads match Python scope/ACL behavior for allowed and denied records. |
 | FW-08-04A | DL-08 | NOT STARTED | Verify in-memory edge/adjacency reads fail closed for absent, malformed, or cross-scope endpoints. |
-| FW-08-02 | DL-08 | NOT STARTED | Verify public read effects after an ACL revocation on each backend and assert unauthorized records are absent. |
+| FW-08-02 | DL-08 | PARENT | Parent scope; children: FW-08-02-PG,FW-08-02-SQLITE-CHROMA,FW-08-02-MEMORY |
+| FW-08-02-PG | DL-08 | NOT STARTED | After ACL revocation, verify PostgreSQL public reads omit the revoked record. |
+| FW-08-02-SQLITE-CHROMA | DL-08 | NOT STARTED | After ACL revocation, verify SQLite+Chroma public reads omit the revoked record. |
+| FW-08-02-MEMORY | DL-08 | NOT STARTED | After ACL revocation, verify in-memory public reads omit the revoked record. |
 | FW-08-02A | DL-08 | NOT STARTED | Verify public read effects with stale/missing canonical records and compare the supported backend result shapes. |
 | FW-08-02B | DL-08 | NOT STARTED | Verify public read effects do not leak denied nodes through adjacency, snapshots, or vector-derived results. |
-| FW-08C-01 | DL-08C | NOT STARTED | Verify vector retrieval excludes tombstoned entities and resolves redirects consistently in Python and Rust. |
+| FW-08C-01 | DL-08C | PARENT | Parent scope; children: FW-08C-01-TOMBSTONE,FW-08C-01-REDIRECT |
+| FW-08C-01-TOMBSTONE | DL-08C | NOT STARTED | Verify Python and Rust vector retrieval excludes tombstoned entities. |
+| FW-08C-01-REDIRECT | DL-08C | NOT STARTED | Verify Python and Rust vector retrieval resolves redirects to the canonical target. |
 | FW-08C-01A | DL-08C | NOT STARTED | Verify vector retrieval requires authorized source evidence and rejects stale/foreign evidence references. |
 | FW-08C-01B | DL-08C | NOT STARTED | Run the lifecycle/evidence vector cases on PostgreSQL and record the exact result parity. |
 | FW-08C-01C | DL-08C | NOT STARTED | Run the lifecycle/evidence vector cases on SQLite+Chroma and record the exact result parity. |
 | FW-08C-01D | DL-08C | NOT STARTED | Run the lifecycle/evidence vector cases on in-memory and record the exact result parity. |
-| FW-08C-03 | DL-08C | NOT STARTED | Verify lifecycle filtering occurs before top-k limit on each supported vector backend. |
+| FW-08C-03 | DL-08C | PARENT | Parent scope; children: FW-08C-03-PG,FW-08C-03-SQLITE-CHROMA,FW-08C-03-MEMORY |
+| FW-08C-03-PG | DL-08C | NOT STARTED | Verify PostgreSQL filters lifecycle state before applying the vector top-k limit. |
+| FW-08C-03-SQLITE-CHROMA | DL-08C | NOT STARTED | Verify SQLite+Chroma filters lifecycle state before applying the vector top-k limit. |
+| FW-08C-03-MEMORY | DL-08C | NOT STARTED | Verify in-memory retrieval filters lifecycle state before applying the vector top-k limit. |
 | FW-08C-03A | DL-08C | NOT STARTED | Verify ACL-denied candidates are omitted without unauthorized backfill changing result limits. |
-| FW-08C-03B | DL-08C | NOT STARTED | Verify normalized score meaning and ordering for each declared metric/backend pair. |
-| FW-08C-04 | DL-08C | NOT STARTED | Verify tenant/project and graph-role scope on vector retrieval across the declared backend set. |
+| FW-08C-03B | DL-08C | PARENT | Parent scope; children: FW-08C-03B-PG,FW-08C-03B-SQLITE-CHROMA,FW-08C-03B-MEMORY |
+| FW-08C-03B-PG | DL-08C | NOT STARTED | Verify normalized score meaning and ordering for supported metrics on PostgreSQL. |
+| FW-08C-03B-SQLITE-CHROMA | DL-08C | NOT STARTED | Verify normalized score meaning and ordering for supported metrics on SQLite+Chroma. |
+| FW-08C-03B-MEMORY | DL-08C | NOT STARTED | Verify normalized score meaning and ordering for supported metrics in-memory. |
+| FW-08C-04 | DL-08C | PARENT | Parent scope; children: FW-08C-04-PG,FW-08C-04-SQLITE-CHROMA,FW-08C-04-MEMORY |
+| FW-08C-04-PG | DL-08C | NOT STARTED | Verify tenant, project, and graph-role scope on PostgreSQL vector retrieval. |
+| FW-08C-04-SQLITE-CHROMA | DL-08C | NOT STARTED | Verify tenant, project, and graph-role scope on SQLite+Chroma vector retrieval. |
+| FW-08C-04-MEMORY | DL-08C | NOT STARTED | Verify tenant, project, and graph-role scope on in-memory vector retrieval. |
 | FW-08C-04A | DL-08C | NOT STARTED | Verify source span/provenance and endpoint authorization on vector results. |
 | FW-08C-04B | DL-08C | NOT STARTED | Verify the same scope and evidence constraints on hybrid retrieval results. |
-| FW-08C-02 | DL-08C | NOT STARTED | Verify mutation admission scope parity for Python and Rust on PostgreSQL and in-memory. |
+| FW-08C-02 | DL-08C | PARENT | Parent scope; children: FW-08C-02-PG,FW-08C-02-MEMORY |
+| FW-08C-02-PG | DL-08C | NOT STARTED | Verify Python/Rust vector mutation admission scope parity on PostgreSQL. |
+| FW-08C-02-MEMORY | DL-08C | NOT STARTED | Verify Python/Rust vector mutation admission scope parity in-memory. |
 | FW-08C-02A | DL-08C | NOT STARTED | Verify mutation admission scope parity for SQLite+Chroma and record unsupported combinations explicitly. |
 | FW-11-01 | DL-11 | NOT STARTED | Compare canonical trace fields for one successful runtime transition against a shared Python/Rust fixture. |
 | FW-11-01A | DL-11 | NOT STARTED | Compare trace fields for retry and attempt increments against a shared Python/Rust fixture. |
@@ -221,10 +260,21 @@
 | FW-16BQ-03 | DL-16BQ | NOT STARTED | Verify syscall authorization and namespace/scope semantics against Python for SQLite+Chroma. |
 | FW-16BQ-03A | DL-16BQ | NOT STARTED | Verify syscall authorization and namespace/scope semantics against Python for PostgreSQL. |
 | FW-16BQ-03B | DL-16BQ | NOT STARTED | Verify syscall authorization and namespace/scope semantics against Python for in-memory. |
-| FW-16BQ-03C | DL-16BQ | NOT STARTED | Verify stable syscall error semantics against Python for each advertised backend. |
+| FW-16BQ-03C | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-03C-PG,FW-16BQ-03C-SQLITE-CHROMA,FW-16BQ-03C-MEMORY |
+| FW-16BQ-03C-PG | DL-16BQ | NOT STARTED | Compare one shared syscall error envelope on PostgreSQL against the Python contract. |
+| FW-16BQ-03C-SQLITE-CHROMA | DL-16BQ | NOT STARTED | Compare one shared syscall error envelope on SQLite+Chroma against the Python contract. |
+| FW-16BQ-03C-MEMORY | DL-16BQ | NOT STARTED | Compare one shared syscall error envelope in-memory against the Python contract. |
 | FW-16BQ-04 | DL-16BQ | NOT STARTED | Verify native answer/provider event publication and claim on SQLite+Chroma without Python fallback. |
-| FW-16BQ-04A | DL-16BQ | NOT STARTED | Verify native event handling, acknowledgment, causal trace, and replay on SQLite+Chroma. |
-| FW-16BQ-04B | DL-16BQ | NOT STARTED | Verify native event publication, handling, acknowledgment, causal trace, and replay on PostgreSQL. |
+| FW-16BQ-04A | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-04A-HANDLE,FW-16BQ-04A-ACK,FW-16BQ-04A-TRACE,FW-16BQ-04A-REPLAY |
+| FW-16BQ-04A-HANDLE | DL-16BQ | NOT STARTED | Verify one native provider event is handled on SQLite+Chroma without Python fallback. |
+| FW-16BQ-04A-ACK | DL-16BQ | NOT STARTED | Verify SQLite+Chroma acknowledges only the active provider-event claim. |
+| FW-16BQ-04A-TRACE | DL-16BQ | NOT STARTED | Verify SQLite+Chroma persists causal links from one handled event to its workflow step. |
+| FW-16BQ-04A-REPLAY | DL-16BQ | NOT STARTED | Replay one acknowledged SQLite+Chroma provider event; assert no duplicate graph effect. |
+| FW-16BQ-04B | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-04B-PUBLISH,FW-16BQ-04B-HANDLE,FW-16BQ-04B-ACK,FW-16BQ-04B-REPLAY |
+| FW-16BQ-04B-PUBLISH | DL-16BQ | NOT STARTED | Verify PostgreSQL atomically publishes one provider event with its conversation graph records. |
+| FW-16BQ-04B-HANDLE | DL-16BQ | NOT STARTED | Verify one native provider event is handled on PostgreSQL without Python fallback. |
+| FW-16BQ-04B-ACK | DL-16BQ | NOT STARTED | Verify PostgreSQL acknowledges only the active provider-event claim. |
+| FW-16BQ-04B-REPLAY | DL-16BQ | NOT STARTED | Replay one acknowledged PostgreSQL provider event; assert no duplicate graph effect. |
 | FW-16BQ-05 | DL-16BQ | NOT STARTED | Verify SQLite+Chroma restart/retry and canonical digest for one advertised syscall path. |
 | FW-16BQ-05A | DL-16BQ | NOT STARTED | Verify PostgreSQL restart/retry and canonical digest for one advertised syscall path. |
 | FW-16BQ-05B | DL-16BQ | NOT STARTED | Verify supported interpreter/runtime cells and list untested/unsupported combinations. |
@@ -292,4 +342,4 @@
 
 ## Current Snapshot
 
-All currently open coarse IDs map to fine rows. **Tasklet sizing audit: incomplete.** The 265-row denominator is still a status count, not a validated equal-sized tasklet denominator. Open rows that ask for evidence over every route/operation, an entire backend/runtime matrix, or multiple independent failure modes are not yet compliant with the one-session unit above. Audit them and, when oversized, replace them with bounded children before starting; do not report them as equal-sized or use the current fine percentage as a progress forecast. Do not add rows solely to make the denominator look granular: a split requires independent acceptance outcomes and an explicit parent-to-child mapping. DL-14C's two passed rows cover environment routing and retry/recovery, not worker identity attestation; FW-14C-03 through FW-14C-03D divide that remainder into contract, language-specific admission, shared fixture parity, and restart binding. CI checks mapping and status consistency; it cannot infer semantic exhaustiveness or effort parity from prose. Record any newly discovered requirement as a child of an existing coarse gate only when required by that gate's contract; otherwise pause and update scope explicitly. The completion snapshot at the top of this file is the sole fine-status/count summary; the linked coarse inventory remains authoritative for coarse status.
+All currently open coarse IDs map to fine rows. **Tasklet sizing result:** 18 over-bundled rows are now non-counted parents with 50 independently counted leaves; replacing those 18 rows adds 32 leaf items (265 to 297). The live count at the top of this file is maintained by the validator. Other matrix/inventory rows are one tasklet only when one automated artifact/check reports one shared invariant with per-cell results; otherwise split them before work starts. DL-14C's two passed rows cover environment routing and retry/recovery, not worker identity attestation; FW-14C-03 through FW-14C-03D divide that remainder into contract, language-specific admission, shared fixture parity, and restart binding. CI validates mapping, parent exclusion, and status counts; it cannot infer semantic completeness or guarantee identical elapsed effort. Record newly discovered requirements only under an existing coarse gate when required by its contract; otherwise pause and update scope explicitly. The completion snapshot at the top is the sole fine-status/count summary; the linked coarse inventory remains authoritative for coarse status.

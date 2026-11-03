@@ -51,11 +51,20 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     coarse_status = {row[0]: row[1].split()[0] for row in coarse_rows}
     fine_by_coarse: dict[str, list[str]] = {}
     fine_ids: set[str] = set()
+    parents: dict[str, tuple[str, list[str]]] = {}
     for row in fine_rows:
         fine_id, coarse_id, status = row[:3]
         assert fine_id not in fine_ids, f"duplicate fine tasklet ID {fine_id}"
         fine_ids.add(fine_id)
         assert coarse_id in coarse_status, f"{fine_id} references unknown coarse item {coarse_id}"
+        if status == "PARENT":
+            match = re.fullmatch(r"Parent scope; children: (FW-[A-Za-z0-9,-]+)", row[3])
+            assert match is not None, f"{fine_id} must enumerate its non-counted leaf children"
+            child_ids = match.group(1).split(",")
+            assert len(child_ids) >= 2 and len(set(child_ids)) == len(child_ids)
+            parents[fine_id] = (coarse_id, child_ids)
+            continue
+        assert status in {"NOT STARTED", "IN PROGRESS", "PASS", "FAIL", "BLOCKED"}
         if status in {"NOT STARTED", "IN PROGRESS"}:
             task_words = row[3].split()
             assert len(task_words) <= 45, (
@@ -63,6 +72,13 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
                 "split independently verifiable outcomes"
             )
         fine_by_coarse.setdefault(coarse_id, []).append(status)
+
+    for parent_id, (parent_coarse_id, child_ids) in parents.items():
+        for child_id in child_ids:
+            child = next((row for row in fine_rows if row[0] == child_id), None)
+            assert child is not None, f"{parent_id} references missing child {child_id}"
+            assert child[2] != "PARENT", f"{parent_id} must reference leaf tasklets, not another parent"
+            assert child[1] == parent_coarse_id, f"{child_id} must stay under {parent_coarse_id}"
 
     open_coarse = {
         coarse_id
@@ -95,7 +111,7 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     assert fine_snapshot is not None
 
     coarse_pass_count = sum(status == "PASS" for status in coarse_status.values())
-    fine_statuses = [row[2] for row in fine_rows]
+    fine_statuses = [row[2] for row in fine_rows if row[2] != "PARENT"]
     fine_pass_count = sum(status == "PASS" for status in fine_statuses)
     assert tuple(map(int, coarse_snapshot.groups()[:2])) == (
         coarse_pass_count,
