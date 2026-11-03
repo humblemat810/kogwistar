@@ -2347,7 +2347,7 @@
     #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_search_index_events_project_to_live_chroma_and_survive_reopen; python=kogwistar/engine_core/search_index/service.py#SearchIndexService.upsert_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_search_index_events_project_to_live_chroma_and_survive_reopen; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
     async fn sqlite_search_index_events_project_to_live_chroma_and_survive_reopen() {
-        use kogwistar_store::{EventReadStore, NodeIndexStore};
+        use kogwistar_store::{EventReadStore, GraphEntityKind, GraphRecord, GraphWriteStore, NodeIndexStore};
 
         let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
             .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
@@ -2363,7 +2363,7 @@
             metric: DistanceMetric::Cosine,
             ..Default::default()
         };
-        let provider = FixedEmbeddingProvider {
+        let provider = Arc::new(FixedEmbeddingProvider {
             profile: kogwistar_engine::embedding::EmbeddingProfile {
                 provider: "test".to_owned(),
                 model: "fixed-search-index-v1".to_owned(),
@@ -2382,7 +2382,7 @@
             vector: vec![0.6, 0.8],
             calls: Arc::new(Mutex::new(Vec::new())),
             fail: None,
-        };
+        });
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/search-index-entry-v1.json"
         ))
@@ -2403,7 +2403,7 @@
             &store,
             &vector_store,
             &fts,
-            &provider,
+            provider.as_ref(),
             &namespace,
             "nodes_index",
             &request.index,
@@ -2460,13 +2460,234 @@
             &reopened_fts,
             &reopened_vector,
             "nodes_index",
-            &provider,
+            provider.as_ref(),
             &format!("uniquepermit{suffix}"),
             5,
         )
         .await
         .unwrap();
         assert!(hits.iter().any(|hit| hit.node_id == request.index[0].node_id));
+
+        let graph_node_collection = format!("kgw-route-n-{suffix}");
+        let graph_edge_collection = format!("kgw-route-e-{suffix}");
+        let route_service = open_sqlite_application_service(
+            &store_path,
+            Some(SqliteChromaGraphConfig {
+                endpoint: std::env::var("KOGWISTAR_TEST_CHROMA_URL").unwrap(),
+                metric: DistanceMetric::Cosine,
+                node_collection: graph_node_collection.clone(),
+                edge_collection: graph_edge_collection.clone(),
+            }),
+        )
+        .await
+        .unwrap()
+        .with_search_index_path(&fts_path)
+        .unwrap()
+        .with_embedding_provider(provider.clone());
+        let chroma_endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL").unwrap();
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            kogwistar_store_chroma::ChromaStoreConfig {
+                endpoint: chroma_endpoint.clone(),
+                collection: graph_node_collection,
+                metric: DistanceMetric::Cosine,
+                ..Default::default()
+            },
+            kogwistar_store_chroma::ChromaStoreConfig {
+                endpoint: chroma_endpoint,
+                collection: graph_edge_collection,
+                metric: DistanceMetric::Cosine,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let node_id = request.index[0].node_id.clone();
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: node_id.clone(),
+                    document: Some("authorized live Chroma node".to_owned()),
+                    metadata: serde_json::from_value(json!({
+                        "workspace_id":"workspace-live",
+                        "graph_space":"facts",
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: format!("acl-{node_id}"),
+                    document: Some("{}".to_owned()),
+                    metadata: serde_json::from_value(json!({
+                        "workspace_id":"workspace-live",
+                        "graph_space":"facts",
+                        "entity_type":"acl_record",
+                        "acl_truth_graph":"knowledge",
+                        "acl_target_grain":"node",
+                        "acl_target_entity_id":node_id,
+                        "acl_version":1,
+                        "acl_mode":"public"
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+
+        let inserted_node = graph
+            .graph_record_of_kind(&namespace, GraphEntityKind::Node, &node_id)
+            .await
+            .unwrap()
+            .expect("inserted live node must be retrievable");
+        assert_eq!(inserted_node.metadata["workspace_id"], "workspace-live");
+
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some("sqlite-live-chroma-search-secret".to_owned()),
+            ..AuthConfig::default()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = |capabilities: &[&str]| {
+            jsonwebtoken::encode(
+                &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
+                    "sub":"live-reader",
+                    "storage_ns":namespace,
+                    "ns":[namespace],
+                    "workspace_id":"workspace-live",
+                    "graph_space":"facts",
+                    "role":"ro",
+                    "capabilities":capabilities,
+                    "exp":now + 300
+                }),
+                &jsonwebtoken::EncodingKey::from_secret(
+                    b"sqlite-live-chroma-search-secret",
+                ),
+            )
+            .unwrap()
+        };
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(route_service),
+        );
+        let encoded_query = url::form_urlencoded::byte_serialize(
+            format!("uniquepermit{suffix}").as_bytes(),
+        )
+        .collect::<String>();
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/search_index_hybrid?q={encoded_query}&limit=5&resolve_node=true"
+                    ))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let response: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let visible = response["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|hit| hit["node_id"] == node_id)
+            .unwrap_or_else(|| {
+                panic!("authorized indexed node missing from live HTTP response: {response}")
+            });
+        assert_eq!(visible["documents"], "authorized live Chroma node");
+        assert_eq!(visible["metadatas"]["workspace_id"], "workspace-live");
+
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: format!("acl-{node_id}"),
+                    document: Some("{}".to_owned()),
+                    metadata: serde_json::from_value(json!({
+                        "workspace_id":"workspace-live",
+                        "graph_space":"facts",
+                        "entity_type":"acl_record",
+                        "acl_truth_graph":"knowledge",
+                        "acl_target_grain":"node",
+                        "acl_target_entity_id":node_id,
+                        "acl_version":2,
+                        "acl_mode":"private"
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+        let acl_denied = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/search_index_hybrid?q={encoded_query}&limit=5&resolve_node=true"
+                    ))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(acl_denied.status(), axum::http::StatusCode::OK);
+        let acl_denied: Value = serde_json::from_slice(
+            &axum::body::to_bytes(acl_denied.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(acl_denied["results"].as_array().unwrap().is_empty());
+
+        let denied = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/search_index_hybrid?q=uniquepermit&limit=5")
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), axum::http::StatusCode::FORBIDDEN);
 
         drop(reopened_fts);
         drop(reopened_vector);

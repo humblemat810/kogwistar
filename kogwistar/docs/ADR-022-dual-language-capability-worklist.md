@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **154/177 PASS (87.0%)**.
-- **Fine worklist:** **3/265 PASS (1.1%)**; **1 IN PROGRESS**, **261 NOT STARTED**.
+- **Fine worklist:** **4/265 PASS (1.5%)**; **0 IN PROGRESS**, **261 NOT STARTED**.
 - Tasklet sizing rule: each open row targets one observable behavior at one primary boundary and should ordinarily take one focused implementation-and-verification session. Matrix rows are split by independently verifiable behavior rather than counted as one large task. The 261-row denominator is an explicit expansion of previously bundled work, not newly discovered implementation progress; report coarse and fine percentages separately and do not infer schedule or nearness to completion from either percentage.
 
 ## How To Track
@@ -24,7 +24,7 @@
 | Fine ID | Coarse ID | Status | Bounded task and acceptance evidence |
 | --- | --- | --- | --- |
 | FW-02-01 | DL-02 | PASS | The SQLite+Chroma authenticated HTTP protocol/authorization route contract is covered in `tests::sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered`: successful canonical node resolution, missing-`read_graph` denial, fail-closed foreign-namespace handling, and metadata-only service rejection with `501 KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER` (**1 passed**). Paired Python ACL/fusion/fixture tests: **5 passed**. |
-| FW-02-01B | DL-02 | IN PROGRESS | Add a live-Chroma public-route smoke with the same request, scope, and ACL expectations as the fake-endpoint route test. CI pins `chromadb/chroma:1.5.9`; local Docker currently has no Chroma service running. Keep this as one bounded integration test and do not duplicate the already-passing fake-endpoint cases. |
+| FW-02-01B | DL-02 | PASS | The ignored live-Chroma regression `tests::sqlite_search_index_events_project_to_live_chroma_and_survive_reopen` now exercises authenticated `GET /api/search_index_hybrid`: a scoped public node resolves to its canonical document, a newer private ACL revision removes the hit, and missing `read_graph` returns `403`. Verified against disposable `chromadb/chroma:1.5.9` on Windows (**1 passed**); paired fake-endpoint scoped-route regression also passes (**1 passed**). |
 | FW-02-02 | DL-02 | NOT STARTED | Freeze the Python/Rust request, response, authorization, and unsupported error contract for `POST /api/add_index_entries`; keep route disabled until evidence passes. |
 | FW-02-02A | DL-02 | NOT STARTED | Verify authenticated add-index admission on the public Rust route against SQLite+Chroma, including missing capability and foreign-namespace denial before durable mutation. |
 | FW-02-02B | DL-02 | NOT STARTED | Verify authenticated add-index admission on the public Rust route against PostgreSQL, including idempotent duplicate request and durable replay after reopen. |
