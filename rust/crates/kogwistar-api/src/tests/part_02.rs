@@ -27,10 +27,18 @@
                     "run_id": "pg-native-run",
                     "workflow_id": "pg-native-workflow",
                     "conversation_id": "pg-native-conversation",
-                    "initial_state": {"seed": 1},
+                    "initial_state": {"counter": 1},
                     "runtime_kind": "sync",
                     "start_node_id": "entry",
-                    "node_ops": {"entry": "rust-native/emit-result"}
+                    "node_ops": {
+                        "entry": "rust-native/increment-counter",
+                        "finish": "rust-native/emit-result"
+                    },
+                    "runtime_routes": [{
+                        "source_node_id": "entry",
+                        "target_node_id": "finish",
+                        "join_mask": 0
+                    }]
                 }),
             ))
             .await;
@@ -50,7 +58,7 @@
             .await;
         assert_eq!(claim.status, StatusCode::OK.as_u16());
         let work = serde_json::from_slice::<Value>(&claim.body).unwrap()["work"][0].clone();
-        assert_eq!(work["payload"]["op"], "rust-native/emit-result");
+        assert_eq!(work["payload"]["op"], "rust-native/increment-counter");
         assert_eq!(
             work["payload"]["executor_target"],
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
@@ -110,6 +118,45 @@
             ))
             .await;
         assert_eq!(execute.status, StatusCode::OK.as_u16());
+        let continuation = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/claim",
+                json!({
+                    "claimed_by": "rust-native-worker",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["rust-native-worker"]
+                }),
+            ))
+            .await;
+        assert_eq!(continuation.status, StatusCode::OK.as_u16());
+        let continuation_work =
+            serde_json::from_slice::<Value>(&continuation.body).unwrap()["work"][0].clone();
+        assert_eq!(
+            continuation_work["payload"]["op"],
+            "rust-native/emit-result"
+        );
+        let continuation_execute = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/native/execute",
+                json!({
+                    "handoff": {
+                        "message_id": continuation_work["message_id"],
+                        "claimed_by": continuation_work["claimed_by"],
+                        "run_id": continuation_work["run_id"],
+                        "step_id": continuation_work["step_id"],
+                        "correlation_id": continuation_work["correlation_id"]
+                    },
+                    "payload": continuation_work["payload"]
+                }),
+            ))
+            .await;
+        assert_eq!(
+            continuation_execute.status,
+            StatusCode::OK.as_u16()
+        );
         let events = service
             .store
             .list_server_run_events("pg-native-run", 0, 100)
@@ -118,6 +165,12 @@
         assert!(events.iter().any(|event| {
             event.event_type == "workflow.trace.v1"
                 && event.payload_json.contains("runtime.native.step.completed")
+        }));
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.recorded_transition.v1"
+                && event.payload_json.contains("increment-counter")
+                && event.payload_json.contains("counter")
+                && event.payload_json.contains(":2")
         }));
         let run = service
             .store
