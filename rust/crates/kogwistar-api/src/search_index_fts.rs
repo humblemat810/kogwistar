@@ -362,7 +362,7 @@ pub struct SearchIndexAdmissionSummary {
 /// The graph namespace is derived from verified principal scope, never from
 /// request JSON, so callers cannot redirect durable index events.
 ///
-/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_upsert_effect; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_upsert_effect_requires_write_scope_and_matches_python_response; python_test=tests/core/test_search_index_contract.py#test_search_index_entries_match_shared_rust_golden_fixture
+/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_upsert_effect; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_upsert_effect_requires_write_scope_and_matches_python_response; python_test=tests/server/test_search_index_api_auth.py#test_add_index_entries_requires_write_role_and_keeps_payload
 pub(crate) async fn search_index_upsert_effect<E, V>(
     request: &crate::ApiEffectRequest,
     capabilities: &crate::SharedCapabilityState,
