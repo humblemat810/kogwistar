@@ -121,6 +121,115 @@ async fn mcp_handler(
     if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
         return forbidden_response();
     }
+    let response_mode = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|accept| {
+            let accepts_json = accept.split(',').any(|item| {
+                item.trim()
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+            });
+            let accepts_sse = accept.split(',').any(|item| {
+                item.trim()
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+            });
+            (accepts_json, accepts_sse)
+        });
+    if response_mode.is_some_and(|(json, sse)| !json && !sse) {
+        return StatusCode::NOT_ACCEPTABLE.into_response();
+    }
+    if headers.contains_key("mcp-session-id") {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let is_initialize = payload.get("method").and_then(Value::as_str) == Some("initialize");
+    if !is_initialize
+        && headers
+            .get("mcp-protocol-version")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|version| {
+                !matches!(
+                    version,
+                    "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25"
+                )
+            })
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let initialize_version = (payload.get("method").and_then(Value::as_str) == Some("initialize"))
+        .then(|| {
+            payload
+                .pointer("/params/protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("2025-11-25")
+        });
+    let request_protocol_version = initialize_version
+        .map(|version| match version {
+            "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => version,
+            _ => "2025-11-25",
+        })
+        .or_else(|| {
+            headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok())
+                .filter(|version| {
+                    matches!(
+                        *version,
+                        "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25"
+                    )
+                })
+        })
+        .map(str::to_owned);
+    let mut response = mcp_dispatch(state, headers.clone(), uri, payload).await;
+    if let Some(protocol_version) = request_protocol_version {
+        response.headers_mut().insert(
+            "mcp-protocol-version",
+            HeaderValue::from_str(&protocol_version)
+                .unwrap_or_else(|_| HeaderValue::from_static("2025-11-25")),
+        );
+    }
+    if response_mode.is_none_or(|(json, sse)| json || !sse)
+        || response.status() != StatusCode::OK
+    {
+        return response;
+    }
+    let protocol_version = response
+        .headers()
+        .get("mcp-protocol-version")
+        .cloned();
+    let Ok(body) = axum::body::to_bytes(response.into_body(), usize::MAX).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let mut sse = Vec::with_capacity(body.len() + 32);
+    sse.extend_from_slice(b"event: message\ndata: ");
+    sse.extend_from_slice(&body);
+    sse.extend_from_slice(b"\n\n");
+    let mut response = (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")],
+        sse,
+    )
+        .into_response();
+    if let Some(protocol_version) = protocol_version {
+        response
+            .headers_mut()
+            .insert("mcp-protocol-version", protocol_version);
+    }
+    response
+}
+
+async fn mcp_dispatch(
+    state: Arc<ServerState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    payload: Value,
+) -> Response {
+    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
+        return forbidden_response();
+    }
     let id = payload.get("id").cloned().unwrap_or(Value::Null);
     let method = payload
         .get("method")
@@ -131,6 +240,36 @@ async fn mcp_handler(
         "/mcp/workflow" => "workflow",
         _ => "root",
     };
+    if method == "initialize" {
+        let requested_version = payload
+            .pointer("/params/protocolVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("2025-11-25");
+        let protocol_version = match requested_version {
+            "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => requested_version,
+            _ => "2025-11-25",
+        };
+        let server_name = match surface {
+            "conversation" => "Conversation MCP",
+            "workflow" => "Workflow Diagnostics MCP",
+            _ => "KnowledgeEngine + MCP + Admin",
+        };
+        return Json(mcp_result(
+            id,
+            json!({
+                "protocolVersion": protocol_version,
+                "capabilities": {"tools": {"listChanged": false}},
+                "serverInfo": {"name": server_name, "version": env!("CARGO_PKG_VERSION")},
+            }),
+        ))
+        .into_response();
+    }
+    if method == "notifications/initialized" {
+        return StatusCode::ACCEPTED.into_response();
+    }
+    if method == "ping" {
+        return Json(mcp_result(id, json!({}))).into_response();
+    }
     if method == "tools/list" {
         let principal = request_principal(&headers, &state.api.auth);
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON)
