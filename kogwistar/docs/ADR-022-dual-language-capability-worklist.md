@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **75/729 PASS (10.3%)**; **0 IN PROGRESS**, **654 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **76/729 PASS (10.4%)**; **0 IN PROGRESS**, **653 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -341,7 +341,7 @@
 | FW-06-01B | DL-06 | PARENT | Parent scope; children: FW-06-01B-POSTGRES,FW-06-01B-SQLITE-CHROMA,FW-06-01B-MEMORY |
 | FW-06-01B-POSTGRES | DL-06 | PASS | ADR-022 states PostgreSQL atomically commits canonical events, graph projections, and explicit index intents; `graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_available` passed against disposable pgvector/pg16 (**1 passed**). |
 | FW-06-01B-SQLITE-CHROMA | DL-06 | PASS | ADR-022/ADR-018 define canonical SQLite events and Chroma as an eventual projection; `sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs` verifies failure, reopen, and retry (**1 passed**, fake HTTP Chroma endpoint; not live Chroma). |
-| FW-06-01B-MEMORY | DL-06 | NOT STARTED | Verify in-memory transaction and durability guarantees are explicitly process-local and non-persistent. |
+| FW-06-01B-MEMORY | DL-06 | PASS | `InMemoryStore` documents volatile state and process-local handles; `cloned_handles_share_volatile_state_but_new_store_starts_empty` verifies clone visibility and fresh-store isolation (**1 passed**). |
 | FW-06-03 | DL-06 | PASS | `concurrent_event_appends_have_one_ordered_sqlite_authority` verifies unique ordered canonical events under eight writers; Chroma remains eventual (**1 passed**). |
 | FW-06-03A | DL-06 | PARENT | Parent scope; children: FW-06-03A-GRAPH,FW-06-03A-RUN,FW-06-03A-WORKER,FW-06-03A-ACL,FW-06-03A-INDEX |
 | FW-06-03A-GRAPH | DL-06 | PASS | Live `postgres_concurrent_graph_mutations_share_one_transaction_order_when_dsn_available` uses separate pools and verifies contiguous events plus final projection (**1 passed**). |

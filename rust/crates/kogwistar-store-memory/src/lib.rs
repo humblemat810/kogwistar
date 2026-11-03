@@ -20,8 +20,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-/// Cloned handles share one process-local writer lock. This backend provides
-/// no cross-process coordination or durable transaction ownership.
+/// Cloned handles share one process-local writer lock and volatile state. A new
+/// store starts empty; state is not persisted across process or store lifetimes.
+/// This backend provides no cross-process coordination or durable transactions.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryStore {
     state: Arc<RwLock<State>>,
@@ -2355,6 +2356,34 @@ mod tests {
         );
         assert!(capability.supports_single_mutation());
         assert!(capability.supports_atomic_index_jobs());
+    }
+
+    #[test]
+    fn cloned_handles_share_volatile_state_but_new_store_starts_empty() {
+        let store = InMemoryStore::new();
+        let shared_handle = store.clone();
+        let scope = GraphScope {
+            namespace: "volatile-contract".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        block_on(store.apply_graph_mutation(graph_mutation(
+            scope.clone(),
+            "volatile-event",
+            "volatile-node",
+            &[1.0, 0.0],
+        )))
+        .expect("write to shared in-memory state");
+
+        assert_eq!(
+            block_on(shared_handle.replay_events(&scope.namespace, 0, 10))
+                .expect("cloned handle reads shared state")
+                .len(),
+            1
+        );
+        assert!(block_on(InMemoryStore::new().replay_events(&scope.namespace, 0, 10))
+            .expect("fresh store has independent volatile state")
+            .is_empty());
     }
 
     #[test]
