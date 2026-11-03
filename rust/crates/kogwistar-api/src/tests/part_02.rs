@@ -1124,6 +1124,32 @@
             json!({})
         );
 
+        let get_stream = client
+            .get(&endpoint)
+            .header("accept", "text/event-stream")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("x-kogwistar-roles", "reader")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get_stream.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(get_stream.headers()[header::ALLOW], "POST, DELETE");
+
+        let get_stream_without_sse_accept = client
+            .get(&endpoint)
+            .header("accept", "application/json")
+            .header("mcp-protocol-version", "2025-06-18")
+            .header("mcp-session-id", &session_id)
+            .header("x-kogwistar-roles", "reader")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            get_stream_without_sse_accept.status(),
+            StatusCode::NOT_ACCEPTABLE
+        );
+
         let terminated = client
             .delete(&endpoint)
             .header("mcp-protocol-version", "2025-06-18")

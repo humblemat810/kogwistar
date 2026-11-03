@@ -313,6 +313,44 @@ async fn mcp_delete_handler(
     }
 }
 
+async fn mcp_get_handler(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
+    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
+        return forbidden_response();
+    }
+    let accepts_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| {
+            accept.split(',').any(|item| {
+                item.trim()
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+            })
+        });
+    if !accepts_sse {
+        return StatusCode::NOT_ACCEPTABLE.into_response();
+    }
+    let Some(session_id) = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let protocol_version = headers
+        .get("mcp-protocol-version")
+        .and_then(|value| value.to_str().ok());
+    let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
+    match state
+        .mcp_sessions
+        .touch(session_id, &session_owner, protocol_version)
+    {
+        Ok(_) => (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST, DELETE")]).into_response(),
+        Err(McpSessionError::ProtocolVersionMismatch) => StatusCode::BAD_REQUEST.into_response(),
+        Err(McpSessionError::NotFound) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 async fn mcp_dispatch(
     state: Arc<ServerState>,
     headers: HeaderMap,
@@ -1705,14 +1743,23 @@ pub fn router_with_application(
 ) -> Router {
     let mut router = Router::new()
         .route("/api/events", get(sse_handler))
-        .route("/mcp", post(mcp_handler).delete(mcp_delete_handler))
+        .route(
+            "/mcp",
+            get(mcp_get_handler)
+                .post(mcp_handler)
+                .delete(mcp_delete_handler),
+        )
         .route(
             "/mcp/conversation",
-            post(mcp_handler).delete(mcp_delete_handler),
+            get(mcp_get_handler)
+                .post(mcp_handler)
+                .delete(mcp_delete_handler),
         )
         .route(
             "/mcp/workflow",
-            post(mcp_handler).delete(mcp_delete_handler),
+            get(mcp_get_handler)
+                .post(mcp_handler)
+                .delete(mcp_delete_handler),
         );
     for path in INTERNAL_APPLICATION_EFFECT_ROUTES {
         router = router.route(path, post(application_effect_handler));
