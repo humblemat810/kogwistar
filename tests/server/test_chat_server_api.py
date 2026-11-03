@@ -920,8 +920,12 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         turns = client.get(
             f"/api/conversations/{conversation_id}/turns", headers=ro_headers
         )
+        assert turns.status_code == 200
         turns.raise_for_status()
-        transcript = turns.json()["turns"]
+        transcript_response = turns.json()
+        assert set(transcript_response) == {"conversation_id", "turns"}
+        assert transcript_response["conversation_id"] == conversation_id
+        transcript = transcript_response["turns"]
         assert [turn["role"] for turn in transcript] == ["user", "assistant"]
         assert transcript[1]["content"] == "Assistant reply: hello world"
 

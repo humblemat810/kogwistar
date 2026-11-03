@@ -5219,6 +5219,11 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .unwrap(),
     )
     .unwrap();
+    assert_eq!(transcript.as_object().unwrap().len(), 2);
+    assert_eq!(
+        transcript["conversation_id"],
+        "conversation-create-contract"
+    );
     let transcript_turns = transcript["turns"].as_array().unwrap();
     assert_eq!(
         transcript_turns
