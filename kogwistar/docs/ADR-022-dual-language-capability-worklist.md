@@ -1,6 +1,6 @@
 # ADR-022 Remaining Worklist
 
-**Updated:** 2026-11-03  
+**Updated:** 2026-11-03
 **Purpose:** Track bounded work beneath the coarse gates in [ADR-022-dual-language-capability-checklist.md](ADR-022-dual-language-capability-checklist.md).
 
 ## How To Track
