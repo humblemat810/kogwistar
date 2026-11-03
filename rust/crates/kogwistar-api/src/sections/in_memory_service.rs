@@ -20,6 +20,7 @@ impl InMemoryGraphApplicationService {
             name,
             "kg_find_edges"
                 | "kg_k_hop"
+                | "kg_load_persisted"
                 | "kg_neighbors"
                 | "kg_propose_bruteforce"
                 | "kg_shortest_path"
@@ -86,6 +87,9 @@ impl InMemoryGraphApplicationService {
     }
 
     async fn graph_read_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if request.path_and_query == INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE {
+            return self.graph_load_persisted_effect(request).await;
+        }
         if request.path_and_query == INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE {
             return self.graph_propose_bruteforce_effect(request).await;
         }
@@ -232,6 +236,64 @@ impl InMemoryGraphApplicationService {
             _ => return unavailable_effect(request.clone()),
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
+    }
+
+    // PYTHON_PARITY: kogwistar/server/mcp_tools.py::_load_persisted_graph
+    async fn graph_load_persisted_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let scope = match self.authorized_graph_scope(request) {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let input = match serde_json::from_slice::<LoadPersistedGraphRequest>(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return invalid_graph_request(format!(
+                    "Invalid persisted graph lookup request: {error}"
+                ));
+            }
+        };
+        if input.doc_ids.is_empty()
+            || input.doc_ids.len() > 1000
+            || input.doc_ids.iter().any(|doc| doc.trim().is_empty())
+            || input
+                .insertion_method
+                .as_ref()
+                .is_some_and(|method| method.trim().is_empty())
+        {
+            return invalid_graph_request(
+                "doc_ids must contain 1 to 1000 non-empty IDs and insertion_method must be non-empty when provided"
+                    .to_owned(),
+            );
+        }
+        let (all_nodes, all_edges) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (nodes, edges) = graph_records_visible_by_acl(
+            &all_nodes,
+            &all_edges,
+            "knowledge",
+            &principal,
+        );
+        let (node_ids, edge_ids) = graph_load_persisted_ids_from_records(&nodes, &edges, &input);
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"node_ids": node_ids, "edge_ids": edge_ids})),
+        )
     }
 
     // PYTHON_PARITY: kogwistar/server/mcp_tools.py::kg_propose_bruteforce
@@ -870,6 +932,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
             && matches!(
                 path.split('?').next(),
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
+                    | Some(INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE)
                     | Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
                     | Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
@@ -894,7 +957,8 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 self.graph_mutation_effect(&request).await
             } else if matches!(
                 request.path_and_query.as_str(),
-                INTERNAL_GRAPH_NEIGHBORS_ROUTE
+                INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE
+                    | INTERNAL_GRAPH_NEIGHBORS_ROUTE
                     | INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE
                     | INTERNAL_GRAPH_VECTOR_QUERY_ROUTE
                     | INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE

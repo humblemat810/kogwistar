@@ -96,6 +96,152 @@ fn brute_force_document_indexes_from_records(
     (node_ids_by_doc, edge_ids_by_doc)
 }
 
+fn graph_record_has_document_method(
+    record: &GraphRecord,
+    doc_id: &str,
+    insertion_method: &str,
+) -> bool {
+    let Some(document) = record
+        .document
+        .as_deref()
+        .and_then(|document| serde_json::from_str::<Value>(document).ok())
+    else {
+        return false;
+    };
+    document
+        .get("mentions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|mention| mention.get("spans").and_then(Value::as_array))
+        .flatten()
+        .any(|span| {
+            let span_doc = span
+                .get("doc_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    span.get("document_page_url")
+                        .and_then(Value::as_str)
+                        .and_then(|url| url.split("document/").nth(1))
+                        .map(|suffix| {
+                            suffix
+                                .chars()
+                                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+                                .collect::<String>()
+                        })
+                        .filter(|value| !value.is_empty())
+                });
+            let method = span
+                .get("insertion_method")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    span.get("verification")
+                        .and_then(|verification| verification.get("method"))
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                })
+                .unwrap_or("unknown");
+            span_doc.as_deref() == Some(doc_id) && method == insertion_method
+        })
+}
+
+fn graph_load_persisted_ids_from_records(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+    input: &LoadPersistedGraphRequest,
+) -> (Vec<String>, Vec<String>) {
+    if let Some(method) = input.insertion_method.as_deref() {
+        let node_ids = nodes
+            .iter()
+            .filter(|record| {
+                !matches!(
+                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                    Some("deleted" | "tombstoned")
+                )
+            })
+            .filter(|record| {
+                input
+                    .doc_ids
+                    .iter()
+                    .any(|doc_id| graph_record_has_document_method(record, doc_id, method))
+            })
+            .map(|record| record.id.clone())
+            .collect::<BTreeSet<_>>();
+        let edge_ids = edges
+            .iter()
+            .filter(|record| {
+                !matches!(
+                    record.metadata.get("lifecycle_status").and_then(Value::as_str),
+                    Some("deleted" | "tombstoned")
+                )
+            })
+            .filter(|record| {
+                input
+                    .doc_ids
+                    .iter()
+                    .any(|doc_id| graph_record_has_document_method(record, doc_id, method))
+            })
+            .map(|record| record.id.clone())
+            .collect::<BTreeSet<_>>();
+        return (node_ids.into_iter().collect(), edge_ids.into_iter().collect());
+    }
+
+    let mut docs_by_node = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut node_ids = BTreeSet::new();
+    for node in nodes {
+        if matches!(
+            node.metadata.get("lifecycle_status").and_then(Value::as_str),
+            Some("deleted" | "tombstoned")
+        ) {
+            continue;
+        }
+        let mut doc_ids = graph_record_string_ids(node, "doc_ids")
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if let Some(doc_id) = graph_record_string_id(node, "doc_id") {
+            doc_ids.insert(doc_id);
+        }
+        if doc_ids.iter().any(|doc_id| input.doc_ids.contains(doc_id)) {
+            node_ids.insert(node.id.clone());
+        }
+        docs_by_node.insert(node.id.clone(), doc_ids);
+    }
+
+    let docs_by_edge = edges
+        .iter()
+        .filter(|edge| {
+            !matches!(
+                edge.metadata.get("lifecycle_status").and_then(Value::as_str),
+                Some("deleted" | "tombstoned")
+            )
+        })
+        .map(|edge| {
+            let mut doc_ids = graph_record_string_ids(edge, "doc_ids")
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            if let Some(doc_id) = graph_record_string_id(edge, "doc_id") {
+                doc_ids.insert(doc_id);
+            }
+            for endpoint_id in graph_record_string_ids(edge, "source_ids")
+                .into_iter()
+                .chain(graph_record_string_ids(edge, "target_ids"))
+            {
+                doc_ids.extend(docs_by_node.get(&endpoint_id).into_iter().flatten().cloned());
+            }
+            (edge.id.as_str(), doc_ids)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let edge_ids = docs_by_edge
+        .into_iter()
+        .filter(|(_, doc_ids)| doc_ids.iter().any(|doc_id| input.doc_ids.contains(doc_id)))
+        .map(|(edge_id, _)| edge_id.to_owned())
+        .collect::<BTreeSet<_>>();
+    (node_ids.into_iter().collect(), edge_ids.into_iter().collect())
+}
+
 fn brute_force_proposal_pairs(
     doc_ids: &[String],
     node_ids_by_doc: &BTreeMap<String, BTreeSet<String>>,

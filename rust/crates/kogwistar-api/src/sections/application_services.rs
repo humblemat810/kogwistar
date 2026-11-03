@@ -1341,7 +1341,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return DocumentStore::supports_document_projection_lookup(&self.store);
         }
         if surface == "root" && name == "kg_load_persisted" {
-            return false;
+            return self.chroma_graph.is_some();
         }
         if surface == "root" && name == "kg_propose_bruteforce" {
             return self.chroma_graph.is_some();
@@ -1354,6 +1354,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 && (matches!(
                     name,
                     "kg_find_edges"
+                        | "kg_load_persisted"
                         | "kg_propose_bruteforce"
                         | "kg_k_hop"
                         | "kg_neighbors"
@@ -1396,7 +1397,7 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
-        if name == "kg_propose_bruteforce" {
+        if matches!(name, "kg_load_persisted" | "kg_propose_bruteforce") {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")
@@ -1502,6 +1503,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && matches!(
                 path.split('?').next(),
                 Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE)
                     | Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
@@ -1715,6 +1717,9 @@ impl ApplicationService for SqliteRunApplicationService {
                             );
                         }
                         return response;
+                    }
+                    Some(INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE) => {
+                        return self.chroma_graph_load_persisted_effect(&request).await;
                     }
                     Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
                         return self.chroma_graph_neighbors_effect(&request).await;

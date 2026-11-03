@@ -5403,10 +5403,22 @@
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n5","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e3","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n1","acl_target_item_id":"n1::mention::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n1","acl_target_item_id":"n1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n2","acl_target_item_id":"n2::mention::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n2","acl_target_item_id":"n2::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
                     ];
-                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3"];
+                    let source_doc = |doc_id: &str, with_mention: bool| {
+                        if !with_mention {
+                            return "{}".to_owned();
+                        }
+                        json!({"mentions":[{"spans":[{"doc_id":doc_id,"insertion_method":"parser"}]}]}).to_string()
+                    };
+                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span"];
                     json!({"ids":ids,
-                        "documents":["{}","{}","{}","{}","{}","{}","{}","{}","{}","{}","{}","{}"],
+                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
                         "metadatas":metas.into_iter().enumerate().map(|(index, m)| {
                             let workspace = if index == 4 || index == 9 {"workspace-b"} else {"workspace-a"};
                             let mut original = m.as_object().unwrap().clone();
@@ -5417,12 +5429,12 @@
                                 original.insert("doc_ids".to_owned(), json!([doc_id]));
                             }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
-                        }).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null]})
+                        }).collect::<Vec<_>>().into_iter().chain((12..18).map(|_| json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\"}"}))).collect::<Vec<_>>(),
+                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
                 } else {
                     json!({"ids":["e1"],
-                        "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"]}"#],
-                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\"}"})],
+                        "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#],
+                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-a\"}"})],
                         "embeddings":[null]})
                 };
                 let body = payload.to_string();
@@ -5454,7 +5466,7 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 12, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 18, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
@@ -5488,6 +5500,7 @@
         }
         let graph_read_tools = [
             "kg_neighbors",
+            "kg_load_persisted",
             "kg_propose_bruteforce",
             "kg_find_edges",
             "kg_shortest_path",
@@ -5565,6 +5578,46 @@
         ).await.unwrap();
         let denied: Value = serde_json::from_slice(&to_bytes(denied.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(denied["error"]["data"]["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
+
+        let loaded = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(json!({
+                    "jsonrpc":"2.0","id":"load-persisted","method":"tools/call",
+                    "params":{"name":"kg_load_persisted","arguments":{"inp":{
+                        "doc_ids":["doc-a"],"sid":false
+                    }}}
+                }).to_string()))
+                .unwrap(),
+        ).await.unwrap();
+        let loaded: Value = serde_json::from_slice(
+            &to_bytes(loaded.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(loaded["result"]["node_ids"], json!(["n1", "n2"]));
+        assert_eq!(loaded["result"]["edge_ids"], json!(["e1"]));
+
+        let loaded_by_method = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(json!({
+                    "jsonrpc":"2.0","id":"load-persisted-method","method":"tools/call",
+                    "params":{"name":"kg_load_persisted","arguments":{"inp":{
+                        "doc_ids":["doc-a"],"insertion_method":"parser","sid":false
+                    }}}
+                }).to_string()))
+                .unwrap(),
+        ).await.unwrap();
+        let loaded_by_method: Value = serde_json::from_slice(
+            &to_bytes(loaded_by_method.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(loaded_by_method["result"]["node_ids"], json!(["n1", "n2"]));
+        assert_eq!(loaded_by_method["result"]["edge_ids"], json!(["e1"]));
 
         let mcp_read = app.clone().oneshot(
             Request::builder()

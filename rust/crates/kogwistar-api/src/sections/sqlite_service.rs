@@ -4716,6 +4716,57 @@ impl SqliteRunApplicationService {
         json_effect(StatusCode::OK, json!({"conversations": conversations}))
     }
 
+    // PYTHON_PARITY: kogwistar/server/mcp_tools.py::_load_persisted_graph
+    async fn chroma_graph_load_persisted_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Persisted graph lookup requires read_graph capability",
+            );
+        }
+        let input = match serde_json::from_slice::<LoadPersistedGraphRequest>(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    format!("Invalid persisted graph lookup request: {error}"),
+                );
+            }
+        };
+        if input.doc_ids.is_empty()
+            || input.doc_ids.len() > 1000
+            || input.doc_ids.iter().any(|doc| doc.trim().is_empty())
+            || input
+                .insertion_method
+                .as_ref()
+                .is_some_and(|method| method.trim().is_empty())
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "doc_ids must contain 1 to 1000 non-empty IDs and insertion_method must be non-empty when provided",
+            );
+        }
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
+            Ok(snapshot) => snapshot,
+            Err(response) => return response,
+        };
+        let (node_ids, edge_ids) = graph_load_persisted_ids_from_records(
+            graph_snapshot.nodes(),
+            graph_snapshot.edges(),
+            &input,
+        );
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"node_ids": node_ids, "edge_ids": edge_ids})),
+        )
+    }
+
     // PYTHON_PARITY: kogwistar/server/mcp_tools.py::kg_propose_bruteforce
     async fn chroma_graph_propose_bruteforce_effect(
         &self,

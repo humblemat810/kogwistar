@@ -441,21 +441,21 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "gke_nodes",
             "node",
             json!({"label":"one","doc_ids":["doc-a"]}),
-            Some(r#"{"label":"one","doc_ids":["doc-a"]}"#),
+            Some(r#"{"label":"one","doc_ids":["doc-a"],"mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#),
         ),
         mutation(
             "n2",
             "gke_nodes",
             "node",
             json!({"label":"two","doc_ids":["doc-a"]}),
-            Some(r#"{"label":"two","doc_ids":["doc-a"]}"#),
+            Some(r#"{"label":"two","doc_ids":["doc-a"],"mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#),
         ),
         mutation(
             "e1",
             "gke_edges",
             "edge",
             json!({"source_ids":["n1"],"target_ids":["n2"],"relation":"links"}),
-            Some(r#"{"source_ids":["n1"],"target_ids":["n2"],"relation":"links"}"#),
+            Some(r#"{"source_ids":["n1"],"target_ids":["n2"],"relation":"links","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#),
         ),
         mutation(
             "n3",
@@ -476,6 +476,20 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "gke_nodes",
             "node",
             json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n1","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-n1-mention",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n1","acl_target_item_id":"n1::mention::0","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-n1-span",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n1","acl_target_item_id":"n1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
             None,
         ),
         mutation(
@@ -500,10 +514,38 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             None,
         ),
         mutation(
+            "acl-n2-mention",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n2","acl_target_item_id":"n2::mention::0","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-n2-span",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n2","acl_target_item_id":"n2::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
             "acl-e1",
             "gke_nodes",
             "node",
             json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-e1-mention",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-e1-span",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
             None,
         ),
         mutation(
@@ -605,7 +647,51 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let written: Value =
         serde_json::from_slice(&to_bytes(written.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(written["atomic"], true);
-    assert_eq!(written["results"].as_array().unwrap().len(), 10);
+    assert_eq!(written["results"].as_array().unwrap().len(), 16);
+    let load_persisted = |id: &str, input: Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header(
+                "authorization",
+                format!("Bearer {}", token("docs", &["read_graph"])),
+            )
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0","id":id,"method":"tools/call",
+                    "params":{"name":"kg_load_persisted","arguments":{"inp":input}}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let loaded = app
+        .clone()
+        .oneshot(load_persisted(
+            "load-persisted",
+            json!({"doc_ids":["doc-a"],"sid":false}),
+        ))
+        .await
+        .unwrap();
+    let loaded: Value =
+        serde_json::from_slice(&to_bytes(loaded.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(loaded["result"]["node_ids"], json!(["n1", "n2"]), "{loaded}");
+    assert_eq!(loaded["result"]["edge_ids"], json!(["e1"]));
+    let loaded_by_method = app
+        .clone()
+        .oneshot(load_persisted(
+            "load-persisted-method",
+            json!({"doc_ids":["doc-a"],"insertion_method":"parser","sid":false}),
+        ))
+        .await
+        .unwrap();
+    let loaded_by_method: Value = serde_json::from_slice(
+        &to_bytes(loaded_by_method.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(loaded_by_method["result"]["node_ids"], json!(["n1", "n2"]));
+    assert_eq!(loaded_by_method["result"]["edge_ids"], json!(["e1"]));
 
     let brute_force = app
         .clone()
