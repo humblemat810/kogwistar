@@ -4716,6 +4716,129 @@ impl SqliteRunApplicationService {
         json_effect(StatusCode::OK, json!({"conversations": conversations}))
     }
 
+    // PYTHON_PARITY: kogwistar/server/mcp_tools.py::kg_propose_bruteforce
+    async fn chroma_graph_propose_bruteforce_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Brute-force graph proposal requires read_graph capability",
+            );
+        }
+        let input = match serde_json::from_slice::<ProposeBruteForceRequest>(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    format!("Invalid brute-force proposal request: {error}"),
+                );
+            }
+        };
+        if brute_force_pair_kinds(&input.pair_kind).is_none()
+            || input.allowed_docs.as_ref().is_some_and(|docs| {
+                docs.len() > 1000 || docs.iter().any(|doc| doc.trim().is_empty())
+            })
+            || input
+                .anchor_doc_id
+                .as_ref()
+                .is_some_and(|doc| doc.trim().is_empty())
+            || input
+                .limit_per_bucket
+                .is_some_and(|limit| limit > 5000)
+            || input
+                .where_filter
+                .as_ref()
+                .is_some_and(|value| !value.is_object())
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "pair_kind, document IDs, where, or limit_per_bucket are invalid or exceed their bounds",
+            );
+        }
+        if let Some(where_filter) = input.where_filter.as_ref() {
+            if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+                &json!({"metadata": {}, "where": where_filter}).to_string(),
+            ) {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        }
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
+            Ok(snapshot) => snapshot,
+            Err(response) => return response,
+        };
+        let nodes = graph_snapshot.nodes();
+        let edges = graph_snapshot.edges();
+        let (node_ids_by_doc, edge_ids_by_doc) =
+            brute_force_document_indexes_from_records(nodes, edges);
+        let mut docs = match input.allowed_docs.as_ref().filter(|docs| !docs.is_empty()) {
+            Some(docs) => docs
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            None => node_ids_by_doc
+                .keys()
+                .chain(edge_ids_by_doc.keys())
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        };
+        if let Some(anchor) = input.anchor_doc_id.as_ref()
+            && !docs.contains(anchor)
+        {
+            docs.insert(0, anchor.clone());
+        }
+        if docs.len() > 1000 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "brute-force proposal is limited to 1000 documents",
+            );
+        }
+        let nodes = nodes
+            .iter()
+            .cloned()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let edges = edges
+            .iter()
+            .cloned()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let pairs = match brute_force_proposal_pairs(
+            &docs,
+            &node_ids_by_doc,
+            &edge_ids_by_doc,
+            &nodes,
+            &edges,
+            &input,
+        ) {
+            Ok(pairs) => pairs,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"pairs": pairs})),
+        )
+    }
+
     async fn chroma_graph_neighbors_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(

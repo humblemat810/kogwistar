@@ -50,6 +50,52 @@ fn brute_force_pair_kinds(pair_kind: &str) -> Option<(&'static str, &'static str
     }
 }
 
+fn brute_force_document_indexes_from_records(
+    nodes: &[GraphRecord],
+    edges: &[GraphRecord],
+) -> (
+    BTreeMap<String, BTreeSet<String>>,
+    BTreeMap<String, BTreeSet<String>>,
+) {
+    let mut node_ids_by_doc = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut docs_by_node = BTreeMap::<String, BTreeSet<String>>::new();
+    for node in nodes {
+        let mut doc_ids = graph_record_string_ids(node, "doc_ids")
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if let Some(doc_id) = graph_record_string_id(node, "doc_id") {
+            doc_ids.insert(doc_id);
+        }
+        for doc_id in &doc_ids {
+            node_ids_by_doc
+                .entry(doc_id.clone())
+                .or_default()
+                .insert(node.id.clone());
+        }
+        docs_by_node.insert(node.id.clone(), doc_ids);
+    }
+    let mut edge_ids_by_doc = BTreeMap::<String, BTreeSet<String>>::new();
+    for edge in edges {
+        let mut doc_ids = BTreeSet::new();
+        for endpoint_id in graph_record_string_ids(edge, "source_ids")
+            .into_iter()
+            .chain(graph_record_string_ids(edge, "target_ids"))
+        {
+            doc_ids.extend(docs_by_node.get(&endpoint_id).into_iter().flatten().cloned());
+        }
+        if let Some(doc_id) = graph_record_string_id(edge, "doc_id") {
+            doc_ids.insert(doc_id);
+        }
+        for doc_id in doc_ids {
+            edge_ids_by_doc
+                .entry(doc_id)
+                .or_default()
+                .insert(edge.id.clone());
+        }
+    }
+    (node_ids_by_doc, edge_ids_by_doc)
+}
+
 fn brute_force_proposal_pairs(
     doc_ids: &[String],
     node_ids_by_doc: &BTreeMap<String, BTreeSet<String>>,

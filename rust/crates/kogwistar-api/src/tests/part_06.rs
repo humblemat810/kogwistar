@@ -5412,6 +5412,10 @@
                             let mut original = m.as_object().unwrap().clone();
                             original.insert("workspace_id".to_owned(), json!(workspace));
                             original.insert("graph_space".to_owned(), json!("facts"));
+                            if index < 5 {
+                                let doc_id = if index < 3 {"doc-a"} else if index == 3 {"doc-b"} else {"doc-c"};
+                                original.insert("doc_ids".to_owned(), json!([doc_id]));
+                            }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
                         }).collect::<Vec<_>>(),
                         "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null]})
@@ -5484,6 +5488,7 @@
         }
         let graph_read_tools = [
             "kg_neighbors",
+            "kg_propose_bruteforce",
             "kg_find_edges",
             "kg_shortest_path",
             "kg_k_hop",
@@ -5509,7 +5514,8 @@
                 &Header::new(jsonwebtoken::Algorithm::HS256),
                 &json!({
                     "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
-                    "graph_space":"facts", "capabilities":capabilities, "exp":now + 300
+                    "graph_space":"facts", "role":"ro", "ns":["docs"],
+                    "capabilities":capabilities, "exp":now + 300
                 }),
                 &EncodingKey::from_secret(b"sqlite-chroma-mcp-secret"),
             )
@@ -5573,6 +5579,99 @@
         let mcp_read: Value = serde_json::from_slice(&to_bytes(mcp_read.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(mcp_read["result"]["nodes"], json!(["n2"]));
         assert_eq!(mcp_read["result"]["edges"], json!(["e1"]));
+
+        let mcp_proposals = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"proposals","method":"tools/call",
+                            "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{
+                                "pair_kind":"node_node","allowed_docs":["doc-a"]
+                            }}}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_proposals.status(), StatusCode::OK);
+        let mcp_proposals: Value = serde_json::from_slice(
+            &to_bytes(mcp_proposals.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mcp_proposals["result"]["pairs"],
+            json!([{
+                "left_id":"n1","left_kind":"node",
+                "right_id":"n2","right_kind":"node"
+            }])
+        );
+        let mixed_proposals = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"mixed-proposals","method":"tools/call",
+                            "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{
+                                "pair_kind":"any_any","allowed_docs":["doc-a"]
+                            }}}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mixed_proposals: Value = serde_json::from_slice(
+            &to_bytes(mixed_proposals.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mixed_proposals["result"]["pairs"].as_array().unwrap().len(), 3);
+        assert!(mixed_proposals.to_string().contains("e1"));
+
+        let proposal_denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"proposal-denied","method":"tools/call",
+                            "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{}}}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let proposal_denied: Value = serde_json::from_slice(
+            &to_bytes(proposal_denied.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert!(proposal_denied.get("error").is_some());
+        assert!(proposal_denied.get("result").is_none());
 
         for (tool, expected_key) in [
             ("kg_viz_d3_json", "nodes"),

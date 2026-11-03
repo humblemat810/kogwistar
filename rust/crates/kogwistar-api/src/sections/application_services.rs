@@ -1344,7 +1344,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return false;
         }
         if surface == "root" && name == "kg_propose_bruteforce" {
-            return false;
+            return self.chroma_graph.is_some();
         }
         if name == "workflow.operator_inbox" && self.chroma_graph.is_none() {
             return false;
@@ -1354,6 +1354,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 && (matches!(
                     name,
                     "kg_find_edges"
+                        | "kg_propose_bruteforce"
                         | "kg_k_hop"
                         | "kg_neighbors"
                         | "kg_shortest_path"
@@ -1395,6 +1396,22 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "kg_propose_bruteforce" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "docs" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "document_id_from_file_name" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1485,6 +1502,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && matches!(
                 path.split('?').next(),
                 Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
@@ -1700,6 +1718,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     }
                     Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE) => {
                         return self.chroma_graph_neighbors_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE) => {
+                        return self.chroma_graph_propose_bruteforce_effect(&request).await;
                     }
                     Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE) => {
                         return self.chroma_graph_vector_query_effect(&request).await;
