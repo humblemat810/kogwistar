@@ -5346,6 +5346,7 @@
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let fake = tokio::spawn(async move {
             let mut observed = Vec::new();
+            let mut include_cross_doc_edge = false;
             loop {
                 let Ok(Ok((mut stream, _))) =
                     tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
@@ -5376,12 +5377,13 @@
                 let payload = if line.contains("/collections HTTP") {
                     json!({"id": format!("collection-{}", input["name"].as_str().unwrap()), "metadata":{"hnsw:space":"cosine"}})
                 } else if line.contains("collection-nodes/query") {
+                    include_cross_doc_edge = input["where"].to_string().contains("doc-a");
                     let scoped = |document: &str| {
                         let workspace = if document == "doc5" {"workspace-b"} else {"workspace-a"};
                         let original = if document == "doc5" {
                             json!({"workspace_id":workspace,"graph_space":"facts"})
                         } else if document == "doc2" {
-                            json!({"workspace_id":workspace,"graph_space":"facts","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1})
+                            json!({"workspace_id":workspace,"graph_space":"facts","doc_id":"doc-a","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1})
                         } else {
                             json!({"workspace_id":workspace,"graph_space":"facts","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2})
                         };
@@ -5393,13 +5395,23 @@
                             "_test_document": document
                         })
                     };
-                    json!({
-                        "ids":[["n4","n2","n5"]],
-                        "documents":[["doc4","doc2","doc5"]],
-                        "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5")]],
-                        "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
-                        "distances":[[0.03,0.1,0.01]]
-                    })
+                    if input["where"].to_string().contains("doc-a") {
+                        json!({
+                            "ids":[["n2"]],
+                            "documents":[[r#"{"id":"n2","label":"Lung Cancer"}"#]],
+                            "metadatas":[[scoped("doc2")]],
+                            "embeddings":[[[0.1,0.2]]],
+                            "distances":[[0.1]]
+                        })
+                    } else {
+                        json!({
+                            "ids":[["n4","n2","n5"]],
+                            "documents":[["doc4","doc2","doc5"]],
+                            "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5")]],
+                            "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
+                            "distances":[[0.03,0.1,0.01]]
+                        })
+                    }
                 } else if line.contains("collection-edges/query") {
                     let scoped = |document: &str| json!({
                         "_kogwistar_namespace":"scope-a",
@@ -5433,6 +5445,7 @@
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n5","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e1","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e3","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e4","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n1","acl_target_item_id":"n1::mention::0","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n1","acl_target_item_id":"n1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n2","acl_target_item_id":"n2::mention::0","acl_version":1,"acl_mode":"public"}),
@@ -5447,9 +5460,9 @@
                         }
                         json!({"mentions":[{"spans":[{"doc_id":doc_id,"insertion_method":"parser"}]}]}).to_string()
                     };
-                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation"];
+                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-e4","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation"];
                     json!({"ids":ids,
-                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
+                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
                         "metadatas":metas.into_iter().enumerate().map(|(index, m)| {
                             let workspace = if index == 4 || index == 9 {"workspace-b"} else {"workspace-a"};
                             let mut original = m.as_object().unwrap().clone();
@@ -5461,10 +5474,19 @@
                             }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
                         }).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
+                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
+                } else if include_cross_doc_edge {
+                    include_cross_doc_edge = false;
+                    json!({"ids":["e1","e4"],
+                        "documents":[r#"{"id":"e1","source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#,r#"{"id":"e4","source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-b"}"#],
+                        "metadatas":[
+                            json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-a\"}"}),
+                            json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-b\"}"})
+                        ],
+                        "embeddings":[null,null]})
                 } else {
                     json!({"ids":["e1"],
-                        "documents":[r#"{"source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#],
+                        "documents":[r#"{"id":"e1","source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#],
                         "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-a\"}"})],
                         "embeddings":[null]})
                 };
@@ -5499,7 +5521,7 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 19, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 20, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
@@ -5709,7 +5731,7 @@
                         json!({
                             "jsonrpc":"2.0","id":"semantic","method":"tools/call",
                             "params":{"name":"kg_semantic_seed_then_expand_text","arguments":{
-                                "text":"find related nodes","top_k":3,"hops":1
+                                "text":"find related nodes","top_k":1,"hops":1,"doc_ids":"doc-a"
                             }}
                         })
                         .to_string(),
@@ -5727,6 +5749,21 @@
             semantic_read["result"]["seeds"].as_array().is_some(),
             "semantic retrieval should return a structured seed result: {semantic_read}"
         );
+        let semantic_seeds = semantic_read["result"]["seeds"].as_array().unwrap();
+        assert_eq!(semantic_seeds.len(), 1, "{semantic_read}");
+        assert!(semantic_seeds[0].as_str().unwrap().contains("n2"));
+        let expanded_edge_ids = semantic_read["result"]["layers"][0]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|edge| {
+                serde_json::from_str::<Value>(edge.as_str().unwrap()).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(expanded_edge_ids, ["e1".to_owned(), "e4".to_owned()].into());
 
         let mcp_proposals = app
             .clone()
