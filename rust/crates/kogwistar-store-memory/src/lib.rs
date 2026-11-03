@@ -20,6 +20,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+/// Cloned handles share one process-local writer lock. This backend provides
+/// no cross-process coordination or durable transaction ownership.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryStore {
     state: Arc<RwLock<State>>,
@@ -2600,6 +2602,65 @@ mod tests {
             assert_eq!(node_generation, edge_generation);
         }
         writer.join().expect("writer thread completes");
+    }
+
+    #[test]
+    fn conflicting_graph_writes_are_serialized_within_process() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-conflicting-writes".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut writers = Vec::new();
+
+        for writer_id in ["writer-a", "writer-b"] {
+            let writer_store = store.clone();
+            let writer_scope = scope.clone();
+            let writer_barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                let mut mutation = graph_mutation(
+                    writer_scope,
+                    &format!("event-{writer_id}"),
+                    "shared-node",
+                    &[1.0, 0.0],
+                );
+                mutation.op = "REPLACE".to_owned();
+                mutation.payload = json!({"id": "shared-node", "writer": writer_id});
+                mutation
+                    .record
+                    .metadata
+                    .insert("writer".to_owned(), json!(writer_id));
+
+                writer_barrier.wait();
+                block_on(writer_store.apply_graph_mutation(mutation))
+                    .expect("serialized conflicting write succeeds")
+            }));
+        }
+        barrier.wait();
+        for writer in writers {
+            writer.join().expect("writer thread completes");
+        }
+
+        let events =
+            block_on(store.replay_events(&scope.namespace, 0, 10)).expect("event replay succeeds");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq + 1, events[1].seq);
+
+        let records = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 10,
+        }))
+        .expect("materialized graph read succeeds");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].metadata.get("writer"),
+            events[1].payload.get("writer")
+        );
     }
 
     #[test]
