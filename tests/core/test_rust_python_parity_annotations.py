@@ -200,7 +200,10 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         assert rust_symbol not in seen_rust_targets
         seen_rust_targets.add(rust_symbol)
         rust_source = rust_file.read_text(encoding="utf-8")
-        assert re.search(rf"\b(?:pub\s+)?fn {re.escape(rust_symbol)}\s*\(", rust_source)
+        assert re.search(
+            rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(rust_symbol)}\s*\(",
+            rust_source,
+        )
 
         python_path, python_symbol = _parse_target(fields["python"])
         python_source = python_path.read_text(encoding="utf-8-sig")

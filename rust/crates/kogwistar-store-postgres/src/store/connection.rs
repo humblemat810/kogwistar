@@ -69,6 +69,20 @@ impl PostgresStore {
         embedding_dim: usize,
         names: GraphTableNames,
     ) -> PostgresStoreResult<()> {
+        self.create_graph_schema_with_node_index(embedding_dim, names, "gke_node_index")
+            .await
+    }
+
+    /// Create Python-compatible graph projections and its separate node-index
+    /// vector collection, preserving the existing schema and column contract.
+    ///
+    /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/connection.rs#create_graph_schema_with_node_index; python=kogwistar/engine_core/postgres_backend.py#PgVectorBackend._ensure_schema_sync; fixture=contracts/golden/pg-node-index-schema-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_named_vector_collections_are_scoped_ranked_and_not_graph_entities; python_test=tests/core/test_rust_store_graph_mutation_differential.py#test_graph_mutation_fresh_rust_schema_and_validation_rollback
+    pub async fn create_graph_schema_with_node_index(
+        &self,
+        embedding_dim: usize,
+        names: GraphTableNames,
+        node_index_table: &str,
+    ) -> PostgresStoreResult<()> {
         let mut pooled_client = self.client().await?;
         let client: &mut tokio_postgres::Client = &mut pooled_client;
         let transaction = client.transaction().await.map_err(|error| {
@@ -83,7 +97,14 @@ impl PostgresStore {
             .map_err(|error| {
                 PostgresStoreError::Backend(format!("graph schema advisory lock failed: {error:?}"))
             })?;
-        create_graph_schema(&transaction, &self.tables, embedding_dim, names).await?;
+        create_graph_schema(
+            &transaction,
+            &self.tables,
+            embedding_dim,
+            names,
+            node_index_table,
+        )
+        .await?;
         transaction.commit().await.map_err(|error| {
             PostgresStoreError::Backend(format!(
                 "graph schema transaction commit failed: {error:?}"

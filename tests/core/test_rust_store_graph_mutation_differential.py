@@ -740,6 +740,61 @@ def test_graph_mutation_fresh_rust_schema_and_validation_rollback(
     schema = f"gke_rust_graph_{uuid.uuid4().hex}"
     try:
         assert _rust(dsn, schema, {"kind": "create_graph_schema", "embedding_dim": 3}) == {"initialized": True}
+        schema_contract = json.loads(
+            (
+                ROOT
+                / "contracts"
+                / "golden"
+                / "pg-node-index-schema-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        with sa_engine.connect() as connection:
+            node_index_dimension = connection.execute(
+                sa.text(
+                    "SELECT format_type(a.atttypid, a.atttypmod) "
+                    "FROM pg_catalog.pg_attribute AS a "
+                    "WHERE a.attrelid = to_regclass(:relation) "
+                    "AND a.attname = :column"
+                ),
+                {
+                    "relation": f"{schema}.{schema_contract['table']}",
+                    "column": schema_contract["embedding_column"],
+                },
+            ).scalar_one()
+        assert node_index_dimension == schema_contract["vector_type"]
+
+        # Rust bootstrap must produce the existing Python node_index table contract.
+        python_index_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=3, schema=schema
+        )
+        python_index_backend.node_index_upsert(
+            ids=["idx:python-bootstrap"],
+            documents=["python-visible vector"],
+            metadatas=[{"target_node_id": "python-node"}],
+            embeddings=[[1.0, 0.0, 0.0]],
+        )
+        python_index = python_index_backend.node_index_get(
+            ids=["idx:python-bootstrap"], include=["documents", "metadatas"]
+        )
+        assert python_index["documents"] == ["python-visible vector"]
+        assert python_index["metadatas"][0]["target_node_id"] == "python-node"
+
+        assert _rust(
+            dsn,
+            schema,
+            {
+                "kind": "create_graph_schema",
+                "embedding_dim": 3,
+                "node_index_table": "custom_node_index",
+            },
+        ) == {"initialized": True}
+        with sa_engine.connect() as connection:
+            custom_node_index_exists = connection.execute(
+                sa.text("SELECT to_regclass(:relation) IS NOT NULL"),
+                {"relation": f"{schema}.custom_node_index"},
+            ).scalar_one()
+        assert custom_node_index_exists is True
+
         with sa_engine.connect() as connection:
             has_id_primary_key = connection.execute(
                 sa.text(

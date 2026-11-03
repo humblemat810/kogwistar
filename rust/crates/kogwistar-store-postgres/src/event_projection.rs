@@ -394,6 +394,7 @@ pub(super) async fn create_graph_schema<C>(
     tables: &Tables,
     embedding_dim: usize,
     names: GraphTableNames,
+    node_index_table: &str,
 ) -> PostgresStoreResult<()>
 where
     C: GenericClient + Sync,
@@ -410,6 +411,7 @@ where
         .into_iter()
         .map(|name| qualified(&tables.quoted_schema, &name))
         .collect::<PostgresStoreResult<Vec<_>>>()?;
+    let node_index = qualified(&tables.quoted_schema, node_index_table)?;
     let edge_endpoints = qualified(&tables.quoted_schema, EDGE_ENDPOINTS_TABLE)?;
     let node_docs = qualified(&tables.quoted_schema, NODE_DOCS_TABLE)?;
     let node_refs = qualified(&tables.quoted_schema, NODE_REFS_TABLE)?;
@@ -420,6 +422,7 @@ where
         "{} \
          CREATE EXTENSION IF NOT EXISTS vector; \
          CREATE SCHEMA IF NOT EXISTS {}; \
+         CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
          CREATE TABLE IF NOT EXISTS {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector({}) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()); \
@@ -449,6 +452,8 @@ where
         relations[2],
         dim,
         relations[3],
+        dim,
+        node_index,
         dim,
         edge_endpoints,
         edge_endpoints,

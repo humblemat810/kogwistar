@@ -2961,6 +2961,8 @@ enum PostgresStoreOperation {
         documents_table: Option<String>,
         #[serde(default)]
         domains_table: Option<String>,
+        #[serde(default)]
+        node_index_table: Option<String>,
     },
     AllocEventSeq {
         namespace: String,
@@ -3654,13 +3656,16 @@ async fn postgres_store_operation_json(
             edges_table,
             documents_table,
             domains_table,
+            node_index_table,
         } => {
-            store
-                .create_graph_schema(
-                    embedding_dim,
-                    graph_table_names(nodes_table, edges_table, documents_table, domains_table),
-                )
-                .await?;
+            let names = graph_table_names(nodes_table, edges_table, documents_table, domains_table);
+            if let Some(node_index_table) = node_index_table {
+                store
+                    .create_graph_schema_with_node_index(embedding_dim, names, &node_index_table)
+                    .await?;
+            } else {
+                store.create_graph_schema(embedding_dim, names).await?;
+            }
             Ok(json!({"initialized": true}))
         }
         PostgresStoreOperation::AllocEventSeq { namespace } => {
@@ -6189,6 +6194,7 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "edges_table",
             "documents_table",
             "domains_table",
+            "node_index_table",
         ][..],
         "alloc_event_seq" => &["kind", "namespace"][..],
         "raw_append" => &[

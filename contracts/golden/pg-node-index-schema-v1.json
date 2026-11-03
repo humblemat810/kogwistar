@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "table": "gke_node_index",
+  "embedding_column": "embedding",
+  "vector_type": "vector(3)",
+  "primary_key_columns": ["id"]
+}

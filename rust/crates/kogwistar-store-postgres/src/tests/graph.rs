@@ -234,6 +234,39 @@ async fn postgres_named_vector_collections_are_scoped_ranked_and_not_graph_entit
     store
         .create_graph_schema(3, GraphTableNames::default())
         .await?;
+    let schema_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/pg-node-index-schema-v1.json"
+    )))?;
+    let client = store.client().await?;
+    let index_table = schema_contract["table"].as_str().unwrap();
+    let embedding_column = schema_contract["embedding_column"].as_str().unwrap();
+    let index_relation = format!("{}.{}", tables.schema, index_table);
+    let node_index_vector_type: String = client
+        .query_one(
+            "SELECT format_type(a.atttypid, a.atttypmod) \
+             FROM pg_attribute AS a \
+             WHERE a.attrelid = to_regclass($1) AND a.attname = $2",
+            &[&index_relation, &embedding_column],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(node_index_vector_type, schema_contract["vector_type"]);
+    drop(client);
+    store
+        .create_graph_schema_with_node_index(3, GraphTableNames::default(), "custom_node_index")
+        .await?;
+    let client = store.client().await?;
+    let custom_node_index_exists: bool = client
+        .query_one(
+            "SELECT to_regclass($1) IS NOT NULL",
+            &[&format!("{}.custom_node_index", tables.schema)],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert!(custom_node_index_exists);
 
     let record = |id: &str, document: &str, category: &str, vector: Vec<f32>| {
         let mut metadata = Map::new();
