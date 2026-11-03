@@ -2037,6 +2037,41 @@ asyncio.run(main())
         let _ = std::fs::remove_file(auth_path);
     }
 
+    #[test]
+    fn auth_return_targets_match_python_allowlist_and_reject_open_redirects() {
+        assert_eq!(
+            resolve_return_target(Some("/workspace?tab=1"), None, None).unwrap(),
+            "/workspace?tab=1"
+        );
+        assert_eq!(
+            resolve_return_target(
+                Some("https://chat.example.local/welcome"),
+                Some("https://chat.example.local/welcome"),
+                Some("/"),
+            )
+            .unwrap(),
+            "https://chat.example.local/welcome"
+        );
+        assert_eq!(
+            resolve_return_target(
+                Some("https://attacker.example/"),
+                Some("https://chat.example.local/"),
+                Some("/"),
+            )
+            .unwrap_err(),
+            "return_to target is not allowed"
+        );
+        assert_eq!(
+            resolve_return_target(Some("//attacker.example/"), None, None).unwrap_err(),
+            "Invalid return_to target"
+        );
+        assert_eq!(
+            resolve_return_target(Some("https://user:secret@example.com/"), Some(""), None)
+                .unwrap_err(),
+            "Invalid return_to target"
+        );
+    }
+
     #[tokio::test]
     async fn oidc_login_preserves_provider_pkce_and_cookie_contract() {
         use axum::body::Body;
@@ -2097,7 +2132,7 @@ asyncio.run(main())
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/auth/login")
+                    .uri("/api/auth/login?return_to=%2Fwelcome%3Ftab%3D1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2126,12 +2161,13 @@ asyncio.run(main())
             .iter()
             .map(|value| value.to_str().unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(cookies.len(), 4);
+        assert_eq!(cookies.len(), 5);
         for cookie_name in [
             "auth_state=",
             "auth_pkce_verifier=",
             "auth_nonce=",
             "auth_provider=test",
+            "auth_return_to=/welcome?tab=1",
         ] {
             assert!(cookies.iter().any(|cookie| {
                 cookie.starts_with(cookie_name)
@@ -2339,7 +2375,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                     .uri("/api/auth/callback?code=auth-code&state=state-1")
                     .header(
                         header::COOKIE,
-                        "auth_state=state-1; auth_pkce_verifier=verifier-1; auth_nonce=nonce-1; auth_provider=test",
+                        "auth_state=state-1; auth_pkce_verifier=verifier-1; auth_nonce=nonce-1; auth_provider=test; auth_return_to=/workspace?view=1",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -2357,7 +2393,12 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
             );
         }
         let location = response.headers()[header::LOCATION].to_str().unwrap();
-        let token = location.split_once("?token=").unwrap().1;
+        assert!(location.starts_with("/workspace?view=1&token="));
+        let token = url::Url::parse(&format!("http://localhost{location}"))
+            .unwrap()
+            .query_pairs()
+            .find_map(|(name, value)| (name == "token").then(|| value.into_owned()))
+            .unwrap();
         let mut token_headers = HeaderMap::new();
         token_headers.insert(
             header::AUTHORIZATION,
@@ -2373,7 +2414,7 @@ NGj8qC7iDj7eHst5dr2KCfToUOTBidV7ynv8RZ5LyChcKzOiEDh/EqlEfGt5xYEI
                 .get_all(header::SET_COOKIE)
                 .iter()
                 .count(),
-            4
+            5
         );
         let auth_store = SqliteAuthStore::open(&auth_path).unwrap();
         let identity = auth_store

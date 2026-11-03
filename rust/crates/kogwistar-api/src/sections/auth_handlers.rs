@@ -3,10 +3,14 @@ async fn auth_login_handler(
     Query(query): Query<LoginQuery>,
 ) -> Response {
     if state.api.auth.mode.eq_ignore_ascii_case("dev") {
-        let ui_url = query
-            .redirect_uri
-            .or_else(|| std::env::var("UI_URL").ok())
-            .unwrap_or_else(|| "/".to_owned());
+        let ui_url = if let Some(redirect_uri) = query.redirect_uri {
+            redirect_uri
+        } else {
+            match configured_return_target(query.return_to.as_deref()) {
+                Ok(target) => target,
+                Err(message) => return auth_error(StatusCode::BAD_REQUEST, message),
+            }
+        };
         let Some(secret) = state
             .api
             .auth
@@ -64,6 +68,10 @@ async fn auth_login_handler(
             "redirect_uri override is only allowed when AUTH_MODE=dev",
         );
     }
+    let return_target = match configured_return_target(query.return_to.as_deref()) {
+        Ok(target) => target,
+        Err(message) => return auth_error(StatusCode::BAD_REQUEST, message),
+    };
     let providers = match oidc_providers(&state.api.auth) {
         Ok(providers) => providers,
         Err(message) => return auth_error(StatusCode::BAD_REQUEST, message),
@@ -143,6 +151,7 @@ async fn auth_login_handler(
     append_login_cookie(&mut response, "auth_pkce_verifier", &verifier);
     append_login_cookie(&mut response, "auth_nonce", &nonce);
     append_login_cookie(&mut response, "auth_provider", &provider_name);
+    append_login_cookie(&mut response, "auth_return_to", &return_target);
     response
 }
 
@@ -183,6 +192,11 @@ async fn auth_callback_handler(
     };
     let Some(provider_name) = request_cookie(&headers, "auth_provider") else {
         return auth_error(StatusCode::BAD_REQUEST, "Missing provider");
+    };
+    let stored_return_to = request_cookie(&headers, "auth_return_to");
+    let return_target = match configured_return_target(stored_return_to.as_deref()) {
+        Ok(target) => target,
+        Err(message) => return auth_error(StatusCode::BAD_REQUEST, message),
     };
     let providers = match oidc_providers(&state.api.auth) {
         Ok(providers) => providers,
@@ -398,8 +412,12 @@ async fn auth_callback_handler(
         Ok(token) => token,
         Err(message) => return auth_error(StatusCode::INTERNAL_SERVER_ERROR, message),
     };
-    let ui_url = std::env::var("UI_URL").unwrap_or_else(|_| "/".to_owned());
-    let mut response = redirect_response(format!("{ui_url}?token={token}"));
+    let separator = if return_target.contains('?') {
+        "&"
+    } else {
+        "?"
+    };
+    let mut response = redirect_response(format!("{return_target}{separator}token={token}"));
     delete_login_cookies(&mut response);
     response
 }

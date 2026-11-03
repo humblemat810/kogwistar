@@ -505,6 +505,8 @@ struct LoginQuery {
     #[serde(default)]
     redirect_uri: Option<String>,
     #[serde(default)]
+    return_to: Option<String>,
+    #[serde(default)]
     provider: Option<String>,
 }
 
@@ -536,12 +538,49 @@ fn delete_login_cookies(response: &mut Response) {
         "auth_pkce_verifier",
         "auth_nonce",
         "auth_provider",
+        "auth_return_to",
     ] {
         let cookie = format!("{name}=; HttpOnly; Max-Age=0; Path=/; SameSite=Lax");
         if let Ok(value) = HeaderValue::from_str(&cookie) {
             response.headers_mut().append(header::SET_COOKIE, value);
         }
     }
+}
+
+fn resolve_return_target(
+    value: Option<&str>,
+    allowed_targets: Option<&str>,
+    ui_url: Option<&str>,
+) -> Result<String, &'static str> {
+    let default_target = ui_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("/");
+    let target = value.unwrap_or(default_target).trim();
+    if target.starts_with('/') && !target.starts_with("//") {
+        return Ok(target.to_owned());
+    }
+    let parsed = url::Url::parse(target).map_err(|_| "Invalid return_to target")?;
+    if parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Invalid return_to target");
+    }
+    let configured = allowed_targets
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.split(',').map(str::trim).collect::<Vec<_>>())
+        .unwrap_or_else(|| vec![default_target]);
+    if configured.contains(&target) {
+        Ok(target.to_owned())
+    } else {
+        Err("return_to target is not allowed")
+    }
+}
+
+fn configured_return_target(value: Option<&str>) -> Result<String, &'static str> {
+    resolve_return_target(
+        value,
+        std::env::var("AUTH_ALLOWED_RETURN_URLS").ok().as_deref(),
+        std::env::var("UI_URL").ok().as_deref(),
+    )
 }
 
 fn random_token() -> String {
