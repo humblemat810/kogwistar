@@ -378,7 +378,7 @@ where
     let scope = crate::security_scope_value(&request.principal);
     let namespace = scope["storage_namespace"]
         .as_str()
-        .filter(|value| !value.trim().is_empty());
+        .filter(|value| !value.trim().is_empty() && *value != "*");
     let namespace_authorized = namespace.is_some_and(|namespace| {
         crate::principal_strings(&request.principal, "ns")
             .iter()
@@ -1165,6 +1165,31 @@ mod tests {
         .await;
         assert_eq!(
             wrong_namespace.status,
+            axum::http::StatusCode::FORBIDDEN.as_u16()
+        );
+
+        let wildcard_without_storage_namespace = super::search_index_upsert_effect(
+            &crate::ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/add_index_entries".to_owned(),
+                body: body.clone(),
+                principal: serde_json::json!({
+                    "sub": "writer",
+                    "role": "rw",
+                    "ns": ["*"],
+                    "capabilities": ["write_graph"]
+                }),
+            },
+            &capabilities,
+            &store,
+            &store,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            wildcard_without_storage_namespace.status,
             axum::http::StatusCode::FORBIDDEN.as_u16()
         );
 
