@@ -162,7 +162,12 @@ have complete coverage. Work toward that target in this order:
 The practical dependency order is canonical persistence and graph effects,
 then workflow/worker execution and recovery, then conversation/agent and the
 remaining REST/MCP/CLI surfaces. PostgreSQL remains the first complete graph
-and transaction proving ground. Keep two SQLite configurations distinct:
+and transaction proving ground. The PostgreSQL graph store commits canonical
+graph events, graph projections, and explicit index-job intents through one
+store-owned SQL transaction; a failure in any member rolls back the batch.
+This guarantee applies to effects admitted through that PostgreSQL unit of
+work, not to Chroma or another external projection. Keep two SQLite
+configurations distinct:
 standalone SQLite metadata mode does not advertise graph authority; configured
 SQLite+Chroma uses canonical SQLite events, current-revision Stage-1 records,
 and durable index-job intents, with Chroma as a derived, revision-fenced,
