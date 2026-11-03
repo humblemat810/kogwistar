@@ -5905,7 +5905,8 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
                 "node_ops": {
                     "provider-step": "rust-native/agent.event.request",
                     "receive-step": "rust-native/agent.event.receive",
-                    "no-action-step": "rust-native/emit-result",
+                    "ack-no-action-step": "rust-native/agent.event.ack",
+                    "ack-final-step": "rust-native/agent.event.ack",
                     "done-step": "rust-native/emit-result"
                 },
                 "initial_state": {
@@ -5920,14 +5921,26 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
                     {"source_node_id": "provider-step", "target_node_id": "receive-step", "join_mask": 0},
                     {
                         "source_node_id": "receive-step",
-                        "target_node_id": "done-step",
+                        "target_node_id": "ack-final-step",
                         "predicate": "event_is_response_complete",
                         "join_mask": 0
                     },
                     {
                         "source_node_id": "receive-step",
-                        "target_node_id": "no-action-step",
+                        "target_node_id": "ack-no-action-step",
                         "predicate": "event_requires_no_action",
+                        "join_mask": 0
+                    },
+                    {
+                        "source_node_id": "ack-no-action-step",
+                        "target_node_id": "receive-step",
+                        "predicate": "event_stream_has_more",
+                        "join_mask": 0
+                    },
+                    {
+                        "source_node_id": "ack-final-step",
+                        "target_node_id": "done-step",
+                        "predicate": "event_run_succeeded",
                         "join_mask": 0
                     }
                 ]
@@ -5985,11 +5998,18 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
     }));
     assert!(!events.iter().any(|event| event.payload_json.contains("text_delta")));
 
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    assert!(service.execute_inline_native_work_once().await.unwrap());
+    for _ in 0..10 {
+        if service.store.get_server_run(run_id).unwrap().unwrap().status == "succeeded" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        if !service.execute_inline_native_work_once().await.unwrap() {
+            break;
+        }
+    }
     let run = service.store.get_server_run(run_id).unwrap().unwrap();
-    assert_eq!(run.status, "running");
-    let received_lane = service
+    assert_eq!(run.status, "succeeded");
+    let handled_lanes = service
         .store
         .list_projected_lane_messages(LaneMessageFilter {
             namespace: Some("conversation".to_owned()),
@@ -5999,21 +6019,37 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
             ..LaneMessageFilter::default()
         })
         .unwrap();
-    assert!(received_lane.iter().any(|message| message.status == "claimed"));
-    let receive_transition = service
-        .store
-        .list_server_run_events(run_id, 0, 100)
-        .unwrap()
-        .into_iter()
-        .find(|event| {
-            event.event_type == "workflow.recorded_transition.v1"
-                && serde_json::from_str::<Value>(&event.payload_json).is_ok_and(|payload| {
-                    payload["reduced"]["state"]["last_node_id"] == "receive-step"
-                })
+    assert!(!handled_lanes.is_empty());
+    assert!(handled_lanes.iter().all(|message| message.status == "completed"));
+    let run_events = service.store.list_server_run_events(run_id, 0, 100).unwrap();
+    let transition_nodes = run_events
+        .iter()
+        .filter(|event| event.event_type == "workflow.recorded_transition.v1")
+        .filter_map(|event| {
+            serde_json::from_str::<Value>(&event.payload_json)
+                .ok()?
+                .get("reduced")?
+                .get("state")?
+                .get("last_node_id")?
+                .as_str()
+                .map(str::to_owned)
         })
-        .expect("native receive transition is durable");
-    assert!(receive_transition.payload_json.contains("agent_event_current"));
-    assert!(receive_transition.payload_json.contains("agent_event_claim"));
+        .collect::<Vec<_>>();
+    let receive_transitions = transition_nodes
+        .iter()
+        .filter(|node_id| node_id.as_str() == "receive-step")
+        .count();
+    let acknowledgement_transitions = transition_nodes
+        .iter()
+        .filter(|node_id| matches!(node_id.as_str(), "ack-no-action-step" | "ack-final-step"))
+        .count();
+    let handled_traces = run_events
+        .iter()
+        .filter(|event| event.event_type == "workflow.provider_event.handled.v1")
+        .count();
+    assert!(receive_transitions >= 1);
+    assert!(acknowledgement_transitions >= 1);
+    assert_eq!(handled_traces, handled_lanes.len());
 
     drop(service);
     remove_test_sqlite(&sqlite_path);
