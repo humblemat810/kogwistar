@@ -871,18 +871,22 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
-        whitespace = client.post(
-            f"/api/conversations/{conversation_id}/turns:answer",
-            json={"user_id": "u-chat", "text": "   "},
-            headers=rw_headers,
+        validation_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts"
+                / "golden"
+                / "conversation-answer-validation-v1.json"
+            ).read_text(encoding="utf-8")
         )
-        assert whitespace.status_code == 400
-        empty = client.post(
-            f"/api/conversations/{conversation_id}/turns:answer",
-            json={"user_id": "u-chat", "text": ""},
-            headers=rw_headers,
-        )
-        assert empty.status_code == 422
+        assert validation_contract["schema_version"] == 1
+        for case in validation_contract["cases"]:
+            invalid = client.post(
+                f"/api/conversations/{conversation_id}/turns:answer",
+                json={"user_id": "u-chat", "text": case["text"]},
+                headers=rw_headers,
+            )
+            assert invalid.status_code == case["http_status"], case["name"]
 
         submit = client.post(
             f"/api/conversations/{conversation_id}/turns:answer",

@@ -4805,34 +4805,35 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         .replay_raw_events("conversation", 0, 50)
         .unwrap()
         .len();
-    let whitespace_answer = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/conversations/conversation-create-contract/turns:answer")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::from(r#"{"text":"  "}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(whitespace_answer.status(), StatusCode::BAD_REQUEST);
-    let empty_answer = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/conversations/conversation-create-contract/turns:answer")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::from(r#"{"text":""}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(empty_answer.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let validation_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/conversation-answer-validation-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(validation_contract["schema_version"], 1);
+    for case in validation_contract["cases"].as_array().unwrap() {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/conversations/conversation-create-contract/turns:answer")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({"text":case["text"]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            case["http_status"].as_u64().unwrap() as u16,
+            "case {}",
+            case["name"]
+        );
+    }
     assert_eq!(
         service
             .store
