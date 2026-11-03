@@ -662,6 +662,98 @@ async fn graph_mutation_retry_requires_identical_effect_when_dsn_available()
         .map_err(backend)?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_graph_mutations_share_one_transaction_order_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_mutation_writer_race");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    first_store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let scope = GraphScope {
+        namespace: format!("graph-mutation-writer-race-{}", std::process::id()),
+        workspace_id: Some("workspace".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let mutation = |writer: &str| {
+        let mut metadata = Map::new();
+        metadata.insert("writer".to_owned(), serde_json::json!(writer));
+        kogwistar_store::GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{writer}"),
+            op: "REPLACE".to_owned(),
+            payload: serde_json::json!({"id":"shared-node", "writer":writer}),
+            record: GraphRecord {
+                id: "shared-node".to_owned(),
+                document: Some(serde_json::json!({"writer":writer}).to_string()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        }
+    };
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store.apply_graph_mutation(mutation("first")).await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store.apply_graph_mutation(mutation("second")).await
+    };
+    let (first, second) = tokio::join!(first, second);
+    let first = first?;
+    let second = second?;
+    assert!(first.inserted && first.mutated);
+    assert!(second.inserted && second.mutated);
+
+    let events = first_store
+        .replay_events(&scope.namespace, 0, 10)
+        .await
+        .map_err(backend)?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq + 1, events[1].seq);
+    let records = first_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["shared-node".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].metadata.get("writer"),
+        events[1].payload.get("writer")
+    );
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 #[test]
 fn physical_graph_purge_requires_canonical_tombstone() {
     let active = Map::new();
