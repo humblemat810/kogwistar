@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **96/740 PASS (13.0%)**; **0 IN PROGRESS**, **644 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **97/740 PASS (13.1%)**; **0 IN PROGRESS**, **643 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -273,7 +273,7 @@
 | FW-03-02 | DL-03 | NOT STARTED | Add one generated coverage assertion that every HTTP inventory operation maps to exactly one route tasklet or an explicit unsupported classification. |
 | FW-03-02A | DL-03 | NOT STARTED | Add one generated coverage assertion that every MCP inventory operation maps to exactly one contract and authorization tasklet. |
 | FW-05-01 | DL-05 | PARENT | Parent scope; children: FW-05-01-NODE,FW-05-01-EDGE,FW-05-01-HYPEREDGE |
-| FW-05-01-NODE | DL-05 | NOT STARTED | Add paired valid Node DTO fixture; Python and Rust canonical JSON outputs must match exactly. |
+| FW-05-01-NODE | DL-05 | PASS | Invariant: typed Rust persistent Node serialization equals Python's backend-mode canonical JSON | Cell: shared valid Node payload fixture | Oracle: canonical Node JSON is byte-identical, and LLM-only fields remain accepted on input but absent from persistent output | Check: Python `pytest -p no:cacheprovider tests/core/test_rust_contract_differential.py::test_python_node_edge_backend_payloads_round_trip_through_rust_json -q` (1 passed); Rust `cargo test -p kogwistar-contracts persistent_node_typed_round_trip_matches_python_canonical_wire_json --lib` (1 passed), including local_id/chunk_id omission compatibility; full `cargo test -p kogwistar-contracts --lib` (99 passed). |
 | FW-05-01-EDGE | DL-05 | NOT STARTED | Add paired valid Edge DTO fixture; Python and Rust canonical JSON outputs must match exactly. |
 | FW-05-01-HYPEREDGE | DL-05 | NOT STARTED | Add paired valid Hyperedge DTO fixture; Python and Rust canonical JSON outputs must match exactly. |
 | FW-05-01A | DL-05 | PARENT | Parent scope; children: FW-05-01A-NODE,FW-05-01A-EDGE,FW-05-01A-HYPEREDGE |

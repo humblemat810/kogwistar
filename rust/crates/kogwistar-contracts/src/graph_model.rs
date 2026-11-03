@@ -1826,7 +1826,7 @@ pub struct TextSpanV1 {
     pub context_before: String,
     #[serde(default)]
     pub context_after: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub chunk_id: Option<String>,
     #[serde(default)]
     pub source_cluster_id: Option<String>,
@@ -1929,7 +1929,7 @@ impl GroundingV1 {
 pub struct GraphEntityCoreV1 {
     #[serde(default)]
     pub id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub local_id: Option<String>,
     pub label: String,
     #[serde(rename = "type")]
@@ -3210,6 +3210,48 @@ mod tests {
             }
             assert_eq!(envelope.payload, case["payload"]);
         }
+    }
+
+    #[test]
+    fn persistent_node_typed_round_trip_matches_python_canonical_wire_json() {
+        let graph_fixture = fixture();
+        let case = graph_fixture["cases"]
+            .as_array()
+            .expect("fixture cases")
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .expect("Python Node fixture");
+        let node = GraphModelEnvelope::new(GraphModelClass::Node, case["payload"].clone())
+            .decode_persistent_v1()
+            .expect("valid persistent Node DTO");
+        let PersistentGraphEntityV1::Node(node) = node else {
+            panic!("expected Node DTO");
+        };
+        let serialized = serde_json::to_value(node).expect("serialize typed Rust Node DTO");
+        assert_eq!(
+            crate::canonical_json(&serialized, false),
+            case["canonical_json"]
+                .as_str()
+                .expect("Python canonical Node JSON")
+        );
+
+        let mut payload_with_non_backend_fields = case["payload"].clone();
+        payload_with_non_backend_fields["local_id"] = serde_json::json!("nn:pending-node");
+        payload_with_non_backend_fields["mentions"][0]["spans"][0]["chunk_id"] =
+            serde_json::json!("chunk:prompt-only");
+        let node = GraphModelEnvelope::new(GraphModelClass::Node, payload_with_non_backend_fields)
+            .decode_persistent_v1()
+            .expect("legacy payload with non-backend fields remains readable");
+        let PersistentGraphEntityV1::Node(node) = node else {
+            panic!("expected Node DTO");
+        };
+        let serialized = serde_json::to_value(node).expect("serialize typed Rust Node DTO");
+        assert_eq!(
+            crate::canonical_json(&serialized, false),
+            case["canonical_json"]
+                .as_str()
+                .expect("Python canonical Node JSON")
+        );
     }
 
     #[test]
