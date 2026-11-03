@@ -1,5 +1,6 @@
 import importlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -194,3 +195,25 @@ def test_persistence_across_instances(in_tmpdir):
 
     # ensure numbering continues
     assert shortids.l2s_id("SECOND") == "<sid>2"
+
+
+def test_concurrent_mapper_instances_share_persisted_allocations(tmp_path):
+    root = tmp_path / "shortids"
+    values = [f"entity-{index}" for index in range(48)]
+
+    def allocate(value: str) -> tuple[str, str]:
+        mapper = shortids.ShortIdMapper("shared-token", root_dir=str(root))
+        return value, mapper.l2s_id(value)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        allocated = list(executor.map(allocate, values))
+
+    mapping = dict(allocated)
+    assert len(set(mapping.values())) == len(values)
+    assert all(
+        shortids.ShortIdMapper("shared-token", root_dir=str(root)).s2l_id(alias) == value
+        for value, alias in allocated
+    )
+    assert shortids.ShortIdMapper("shared-token", root_dir=str(root)).l2s_id(
+        values[0]
+    ) == mapping[values[0]]

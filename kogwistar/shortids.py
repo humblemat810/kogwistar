@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import re
+import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -100,6 +102,7 @@ class ShortIdMapper:
         self.run_id = run_id
         self.root = pathlib.Path(root_dir)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._state_lock = threading.RLock()
         self.state: ShortIdState = self._load()
         self.obj_max_depth: int = 1  # shallow by default (top-level only)
 
@@ -107,6 +110,35 @@ class ShortIdMapper:
     def _file(self) -> pathlib.Path:
         h = hashlib.sha256(self.run_id.encode("utf-8")).hexdigest()[:32]
         return self.root / f"{h}.json"
+
+    @contextmanager
+    def _locked_state_file(self) -> Iterator[None]:
+        """Serialize mapping reads and writes across threads and processes."""
+        with self._state_lock:
+            lock_path = self._file().with_suffix(".lock")
+            with lock_path.open("a+b") as handle:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0, os.SEEK_END)
+                    if handle.tell() == 0:
+                        handle.write(b"\0")
+                        handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    try:
+                        yield
+                    finally:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                    try:
+                        yield
+                    finally:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _load(self) -> ShortIdState:
         p = self._file()
@@ -120,15 +152,23 @@ class ShortIdMapper:
         return {"next": 1, "l2s": {}, "s2l": {}}
 
     def _save(self) -> None:
-        self._file().write_text(json.dumps(self.state, ensure_ascii=False), "utf-8")
+        path = self._file()
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(json.dumps(self.state, ensure_ascii=False))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
 
     def _restore_state(self, state: ShortIdState) -> None:
         restored = _decode_state(state)
         if restored is None:
             raise ValueError("Cannot restore invalid short-id state")
-        if self.state != restored:
-            self.state = restored
-            self._save()
+        with self._locked_state_file():
+            self.state = self._load()
+            if self.state != restored:
+                self.state = restored
+                self._save()
 
     def _native_payload(
         self,
@@ -154,30 +194,32 @@ class ShortIdMapper:
         """JSON-only native transform. File persistence remains Python-owned."""
         if contract_implementation_mode() != "rust" or not json_contract_compatible(value):
             return None
-        try:
-            result = _rust_short_id_transform(
-                payload=self._native_payload(
-                    value, direction, primitive=primitive
-                ),
-                python_value=None,
-            )
-        except ValueError as exc:
-            # Preserve legacy public exception class/message; code remains usable
-            # for callers that opt into machine-readable native diagnostics.
-            error = ValueError(str(exc))
-            code = getattr(exc, "code", None)
-            if isinstance(code, str):
-                setattr(error, "code", code)
-            raise error from None
-        if not isinstance(result, dict):
-            raise ValueError("Native short-id transform returned a non-object result")
-        native_result = cast(JsonObject, result)
-        state = _decode_state(native_result.get("state"))
-        if state is None:
-            raise ValueError("Native short-id transform returned invalid state")
-        self.state = state
-        self._save()
-        return native_result.get("value")
+        with self._locked_state_file():
+            self.state = self._load()
+            try:
+                result = _rust_short_id_transform(
+                    payload=self._native_payload(
+                        value, direction, primitive=primitive
+                    ),
+                    python_value=None,
+                )
+            except ValueError as exc:
+                # Preserve legacy public exception class/message; code remains usable
+                # for callers that opt into machine-readable native diagnostics.
+                error = ValueError(str(exc))
+                code = getattr(exc, "code", None)
+                if isinstance(code, str):
+                    setattr(error, "code", code)
+                raise error from None
+            if not isinstance(result, dict):
+                raise ValueError("Native short-id transform returned a non-object result")
+            native_result = cast(JsonObject, result)
+            state = _decode_state(native_result.get("state"))
+            if state is None:
+                raise ValueError("Native short-id transform returned invalid state")
+            self.state = state
+            self._save()
+            return native_result.get("value")
 
     def _shadow_compare(
         self,
@@ -231,15 +273,17 @@ class ShortIdMapper:
 
     # --- id primitives ---
     def _alloc_short_for(self, long_id: str) -> str:
-        st = self.state
-        if long_id in st["l2s"]:
-            return st["l2s"][long_id]
-        sid = f"{self.SHORT_PREFIX}{st['next']}"
-        st["next"] += 1
-        st["l2s"][long_id] = sid
-        st["s2l"][sid] = long_id
-        self._save()
-        return sid
+        with self._locked_state_file():
+            self.state = self._load()
+            st = self.state
+            if long_id in st["l2s"]:
+                return st["l2s"][long_id]
+            sid = f"{self.SHORT_PREFIX}{st['next']}"
+            st["next"] += 1
+            st["l2s"][long_id] = sid
+            st["s2l"][sid] = long_id
+            self._save()
+            return sid
 
     def l2s_id(self, in_id: str) -> str:
         """Server→User: if already <sid>…, keep; else allocate/return <sid>…"""
@@ -264,8 +308,10 @@ class ShortIdMapper:
             if not isinstance(native, str):
                 raise ValueError("Native short-id transform returned a non-string id")
             return native
-        before = cast(ShortIdState, json.loads(json.dumps(self.state, ensure_ascii=False)))
-        long_id = self.state["s2l"].get(in_id)
+        with self._locked_state_file():
+            self.state = self._load()
+            before = cast(ShortIdState, json.loads(json.dumps(self.state, ensure_ascii=False)))
+            long_id = self.state["s2l"].get(in_id)
         if not long_id:
             raise ValueError(f"Unknown short id '{in_id}' for this run.")
         return cast(str, self._shadow_compare(in_id, "s2l", before, long_id, primitive=True))
