@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "request": {
+    "new_node_ids": ["n1"],
+    "top_k": 10,
+    "include_edges": false,
+    "max_distance": 0.35,
+    "where": {"label": {"$ne": "private"}}
+  },
+  "expected_pairs": [
+    {
+      "left_id": "n1",
+      "left_kind": "node",
+      "right_id": "n2",
+      "right_kind": "node"
+    }
+  ]
+}

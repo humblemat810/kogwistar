@@ -538,6 +538,12 @@ async def test_mcp_neighbors_hide_private_endpoint_of_visible_edge(monkeypatch, 
 
 
 def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-proposal-acl-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     from kogwistar.server import mcp_tools
 
     engine = GraphKnowledgeEngine(
@@ -548,12 +554,12 @@ def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
         acl_enabled=True,
     )
     visible_a = build_entity_node(
-        node_id="proposal-visible-a",
+        node_id=fixture["expected_pairs"][0]["left_id"],
         doc_id="D-proposals",
         metadata={"visibility": "public"},
     )
     visible_b = build_entity_node(
-        node_id="proposal-visible-b",
+        node_id=fixture["expected_pairs"][0]["right_id"],
         doc_id="D-proposals",
         metadata={"visibility": "public"},
     )
@@ -602,7 +608,12 @@ def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
         def __init__(self, _engine):
             pass
 
-        def generate_merge_candidates(self, **_kwargs):
+        def generate_merge_candidates(self, **kwargs):
+            assert kwargs["new_node"] == fixture["request"]["new_node_ids"]
+            assert kwargs["top_k"] == fixture["request"]["top_k"]
+            assert kwargs["include_edges"] == fixture["request"]["include_edges"]
+            assert kwargs["max_distance"] == fixture["request"]["max_distance"]
+            assert kwargs["where"] == fixture["request"]["where"]
             return {
                 ("visible", "visible"): (visible_a, visible_b, 0.1),
                 ("visible", "private"): (visible_a, private, 0.1),
@@ -613,16 +624,11 @@ def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_tools, "VectorProposer", _FakeProposer)
 
     with _claims("ro", "docs", sub="proposal-reader"):
-        result = mcp_tools.propose_vector(mcp_tools.ProposeVectorIn())
+        result = mcp_tools.propose_vector(
+            mcp_tools.ProposeVectorIn.model_validate(fixture["request"])
+        )
 
-    assert [pair.model_dump() for pair in result.pairs] == [
-        {
-            "left_id": visible_a.id,
-            "left_kind": "node",
-            "right_id": visible_b.id,
-            "right_kind": "node",
-        }
-    ]
+    assert [pair.model_dump() for pair in result.pairs] == fixture["expected_pairs"]
 
 
 def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):

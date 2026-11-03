@@ -230,6 +230,7 @@ impl InMemoryGraphApplicationService {
         json_effect(StatusCode::OK, rust_native_attested(result))
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_vector_proposal_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
     // Mirrors Python's propose_vector contract for the in-memory backend only;
     // PostgreSQL and SQLite+Chroma remain unadvertised until their snapshots
     // can provide the same pre-top-K filtering and ACL guarantees.

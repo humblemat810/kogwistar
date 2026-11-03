@@ -1154,6 +1154,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         );
     }
 
+    let proposal_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-vector-proposal-acl-v1.json"
+    )))
+    .unwrap();
     let proposals = app
         .clone()
         .oneshot(
@@ -1172,13 +1177,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                         "method":"tools/call",
                         "params":{
                             "name":"propose_vector",
-                            "arguments":{
-                                "new_node_ids":["n1"],
-                                "top_k":10,
-                                "include_edges":false,
-                                "max_distance":0.35,
-                                "where":{"label":{"$ne":"private"}}
-                            }
+                            "arguments":proposal_fixture["request"]
                         }
                     })
                     .to_string(),
@@ -1193,13 +1192,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert!(proposals.get("error").is_none(), "{proposals}");
     assert_eq!(proposals["result"]["implementation_authority"], "rust");
     assert_eq!(proposals["result"]["seam_crossings"], json!([]));
-    let proposal_pairs = proposals["result"]["pairs"].as_array().unwrap();
-    assert!(proposal_pairs.iter().any(|pair| {
-        pair["left_id"] == "n1" && pair["right_id"] == "n2"
-    }));
-    assert!(proposal_pairs.iter().all(|pair| {
-        pair["left_id"] != "n3" && pair["right_id"] != "n3"
-    }));
+    assert_eq!(
+        proposals["result"]["pairs"],
+        proposal_fixture["expected_pairs"]
+    );
 
     let vector_query = app
         .oneshot(
