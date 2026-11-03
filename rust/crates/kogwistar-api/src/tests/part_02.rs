@@ -1445,9 +1445,13 @@ from mcp.client.streamable_http import streamable_http_client
 ENDPOINT = {endpoint:?}
 READY = Path({ready_path_literal})
 received = asyncio.Event()
+received_methods = set()
 
 async def on_message(message):
-    if "rust-sdk-interoperability-marker" in message.model_dump_json(by_alias=True):
+    method = getattr(message, "method", None)
+    if method in {{"notifications/message", "notifications/tools/list_changed"}}:
+        received_methods.add(method)
+    if len(received_methods) == 2:
         received.set()
 
 async def record_session(response):
@@ -1509,7 +1513,7 @@ asyncio.run(main())
             mcp_sessions.has_active_get(&session_id),
             "Python MCP SDK did not establish the server-initiated GET stream"
         );
-        mcp_sessions
+        let logging_event_id = mcp_sessions
             .publish(
                 &session_id,
                 &session_owner,
@@ -1525,6 +1529,19 @@ asyncio.run(main())
                 }),
             )
             .unwrap();
+        let tools_changed_event_id = mcp_sessions
+            .publish(
+                &session_id,
+                &session_owner,
+                Some("2025-11-25"),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed"
+                }),
+            )
+            .unwrap();
+        assert_eq!(logging_event_id, "1");
+        assert_eq!(tools_changed_event_id, "2");
         let child_deadline = Instant::now() + Duration::from_secs(25);
         while child.try_wait().unwrap().is_none() && Instant::now() < child_deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
