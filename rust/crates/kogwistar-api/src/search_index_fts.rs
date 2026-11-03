@@ -6,7 +6,8 @@ use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
 use kogwistar_contracts::{SearchIndexEntryV1, make_search_index_key};
-use kogwistar_store::VectorMatch;
+use kogwistar_engine::embedding::EmbeddingProvider;
+use kogwistar_store::{DistanceMetric, NodeIndexStore, VectorMatch, VectorQuery};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const INDEX_TABLE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS semantic_index (
@@ -61,6 +62,67 @@ pub struct HybridSearchHit {
     pub fts_score: f64,
     pub vec_score: f64,
     pub hybrid_score: f64,
+}
+
+pub fn parse_hybrid_search_query(path_and_query: &str) -> Result<(String, usize, bool), String> {
+    let raw_query = path_and_query
+        .split_once('?')
+        .map_or("", |(_, query)| query);
+    let mut query = None;
+    let mut limit = 10usize;
+    let mut resolve_node = false;
+    for (key, value) in url::form_urlencoded::parse(raw_query.as_bytes()) {
+        match key.as_ref() {
+            "q" => query = Some(value.into_owned()),
+            "limit" => {
+                limit = value
+                    .parse::<usize>()
+                    .map_err(|_| "limit must be an integer".to_owned())?;
+            }
+            "resolve_node" => {
+                resolve_node = match value.to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" => true,
+                    "false" | "0" | "no" => false,
+                    _ => return Err("resolve_node must be a boolean".to_owned()),
+                };
+            }
+            _ => {}
+        }
+    }
+    let query = query
+        .filter(|query| !query.trim().is_empty())
+        .ok_or_else(|| "q is required and must not be empty".to_owned())?;
+    if !(1..=1000).contains(&limit) {
+        return Err("limit must be between 1 and 1000".to_owned());
+    }
+    Ok((query, limit, resolve_node))
+}
+
+pub fn project_hybrid_search_result(
+    query: &str,
+    hits: &[HybridSearchHit],
+    authorized_nodes: &[kogwistar_store::GraphRecord],
+    resolve_node: bool,
+    limit: usize,
+) -> serde_json::Value {
+    let nodes = authorized_nodes
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect::<HashMap<_, _>>();
+    let results = hits
+        .iter()
+        .filter_map(|hit| {
+            let node = nodes.get(hit.node_id.as_str())?;
+            let mut value = serde_json::to_value(hit).ok()?;
+            if resolve_node {
+                value["documents"] = serde_json::to_value(&node.document).ok()?;
+                value["metadatas"] = serde_json::to_value(&node.metadata).ok()?;
+            }
+            Some(value)
+        })
+        .take(limit)
+        .collect::<Vec<_>>();
+    serde_json::json!({"query": query, "results": results})
 }
 
 /// Combine Python-compatible FTS and vector candidates before the caller applies
@@ -301,13 +363,235 @@ pub fn search_fts(
     rows.collect()
 }
 
+pub async fn hybrid_search<S: NodeIndexStore>(
+    fts: &std::sync::Mutex<Connection>,
+    vector_store: &S,
+    index: &str,
+    provider: &dyn EmbeddingProvider,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<HybridSearchHit>, String> {
+    let lexical = {
+        let connection = fts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        search_fts(&connection, query, limit).map_err(|error| error.to_string())?
+    };
+    let mut batches = provider
+        .embed(&[query.to_owned()])
+        .await
+        .map_err(|error| error.to_string())?;
+    if batches.len() != 1 || batches[0].len() != provider.profile().dimension {
+        return Err("embedding provider returned an unexpected query vector shape".to_owned());
+    }
+    let embedding = batches.pop().expect("one embedding batch");
+    let embedding = embedding
+        .into_iter()
+        .map(|value| {
+            if !value.is_finite() || value.abs() > f64::from(f32::MAX) {
+                return Err(
+                    "embedding provider returned a non-finite or out-of-range value".to_owned(),
+                );
+            }
+            Ok(value as f32)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let metric = match provider
+        .profile()
+        .similarity_metric
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "cosine" => DistanceMetric::Cosine,
+        "l2" => DistanceMetric::L2,
+        "ip" => DistanceMetric::InnerProduct,
+        _ => return Err("embedding profile has an unsupported similarity metric".to_owned()),
+    };
+    let vectors = vector_store
+        .query_node_index(
+            index,
+            &VectorQuery {
+                embedding,
+                limit,
+                metadata: Default::default(),
+                metric,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(fuse_hybrid_hits(&lexical, &vectors))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{fuse_hybrid_hits, open_index, search_fts, upsert_entries};
+    use super::{
+        HybridSearchHit, fuse_hybrid_hits, open_index, parse_hybrid_search_query,
+        project_hybrid_search_result, search_fts, upsert_entries,
+    };
     use kogwistar_contracts::SearchIndexUpsertV1;
-    use kogwistar_store::{GraphRecord, VectorMatch};
+    use kogwistar_engine::embedding::{EmbeddingFuture, EmbeddingProfile, EmbeddingProvider};
+    use kogwistar_store::{GraphRecord, NodeIndexStore, VectorMatch};
+    use kogwistar_store_memory::InMemoryStore;
     use serde_json::Value;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    struct FixedEmbeddingProvider {
+        profile: EmbeddingProfile,
+    }
+
+    impl EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &EmbeddingProfile {
+            &self.profile
+        }
+
+        fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingFuture<'a> {
+            Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6_f64, 0.8_f64]).collect()) })
+        }
+    }
+
+    #[test]
+    fn hybrid_search_query_parses_defaults_and_encoded_values() {
+        assert_eq!(
+            parse_hybrid_search_query("/api/search_index_hybrid?q=graph+retrieval"),
+            Ok(("graph retrieval".to_owned(), 10, false))
+        );
+        assert_eq!(
+            parse_hybrid_search_query(
+                "/api/search_index_hybrid?q=na%C3%AFve&limit=25&resolve_node=YES"
+            ),
+            Ok(("naïve".to_owned(), 25, true))
+        );
+    }
+
+    #[test]
+    fn hybrid_search_query_rejects_missing_query_bad_flags_and_out_of_range_limits() {
+        for (query, expected) in [
+            (
+                "/api/search_index_hybrid",
+                "q is required and must not be empty",
+            ),
+            (
+                "/api/search_index_hybrid?q=%20%20",
+                "q is required and must not be empty",
+            ),
+            (
+                "/api/search_index_hybrid?q=x&limit=0",
+                "limit must be between 1 and 1000",
+            ),
+            (
+                "/api/search_index_hybrid?q=x&limit=1001",
+                "limit must be between 1 and 1000",
+            ),
+            (
+                "/api/search_index_hybrid?q=x&limit=many",
+                "limit must be an integer",
+            ),
+            (
+                "/api/search_index_hybrid?q=x&resolve_node=sometimes",
+                "resolve_node must be a boolean",
+            ),
+        ] {
+            assert_eq!(parse_hybrid_search_query(query).unwrap_err(), expected);
+        }
+    }
+
+    #[test]
+    fn hybrid_result_projection_acl_filters_before_applying_limit() {
+        let hits = ["private", "visible-1", "visible-2"].map(|node_id| HybridSearchHit {
+            index_key: format!("key-{node_id}"),
+            node_id: node_id.to_owned(),
+            canonical_title: node_id.to_owned(),
+            provision: String::new(),
+            document_id: None,
+            fts_score: 0.0,
+            vec_score: 0.0,
+            hybrid_score: 0.0,
+        });
+        let authorized_nodes = ["visible-1", "visible-2"].map(|id| GraphRecord {
+            id: id.to_owned(),
+            document: Some(format!("document for {id}")),
+            metadata: serde_json::Map::from_iter([(
+                "canonical_id".to_owned(),
+                Value::String(id.to_owned()),
+            )]),
+            embedding: None,
+        });
+
+        let projected = project_hybrid_search_result("q", &hits, &authorized_nodes, true, 1);
+        let results = projected["results"].as_array().expect("results array");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["node_id"], "visible-1");
+        assert_eq!(results[0]["documents"], "document for visible-1");
+        assert!(results.iter().all(|hit| hit["node_id"] != "private"));
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_reads_fts_and_node_index_then_fuses_candidates() {
+        let (request, _) = fixture();
+        let entry = request
+            .index
+            .iter()
+            .find(|entry| entry.node_id == "node-42")
+            .expect("fixture includes node-42");
+        let index_key = kogwistar_contracts::make_search_index_key(
+            &entry.node_id,
+            &entry.canonical_title,
+            &entry.provision,
+        );
+        let vector_store = InMemoryStore::default();
+        vector_store
+            .upsert_node_index(
+                "nodes_index",
+                vec![GraphRecord {
+                    id: index_key.clone(),
+                    document: None,
+                    metadata: serde_json::from_value(serde_json::json!({
+                        "index_key": index_key,
+                        "target_node_id": entry.node_id,
+                        "canonical_title": entry.canonical_title,
+                        "provision": entry.provision,
+                        "doc_id": entry.doc_id,
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                }],
+            )
+            .await
+            .expect("seed vector index");
+        let mut connection = open_index(":memory:").expect("open lexical index");
+        upsert_entries(&mut connection, &request.index).expect("seed FTS index");
+        let fts = Mutex::new(connection);
+        let provider = FixedEmbeddingProvider {
+            profile: EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-test-embedding".to_owned(),
+                dimension: 2,
+                similarity_metric: "COSINE".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+        };
+
+        let hits =
+            super::hybrid_search(&fts, &vector_store, "nodes_index", &provider, "permit", 10)
+                .await
+                .expect("query both indexes");
+        let hit = hits
+            .iter()
+            .find(|hit| hit.node_id == "node-42")
+            .expect("candidate appears in hybrid result");
+        assert!(hit.fts_score > 0.0);
+        assert!(hit.vec_score > 0.0);
+        assert!(hit.hybrid_score > 0.0);
+    }
 
     fn fixture() -> (SearchIndexUpsertV1, Value) {
         let fixture: Value = serde_json::from_str(include_str!(concat!(

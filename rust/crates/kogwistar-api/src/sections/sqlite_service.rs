@@ -3,6 +3,7 @@ pub struct SqliteRunApplicationService {
     store: SqliteStore,
     graph_role: String,
     chroma_graph: Option<kogwistar_store_chroma::ChromaGraphStore>,
+    chroma_node_index: Option<kogwistar_store_chroma::ChromaVectorCollectionStore>,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
@@ -38,7 +39,7 @@ async fn open_sqlite_application_service(
         };
         let edge_config = kogwistar_store_chroma::ChromaStoreConfig {
             collection: chroma.edge_collection,
-            ..common
+            ..common.clone()
         };
         let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
             node_config,
@@ -46,7 +47,15 @@ async fn open_sqlite_application_service(
         )
         .await
         .map_err(|error| error.to_string())?;
-        service = service.with_chroma_graph(graph);
+        let node_index = kogwistar_store_chroma::ChromaVectorCollectionStore::connect(
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: "nodes_index".to_owned(),
+                ..common
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        service = service.with_chroma_graph(graph).with_chroma_node_index(node_index);
     }
     Ok(service)
 }
@@ -1073,6 +1082,7 @@ impl SqliteRunApplicationService {
                 store,
                 graph_role: "knowledge".to_owned(),
                 chroma_graph: None,
+                chroma_node_index: None,
                 embedding_provider: None,
                 search_index_fts: None,
                 chat_completion_provider: None,
@@ -1112,6 +1122,14 @@ impl SqliteRunApplicationService {
     /// remains an eventual, revision-fenced projection.
     pub fn with_chroma_graph(mut self, graph: kogwistar_store_chroma::ChromaGraphStore) -> Self {
         self.chroma_graph = Some(graph);
+        self
+    }
+
+    fn with_chroma_node_index(
+        mut self,
+        index: kogwistar_store_chroma::ChromaVectorCollectionStore,
+    ) -> Self {
+        self.chroma_node_index = Some(index);
         self
     }
 
@@ -3080,6 +3098,85 @@ impl SqliteRunApplicationService {
             truth_graph,
             &principal,
         ))
+    }
+
+    async fn sqlite_search_index_hybrid_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Search-index query requires read_graph capability",
+            );
+        }
+        let (query, limit, resolve_node) = match crate::search_index_fts::parse_hybrid_search_query(
+            &request.path_and_query,
+        ) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let (Some(provider), Some(fts), Some(index_store)) = (
+            self.embedding_provider.as_ref(),
+            self.search_index_fts.as_ref(),
+            self.chroma_node_index.as_ref(),
+        ) else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_SEARCH_INDEX_UNAVAILABLE",
+                "Search-index embedding, FTS, or Chroma node-index storage is not configured",
+            );
+        };
+        let hits = match crate::search_index_fts::hybrid_search(
+            fts,
+            index_store,
+            "nodes_index",
+            provider.as_ref(),
+            &query,
+            limit,
+        )
+        .await
+        {
+            Ok(hits) => hits,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_SEARCH_INDEX_ERROR",
+                    error,
+                );
+            }
+        };
+        let projection = match self.chroma_graph_snapshot(request, &self.graph_role).await {
+            Ok(projection) => projection,
+            Err(response) => return response,
+        };
+        let candidate_ids = hits
+            .iter()
+            .map(|hit| hit.node_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let canonical_nodes = projection
+            .nodes()
+            .iter()
+            .filter(|record| candidate_ids.contains(record.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        json_effect(
+            StatusCode::OK,
+            crate::search_index_fts::project_hybrid_search_result(
+                &query,
+                &hits,
+                &canonical_nodes,
+                resolve_node,
+                limit,
+            ),
+        )
     }
 
     async fn native_answer_view_context(

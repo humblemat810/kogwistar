@@ -6233,6 +6233,11 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
             return self.graph_vector_query_effect(&request).await;
         }
+        if request.method == "GET"
+            && request.path_and_query.split('?').next() == Some("/api/search_index_hybrid")
+        {
+            return self.search_index_hybrid_effect(&request).await;
+        }
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_FIND_EDGES_ROUTE {
             return self.graph_find_edges_effect(&request).await;
         }

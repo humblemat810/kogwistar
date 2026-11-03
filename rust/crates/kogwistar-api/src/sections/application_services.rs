@@ -962,6 +962,9 @@ impl ApplicationService for PostgresRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "GET" && path == "/api/search_index_hybrid" {
+            return self.embedding_provider.is_some() && self.search_index_fts.is_some();
+        }
         FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
@@ -1369,6 +1372,15 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        let is_composed_search_index = method == "GET"
+            && path == "/api/search_index_hybrid"
+            && self.search_index_fts.is_some()
+            && self.embedding_provider.is_some()
+            && self.chroma_graph.is_some()
+            && self.chroma_node_index.is_some();
+        if method == "GET" && path == "/api/search_index_hybrid" && !is_composed_search_index {
+            return false;
+        }
         let is_composed_graph_read = self.chroma_graph.is_some()
             && method == "POST"
             && matches!(
@@ -1415,7 +1427,8 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_conversation_detail
             || is_composed_conversation_list
             || is_composed_conversation_create
-            || is_composed_conversation_answer)
+            || is_composed_conversation_answer
+            || is_composed_search_index)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (path != "/api/workflow/runs/{run_id}/lineage"
@@ -1430,7 +1443,8 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_conversation_detail
                 || is_composed_conversation_list
                 || is_composed_conversation_create
-                || is_composed_conversation_answer)
+                || is_composed_conversation_answer
+                || is_composed_search_index)
     }
 
     fn execute(
@@ -1438,6 +1452,13 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "GET"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/search_index_hybrid")
+                && self.supports_http_operation("GET", "/api/search_index_hybrid")
+            {
+                return self.sqlite_search_index_hybrid_effect(&request).await;
+            }
             if request.method == "POST"
                 && self.chroma_graph.is_some()
                 && is_document_projection_route(&request.method, &request.path_and_query)

@@ -1029,6 +1029,154 @@ impl PostgresRunApplicationService {
             .collect())
     }
 
+    async fn search_index_hybrid_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Search-index query requires read_graph capability",
+            );
+        }
+        let (query, limit, resolve_node) = match crate::search_index_fts::parse_hybrid_search_query(
+            &request.path_and_query,
+        ) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let (Some(provider), Some(fts)) =
+            (self.embedding_provider.as_ref(), self.search_index_fts.as_ref())
+        else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_SEARCH_INDEX_UNAVAILABLE",
+                "Search-index embedding or FTS storage is not configured",
+            );
+        };
+        let graph_store = self.graph_store_for_type(&self.graph_role);
+        let hits = match crate::search_index_fts::hybrid_search(
+            fts,
+            graph_store,
+            "gke_node_index",
+            provider.as_ref(),
+            &query,
+            limit,
+        )
+        .await
+        {
+            Ok(hits) => hits,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_SEARCH_INDEX_ERROR",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let node_ids = hits
+            .iter()
+            .map(|hit| hit.node_id.clone())
+            .filter(|id| !id.is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut canonical_nodes = if node_ids.is_empty() {
+            Vec::new()
+        } else {
+            match graph_projection_records_all(
+                graph_store,
+                GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(node_ids.clone()),
+                    metadata: MetadataFilter::default(),
+                    limit: node_ids.len(),
+                },
+            )
+            .await
+            {
+                Ok(nodes) => nodes,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_GRAPH_READ_ERROR",
+                        error.to_string(),
+                    );
+                }
+            }
+        };
+        canonical_nodes.retain(|record| {
+            !matches!(
+                record
+                    .metadata
+                    .get("lifecycle_status")
+                    .and_then(Value::as_str),
+                Some("tombstoned" | "deleted")
+            )
+        });
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let visible_ids = match self
+            .authorized_vector_candidate_ids(
+                graph_store,
+                &scope,
+                &self.graph_role,
+                "node",
+                &[canonical_nodes.clone()],
+                &principal,
+            )
+            .await
+        {
+            Ok(ids) => ids,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_ACL_QUERY_ERROR",
+                    error,
+                );
+            }
+        };
+        canonical_nodes.retain(|record| visible_ids.contains(&record.id));
+        json_effect(
+            StatusCode::OK,
+            crate::search_index_fts::project_hybrid_search_result(
+                &query,
+                &hits,
+                &canonical_nodes,
+                resolve_node,
+                limit,
+            ),
+        )
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_vector_query_effect; python=kogwistar/engine_core/subsystems/acl.py#ACLAwareReadSubsystem.query_nodes; fixture=contracts/golden/graph-acl-vector-query-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_01.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_acl_vector_query_matches_shared_python_rust_ranking_fixture
     async fn graph_vector_query_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
