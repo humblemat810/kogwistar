@@ -106,3 +106,47 @@ fn reopen_is_durable_and_concurrent_global_allocations_are_serialized() {
     drop(reopened);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn concurrent_event_appends_have_one_ordered_sqlite_authority() {
+    let (store, path) = store("concurrent-event-authority");
+    let workers = 8;
+    let barrier = Arc::new(Barrier::new(workers));
+    let handles = (0..workers)
+        .map(|index| {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let event_id = format!("event-{index}");
+                barrier.wait();
+                store
+                    .append_raw_entity_event("shared-namespace", raw_event(&event_id, "{}"))
+                    .unwrap()
+                    .event
+                    .seq
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut sequences = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap())
+        .collect::<Vec<_>>();
+    sequences.sort_unstable();
+    assert_eq!(sequences, (1..=workers as i64).collect::<Vec<_>>());
+
+    let events = store
+        .replay_raw_events("shared-namespace", 0, workers)
+        .unwrap();
+    assert_eq!(events.len(), workers);
+    assert!(events.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        workers
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
