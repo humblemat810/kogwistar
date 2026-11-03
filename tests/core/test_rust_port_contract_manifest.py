@@ -25,10 +25,96 @@ RUST_API_BUILD_SCRIPT_PATH = (
 CONSUMER_IMPORT_INVENTORY_PATH = (
     ROOT / "contracts" / "inventory" / "consumer-imports-v1.json"
 )
+DUAL_LANGUAGE_CHECKLIST_PATH = (
+    ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
+)
+DUAL_LANGUAGE_WORKLIST_PATH = (
+    ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-worklist.md"
+)
 
 
 def _manifest() -> dict:
     return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def _markdown_table_rows(path: Path, row_prefix: str) -> list[list[str]]:
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(row_prefix):
+            rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
+    return rows
+
+
+def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
+    coarse_rows = _markdown_table_rows(DUAL_LANGUAGE_CHECKLIST_PATH, "| DL-")
+    fine_rows = _markdown_table_rows(DUAL_LANGUAGE_WORKLIST_PATH, "| FW-")
+    coarse_status = {row[0]: row[1].split()[0] for row in coarse_rows}
+    fine_by_coarse: dict[str, list[str]] = {}
+    fine_ids: set[str] = set()
+    for row in fine_rows:
+        fine_id, coarse_id, status = row[:3]
+        assert fine_id not in fine_ids, f"duplicate fine tasklet ID {fine_id}"
+        fine_ids.add(fine_id)
+        assert coarse_id in coarse_status, f"{fine_id} references unknown coarse item {coarse_id}"
+        if status in {"NOT STARTED", "IN PROGRESS"}:
+            task_words = row[3].split()
+            assert len(task_words) <= 45, (
+                f"{fine_id} is too broad for one tasklet ({len(task_words)} words); "
+                "split independently verifiable outcomes"
+            )
+        fine_by_coarse.setdefault(coarse_id, []).append(status)
+
+    open_coarse = {
+        coarse_id
+        for coarse_id, status in coarse_status.items()
+        if status in {"IN", "FAIL", "BLOCKED"}
+    }
+    assert open_coarse <= fine_by_coarse.keys(), (
+        "every open coarse gate must have at least one fine task: "
+        f"{sorted(open_coarse - fine_by_coarse.keys())}"
+    )
+    for coarse_id, statuses in fine_by_coarse.items():
+        all_fine_pass = all(status == "PASS" for status in statuses)
+        coarse_pass = coarse_status[coarse_id] == "PASS"
+        assert coarse_pass == all_fine_pass, (
+            f"{coarse_id}: coarse status {coarse_status[coarse_id]!r} must match "
+            f"mapped fine statuses {statuses!r}"
+        )
+
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    coarse_snapshot = re.search(
+        r"\*\*Coarse checklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*\.",
+        worklist,
+    )
+    fine_snapshot = re.search(
+        r"\*\*Fine worklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
+        r"\*\*(\d+) IN PROGRESS\*\*, \*\*(\d+) NOT STARTED\*\*\.",
+        worklist,
+    )
+    assert coarse_snapshot is not None
+    assert fine_snapshot is not None
+
+    coarse_pass_count = sum(status == "PASS" for status in coarse_status.values())
+    fine_statuses = [row[2] for row in fine_rows]
+    fine_pass_count = sum(status == "PASS" for status in fine_statuses)
+    assert tuple(map(int, coarse_snapshot.groups()[:2])) == (
+        coarse_pass_count,
+        len(coarse_status),
+    )
+    assert float(coarse_snapshot.group(3)) == round(
+        100 * coarse_pass_count / len(coarse_status), 1
+    )
+    assert tuple(map(int, fine_snapshot.groups()[:2])) == (
+        fine_pass_count,
+        len(fine_statuses),
+    )
+    assert float(fine_snapshot.group(3)) == round(
+        100 * fine_pass_count / len(fine_statuses), 1
+    )
+    assert tuple(map(int, fine_snapshot.groups()[3:])) == (
+        sum(status == "IN PROGRESS" for status in fine_statuses),
+        sum(status == "NOT STARTED" for status in fine_statuses),
+    )
 
 
 def test_ci_full_uses_postgres_image_with_pgvector_extension() -> None:

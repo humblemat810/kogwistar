@@ -6,8 +6,8 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **154/177 PASS (87.0%)**.
-- **Fine worklist:** **3/47 PASS (6.4%)**; **1 IN PROGRESS**, **43 NOT STARTED**.
-- The fine list is a fixed working decomposition of the 23 open coarse gates, not a second expanding scope list. Do not split rows merely by backend or implementation detail; revise a row only when evidence shows it contains independently closable acceptance outcomes. Granularity for the other rows remains under audit, but that audit must first refine existing rows without increasing the denominator unless a distinct required outcome cannot fit their acceptance criteria.
+- **Fine worklist:** **3/265 PASS (1.1%)**; **1 IN PROGRESS**, **261 NOT STARTED**.
+- Tasklet sizing rule: each open row targets one observable behavior at one primary boundary and should ordinarily take one focused implementation-and-verification session. Matrix rows are split by independently verifiable behavior rather than counted as one large task. The 261-row denominator is an explicit expansion of previously bundled work, not newly discovered implementation progress; report coarse and fine percentages separately and do not infer schedule or nearness to completion from either percentage.
 
 ## How To Track
 
@@ -16,7 +16,7 @@
 - This is a first-pass decomposition of all open coarse gates, not yet a proven exhaustive leaf-level inventory of every code/test action. Rows marked as broad inventory or matrix work must be expanded into concrete child tasks before that row is started; do not silently treat an umbrella row as a completed implementation plan.
 - A fine task reaches `PASS` only when its stated acceptance evidence is recorded here or linked from its referenced test/report. Tests must exercise the named behavior, not merely compile the surrounding code.
 - Close a coarse ID only when its original exit criteria and all mapped required fine tasks pass. Do not reopen a passed coarse ID without a reproduced regression or new required contract.
-- A countable fine task must have one independently testable outcome, an explicit evidence target, and a bounded stopping point that can ordinarily be completed in one focused work session. Do not count a multi-backend inventory, whole conformance suite, or broad parity matrix as one leaf task. Complete the current granularity audit once; thereafter freeze the denominator unless an approved requirement changes.
+- A countable tasklet must have one independently testable outcome, one primary implementation/evidence boundary, an explicit evidence target, and a bounded stopping point suitable for one focused coding-and-verification session. A backend/runtime matrix, whole conformance suite, multi-operation inventory, or broad parity claim is a parent scope, not one tasklet. Split only on independent outcomes (not arbitrary file/backend multiplication); keep each tasklet's expected effort roughly comparable, and record dependencies rather than combining prerequisite work into one row.
 - If a task proves unexpectedly broad, preserve its original ID as a non-counted parent and split only the concrete remaining outcomes; do not expand scope speculatively.
 
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
@@ -25,52 +25,270 @@
 | --- | --- | --- | --- |
 | FW-02-01 | DL-02 | PASS | The SQLite+Chroma authenticated HTTP protocol/authorization route contract is covered in `tests::sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered`: successful canonical node resolution, missing-`read_graph` denial, fail-closed foreign-namespace handling, and metadata-only service rejection with `501 KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER` (**1 passed**). Paired Python ACL/fusion/fixture tests: **5 passed**. |
 | FW-02-01B | DL-02 | IN PROGRESS | Add a live-Chroma public-route smoke with the same request, scope, and ACL expectations as the fake-endpoint route test. CI pins `chromadb/chroma:1.5.9`; local Docker currently has no Chroma service running. Keep this as one bounded integration test and do not duplicate the already-passing fake-endpoint cases. |
-| FW-02-02 | DL-02 | NOT STARTED | Resolve the remaining write-route contract, including `POST /api/search_index_hybrid`/add-index behavior and deferred syscall gaps. Add paired Python/Rust request-response tests before advertising each path. |
-| FW-03-01 | DL-03 | NOT STARTED | Inventory public operations claimed by the capability crosswalk and map each to an executable Python/Rust evidence test; fail the drift test when a claimed operation lacks evidence. |
-| FW-03-02 | DL-03 | NOT STARTED | Run the required per-operation conformance suite for the advertised routes and record the exact pass/unsupported set; retain `not-verified` for any untested route. |
-| FW-05-01 | DL-05 | NOT STARTED | Extend paired Pydantic/Serde fixtures to remaining graph, storage, REST/MCP request and error DTOs, covering valid and invalid inputs with canonical output comparisons. |
-| FW-05-02 | DL-05 | NOT STARTED | Verify identifier/span edge cases and schema-version evolution using shared fixtures; document compatibility behavior for additive and rejected changes. |
-| FW-06-01 | DL-06 | NOT STARTED | Enumerate durable resources and state-changing entry points across Python, Rust and mixed mode; prove each operation has one transaction owner or an explicitly weaker backend contract. |
-| FW-06-02 | DL-06 | NOT STARTED | Add failure-injection and reopen/retry tests for any authority/resource gaps found in FW-06-01; confirm no partial durable effects or duplicate commits. |
-| FW-08-01 | DL-08 | NOT STARTED | Add live PostgreSQL graph-neighbor and graph-snapshot tests for tenant/project scope, source evidence and endpoint dependencies, including malformed or conflicting backend records. |
-| FW-08-02 | DL-08 | NOT STARTED | Exercise the public read-effect matrix across supported backends, including ACL changes and stale/missing records; prove unauthorized data is absent from every result shape. |
-| FW-08C-01 | DL-08C | NOT STARTED | Add shared Python/Rust cases for tombstone/redirect and source-evidence authorization in vector retrieval across PostgreSQL, SQLite+Chroma and in-memory. |
-| FW-08C-02 | DL-08C | NOT STARTED | Verify mutation admission and tenant/project scope parity across the declared runtime/backend matrix; report unsupported combinations explicitly. |
-| FW-11-01 | DL-11 | NOT STARTED | Complete trace-field parity for remaining runtime transitions, retries, suspend/resume and terminal errors; compare Python and Rust projections against shared fixtures. |
-| FW-11-02 | DL-11 | NOT STARTED | Verify trace parentage and event-to-step linkage through authenticated inspection APIs on SQLite and PostgreSQL, including replay/reopen. |
-| FW-12-01 | DL-12 | NOT STARTED | Finish explicit Python-only selector/no-native-loader tests for remaining REST and MCP operations; include legacy defaults and configured graph types. |
-| FW-12-02 | DL-12 | NOT STARTED | Exercise Python-only two-stage indexing and retrieval through public interfaces on supported backends, verifying durable job state and vector/visualization readback. |
-| FW-13-01 | DL-13 | NOT STARTED | Expand Rust-native executor conformance from the current bounded workflow kinds to each operation advertised as native; assert fixture parity and fail-closed unknown kinds. |
-| FW-13-02 | DL-13 | NOT STARTED | Run the native executor matrix on each backend/runtime combination claimed as supported, covering durable restart, error routing and final graph/result digest. |
-| FW-14-01 | DL-14 | NOT STARTED | Define the advertised mixed-language capability combinations from existing contracts and execute paired operation/scope tests for each combination. |
-| FW-14-02 | DL-14 | NOT STARTED | Add recovery tests for mixed Python/Rust operations (crash, retry, reopen) and verify canonical final-state digests and no duplicate effects. |
-| FW-14A-01 | DL-14A | NOT STARTED | Verify Rust-owned scheduling with Python sync and async workers across claim, result delivery, worker loss and scheduler restart; assert durable correlation and state continuity. |
-| FW-14A-02 | DL-14A | NOT STARTED | Exercise resolver rejection, bounded JSON projection and process-local dependency isolation on both storage authorities; prove rejected results never reach durable state. |
+| FW-02-02 | DL-02 | NOT STARTED | Freeze the Python/Rust request, response, authorization, and unsupported error contract for `POST /api/add_index_entries`; keep route disabled until evidence passes. |
+| FW-02-02A | DL-02 | NOT STARTED | Verify authenticated add-index admission on the public Rust route against SQLite+Chroma, including missing capability and foreign-namespace denial before durable mutation. |
+| FW-02-02B | DL-02 | NOT STARTED | Verify authenticated add-index admission on the public Rust route against PostgreSQL, including idempotent duplicate request and durable replay after reopen. |
+| FW-02-02C | DL-02 | NOT STARTED | Reconcile each deferred search-index syscall with the Python contract and record a paired pass or explicit unsupported result; do not enable deferred operations in this task. |
+| FW-03-01 | DL-03 | NOT STARTED | Map every capability-crosswalk claim to one named Python evidence test and verify no claim lacks Python behavior evidence. |
+| FW-03-01A | DL-03 | NOT STARTED | Map every capability-crosswalk claim to one named Rust evidence test or an explicit `not-verified`/unsupported record. |
+| FW-03-01B | DL-03 | NOT STARTED | Add a drift test that rejects missing, stale, or duplicate capability-to-evidence links without treating route advertisement as evidence. |
+| FW-03-03 | DL-03 | NOT STARTED | Reconcile frozen REST inventory method/path entries to one owner and one evidence reference each; report missing and stale mappings. |
+| FW-03-03A | DL-03 | NOT STARTED | For each REST route already implemented in Rust, verify its success response against the Python contract using one paired test per route. |
+| FW-03-03B | DL-03 | NOT STARTED | For each REST route intentionally unsupported in Rust, verify the explicit unsupported response and that no state change occurs. |
+| FW-03-04 | DL-03 | NOT STARTED | Reconcile frozen MCP operation names and schemas to one implementation owner and one evidence reference each. |
+| FW-03-04A | DL-03 | NOT STARTED | Verify Python/Rust request and response parity for each advertised MCP operation, one operation family per test slice. |
+| FW-03-04B | DL-03 | NOT STARTED | Verify authorization denial and stable error semantics for each advertised MCP operation family without executing denied effects. |
+| FW-03-02 | DL-03 | NOT STARTED | Run conformance tests for currently advertised REST routes and record exact pass/unsupported outcomes; keep untested paths `not-verified`. |
+| FW-03-02A | DL-03 | NOT STARTED | Run conformance tests for currently advertised MCP operations and record exact pass/unsupported outcomes; keep untested paths `not-verified`. |
+| FW-05-01 | DL-05 | NOT STARTED | Add paired Pydantic/Serde valid-input fixtures for remaining graph entity DTOs and compare canonical outputs. |
+| FW-05-01A | DL-05 | NOT STARTED | Add paired invalid-input fixtures for remaining graph entity DTOs and verify both languages reject before effects. |
+| FW-05-01B | DL-05 | NOT STARTED | Add paired persistence DTO fixtures for valid and invalid payloads, comparing canonical serialization and rejection behavior. |
+| FW-05-01C | DL-05 | NOT STARTED | Add paired REST/MCP request and response DTO fixtures for valid and invalid payloads, comparing canonical serialization. |
+| FW-05-03 | DL-05 | NOT STARTED | Complete Node and Edge base-family DTO parity for identity, common fields, lifecycle, and legacy defaults. |
+| FW-05-03A | DL-05 | NOT STARTED | Complete hyperedge-family DTO parity for identity, participations/endpoints, and invalid endpoint rejection. |
+| FW-05-03B | DL-05 | NOT STARTED | Verify graph mutation DTOs reject malformed entity batches before any document, event, or index effect. |
+| FW-05-03C | DL-05 | NOT STARTED | Verify lifecycle and tombstone DTOs preserve redirect and endpoint fields through Python/Rust round trips. |
+| FW-05-04 | DL-05 | NOT STARTED | Compare provider request/event DTO canonical serialization and stable errors across Python and Rust. |
+| FW-05-04A | DL-05 | NOT STARTED | Compare persistence and transaction error-envelope DTOs, including stable error codes and details. |
+| FW-05-04B | DL-05 | NOT STARTED | Compare REST/MCP error envelopes and identify/document intentionally Python-only payload shapes. |
+| FW-05-02 | DL-05 | NOT STARTED | Verify identifier and source-span boundary cases with shared valid/invalid fixtures and matching offsets. |
+| FW-05-02A | DL-05 | NOT STARTED | Verify additive schema-version evolution remains accepted in both languages for the declared compatible DTOs. |
+| FW-05-02B | DL-05 | NOT STARTED | Verify unsupported schema versions and unknown fields fail consistently before effects. |
+| FW-06-01 | DL-06 | NOT STARTED | Inventory canonical durable resources and their Python transaction owner, one resource family per evidence row. |
+| FW-06-01A | DL-06 | NOT STARTED | Inventory Rust and mixed-mode write entry points and map each to its declared transaction owner. |
+| FW-06-01B | DL-06 | NOT STARTED | Mark resources with explicitly weaker backend guarantees and verify those guarantees are stated in the backend contract. |
+| FW-06-03 | DL-06 | NOT STARTED | Verify SQLite single-writer ownership for event journal and graph projection with a concurrent-writer test. |
+| FW-06-03A | DL-06 | NOT STARTED | Verify PostgreSQL transaction ownership for graph, workflow/run, worker journal, ACL, and index-job intent with an overlapping-writer test. |
+| FW-06-03B | DL-06 | NOT STARTED | Verify in-memory authority serialization/ownership for one conflicting write pair and document its process-local boundary. |
+| FW-06-04 | DL-06 | NOT STARTED | Verify Chroma projection is eventual and SQLite metadata/events remain canonical when projection is unavailable. |
+| FW-06-04A | DL-06 | NOT STARTED | Verify Chroma projection replay repairs a stale/missing vector without claiming Chroma multi-writer ACID. |
+| FW-06-05 | DL-06 | NOT STARTED | Inject failure before canonical transaction commit and assert no authoritative partial write remains. |
+| FW-06-05A | DL-06 | NOT STARTED | Inject failure after canonical commit but before projection/ack and assert replay converges without duplicate authoritative effects. |
+| FW-06-05B | DL-06 | NOT STARTED | Inject failure during multi-entity atomic mutation and assert transaction rollback or explicit unsupported atomicity. |
+| FW-06-02 | DL-06 | NOT STARTED | Reopen SQLite after injected failure and verify durable state and idempotent retry. |
+| FW-06-02A | DL-06 | NOT STARTED | Reopen PostgreSQL after injected failure and verify durable state and idempotent retry. |
+| FW-08-01 | DL-08 | NOT STARTED | Add a live PostgreSQL graph-neighbor read test for tenant/project scope and source-evidence authorization. |
+| FW-08-01A | DL-08 | NOT STARTED | Add a live PostgreSQL graph-snapshot test for edge endpoint dependency filtering and malformed backend records. |
+| FW-08-01B | DL-08 | NOT STARTED | Add a live PostgreSQL conflicting-scope record test and prove it is excluded from every returned shape. |
+| FW-08-03 | DL-08 | NOT STARTED | Verify live SQLite+Chroma public graph reads revalidate canonical scope and ACL after vector/backend response. |
+| FW-08-03A | DL-08 | NOT STARTED | Verify live SQLite+Chroma endpoint dependencies and stale-projection handling on graph reads. |
+| FW-08-04 | DL-08 | NOT STARTED | Verify in-memory authenticated node reads match Python scope/ACL behavior for allowed and denied records. |
+| FW-08-04A | DL-08 | NOT STARTED | Verify in-memory edge/adjacency reads fail closed for absent, malformed, or cross-scope endpoints. |
+| FW-08-02 | DL-08 | NOT STARTED | Verify public read effects after an ACL revocation on each backend and assert unauthorized records are absent. |
+| FW-08-02A | DL-08 | NOT STARTED | Verify public read effects with stale/missing canonical records and compare the supported backend result shapes. |
+| FW-08-02B | DL-08 | NOT STARTED | Verify public read effects do not leak denied nodes through adjacency, snapshots, or vector-derived results. |
+| FW-08C-01 | DL-08C | NOT STARTED | Verify vector retrieval excludes tombstoned entities and resolves redirects consistently in Python and Rust. |
+| FW-08C-01A | DL-08C | NOT STARTED | Verify vector retrieval requires authorized source evidence and rejects stale/foreign evidence references. |
+| FW-08C-01B | DL-08C | NOT STARTED | Run the lifecycle/evidence vector cases on PostgreSQL and record the exact result parity. |
+| FW-08C-01C | DL-08C | NOT STARTED | Run the lifecycle/evidence vector cases on SQLite+Chroma and record the exact result parity. |
+| FW-08C-01D | DL-08C | NOT STARTED | Run the lifecycle/evidence vector cases on in-memory and record the exact result parity. |
+| FW-08C-03 | DL-08C | NOT STARTED | Verify lifecycle filtering occurs before top-k limit on each supported vector backend. |
+| FW-08C-03A | DL-08C | NOT STARTED | Verify ACL-denied candidates are omitted without unauthorized backfill changing result limits. |
+| FW-08C-03B | DL-08C | NOT STARTED | Verify normalized score meaning and ordering for each declared metric/backend pair. |
+| FW-08C-04 | DL-08C | NOT STARTED | Verify tenant/project and graph-role scope on vector retrieval across the declared backend set. |
+| FW-08C-04A | DL-08C | NOT STARTED | Verify source span/provenance and endpoint authorization on vector results. |
+| FW-08C-04B | DL-08C | NOT STARTED | Verify the same scope and evidence constraints on hybrid retrieval results. |
+| FW-08C-02 | DL-08C | NOT STARTED | Verify mutation admission scope parity for Python and Rust on PostgreSQL and in-memory. |
+| FW-08C-02A | DL-08C | NOT STARTED | Verify mutation admission scope parity for SQLite+Chroma and record unsupported combinations explicitly. |
+| FW-11-01 | DL-11 | NOT STARTED | Compare canonical trace fields for one successful runtime transition against a shared Python/Rust fixture. |
+| FW-11-01A | DL-11 | NOT STARTED | Compare trace fields for retry and attempt increments against a shared Python/Rust fixture. |
+| FW-11-01B | DL-11 | NOT STARTED | Compare trace fields for suspend/resume and terminal error transitions against shared fixtures. |
+| FW-11-03 | DL-11 | NOT STARTED | Verify trace parentage, run/step identity, and sequence ordering for synchronous execution. |
+| FW-11-03A | DL-11 | NOT STARTED | Verify trace parentage and event-to-step causal edges for asynchronous execution. |
+| FW-11-03B | DL-11 | NOT STARTED | Verify retries and terminal failures retain correct parent span, attempt, and event identity. |
+| FW-11-04 | DL-11 | NOT STARTED | Verify authenticated trace/run-event inspection on SQLite before and after reopen/replay. |
+| FW-11-04A | DL-11 | NOT STARTED | Verify authenticated trace/run-event inspection on PostgreSQL before and after reopen/replay. |
+| FW-11-04B | DL-11 | NOT STARTED | Verify legacy persisted trace rows with omitted optional fields remain readable and are not misreported. |
+| FW-11-02 | DL-11 | NOT STARTED | Verify authenticated SQLite inspection returns correct trace parentage and event-to-step linkage. |
+| FW-11-02A | DL-11 | NOT STARTED | Verify authenticated PostgreSQL inspection returns correct trace parentage and event-to-step linkage. |
+| FW-12-01 | DL-12 | NOT STARTED | Verify explicit Python selector behavior for one REST operation family with Rust extension absent. |
+| FW-12-01A | DL-12 | NOT STARTED | Verify explicit Python selector behavior for one MCP operation family with Rust extension absent. |
+| FW-12-01B | DL-12 | NOT STARTED | Verify legacy selector defaults and configured graph-role selection remain unchanged in Python-only mode. |
+| FW-12-03 | DL-12 | NOT STARTED | Verify Python-only REST ingress and graph mutation do not import or call Rust for one supported request path. |
+| FW-12-03A | DL-12 | NOT STARTED | Verify unsupported/missing Rust extension does not alter Python-only REST behavior or trigger an implicit Rust load. |
+| FW-12-04 | DL-12 | NOT STARTED | Verify Python-only MCP in-process authorization and response/error shape without Rust import. |
+| FW-12-04A | DL-12 | NOT STARTED | Verify Python-only MCP HTTP transport authorization and response/error shape without Rust import. |
+| FW-12-02 | DL-12 | NOT STARTED | Verify Python-only indexing emits durable job state through a public interface. |
+| FW-12-02A | DL-12 | NOT STARTED | Verify Python-only retrieval and visualization read back the indexed result on supported backends. |
+| FW-13-01 | DL-13 | NOT STARTED | Inventory advertised native operation kinds and map each kind to its Rust handler and shared parity fixture. |
+| FW-13-01A | DL-13 | NOT STARTED | Verify one advertised native operation's output against the Python/shared fixture contract. |
+| FW-13-01B | DL-13 | NOT STARTED | Verify unknown native operation kinds fail closed before durable or graph effects. |
+| FW-13-03 | DL-13 | NOT STARTED | Verify versioned native dispatch and legacy routing defaults for valid operations. |
+| FW-13-03A | DL-13 | NOT STARTED | Verify malformed operation payloads fail before effects. |
+| FW-13-03B | DL-13 | NOT STARTED | Verify unavailable native capabilities fail explicitly before effects and do not silently fallback. |
+| FW-13-04 | DL-13 | NOT STARTED | Verify native executor durable completion and final digest after SQLite service restart. |
+| FW-13-04A | DL-13 | NOT STARTED | Verify native executor durable completion and final digest after PostgreSQL service restart. |
+| FW-13-04B | DL-13 | NOT STARTED | Verify native executor error routing and recovery for one injected backend failure. |
+| FW-13-02 | DL-13 | NOT STARTED | Run the native executor supported-operation matrix on SQLite and record tested cells. |
+| FW-13-02A | DL-13 | NOT STARTED | Run the native executor supported-operation matrix on PostgreSQL and record tested cells. |
+| FW-13-02B | DL-13 | NOT STARTED | Run the native executor supported-operation matrix on in-memory and record tested cells. |
+| FW-14-01 | DL-14 | NOT STARTED | Freeze the mixed-language mode combinations currently claimed by the support matrix. |
+| FW-14-01A | DL-14 | NOT STARTED | Run one paired mixed-mode operation test and verify scope fields at the Python/Rust seam. |
+| FW-14-01B | DL-14 | NOT STARTED | Add drift protection that rejects an advertised mixed combination without an executable evidence reference. |
+| FW-14-03 | DL-14 | NOT STARTED | Verify namespace, workspace, and graph-role preservation for one mixed graph mutation seam. |
+| FW-14-03A | DL-14 | NOT STARTED | Verify ACL and source-provenance preservation for one mixed graph read/mutation seam. |
+| FW-14-03B | DL-14 | NOT STARTED | Verify runtime/storage handoff preserves the same scope contract at one declared seam. |
+| FW-14-04 | DL-14 | NOT STARTED | Verify mixed-mode crash/reopen recovery produces the expected canonical digest for one operation family. |
+| FW-14-04A | DL-14 | NOT STARTED | Verify mixed-mode retry does not duplicate durable effects for one idempotent operation family. |
+| FW-14-04B | DL-14 | NOT STARTED | Verify a non-idempotent mixed-mode retry fails closed or uses its declared idempotency key. |
+| FW-14-02 | DL-14 | NOT STARTED | Add a mixed-mode crash-before-commit recovery test and verify final digest. |
+| FW-14-02A | DL-14 | NOT STARTED | Add a mixed-mode crash-after-commit-before-ack recovery test and verify no duplicate effect. |
+| FW-14-02B | DL-14 | NOT STARTED | Add a mixed-mode reopen/replay test and verify canonical final-state digest. |
+| FW-14A-01 | DL-14A | NOT STARTED | Verify Rust-owned scheduler claims and receives a result from one synchronous Python worker. |
+| FW-14A-01A | DL-14A | NOT STARTED | Verify Rust-owned scheduler claims and receives a result from one asynchronous Python worker. |
+| FW-14A-01B | DL-14A | NOT STARTED | Verify worker loss is detected and the durable claim can be recovered after scheduler restart. |
+| FW-14A-03 | DL-14A | NOT STARTED | Verify result run/step identity and correlation match the active claim before acceptance. |
+| FW-14A-03A | DL-14A | NOT STARTED | Verify bounded JSON projection rejects malformed and oversized worker results before journal mutation. |
+| FW-14A-03B | DL-14A | NOT STARTED | Verify cross-run and stale-lease results are rejected before graph mutation. |
+| FW-14A-04 | DL-14A | NOT STARTED | Verify process-local Python dependencies are absent from durable run state. |
+| FW-14A-04A | DL-14A | NOT STARTED | Verify process-local dependencies are re-resolved by run identity after scheduler restart. |
+| FW-14A-04B | DL-14A | NOT STARTED | Verify Python objects/callback closures are never serialized into durable state or worker effects. |
+| FW-14A-05 | DL-14A | NOT STARTED | Verify exact idempotent result replay on SQLite does not rerun callback or duplicate effects. |
+| FW-14A-05A | DL-14A | NOT STARTED | Verify worker loss and lease mismatch recovery on SQLite. |
+| FW-14A-05B | DL-14A | NOT STARTED | Verify exact idempotent result replay and crash recovery on PostgreSQL. |
+| FW-14A-05C | DL-14A | NOT STARTED | Verify worker loss and lease mismatch recovery on PostgreSQL. |
+| FW-14A-02 | DL-14A | NOT STARTED | Verify resolver rejection on SQLite keeps rejected results out of durable state. |
+| FW-14A-02A | DL-14A | NOT STARTED | Verify resolver rejection on PostgreSQL keeps rejected results out of durable state. |
+| FW-14A-02B | DL-14A | NOT STARTED | Verify bounded JSON projection and dependency isolation on one successful worker result. |
 | FW-14C-01 | DL-14C | PASS | Verified exact environment admission, mismatch rejection, and compatible-recipient-first ordering while preserving generic fallback: `tests/runtime/test_workflow_version_admission.py` and focused `test_python_worker_checks_environment_before_numerical_callback`, `test_environment_pinned_resolver_advertises_compatible_claim_recipients`, `test_async_environment_pinned_resolver_advertises_compatible_claim_recipients`; Rust `cargo test -p kogwistar-api sqlite_environment_pinned_work_resumes_on_another_compatible_worker --lib` (1 passed). Combined focused Python run: 42 passed. |
 | FW-14C-02 | DL-14C | PASS | Verified wrong-environment work fails before callback/journal mutation, compatible worker B resumes the persisted workflow after service reopen, and Python sync/async worker journals replay prepared effects after restart/retry without re-running callbacks: `test_worker_environment_mismatch_does_not_poison_execution_journal`, Rust `sqlite_environment_pinned_work_resumes_on_another_compatible_worker` (1 passed), `test_worker_journals_callback_before_send_and_replays_after_restart`, and `test_async_worker_journals_awaited_callback_before_response_retry`; combined focused Python run: 42 passed. |
-| FW-15-01 | DL-15 | NOT STARTED | Reconcile every explicit backend/runtime selector with the current supported-mode manifest; classify each fallback as intentional compatibility or an error. |
-| FW-15-02 | DL-15 | NOT STARTED | For each Rust-selected operation still open in the selector inventory, inject missing-extension/unsupported-backend conditions and assert explicit failure before effects. |
-| FW-15C-01 | DL-15C | NOT STARTED | Cover remaining workflow continuation and callback state-changing call sites with owner/selector guards and negative tests for cross-authority writes. |
-| FW-15C-02 | DL-15C | NOT STARTED | Verify transaction/atomicity claims for async backends with and without transactional UoW; document and test fail-closed behavior where atomicity is unavailable. |
-| FW-16-01 | DL-16 | NOT STARTED | Add derived-family contract and round-trip tests for remaining production node/edge families, including exact type, wire tag, endpoints and lifecycle fields. |
-| FW-16-02 | DL-16 | NOT STARTED | Verify shared payload, digest and recovery parity for the derived families on advertised native and mixed paths, including invalid-payload rejection before mutation. |
-| FW-16AC-01 | DL-16AC | NOT STARTED | Complete the shared ACL matrix for Rust graph reads: public, owner, private, scope, shared/group, latest-version, tombstone and no-record denial, paired against Python for nodes and edges. |
-| FW-16AC-02 | DL-16AC | NOT STARTED | Add mutation and runtime/backend parity cases for graph reads, including same-string node/edge IDs and stale Chroma projection recovery across service restart; distinguish fake-endpoint from live-service evidence. |
-| FW-16AM-01 | DL-16AM | NOT STARTED | Inventory remaining public MCP operations and compare Rust request/response, authorization, discovery and error behavior with Python; add paired contract tests for each advertised operation family. |
-| FW-16AM-02 | DL-16AM | NOT STARTED | Verify remaining server-initiated event types, ingestion/parsing/indexing paths, backend paths and production transport conformance; mark unsupported combinations explicitly until exercised. |
-| FW-16BQ-01 | DL-16BQ | NOT STARTED | Complete the syscall and REST/MCP parity inventory for advertised operations, verifying Python-compatible behavior across SQLite+Chroma, PostgreSQL and in-memory where supported. |
-| FW-16BQ-02 | DL-16BQ | NOT STARTED | Exercise cross-backend execution and restart/retry behavior under the supported interpreter matrix; prove shared ACL, event, worker and final graph-state contracts without claiming universal parity beyond tested paths. |
-| FW-17-01 | DL-17 | NOT STARTED | Execute required CI cells for all advertised Python and Rust support versions/platforms and record pass evidence; do not promote best-effort cells to required support without evidence. |
-| FW-17-02 | DL-17 | NOT STARTED | Run downstream pinned-consumer and feature/regression checks for each advertised implementation path; confirm package metadata and documented support matrix agree. |
-| FW-18-01 | DL-18 | NOT STARTED | Extend the shared versioned workload contract to representative mixed read/write traces and verify identical visibility and final digests across each measured implementation. |
-| FW-18-02 | DL-18 | NOT STARTED | Validate batch atomicity boundaries and error/replay behavior per backend; retain per-commit sequential trace semantics and do not claim atomicity for unsupported stores. |
-| FW-19-01 | DL-19 | NOT STARTED | Run the fixed-resource benchmark on larger representative fixtures for PostgreSQL/indexing/ACL/agent request paths with warm-up, repeated samples and resource limits recorded. |
-| FW-19-02 | DL-19 | NOT STARTED | Add replay/recovery and supported-runtime cells to the benchmark report; verify digest parity and report medians, tail latency and sample variation. |
-| FW-20-01 | DL-20 | NOT STARTED | Attribute endpoint latency and throughput to transport, authorization, storage, indexing and worker-transfer stages across representative sizes and backends. |
-| FW-20-02 | DL-20 | NOT STARTED | Repeat resource-matched endpoint comparisons with correctness digests and confidence/variation; state only conclusions supported by those measurements. |
-| FW-20A-01 | DL-20A | NOT STARTED | Join language-crossing, FFI, worker-dispatch, serialized-byte and transaction counters across representative graph/workflow/storage/indexing/MCP traces. |
-| FW-20A-02 | DL-20A | NOT STARTED | Add batch-versus-per-item regression fixtures at representative sizes and define thresholds that detect accidental crossings or serialization loops without duplicating state effects. |
+| FW-14C-03 | DL-14C | NOT STARTED | Define a versioned worker identity-attestation payload binding environment identity to image/build and dependency-lock identity. |
+| FW-14C-03A | DL-14C | NOT STARTED | Verify Python worker admission rejects missing, stale, and mismatched identity attestations before callback execution. |
+| FW-14C-03B | DL-14C | NOT STARTED | Verify Rust scheduler admission rejects missing, stale, and mismatched identity attestations before scheduling/claim. |
+| FW-14C-03C | DL-14C | NOT STARTED | Verify Python and Rust accept the same valid attestation fixture and reject the same invalid fixtures. |
+| FW-14C-03D | DL-14C | NOT STARTED | Verify admitted worker identity remains bound to a persisted workflow across service restart/resume. |
+| FW-15-01 | DL-15 | NOT STARTED | Reconcile selector names and precedence rules with the supported-mode manifest. |
+| FW-15-01A | DL-15 | NOT STARTED | Reconcile legacy/default selector behavior with the supported-mode manifest. |
+| FW-15-01B | DL-15 | NOT STARTED | Classify every fallback as intentional compatibility or an error and link the owner/evidence. |
+| FW-15-03 | DL-15 | NOT STARTED | Verify selector behavior for one advertised backend and operation combination against the manifest. |
+| FW-15-03A | DL-15 | NOT STARTED | Verify selector behavior for each remaining advertised backend/operation combination and report unsupported cells. |
+| FW-15-03B | DL-15 | NOT STARTED | Add drift assertion that blocks a supported-mode manifest entry without a matching runtime selector. |
+| FW-15-02 | DL-15 | NOT STARTED | Verify missing Rust extension fails before effects for one Rust-selected REST operation. |
+| FW-15-02A | DL-15 | NOT STARTED | Verify unsupported backend fails before effects for one Rust-selected graph operation. |
+| FW-15-02B | DL-15 | NOT STARTED | Verify missing-extension and unsupported-backend failures for the remaining Rust-selected operation classes. |
+| FW-15C-01 | DL-15C | NOT STARTED | Verify transaction-owner guard on one workflow continuation write path. |
+| FW-15C-01A | DL-15C | NOT STARTED | Verify transaction-owner guard on one callback state-changing path and reject cross-authority writes. |
+| FW-15C-01B | DL-15C | NOT STARTED | Verify remaining state-changing call sites are inventoried and each maps to a negative guard test. |
+| FW-15C-03 | DL-15C | NOT STARTED | Verify async adapter atomicity with transactional UoW. |
+| FW-15C-03A | DL-15C | NOT STARTED | Verify async adapter without transactional UoW fails closed before partial effects. |
+| FW-15C-04 | DL-15C | NOT STARTED | Verify nested framework invocation preserves selected transaction ownership. |
+| FW-15C-04A | DL-15C | NOT STARTED | Verify framework-managed task/thread context propagation cannot bypass transaction owner guards. |
+| FW-15C-04B | DL-15C | NOT STARTED | Verify retained framework handles cannot write after owner context ends. |
+| FW-15C-02 | DL-15C | NOT STARTED | Verify async transactional backend commits or rolls back its declared atomic unit. |
+| FW-15C-02A | DL-15C | NOT STARTED | Verify async non-transactional backend reports weaker semantics and rejects unsupported atomic operations. |
+| FW-16-01 | DL-16 | NOT STARTED | Add derived Node-family round-trip coverage for exact type, wire tag, and extension fields. |
+| FW-16-01A | DL-16 | NOT STARTED | Add derived Edge-family round-trip coverage for exact type, wire tag, endpoints, and lifecycle fields. |
+| FW-16-01B | DL-16 | NOT STARTED | Verify malformed derived-family payloads reject before graph mutation. |
+| FW-16-03 | DL-16 | NOT STARTED | Inventory production derived Node families and define their Python/Rust identity and field contracts. |
+| FW-16-03A | DL-16 | NOT STARTED | Inventory production derived Edge families and define their Python/Rust identity, endpoint, and lifecycle contracts. |
+| FW-16-03B | DL-16 | NOT STARTED | Verify extension fields are explicitly represented or intentionally excluded in every derived-family wire contract. |
+| FW-16-04 | DL-16 | NOT STARTED | Verify shared canonical payload and digest parity for one derived family on the native path. |
+| FW-16-04A | DL-16 | NOT STARTED | Verify recovery parity for one derived family on the native path. |
+| FW-16-04B | DL-16 | NOT STARTED | Verify shared payload, digest, and invalid-input rejection for one derived family on the mixed path. |
+| FW-16-02 | DL-16 | NOT STARTED | Verify shared payload and digest parity for derived Node families on advertised paths. |
+| FW-16-02A | DL-16 | NOT STARTED | Verify shared payload and digest parity for derived Edge families on advertised paths. |
+| FW-16-02B | DL-16 | NOT STARTED | Verify restart/recovery parity and invalid-payload rejection for derived families. |
+| FW-16AC-01 | DL-16AC | NOT STARTED | Verify node ACL outcomes for public, owner, private, scope, and shared/group visibility against Python fixtures. |
+| FW-16AC-01A | DL-16AC | NOT STARTED | Verify edge ACL outcomes for public, owner, private, scope, and shared/group visibility against Python fixtures. |
+| FW-16AC-01B | DL-16AC | NOT STARTED | Verify latest-version selection and no-record denial for node and edge reads. |
+| FW-16AC-01C | DL-16AC | NOT STARTED | Verify tombstone and redirect filtering for node and edge reads against Python. |
+| FW-16AC-03 | DL-16AC | NOT STARTED | Verify node ACL decisions for each graph role and same-string cross-kind IDs. |
+| FW-16AC-03A | DL-16AC | NOT STARTED | Verify edge ACL decisions for each graph role and same-string cross-kind IDs. |
+| FW-16AC-03B | DL-16AC | NOT STARTED | Verify shared/group and latest-version decisions remain scoped to selected graph role. |
+| FW-16AC-04 | DL-16AC | NOT STARTED | Verify source-evidence authorization and tombstone/redirect behavior on graph reads. |
+| FW-16AC-04A | DL-16AC | NOT STARTED | Verify edge endpoint dependency filtering for authorized and denied endpoint cases. |
+| FW-16AC-04B | DL-16AC | NOT STARTED | Verify stale Chroma projection is reconciled after backend restart and graph mutation. |
+| FW-16AC-02 | DL-16AC | NOT STARTED | Verify mutation and graph-read ACL parity for same-string node/edge identifiers. |
+| FW-16AC-02A | DL-16AC | NOT STARTED | Verify stale Chroma projection recovery after service restart using a fake endpoint. |
+| FW-16AC-02B | DL-16AC | NOT STARTED | Verify stale Chroma projection recovery after service restart against live Chroma and label evidence type. |
+| FW-16AM-01 | DL-16AM | NOT STARTED | Inventory public MCP operation names, schemas, and discovery metadata against Python. |
+| FW-16AM-01A | DL-16AM | NOT STARTED | Verify paired request/response and stable error semantics for one advertised MCP operation family. |
+| FW-16AM-01B | DL-16AM | NOT STARTED | Verify authorization behavior for each advertised MCP operation family and reject denied effects. |
+| FW-16AM-03 | DL-16AM | NOT STARTED | Verify supported server-initiated event type and sequence ordering against Python. |
+| FW-16AM-03A | DL-16AM | NOT STARTED | Verify event replay/resume behavior and explicit unsupported status for unimplemented event types. |
+| FW-16AM-03B | DL-16AM | NOT STARTED | Verify transport negotiation for the declared MCP event transport. |
+| FW-16AM-04 | DL-16AM | NOT STARTED | Verify public ingestion operation request/response and capability advertisement. |
+| FW-16AM-04A | DL-16AM | NOT STARTED | Verify public parsing operation behavior and capability advertisement. |
+| FW-16AM-04B | DL-16AM | NOT STARTED | Verify public indexing/backend operation behavior and capability advertisement. |
+| FW-16AM-02 | DL-16AM | NOT STARTED | Verify one remaining server-initiated event family and its production transport behavior. |
+| FW-16AM-02A | DL-16AM | NOT STARTED | Verify ingestion/parsing/indexing operation boundaries against the support matrix. |
+| FW-16AM-02B | DL-16AM | NOT STARTED | Mark unexercised backend/transport combinations explicitly unsupported in discovery. |
+| FW-16BQ-01 | DL-16BQ | NOT STARTED | Inventory advertised syscall and REST/MCP operations against Python contract and backend support declarations. |
+| FW-16BQ-01A | DL-16BQ | NOT STARTED | Verify syscall request/response parity for SQLite+Chroma on one operation family. |
+| FW-16BQ-01B | DL-16BQ | NOT STARTED | Verify syscall request/response parity for PostgreSQL on one operation family. |
+| FW-16BQ-01C | DL-16BQ | NOT STARTED | Verify syscall request/response parity for in-memory on one operation family. |
+| FW-16BQ-03 | DL-16BQ | NOT STARTED | Verify syscall authorization and namespace/scope semantics against Python for SQLite+Chroma. |
+| FW-16BQ-03A | DL-16BQ | NOT STARTED | Verify syscall authorization and namespace/scope semantics against Python for PostgreSQL. |
+| FW-16BQ-03B | DL-16BQ | NOT STARTED | Verify syscall authorization and namespace/scope semantics against Python for in-memory. |
+| FW-16BQ-03C | DL-16BQ | NOT STARTED | Verify stable syscall error semantics against Python for each advertised backend. |
+| FW-16BQ-04 | DL-16BQ | NOT STARTED | Verify native answer/provider event publication and claim on SQLite+Chroma without Python fallback. |
+| FW-16BQ-04A | DL-16BQ | NOT STARTED | Verify native event handling, acknowledgment, causal trace, and replay on SQLite+Chroma. |
+| FW-16BQ-04B | DL-16BQ | NOT STARTED | Verify native event publication, handling, acknowledgment, causal trace, and replay on PostgreSQL. |
+| FW-16BQ-05 | DL-16BQ | NOT STARTED | Verify SQLite+Chroma restart/retry and canonical digest for one advertised syscall path. |
+| FW-16BQ-05A | DL-16BQ | NOT STARTED | Verify PostgreSQL restart/retry and canonical digest for one advertised syscall path. |
+| FW-16BQ-05B | DL-16BQ | NOT STARTED | Verify supported interpreter/runtime cells and list untested/unsupported combinations. |
+| FW-16BQ-02 | DL-16BQ | NOT STARTED | Verify cross-backend ACL parity for one shared operation fixture. |
+| FW-16BQ-02A | DL-16BQ | NOT STARTED | Verify cross-backend event/worker state parity for one shared operation fixture. |
+| FW-16BQ-02B | DL-16BQ | NOT STARTED | Verify cross-backend final graph-state digest on the declared interpreter matrix. |
+| FW-17-01 | DL-17 | NOT STARTED | Run and record required CPython 3.12 CI cells for the declared platform set. |
+| FW-17-01A | DL-17 | NOT STARTED | Run and record required CPython 3.13/3.14 CI cells for the declared platform set. |
+| FW-17-01B | DL-17 | NOT STARTED | Run and record required PyPy 3.11 cells; retain best-effort status where a cell is not required. |
+| FW-17-01C | DL-17 | NOT STARTED | Verify Rust toolchain/platform CI cells and clearly distinguish required versus best-effort. |
+| FW-17-03 | DL-17 | NOT STARTED | Verify published wheel metadata and dependency installation on CPython required cells. |
+| FW-17-03A | DL-17 | NOT STARTED | Verify native extension loading on each supported CPython/platform cell. |
+| FW-17-03B | DL-17 | NOT STARTED | Verify package installation/import behavior on the required PyPy 3.11 cell. |
+| FW-17-04 | DL-17 | NOT STARTED | Run downstream pinned-consumer feature tests for the Python implementation path. |
+| FW-17-04A | DL-17 | NOT STARTED | Run downstream pinned-consumer regression tests for the Rust/mixed implementation paths. |
+| FW-17-04B | DL-17 | NOT STARTED | Reconcile CI, package metadata, and support documentation after downstream runs. |
+| FW-17-02 | DL-17 | NOT STARTED | Run pinned-consumer feature tests against the declared package version. |
+| FW-17-02A | DL-17 | NOT STARTED | Run pinned-consumer regression tests for each advertised implementation path. |
+| FW-17-02B | DL-17 | NOT STARTED | Verify published metadata and documented support matrix match the tested consumer cells. |
+| FW-18-01 | DL-18 | NOT STARTED | Freeze one deterministic balanced mixed read/write trace and expected read visibility. |
+| FW-18-01A | DL-18 | NOT STARTED | Freeze one deterministic read-heavy trace and expected read visibility. |
+| FW-18-01B | DL-18 | NOT STARTED | Verify final canonical digest parity for the balanced trace across measured implementations. |
+| FW-18-03 | DL-18 | NOT STARTED | Verify seeded workload and expected per-read visibility at the small fixture size. |
+| FW-18-03A | DL-18 | NOT STARTED | Verify seeded workload and expected per-read visibility at the larger fixture size. |
+| FW-18-03B | DL-18 | NOT STARTED | Verify Python and Rust trace consumers agree on final digest for both fixture sizes. |
+| FW-18-04 | DL-18 | NOT STARTED | Verify individual write commit boundaries and duplicate semantics on SQLite. |
+| FW-18-04A | DL-18 | NOT STARTED | Verify commit, duplicate, and replay semantics on PostgreSQL. |
+| FW-18-04B | DL-18 | NOT STARTED | Verify supported Chroma projection semantics without claiming vector-store transactionality. |
+| FW-18-02 | DL-18 | NOT STARTED | Verify batch atomicity on a backend that declares transaction support. |
+| FW-18-02A | DL-18 | NOT STARTED | Verify weaker/non-transactional backend fails or reports partial outcomes according to its contract. |
+| FW-19-01 | DL-19 | NOT STARTED | Run fixed-resource PostgreSQL graph operation benchmark at the larger fixture size. |
+| FW-19-01A | DL-19 | NOT STARTED | Run fixed-resource indexing benchmark at the larger fixture size. |
+| FW-19-01B | DL-19 | NOT STARTED | Run fixed-resource ACL and agent request profiles at the larger fixture size. |
+| FW-19-03 | DL-19 | NOT STARTED | Run PostgreSQL profile with fixed CPU/RAM, warm-up, and fresh data per sample. |
+| FW-19-03A | DL-19 | NOT STARTED | Run indexing profile with fixed CPU/RAM, warm-up, and fresh data per sample. |
+| FW-19-03B | DL-19 | NOT STARTED | Run ACL profile with fixed CPU/RAM, warm-up, and fresh data per sample. |
+| FW-19-03C | DL-19 | NOT STARTED | Run agent-request profile with fixed CPU/RAM, warm-up, and fresh data per sample. |
+| FW-19-04 | DL-19 | NOT STARTED | Add supported CPython/Rust runtime cells and verify canonical digest parity. |
+| FW-19-04A | DL-19 | NOT STARTED | Add replay/recovery benchmark runs and record state digest and resource limits. |
+| FW-19-04B | DL-19 | NOT STARTED | Report medians, tail latency, and sample variation for the added runtime/recovery cells. |
+| FW-19-02 | DL-19 | NOT STARTED | Add one supported-runtime replay/recovery cell and verify digest parity. |
+| FW-19-02A | DL-19 | NOT STARTED | Report median and tail latency for replay/recovery samples. |
+| FW-20-01 | DL-20 | NOT STARTED | Attribute endpoint latency to transport and authentication/authorization stages on one representative request. |
+| FW-20-01A | DL-20 | NOT STARTED | Attribute endpoint latency to graph storage and indexing stages on one representative request. |
+| FW-20-01B | DL-20 | NOT STARTED | Attribute endpoint latency to worker transfer and aggregate those timings across representative sizes/backends. |
+| FW-20-03 | DL-20 | NOT STARTED | Add ingress/transport stage timing and operation counter without changing request semantics. |
+| FW-20-03A | DL-20 | NOT STARTED | Add authentication/authorization and graph-storage stage timing counters. |
+| FW-20-03B | DL-20 | NOT STARTED | Add indexing and worker-transfer stage timing counters and verify attribution. |
+| FW-20-04 | DL-20 | NOT STARTED | Repeat resource-matched Python versus mixed endpoint comparison and verify identical digest. |
+| FW-20-04A | DL-20 | NOT STARTED | Repeat resource-matched Rust-native endpoint comparison and verify identical digest. |
+| FW-20-04B | DL-20 | NOT STARTED | Report latency tails and sample variation for all three modes under matched resources. |
+| FW-20-02 | DL-20 | NOT STARTED | Repeat endpoint comparison with correctness digest and enough samples for Python/mixed modes. |
+| FW-20-02A | DL-20 | NOT STARTED | Repeat endpoint comparison with correctness digest and enough samples for Rust-native mode. |
+| FW-20-02B | DL-20 | NOT STARTED | State performance conclusions only where confidence/variation evidence supports them. |
+| FW-20A-01 | DL-20A | NOT STARTED | Join FFI and serialized-byte counters for one representative graph trace. |
+| FW-20A-01A | DL-20A | NOT STARTED | Join worker-dispatch and transaction counters for one representative workflow/storage trace. |
+| FW-20A-01B | DL-20A | NOT STARTED | Add the joined counters to representative indexing and MCP traces. |
+| FW-20A-03 | DL-20A | NOT STARTED | Verify counters join to one trace/run identity and count no duplicate state effects. |
+| FW-20A-03A | DL-20A | NOT STARTED | Verify ingress, worker, FFI, serialization, and transaction ownership fields correlate for one mixed trace. |
+| FW-20A-04 | DL-20A | NOT STARTED | Add small/large batch-versus-item fixtures and verify equal final-state digest. |
+| FW-20A-04A | DL-20A | NOT STARTED | Define regression thresholds for crossings, serialized bytes, and latency using measured baseline. |
+| FW-20A-02 | DL-20A | NOT STARTED | Add batch-versus-per-item graph fixture and verify no duplicated state effects. |
+| FW-20A-02A | DL-20A | NOT STARTED | Add batch-versus-per-item workflow fixture and verify crossing/serialization counts. |
+| FW-20A-02B | DL-20A | NOT STARTED | Add regression assertion for threshold violations without comparing different operation semantics. |
 
 ## Current Snapshot
 
-The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 47 counted tasks; 3 are `PASS`, 1 is `IN PROGRESS`, and 43 are `NOT STARTED`. DL-02's SQLite+Chroma read-route protocol/authorization contract is closed; live Chroma HTTP evidence is separately active. Keep the fine denominator fixed during the remaining granularity audit unless an existing acceptance criterion proves to contain a distinct required outcome that cannot be verified within that row. Keep the completion snapshot synchronized whenever status changes, and keep the linked coarse inventory as the authority for coarse status.
+The coarse checklist has 23 `IN PROGRESS` IDs. All 23 map to 265 fine rows: 3 `PASS`, 1 `IN PROGRESS`, and 261 `NOT STARTED`. The rows were split to isolate independently verifiable outcomes across backends, operations, error paths, recovery, and runtime cells. This is a tasklet-sized working expansion; it does not assert that every implementation detail is foreseeable or that the overall goal is near completion. DL-14C's two passed rows cover environment routing and retry/recovery, not worker identity attestation; FW-14C-03 through FW-14C-03D now divide that remainder into contract, language-specific admission, shared fixture parity, and restart binding. CI checks mapping and status consistency; it cannot infer semantic exhaustiveness from prose. Record any newly discovered requirement as a child of an existing coarse gate only when it is required by that gate's contract; otherwise pause and update scope explicitly. The snapshot is checked against the tables in CI, and the linked coarse inventory remains authoritative for coarse status.
