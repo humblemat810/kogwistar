@@ -3037,6 +3037,158 @@
     }
 
     #[tokio::test]
+    async fn sqlite_native_noop_result_is_durable_through_runtime_route() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-native-noop-{nonce}.sqlite3"));
+        let store = SqliteStore::open(&path).unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+        );
+
+        let submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("x-kogwistar-roles", "reader")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "run_id": "native-noop-run",
+                            "workflow_id": "native-noop-workflow",
+                            "conversation_id": "native-noop-conversation",
+                            "initial_state": {"seed": 1},
+                            "runtime_kind": "sync",
+                            "start_node_id": "start",
+                            "node_ops": {
+                                "start": "rust-native/noop",
+                                "finish": "rust-native/emit-result"
+                            },
+                            "runtime_routes": [{
+                                "source_node_id": "start",
+                                "target_node_id": "finish",
+                                "join_mask": 0
+                            }]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(submit.status(), StatusCode::ACCEPTED);
+
+        let claim = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/claim")
+                    .header("x-kogwistar-roles", "reader")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "claimed_by": "rust-native-worker",
+                            "limit": 1,
+                            "lease_seconds": 60,
+                            "recipient_ids": ["rust-native-worker"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claim.status(), StatusCode::OK);
+        let claim_body: Value = serde_json::from_slice(
+            &to_bytes(claim.into_body(), 1_048_576).await.unwrap(),
+        )
+        .unwrap();
+        let work = claim_body["work"][0].clone();
+        assert_eq!(work["payload"]["op"], "rust-native/noop");
+
+        let execute = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/runtime/native/execute")
+                    .header("x-kogwistar-roles", "reader")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "handoff": {
+                                "message_id": work["message_id"],
+                                "claimed_by": work["claimed_by"],
+                                "run_id": work["run_id"],
+                                "step_id": work["step_id"],
+                                "correlation_id": work["correlation_id"]
+                            },
+                            "payload": work["payload"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(execute.status(), StatusCode::OK);
+
+        let run = store.get_server_run("native-noop-run").unwrap().unwrap();
+        assert_eq!(run.status, "running");
+        let events = store
+            .list_server_run_events("native-noop-run", 0, 100)
+            .unwrap();
+        let transition = events
+            .iter()
+            .find(|event| {
+                if event.event_type != "workflow.recorded_transition.v1" {
+                    return false;
+                }
+                serde_json::from_str::<Value>(&event.payload_json)
+                    .map(|payload| {
+                        payload["reduced"]["state"]["last_node_id"] == "start"
+                            && payload["reduced"]["state"]["last_step_seq"] == 0
+                    })
+                    .unwrap_or(false)
+            })
+            .expect("native noop transition must be durable");
+        let transition_payload: Value = serde_json::from_str(&transition.payload_json).unwrap();
+        assert_eq!(
+            transition_payload["reduced"]["result"]["workflow_status"],
+            "succeeded",
+            "unexpected persisted noop transition: {transition_payload}"
+        );
+        assert_eq!(
+            transition_payload["reduced"]["result"]["final_state"]["seed"],
+            1
+        );
+        assert!(events.iter().any(|event| {
+            event.event_type == "workflow.trace.v1"
+                && event.payload_json.contains("runtime.native.step.completed")
+        }));
+
+        drop(app);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn sqlite_native_runtime_route_uses_shared_result_reducer() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
