@@ -8,6 +8,8 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 Current inventory: **177 items** (**154 PASS, 23 IN PROGRESS; 87.0% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
+Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 23 open IDs above and do not change this inventory or denominator.
+
 
 DL-02 current gate: search-index event replay targets the backend's existing index identity (`gke_node_index` for PostgreSQL, `nodes_index` for SQLite+Chroma). Live PostgreSQL 17/pgvector verification passed `postgres_search_index_events_project_to_pgvector_and_survive_reopen`, covering canonical event admission, FTS/vector projection, service reopen, and hybrid retrieval. Final focused verification: Rust search-index tests (**12 passed, 2 live tests ignored by default**), live PostgreSQL integration (**1 passed**), Python fixture/parity/replay tests (**6 passed**), `cargo fmt --check --package kogwistar-api`, and `git diff --check`. Python `SearchIndexService` exposes upsert/event replay but no index-delete or rollback API; document rollback acts on graph entities and derived graph projections. DL-02 therefore requires Rust parity with the existing upsert/replay contract, not a Rust-only deletion behavior. A future deletion policy would need a shared Python-first contract. Backend integration evidence does not clear the frozen public HTTP deferral.
 
