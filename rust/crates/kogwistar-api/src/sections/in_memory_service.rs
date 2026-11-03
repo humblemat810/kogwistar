@@ -21,6 +21,7 @@ impl InMemoryGraphApplicationService {
             "kg_find_edges"
                 | "kg_k_hop"
                 | "kg_neighbors"
+                | "kg_propose_bruteforce"
                 | "kg_shortest_path"
                 | "kg_viz_cytoscape_json"
                 | "kg_viz_d3_json"
@@ -85,6 +86,9 @@ impl InMemoryGraphApplicationService {
     }
 
     async fn graph_read_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if request.path_and_query == INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE {
+            return self.graph_propose_bruteforce_effect(request).await;
+        }
         if request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
             return self.graph_vector_query_effect(request).await;
         }
@@ -228,6 +232,124 @@ impl InMemoryGraphApplicationService {
             _ => return unavailable_effect(request.clone()),
         };
         json_effect(StatusCode::OK, rust_native_attested(result))
+    }
+
+    // PYTHON_PARITY: kogwistar/server/mcp_tools.py::kg_propose_bruteforce
+    async fn graph_propose_bruteforce_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let scope = match self.authorized_graph_scope(request) {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let input = match serde_json::from_slice::<ProposeBruteForceRequest>(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return invalid_graph_request(format!(
+                    "Invalid brute-force proposal request: {error}"
+                ));
+            }
+        };
+        if brute_force_pair_kinds(&input.pair_kind).is_none()
+            || input.allowed_docs.as_ref().is_some_and(|docs| {
+                docs.len() > 1000 || docs.iter().any(|doc| doc.trim().is_empty())
+            })
+            || input
+                .anchor_doc_id
+                .as_ref()
+                .is_some_and(|doc| doc.trim().is_empty())
+            || input
+                .limit_per_bucket
+                .is_some_and(|limit| limit > 5000)
+            || input
+                .where_filter
+                .as_ref()
+                .is_some_and(|value| !value.is_object())
+        {
+            return invalid_graph_request(
+                "pair_kind, document IDs, where, or limit_per_bucket are invalid or exceed their bounds"
+                    .to_owned(),
+            );
+        }
+        if let Some(where_filter) = input.where_filter.as_ref() {
+            if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+                &json!({"metadata": {}, "where": where_filter}).to_string(),
+            ) {
+                return invalid_graph_request(error.to_string());
+            }
+        }
+        let (all_nodes, all_edges) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (nodes, edges) = graph_records_visible_by_acl(
+            &all_nodes,
+            &all_edges,
+            "knowledge",
+            &principal,
+        );
+        let (node_ids_by_doc, edge_ids_by_doc) =
+            brute_force_document_indexes_from_records(&nodes, &edges);
+        let mut docs = match input.allowed_docs.as_ref().filter(|docs| !docs.is_empty()) {
+            Some(docs) => docs
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            None => node_ids_by_doc
+                .keys()
+                .chain(edge_ids_by_doc.keys())
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+        };
+        if let Some(anchor) = input.anchor_doc_id.as_ref()
+            && !docs.contains(anchor)
+        {
+            docs.insert(0, anchor.clone());
+        }
+        if docs.len() > 1000 {
+            return invalid_graph_request(
+                "brute-force proposal is limited to 1000 documents".to_owned(),
+            );
+        }
+        let nodes = nodes
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let edges = edges
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let pairs = match brute_force_proposal_pairs(
+            &docs,
+            &node_ids_by_doc,
+            &edge_ids_by_doc,
+            &nodes,
+            &edges,
+            &input,
+        ) {
+            Ok(pairs) => pairs,
+            Err(error) => return invalid_graph_request(error),
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"pairs": pairs})),
+        )
     }
 
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_vector_proposal_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
@@ -749,6 +871,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 path.split('?').next(),
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
                     | Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
+                    | Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
                     | Some(INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
@@ -772,6 +895,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
             } else if matches!(
                 request.path_and_query.as_str(),
                 INTERNAL_GRAPH_NEIGHBORS_ROUTE
+                    | INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE
                     | INTERNAL_GRAPH_VECTOR_QUERY_ROUTE
                     | INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE
                     | INTERNAL_GRAPH_FIND_EDGES_ROUTE

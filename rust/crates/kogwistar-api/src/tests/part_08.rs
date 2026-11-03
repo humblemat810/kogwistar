@@ -440,15 +440,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "n1",
             "gke_nodes",
             "node",
-            json!({"label":"one"}),
-            Some(r#"{"label":"one"}"#),
+            json!({"label":"one","doc_ids":["doc-a"]}),
+            Some(r#"{"label":"one","doc_ids":["doc-a"]}"#),
         ),
         mutation(
             "n2",
             "gke_nodes",
             "node",
-            json!({"label":"two"}),
-            Some(r#"{"label":"two"}"#),
+            json!({"label":"two","doc_ids":["doc-a"]}),
+            Some(r#"{"label":"two","doc_ids":["doc-a"]}"#),
         ),
         mutation(
             "e1",
@@ -606,6 +606,97 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         serde_json::from_slice(&to_bytes(written.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(written["atomic"], true);
     assert_eq!(written["results"].as_array().unwrap().len(), 10);
+
+    let brute_force = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0","id":"brute-force","method":"tools/call",
+                        "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{
+                            "pair_kind":"node_node","allowed_docs":["doc-a"]
+                        }}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(brute_force.status(), StatusCode::OK);
+    let brute_force: Value =
+        serde_json::from_slice(&to_bytes(brute_force.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(
+        brute_force["result"]["pairs"],
+        json!([{
+            "left_id":"n1","left_kind":"node",
+            "right_id":"n2","right_kind":"node"
+        }])
+    );
+    let mixed_pairs = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0","id":"mixed-pairs","method":"tools/call",
+                        "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{
+                            "pair_kind":"any_any","allowed_docs":["doc-a"]
+                        }}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mixed_pairs: Value =
+        serde_json::from_slice(&to_bytes(mixed_pairs.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(mixed_pairs["result"]["pairs"].as_array().unwrap().len(), 3);
+    assert!(mixed_pairs.to_string().contains("e1"));
+    let denied_proposal = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &[])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0","id":"denied-proposal","method":"tools/call",
+                        "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{}}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let denied_proposal: Value = serde_json::from_slice(
+        &to_bytes(denied_proposal.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(denied_proposal.get("error").is_some());
+    assert!(denied_proposal.get("result").is_none());
 
     let cross_kind_fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
