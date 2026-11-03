@@ -27,18 +27,18 @@
                     "run_id": "pg-native-run",
                     "workflow_id": "pg-native-workflow",
                     "conversation_id": "pg-native-conversation",
-                    "initial_state": {"counter": 1},
+                    "initial_state": {"counter": 1, "seed": 17},
                     "runtime_kind": "sync",
-                    "start_node_id": "entry",
+                    "start_node_id": "noop",
                     "node_ops": {
+                        "noop": "rust-native/noop",
                         "entry": "rust-native/increment-counter",
                         "finish": "rust-native/emit-result"
                     },
-                    "runtime_routes": [{
-                        "source_node_id": "entry",
-                        "target_node_id": "finish",
-                        "join_mask": 0
-                    }]
+                    "runtime_routes": [
+                        {"source_node_id": "noop", "target_node_id": "entry", "join_mask": 0},
+                        {"source_node_id": "entry", "target_node_id": "finish", "join_mask": 0}
+                    ]
                 }),
             ))
             .await;
@@ -58,7 +58,7 @@
             .await;
         assert_eq!(claim.status, StatusCode::OK.as_u16());
         let work = serde_json::from_slice::<Value>(&claim.body).unwrap()["work"][0].clone();
-        assert_eq!(work["payload"]["op"], "rust-native/increment-counter");
+        assert_eq!(work["payload"]["op"], "rust-native/noop");
         assert_eq!(
             work["payload"]["executor_target"],
             kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
@@ -131,37 +131,83 @@
             ))
             .await;
         assert_eq!(continuation.status, StatusCode::OK.as_u16());
-        let continuation_work =
+        let counter_work =
             serde_json::from_slice::<Value>(&continuation.body).unwrap()["work"][0].clone();
         assert_eq!(
-            continuation_work["payload"]["op"],
-            "rust-native/emit-result"
+            counter_work["payload"]["op"],
+            "rust-native/increment-counter"
         );
-        let continuation_execute = service
+        let counter_execute = service
             .execute(request(
                 "POST",
                 "/internal/runtime/native/execute",
                 json!({
                     "handoff": {
-                        "message_id": continuation_work["message_id"],
-                        "claimed_by": continuation_work["claimed_by"],
-                        "run_id": continuation_work["run_id"],
-                        "step_id": continuation_work["step_id"],
-                        "correlation_id": continuation_work["correlation_id"]
+                        "message_id": counter_work["message_id"],
+                        "claimed_by": counter_work["claimed_by"],
+                        "run_id": counter_work["run_id"],
+                        "step_id": counter_work["step_id"],
+                        "correlation_id": counter_work["correlation_id"]
                     },
-                    "payload": continuation_work["payload"]
+                    "payload": counter_work["payload"]
                 }),
             ))
             .await;
-        assert_eq!(
-            continuation_execute.status,
-            StatusCode::OK.as_u16()
-        );
+        assert_eq!(counter_execute.status, StatusCode::OK.as_u16());
+        let finish = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/claim",
+                json!({
+                    "claimed_by": "rust-native-worker",
+                    "limit": 1,
+                    "lease_seconds": 60,
+                    "recipient_ids": ["rust-native-worker"]
+                }),
+            ))
+            .await;
+        assert_eq!(finish.status, StatusCode::OK.as_u16());
+        let finish_work = serde_json::from_slice::<Value>(&finish.body).unwrap()["work"][0].clone();
+        assert_eq!(finish_work["payload"]["op"], "rust-native/emit-result");
+        let finish_execute = service
+            .execute(request(
+                "POST",
+                "/internal/runtime/native/execute",
+                json!({
+                    "handoff": {
+                        "message_id": finish_work["message_id"],
+                        "claimed_by": finish_work["claimed_by"],
+                        "run_id": finish_work["run_id"],
+                        "step_id": finish_work["step_id"],
+                        "correlation_id": finish_work["correlation_id"]
+                    },
+                    "payload": finish_work["payload"]
+                }),
+            ))
+            .await;
+        assert_eq!(finish_execute.status, StatusCode::OK.as_u16());
         let events = service
             .store
             .list_server_run_events("pg-native-run", 0, 100)
             .await
             .unwrap();
+        let noop_transition = events
+            .iter()
+            .find(|event| {
+                event.event_type == "workflow.recorded_transition.v1"
+                    && serde_json::from_str::<Value>(&event.payload_json)
+                        .ok()
+                        .is_some_and(|payload| {
+                            payload["reduced"]["result"]["workflow_status"] == "succeeded"
+                                && payload["reduced"]["result"]["final_state"]["counter"] == 1
+                                && payload["reduced"]["result"]["final_state"]["seed"] == 17
+                        })
+            })
+            .expect("native noop transition must be durably recorded");
+        let noop_payload: Value = serde_json::from_str(&noop_transition.payload_json).unwrap();
+        assert_eq!(noop_payload["reduced"]["result"]["workflow_status"], "succeeded");
+        assert_eq!(noop_payload["reduced"]["result"]["final_state"]["counter"], 1);
+        assert_eq!(noop_payload["reduced"]["result"]["final_state"]["seed"], 17);
         assert!(events.iter().any(|event| {
             event.event_type == "workflow.trace.v1"
                 && event.payload_json.contains("runtime.native.step.completed")
