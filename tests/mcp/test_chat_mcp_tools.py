@@ -164,7 +164,8 @@ async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
 
     engine, adapter = _engine(tmp_path)
     engine._iterative_defensive_emb = lambda _text: [0.0, 0.0]
-    engine.read.query_nodes = lambda **_kwargs: []
+    semantic_queries = []
+    engine.read.query_nodes = lambda **kwargs: semantic_queries.append(kwargs) or []
     source = build_entity_node(node_id="mcp-stage1-source", doc_id="mcp-doc")
     target = build_entity_node(node_id="mcp-stage1-target", doc_id="mcp-doc")
     edge = build_relationship_edge(
@@ -174,6 +175,9 @@ async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
     adapter.add_node(target)
     adapter.add_edge(edge)
     monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    monkeypatch.setattr(
+        mcp_tools.shortids, "s2l_id", lambda doc_id: f"canonical:{doc_id}"
+    )
 
     with _claims("rw", "knowledge", sub="mcp-agent"):
         neighbors = _structured(
@@ -185,10 +189,18 @@ async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
                 {"text": "stage one pending", "top_k": 5, "hops": 1},
             )
         )
+        semantic_by_doc = _structured(
+            await server.mcp.call_tool(
+                "kg_semantic_seed_then_expand_text",
+                {"text": "stage one pending", "doc_ids": "mcp-doc"},
+            )
+        )
 
     assert target.id in neighbors["nodes"]
     assert edge.id in neighbors["edges"]
     assert semantic["seeds"] == []
+    assert semantic_by_doc["seeds"] == []
+    assert semantic_queries[-1]["where"] == {"doc_id": "canonical:mcp-doc"}
 
 
 @pytest.mark.asyncio

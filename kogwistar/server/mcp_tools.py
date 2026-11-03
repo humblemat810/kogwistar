@@ -307,7 +307,7 @@ def kg_semantic_seed_then_expand_text(
     if doc_ids:
         doc_ids_coerced = (
             shortids.s2l_id(doc_ids)
-            if type(doc_ids is str)
+            if isinstance(doc_ids, str)
             else [shortids.s2l_id(i) for i in doc_ids]
         )
     out = cast(
