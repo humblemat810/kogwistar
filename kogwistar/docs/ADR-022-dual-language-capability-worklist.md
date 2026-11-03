@@ -17,7 +17,7 @@
 ## Dual Progress Reporting
 
 - **Coarse completion:** coarse checklist `PASS` count divided by its fixed total. Current: **154/177 = 87.0%**.
-- **Fine completion:** fine task `PASS` count divided by the current fine-task total. Current: **0/46 = 0.0%**. This is closure progress for the newly established residual-work tracker, not a claim that none of the underlying code or tests exist.
+- **Fine completion:** fine task `PASS` count divided by the current fine-task total. Current: **2/46 = 4.3%**. This is closure progress for the newly established residual-work tracker, not a claim that none of the underlying code or tests exist.
 - Report both numbers together. Do not average them, combine their denominators, or treat fine tasks as new coarse checklist items. When a parent work package is split, preserve the parent as a non-counted heading and count only its active child tasks in the fine denominator.
 
 | Fine ID | Coarse ID | Status | Bounded task and acceptance evidence |
@@ -44,8 +44,8 @@
 | FW-14-02 | DL-14 | NOT STARTED | Add recovery tests for mixed Python/Rust operations (crash, retry, reopen) and verify canonical final-state digests and no duplicate effects. |
 | FW-14A-01 | DL-14A | NOT STARTED | Verify Rust-owned scheduling with Python sync and async workers across claim, result delivery, worker loss and scheduler restart; assert durable correlation and state continuity. |
 | FW-14A-02 | DL-14A | NOT STARTED | Exercise resolver rejection, bounded JSON projection and process-local dependency isolation on both storage authorities; prove rejected results never reach durable state. |
-| FW-14C-01 | DL-14C | NOT STARTED | Test environment-pinned worker admission end to end for exact match, generic worker exclusion, mismatch rejection and compatible-recipient priority. |
-| FW-14C-02 | DL-14C | NOT STARTED | Test environment-pinned claim/result behavior through restart and retry, asserting mismatch is rejected before callback and before the execution journal advances. |
+| FW-14C-01 | DL-14C | PASS | Verified exact environment admission, mismatch rejection, and compatible-recipient-first ordering while preserving generic fallback: `tests/runtime/test_workflow_version_admission.py` and focused `test_python_worker_checks_environment_before_numerical_callback`, `test_environment_pinned_resolver_advertises_compatible_claim_recipients`, `test_async_environment_pinned_resolver_advertises_compatible_claim_recipients`; Rust `cargo test -p kogwistar-api sqlite_environment_pinned_work_resumes_on_another_compatible_worker --lib` (1 passed). Combined focused Python run: 42 passed. |
+| FW-14C-02 | DL-14C | PASS | Verified wrong-environment work fails before callback/journal mutation, compatible worker B resumes the persisted workflow after service reopen, and Python sync/async worker journals replay prepared effects after restart/retry without re-running callbacks: `test_worker_environment_mismatch_does_not_poison_execution_journal`, Rust `sqlite_environment_pinned_work_resumes_on_another_compatible_worker` (1 passed), `test_worker_journals_callback_before_send_and_replays_after_restart`, and `test_async_worker_journals_awaited_callback_before_response_retry`; combined focused Python run: 42 passed. |
 | FW-15-01 | DL-15 | NOT STARTED | Reconcile every explicit backend/runtime selector with the current supported-mode manifest; classify each fallback as intentional compatibility or an error. |
 | FW-15-02 | DL-15 | NOT STARTED | For each Rust-selected operation still open in the selector inventory, inject missing-extension/unsupported-backend conditions and assert explicit failure before effects. |
 | FW-15C-01 | DL-15C | NOT STARTED | Cover remaining workflow continuation and callback state-changing call sites with owner/selector guards and negative tests for cross-authority writes. |
@@ -71,4 +71,4 @@
 
 ## Current Snapshot
 
-The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 46 tasks, initially `NOT STARTED`. Mapping coverage is complete, but leaf-level exhaustiveness is not yet verified; refine umbrella inventory/matrix tasks before starting them. The fine 0/46 snapshot is a tracking baseline, not a claim that implementation progress regressed. Update the two percentages whenever either list changes, and keep the linked coarse inventory as the authority for coarse status.
+The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 46 tasks; 2 are `PASS` and 44 remain open. Mapping coverage is complete, but leaf-level exhaustiveness is not yet verified; refine umbrella inventory/matrix tasks before starting them. Update the two percentages whenever either list changes, and keep the linked coarse inventory as the authority for coarse status.
