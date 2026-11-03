@@ -249,7 +249,7 @@ impl InMemoryGraphApplicationService {
         json_effect(StatusCode::OK, rust_native_attested(result))
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_semantic_seed_expand_effect; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; fixture=contracts/golden/graph-acl-traversal-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_contract; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_semantic_seed_expand_effect; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; fixture=contracts/golden/semantic-seed-expand-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
     async fn graph_semantic_seed_expand_effect(
         &self,
         request: &ApiEffectRequest,

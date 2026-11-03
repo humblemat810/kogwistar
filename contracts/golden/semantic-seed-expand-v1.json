@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scope": {
+    "doc_id": "D1"
+  },
+  "query_text": "smok",
+  "top_k": 1,
+  "hops": 1,
+  "expected_seed_ids": ["A"],
+  "expected_first_layer_edge_ids": ["E1"]
+}

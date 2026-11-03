@@ -43,7 +43,24 @@ fn failed_inline_graph_effect_clears_provider_event_side_effects() {
 }
 
 #[tokio::test]
-async fn in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_contract() {
+async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/semantic-seed-expand-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(fixture["schema_version"], 1);
+    let seed_id = fixture["expected_seed_ids"][0].as_str().unwrap();
+    let edge_id = fixture["expected_first_layer_edge_ids"][0]
+        .as_str()
+        .unwrap();
+    let doc_id = fixture["scope"]["doc_id"].as_str().unwrap();
+
     struct FixedEmbeddingProvider;
     impl EmbeddingProvider for FixedEmbeddingProvider {
         fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
@@ -96,21 +113,73 @@ async fn in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_c
                 entity_kind: "node".to_owned(),
                 event_id: "semantic-seed-node-event".to_owned(),
                 op: "ADD".to_owned(),
-                payload: json!({"id":"semantic-seed-node","label":"matching"}),
+                payload: json!({"id":seed_id,"label":"Smoking"}),
                 record: GraphRecord {
-                    id: "semantic-seed-node".to_owned(),
-                    document: Some(r#"{"id":"semantic-seed-node","label":"matching"}"#.to_owned()),
+                    id: seed_id.to_owned(),
+                    document: Some(json!({"id":seed_id,"label":"Smoking"}).to_string()),
                     metadata: serde_json::Map::from_iter([
                         ("namespace".to_owned(), json!("tenant-a")),
                         ("workspace_id".to_owned(), json!("workspace-a")),
                         ("graph_space".to_owned(), json!("facts")),
+                        ("doc_id".to_owned(), json!(doc_id)),
                     ]),
                     embedding: Some(vec![1.0, 0.0]),
                 },
                 embedding_dim: 2,
             },
             GraphMutation {
-                scope,
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "semantic-neighbor-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"B","label":"Lung Cancer"}),
+                record: GraphRecord {
+                    id: "B".to_owned(),
+                    document: Some(r#"{"id":"B","label":"Lung Cancer"}"#.to_owned()),
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("doc_id".to_owned(), json!(doc_id)),
+                    ]),
+                    embedding: Some(vec![0.0, 1.0]),
+                },
+                embedding_dim: 2,
+            },
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_edges".to_owned(),
+                entity_kind: "edge".to_owned(),
+                event_id: "semantic-edge-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":edge_id,"source_ids":[seed_id],"target_ids":["B"]}),
+                record: GraphRecord {
+                    id: edge_id.to_owned(),
+                    document: Some(
+                        json!({
+                            "id":edge_id,
+                            "relation":"causes",
+                            "source_ids":[seed_id],
+                            "target_ids":["B"]
+                        })
+                        .to_string(),
+                    ),
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("doc_id".to_owned(), json!(doc_id)),
+                        ("source_ids".to_owned(), json!([seed_id])),
+                        ("target_ids".to_owned(), json!(["B"])),
+                        ("relation".to_owned(), json!("causes")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+            GraphMutation {
+                scope: scope.clone(),
                 table: "gke_nodes".to_owned(),
                 entity_kind: "node".to_owned(),
                 event_id: "semantic-seed-acl-event".to_owned(),
@@ -126,7 +195,57 @@ async fn in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_c
                         ("entity_type".to_owned(), json!("acl_record")),
                         ("acl_truth_graph".to_owned(), json!("knowledge")),
                         ("acl_target_grain".to_owned(), json!("node")),
-                        ("acl_target_entity_id".to_owned(), json!("semantic-seed-node")),
+                        ("acl_target_entity_id".to_owned(), json!(seed_id)),
+                        ("acl_version".to_owned(), json!(1)),
+                        ("acl_mode".to_owned(), json!("public")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "semantic-neighbor-acl-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"semantic-neighbor-acl"}),
+                record: GraphRecord {
+                    id: "semantic-neighbor-acl".to_owned(),
+                    document: None,
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("acl_truth_graph".to_owned(), json!("knowledge")),
+                        ("acl_target_grain".to_owned(), json!("node")),
+                        ("acl_target_entity_id".to_owned(), json!("B")),
+                        ("acl_version".to_owned(), json!(1)),
+                        ("acl_mode".to_owned(), json!("public")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+            GraphMutation {
+                scope,
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "semantic-edge-acl-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"semantic-edge-acl"}),
+                record: GraphRecord {
+                    id: "semantic-edge-acl".to_owned(),
+                    document: None,
+                    metadata: serde_json::Map::from_iter([
+                        ("namespace".to_owned(), json!("tenant-a")),
+                        ("workspace_id".to_owned(), json!("workspace-a")),
+                        ("graph_space".to_owned(), json!("facts")),
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("acl_truth_graph".to_owned(), json!("knowledge")),
+                        ("acl_target_grain".to_owned(), json!("edge")),
+                        ("acl_target_entity_id".to_owned(), json!(edge_id)),
                         ("acl_version".to_owned(), json!(1)),
                         ("acl_mode".to_owned(), json!("public")),
                     ]),
@@ -138,39 +257,94 @@ async fn in_memory_semantic_seed_expand_matches_authorized_vector_and_topology_c
         .await
         .unwrap();
 
-    let response = ApplicationService::execute(
-        &service,
-        ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: GRAPH_SEMANTIC_SEED_EXPAND_ROUTE.to_owned(),
-            body: serde_json::to_vec(&json!({
-                "text":"matching",
-                "top_k":1,
-                "hops":0
-            }))
-            .unwrap(),
-            principal: json!({
-                "sub":"reader",
-                "role":"rw",
-                "ns":["docs"],
-                "storage_ns":"tenant-a",
-                "workspace_id":"workspace-a",
-                "graph_space":"facts",
-                "capabilities":["read_graph"]
-            }),
-        },
+    let secret = "in-memory-semantic-mcp-test-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader",
+            "role":"rw",
+            "ns":["docs"],
+            "storage_ns":"tenant-a",
+            "workspace_id":"workspace-a",
+            "graph_space":"facts",
+            "capabilities":["read_graph"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
     )
-    .await;
-    assert_eq!(
-        response.status,
-        StatusCode::OK.as_u16(),
-        "{}",
-        String::from_utf8_lossy(&response.body)
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec![],
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service),
     );
-    let body: Value = serde_json::from_slice(&response.body).unwrap();
-    let seed: Value = serde_json::from_str(body["seeds"][0].as_str().unwrap()).unwrap();
-    assert_eq!(seed["id"], "semantic-seed-node");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"in-memory-semantic",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"kg_semantic_seed_then_expand_text",
+                            "arguments":{
+                                "text":fixture["query_text"],
+                                "top_k":fixture["top_k"],
+                                "hops":fixture["hops"],
+                                "doc_ids":doc_id
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(response["result"]["seeds"].is_array(), "{response}");
+    let seed: Value = serde_json::from_str(response["result"]["seeds"][0].as_str().unwrap())
+        .unwrap();
+    assert_eq!(seed["id"], seed_id);
+    let first_layer_edge_ids = response["result"]["layers"][0]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| {
+            serde_json::from_str::<Value>(edge.as_str().unwrap()).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        json!(first_layer_edge_ids),
+        fixture["expected_first_layer_edge_ids"],
+        "response={response}"
+    );
 }
 
 #[test]

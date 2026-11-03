@@ -440,7 +440,22 @@ def test_document_subgraph(small_graph):
 
 def test_semantic_seed_then_expand_text(small_graph):
     engine, _ = small_graph
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/semantic-seed-expand-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     gq = GraphQuery(engine)
-    out = gq.semantic_seed_then_expand_text("smok", top_k=5, hops=1)
-    assert out["seeds"]
-    assert isinstance(out["layers"], list) and out["layers"]
+    out = gq.semantic_seed_then_expand_text(
+        fixture["query_text"],
+        top_k=fixture["top_k"],
+        hops=fixture["hops"],
+        doc_ids=fixture["scope"]["doc_id"],
+    )
+    assert [json.loads(seed)["id"] for seed in out["seeds"]] == fixture[
+        "expected_seed_ids"
+    ]
+    assert [json.loads(edge)["id"] for edge in out["layers"][0]["edges"]] == (
+        fixture["expected_first_layer_edge_ids"]
+    )
