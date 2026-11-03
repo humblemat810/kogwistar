@@ -1092,6 +1092,42 @@ mod tests {
             1,
             "same namespace and entry must not append duplicate events"
         );
+
+        let mut revised = item.clone();
+        revised.keywords = vec!["latesttoken".to_owned()];
+        revised.aliases.clear();
+        let updated = super::admit_search_index_entries(
+            &event_store,
+            &vector_store,
+            &fts,
+            &provider,
+            "workspace",
+            std::slice::from_ref(&revised),
+        )
+        .await
+        .expect("changed content appends and projects a newer event");
+        assert_eq!(updated.last_event_seq, 2);
+        assert_eq!(updated.events_projected, 1);
+        let old_hits = search_fts(&fts.lock().expect("FTS lock"), "authorization", 10)
+            .expect("query superseded lexical terms");
+        assert!(old_hits.iter().all(|hit| hit.node_id != item.node_id));
+        let latest_hits = search_fts(&fts.lock().expect("FTS lock"), "latesttoken", 10)
+            .expect("query revised lexical terms");
+        assert!(latest_hits.iter().any(|hit| hit.node_id == item.node_id));
+        let projected = vector_store
+            .get_node_index("nodes_index", &[format!("idx:{key}")])
+            .await
+            .expect("read updated vector projection");
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].metadata["keywords"], "[\"latesttoken\"]");
+        assert_eq!(
+            EventReadStore::replay_events(&event_store, "workspace", 0, 10)
+                .await
+                .expect("read update history")
+                .len(),
+            2,
+            "changed content is a new event, not a duplicate of the prior payload"
+        );
     }
 
     #[tokio::test]

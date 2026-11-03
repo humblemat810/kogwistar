@@ -43,17 +43,6 @@ def _read_entity_events(engine: GraphKnowledgeEngine):
     return list(iter_events(namespace="default"))
 
 
-def _replay_search_index_events(engine: GraphKnowledgeEngine) -> None:
-    items: list[IndexingItem] = []
-    for _, entity_kind, _entity_id, op, payload_json in _read_entity_events(engine):
-        if entity_kind != "search_index" or op != "search_index.upsert":
-            continue
-        payload = json.loads(payload_json)
-        items.append(IndexingItem(**payload))
-    assert items, "Expected at least one search_index event to replay"
-    engine.search_index.upsert_entries(items)
-
-
 def test_search_index_cdc_and_event_sourcing(temp_engine_dir):
     engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
     sink = MockSink()
@@ -127,9 +116,16 @@ def test_search_index_replay(temp_engine_dir):
         / "contracts/golden/search-index-entry-v1.json"
     )
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-    engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
+    engine = GraphKnowledgeEngine(
+        persist_directory=temp_engine_dir,
+        backend_factory=build_in_memory_backend,
+    )
     item = IndexingItem.model_validate(fixture["request"]["index"][0])
     engine.search_index.upsert_entries([item])
+    revised = item.model_copy(
+        update={"keywords": ["latesttoken"], "aliases": []}
+    )
+    engine.search_index.upsert_entries([revised])
 
     index_db_path = os.path.join(temp_engine_dir, "index.db")
     conn = sqlite3.connect(index_db_path)
@@ -155,12 +151,40 @@ def test_search_index_replay(temp_engine_dir):
     assert len(search_res["results"]) == 0
 
     # Replay from the persisted entity event log into the projection.
-    _replay_search_index_events(engine)
+    assert engine.replay_namespace(namespace="default", from_seq=1) > 0
 
-    search_res2 = engine.search_index.search_hybrid("Permit", limit=5)
-    assert len(search_res2["results"]) > 0
-    assert search_res2["results"][0]["node_id"] == item.node_id
-    assert search_res2["results"][0]["canonical_title"] == item.canonical_title
+    search_res2 = engine.search_index.search_hybrid("latesttoken", limit=5)
+    assert len(search_res2["results"]) == 1
+    assert search_res2["results"][0]["node_id"] == revised.node_id
+    conn = sqlite3.connect(index_db_path)
+    try:
+        projected_keywords = conn.execute(
+            "SELECT keywords FROM semantic_index WHERE index_key=?",
+            (index_key,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert projected_keywords == "latesttoken"
+    conn = sqlite3.connect(index_db_path)
+    try:
+        stale_fts_count = conn.execute(
+            "SELECT COUNT(*) FROM semantic_index_fts "
+            "WHERE semantic_index_fts MATCH 'authorization'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stale_fts_count == 0
+    vector_projection = engine.backend.node_index_get(
+        ids=[f"idx:{index_key}"], include=["metadatas"]
+    )
+    assert vector_projection["metadatas"][0]["keywords"] == '["latesttoken"]'
+
+    events = [
+        event
+        for event in _read_entity_events(engine)
+        if event[1] == "search_index" and event[3] == "search_index.upsert"
+    ]
+    assert len(events) == 2
 
 
 def test_search_index_retrieval(temp_engine_dir):
