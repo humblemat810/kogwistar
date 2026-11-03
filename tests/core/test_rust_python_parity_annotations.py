@@ -26,6 +26,10 @@ def _parse_target(target: str) -> tuple[Path, str]:
     return ROOT / path_text, symbol
 
 
+def _rust_target_identity(path: Path, symbol: str) -> str:
+    return f"{path.relative_to(ROOT).as_posix()}#{symbol}"
+
+
 def _python_symbol_exists(source: str, symbol: str) -> bool:
     tree = ast.parse(source)
     parts = symbol.split(".")
@@ -197,8 +201,9 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
     for rust_file, fields in annotations:
         rust_target_path, rust_symbol = _parse_target(fields["rust"])
         assert rust_target_path == rust_file
-        assert rust_symbol not in seen_rust_targets
-        seen_rust_targets.add(rust_symbol)
+        rust_identity = _rust_target_identity(rust_target_path, rust_symbol)
+        assert rust_identity not in seen_rust_targets
+        seen_rust_targets.add(rust_identity)
         rust_source = rust_file.read_text(encoding="utf-8")
         assert re.search(
             rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(rust_symbol)}\s*\(",
@@ -284,4 +289,16 @@ def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
     )
     assert not _rust_test_consumes_fixture(
         rust_other_fixture, "parity_test", "shared.json"
+    )
+
+
+def test_parity_targets_allow_same_symbol_in_distinct_backend_modules() -> None:
+    symbol = "upsert_node_index"
+    chroma = ROOT / "rust/crates/kogwistar-store-chroma/src/store.rs"
+    postgres = ROOT / "rust/crates/kogwistar-store-postgres/src/store/node_index.rs"
+    assert _rust_target_identity(chroma, symbol) != _rust_target_identity(
+        postgres, symbol
+    )
+    assert _rust_target_identity(chroma, symbol) == _rust_target_identity(
+        chroma, symbol
     )

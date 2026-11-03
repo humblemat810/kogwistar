@@ -24,7 +24,7 @@ use kogwistar_store::{
     GraphProjectionVectorQuery, GraphProjectionWriteStore, GraphRecord, GraphScope, IndexJob,
     IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
     LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, NamedProjection,
-    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
+    NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage, NodeIndexStore,
     ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, RestoredRawEntityEvent,
     ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,

@@ -1,7 +1,7 @@
 // Domain-focused tests; shared fixtures live in the parent test module.
 use super::*;
 use kogwistar_store::{
-    DistanceMetric, GraphRecord, MetadataFilter, VectorCollectionStore, VectorQuery,
+    DistanceMetric, GraphRecord, MetadataFilter, NodeIndexStore, VectorCollectionStore, VectorQuery,
 };
 
 #[test]
@@ -403,12 +403,10 @@ async fn node_index_operations_match_shared_python_fixture() -> PostgresStoreRes
                 .collect(),
         ),
     };
-    store
-        .upsert_node_index("gke_node_index", vec![record.clone()])
-        .await?;
-    let retrieved = store
-        .get_node_index("gke_node_index", std::slice::from_ref(&record.id))
-        .await?;
+    NodeIndexStore::upsert_node_index(&store, "gke_node_index", vec![record.clone()]).await?;
+    let retrieved =
+        NodeIndexStore::get_node_index(&store, "gke_node_index", std::slice::from_ref(&record.id))
+            .await?;
     assert_eq!(retrieved, vec![record]);
 
     let query_contract = &fixture["node_index_query"];
@@ -426,7 +424,7 @@ async fn node_index_operations_match_shared_python_fixture() -> PostgresStoreRes
         },
         metric: DistanceMetric::Cosine,
     };
-    let matches = store.query_node_index("gke_node_index", &query).await?;
+    let matches = NodeIndexStore::query_node_index(&store, "gke_node_index", &query).await?;
     let actual_ids = matches
         .iter()
         .map(|item| item.record.id.as_str())

@@ -8,12 +8,13 @@ use kogwistar_store::{
     GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
     LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter,
     NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
-    validate_graph_mutation, validate_graph_mutation_batch, validate_graph_mutation_replay,
+    NodeIndexStore, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor,
+    ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
+    ServerRunWriteStore, StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery,
+    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
+    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    integer_timestamp, timestamp_i64, validate_graph_mutation, validate_graph_mutation_batch,
+    validate_graph_mutation_replay,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1592,6 +1593,47 @@ impl VectorCollectionStore for InMemoryStore {
     }
 }
 
+impl NodeIndexStore for InMemoryStore {
+    async fn upsert_node_index(&self, index: &str, records: Vec<GraphRecord>) -> StoreResult<()> {
+        self.upsert_vector_collection("__node_index__", index, records)
+            .await
+    }
+
+    async fn get_node_index(&self, index: &str, ids: &[String]) -> StoreResult<Vec<GraphRecord>> {
+        collection_name(index)?;
+        if ids.len() > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-node-index".to_owned(),
+                message: "lookup exceeds the 10000-ID limit".to_owned(),
+            });
+        }
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let records = state
+            .vector_collections
+            .get(&("__node_index__".to_owned(), index.to_owned()));
+        let Some(records) = records else {
+            return Ok(Vec::new());
+        };
+        let by_id = records
+            .iter()
+            .map(|record| (record.id.as_str(), record))
+            .collect::<BTreeMap<_, _>>();
+        Ok(ids
+            .iter()
+            .filter_map(|id| by_id.get(id.as_str()).map(|record| (*record).clone()))
+            .collect())
+    }
+
+    async fn query_node_index(
+        &self,
+        index: &str,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        self.query_vector_collection("__node_index__", index, query)
+            .await
+    }
+}
+
 impl GraphReadStore for InMemoryStore {
     async fn graph_record(&self, ns: &str, id: &str) -> StoreResult<Option<GraphRecord>> {
         namespace(ns)?;
@@ -2282,8 +2324,8 @@ mod tests {
     use kogwistar_store::{
         GraphAuthorityCapability, GraphMutation, GraphMutationStore, GraphProjectionRead,
         GraphProjectionVectorQuery, GraphRecord, GraphScope, NewProjectedLaneMessage,
-        ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore, ShadowInspectable,
-        VectorCollectionStore,
+        NodeIndexStore, ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore,
+        ShadowInspectable, VectorCollectionStore,
     };
     use serde_json::{Value, json};
     use std::future::Future;
@@ -2375,6 +2417,52 @@ mod tests {
             .expect("query after delete");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].record.id, "idx:two");
+    }
+
+    #[test]
+    fn dedicated_node_index_store_preserves_lookup_order_and_collection_isolation() {
+        let store = InMemoryStore::new();
+        let make_record = |id: &str, embedding: Vec<f32>| GraphRecord {
+            id: id.to_owned(),
+            document: Some(format!("entry {id}")),
+            metadata: serde_json::Map::new(),
+            embedding: Some(embedding),
+        };
+        block_on(store.upsert_node_index(
+            "graph-index",
+            vec![
+                make_record("idx:a", vec![1.0, 0.0]),
+                make_record("idx:b", vec![0.0, 1.0]),
+            ],
+        ))
+        .expect("index upsert");
+
+        let ids = vec!["idx:b".to_owned(), "missing".to_owned(), "idx:a".to_owned()];
+        let records = block_on(store.get_node_index("graph-index", &ids)).expect("index read");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["idx:b", "idx:a"]
+        );
+        assert!(
+            block_on(store.get_node_index("other-index", &ids))
+                .expect("isolated index")
+                .is_empty()
+        );
+
+        let matches = block_on(store.query_node_index(
+            "graph-index",
+            &VectorQuery {
+                embedding: vec![1.0, 0.0],
+                limit: 1,
+                metadata: MetadataFilter::default(),
+                metric: DistanceMetric::Cosine,
+            },
+        ))
+        .expect("index query");
+        assert_eq!(matches[0].record.id, "idx:a");
     }
 
     #[test]

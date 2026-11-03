@@ -3069,6 +3069,33 @@ pub trait VectorCollectionStore: Send + Sync {
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
 }
 
+/// Backend-native access to Python's dedicated `node_index` projection.
+///
+/// This is intentionally separate from `VectorCollectionStore`: PostgreSQL
+/// stores this projection in the graph-schema-local `gke_node_index` table,
+/// while Chroma and memory use their dedicated index collections. `index`
+/// names that backend-native target; it is not a graph entity kind and writes
+/// through this contract do not imply canonical graph mutation atomicity.
+pub trait NodeIndexStore: Send + Sync {
+    fn upsert_node_index(
+        &self,
+        index: &str,
+        records: Vec<GraphRecord>,
+    ) -> impl Future<Output = StoreResult<()>> + Send;
+
+    fn get_node_index(
+        &self,
+        index: &str,
+        ids: &[String],
+    ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send;
+
+    fn query_node_index(
+        &self,
+        index: &str,
+        query: &VectorQuery,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+}
+
 pub trait GraphWriteStore: GraphReadStore {
     fn upsert_graph_record(
         &self,

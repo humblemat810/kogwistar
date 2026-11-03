@@ -5,6 +5,57 @@ use serde_json::{Map, Value, json};
 
 pub(crate) const NAMESPACE_KEY: &str = "_kogwistar_namespace";
 const ORIGINAL_METADATA_KEY: &str = "_kogwistar_original_metadata";
+const CHROMA_JSON_METADATA_PREFIX: &str = "__kogwistar_json_v1__:";
+
+pub(crate) fn node_index_metadata(
+    metadata: &serde_json::Map<String, Value>,
+) -> Result<Value, StoreError> {
+    let mut safe = serde_json::Map::new();
+    for (key, value) in metadata {
+        if value.is_null() {
+            continue;
+        }
+        let has_nested_value = value.is_object()
+            || value
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item.is_array() || item.is_object()));
+        let encoded = if has_nested_value {
+            Value::String(format!(
+                "{CHROMA_JSON_METADATA_PREFIX}{}",
+                serde_json::to_string(value).map_err(|error| StoreError::Backend {
+                    backend: "chroma-node-index".to_owned(),
+                    message: error.to_string(),
+                })?
+            ))
+        } else if value.as_array().is_some_and(Vec::is_empty) {
+            Value::String("[]".to_owned())
+        } else {
+            value.clone()
+        };
+        safe.insert(key.clone(), encoded);
+    }
+    Ok(Value::Object(safe))
+}
+
+pub(crate) fn restore_node_index_metadata(
+    value: Option<&Value>,
+) -> Result<serde_json::Map<String, Value>, StoreError> {
+    let mut metadata = value
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for item in metadata.values_mut() {
+        if let Some(encoded) = item.as_str()
+            && let Some(json) = encoded.strip_prefix(CHROMA_JSON_METADATA_PREFIX)
+        {
+            *item = serde_json::from_str(json).map_err(|error| StoreError::Backend {
+                backend: "chroma-node-index".to_owned(),
+                message: format!("stored compound metadata is invalid: {error}"),
+            })?;
+        }
+    }
+    Ok(metadata)
+}
 
 pub(crate) fn chroma_metadata(namespace: &str, record: &GraphRecord) -> Result<Value, StoreError> {
     if record.metadata.contains_key(NAMESPACE_KEY)
@@ -205,6 +256,29 @@ mod tests {
         )
         .expect("restored record");
         assert_eq!(restored, record);
+    }
+
+    #[test]
+    fn node_index_metadata_matches_python_chroma_encoding() {
+        let metadata = serde_json::from_value(json!({
+            "target_node_id": "node-1",
+            "keywords": ["water", "safety"],
+            "nested": {"revision": 2},
+            "omitted": null,
+            "empty": []
+        }))
+        .expect("metadata object");
+        let encoded = node_index_metadata(&metadata).expect("encode metadata");
+        assert_eq!(encoded["target_node_id"], "node-1");
+        assert_eq!(encoded["keywords"], json!(["water", "safety"]));
+        assert_eq!(encoded["nested"], "__kogwistar_json_v1__:{\"revision\":2}");
+        assert_eq!(encoded["empty"], "[]");
+        assert!(encoded.get("omitted").is_none());
+        let restored = restore_node_index_metadata(Some(&encoded)).expect("restore metadata");
+        let mut expected = metadata;
+        expected.remove("omitted");
+        expected.insert("empty".to_owned(), Value::String("[]".to_owned()));
+        assert_eq!(restored, expected);
     }
 
     #[test]

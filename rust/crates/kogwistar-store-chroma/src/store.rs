@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use kogwistar_store::{
     DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
-    StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery,
+    NodeIndexStore, StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery,
 };
 use reqwest::Method;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{client::ChromaHttpStore, records};
 
@@ -278,6 +278,221 @@ impl VectorCollectionStore for ChromaVectorCollectionStore {
             .vector_query_in_collection(&self.http, namespace, query, &BTreeMap::new(), None)
             .await
     }
+}
+
+impl NodeIndexStore for ChromaVectorCollectionStore {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#upsert_node_index; python=kogwistar/engine_core/chroma_backend.py#ChromaBackend.node_index_upsert; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-store-chroma/tests/http_contract.rs#dedicated_node_index_contract_uses_its_backend_collection_and_scope; python_test=tests/core/test_search_index_contract.py#test_search_index_entries_match_shared_rust_golden_fixture
+    async fn upsert_node_index(&self, index: &str, records: Vec<GraphRecord>) -> StoreResult<()> {
+        self.validate_collection(index)?;
+        if records.len() > 10_000 {
+            return Err(ChromaGraphStore::backend_error(
+                "node-index upsert exceeds the 10000-record limit",
+            ));
+        }
+        let mut ids = Vec::with_capacity(records.len());
+        let mut embeddings = Vec::with_capacity(records.len());
+        let mut documents = Vec::with_capacity(records.len());
+        let mut metadatas = Vec::with_capacity(records.len());
+        let mut seen = BTreeSet::new();
+        for record in records {
+            if record.id.trim().is_empty() || record.id.contains('\0') {
+                return Err(StoreError::InvalidIdentifier {
+                    identifier: "node-index record id",
+                });
+            }
+            if !seen.insert(record.id.clone()) {
+                return Err(ChromaGraphStore::backend_error(
+                    "node-index batch contains duplicate IDs",
+                ));
+            }
+            let embedding = record.embedding.ok_or_else(|| {
+                ChromaGraphStore::backend_error("node-index records require embeddings")
+            })?;
+            if embedding.iter().any(|value| !value.is_finite()) {
+                return Err(StoreError::NonFiniteVector);
+            }
+            ids.push(record.id);
+            embeddings.push(embedding);
+            documents.push(record.document);
+            metadatas.push(records::node_index_metadata(&record.metadata)?);
+        }
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let url = self
+            .http
+            .collection_url("upsert")
+            .map_err(ChromaGraphStore::backend_error)?;
+        self.http
+            .request(
+                Method::POST,
+                url,
+                Some(json!({
+                    "ids": ids,
+                    "embeddings": embeddings,
+                    "documents": documents,
+                    "metadatas": metadatas
+                })),
+            )
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        Ok(())
+    }
+
+    async fn get_node_index(&self, index: &str, ids: &[String]) -> StoreResult<Vec<GraphRecord>> {
+        self.validate_collection(index)?;
+        self.validate_collection(index)?;
+        if ids.len() > 10_000
+            || ids
+                .iter()
+                .any(|id| id.trim().is_empty() || id.contains('\0'))
+        {
+            return Err(ChromaGraphStore::backend_error(
+                "node-index IDs must be non-empty and the batch cannot exceed 10000 records",
+            ));
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = self
+            .http
+            .collection_url("get")
+            .map_err(ChromaGraphStore::backend_error)?;
+        let response = self
+            .http
+            .request(
+                Method::POST,
+                url,
+                Some(json!({
+                    "ids": ids,
+                    "include": ["documents", "metadatas", "embeddings"]
+                })),
+            )
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        let mut by_id = decode_node_index_records(&payload, false)?
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+    }
+
+    async fn query_node_index(
+        &self,
+        index: &str,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        self.validate_collection(index)?;
+        if query.metric != self.metric {
+            return Err(ChromaGraphStore::backend_error(
+                "query metric differs from the collection's configured metric",
+            ));
+        }
+        if query.limit == 0 {
+            return Ok(Vec::new());
+        }
+        if query.embedding.iter().any(|value| !value.is_finite()) {
+            return Err(StoreError::NonFiniteVector);
+        }
+        let mut request = json!({
+            "query_embeddings": [query.embedding],
+            "n_results": u32::try_from(query.limit).unwrap_or(u32::MAX),
+            "include": ["documents", "metadatas", "embeddings", "distances"]
+        });
+        if !query.metadata.equals.is_empty() {
+            let clauses = query
+                .metadata
+                .equals
+                .iter()
+                .map(|(key, value)| {
+                    let mut operator = Map::new();
+                    operator.insert("$eq".to_owned(), value.clone());
+                    let mut predicate = Map::new();
+                    predicate.insert(key.clone(), Value::Object(operator));
+                    Value::Object(predicate)
+                })
+                .collect::<Vec<_>>();
+            request["where"] = if clauses.len() == 1 {
+                clauses.into_iter().next().unwrap_or(Value::Null)
+            } else {
+                json!({"$and": clauses})
+            };
+        }
+        let url = self
+            .http
+            .collection_url("query")
+            .map_err(ChromaGraphStore::backend_error)?;
+        let response = self
+            .http
+            .request(Method::POST, url, Some(request))
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(ChromaGraphStore::backend_error)?;
+        let records = decode_node_index_records(&payload, true)?;
+        let distances = field_array(&payload, "distances", true);
+        records
+            .into_iter()
+            .enumerate()
+            .map(|(index, record)| {
+                let distance = distances
+                    .get(index)
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| {
+                        ChromaGraphStore::backend_error(
+                            "Chroma omitted a numeric distance for a node-index result",
+                        )
+                    })?;
+                Ok(VectorMatch { record, distance })
+            })
+            .collect()
+    }
+}
+
+fn decode_node_index_records(payload: &Value, nested: bool) -> StoreResult<Vec<GraphRecord>> {
+    let ids = field_array(payload, "ids", nested);
+    let documents = field_array(payload, "documents", nested);
+    let metadatas = field_array(payload, "metadatas", nested);
+    let embeddings = field_array(payload, "embeddings", nested);
+    ids.iter()
+        .enumerate()
+        .map(|(index, id)| {
+            let id = id.as_str().ok_or_else(|| {
+                ChromaGraphStore::backend_error("Chroma returned a non-string node-index ID")
+            })?;
+            let embedding = embeddings
+                .get(index)
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| {
+                            value.as_f64().map(|value| value as f32).ok_or_else(|| {
+                                ChromaGraphStore::backend_error(
+                                    "Chroma returned an invalid node-index embedding component",
+                                )
+                            })
+                        })
+                        .collect::<StoreResult<Vec<_>>>()
+                })
+                .transpose()?;
+            Ok(GraphRecord {
+                id: id.to_owned(),
+                document: documents
+                    .get(index)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                metadata: records::restore_node_index_metadata(metadatas.get(index))?,
+                embedding,
+            })
+        })
+        .collect()
 }
 
 impl GraphReadStore for ChromaGraphStore {

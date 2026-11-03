@@ -1,6 +1,6 @@
 use kogwistar_store::{
     DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, MetadataFilter,
-    VectorCollectionStore, VectorQuery,
+    NodeIndexStore, VectorCollectionStore, VectorQuery,
 };
 use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig, ChromaVectorCollectionStore};
 use serde_json::{Value, json};
@@ -53,6 +53,7 @@ async fn fake_chroma(
             } else {
                 serde_json::from_slice(body).expect("JSON request body")
             };
+            let requested_namespace = requested_namespace(&payload);
             let response = if first_line.contains("/collections HTTP") {
                 json!({
                     "id": format!("collection-{}", payload["name"].as_str().unwrap_or("legacy")),
@@ -62,7 +63,7 @@ async fn fake_chroma(
             } else if first_line.contains("/upsert HTTP") || first_line.contains("/delete HTTP") {
                 json!({"updated": 1, "deleted": 1})
             } else if first_line.contains("/query HTTP") {
-                query_response(query_distance)
+                query_response_for(query_distance, requested_namespace.as_deref())
             } else if first_line.contains("/get HTTP") && payload.get("offset").is_some() {
                 paged_get_response(
                     payload["offset"].as_u64().expect("page offset") as usize,
@@ -72,7 +73,10 @@ async fn fake_chroma(
                 json!({
                     "ids": [payload["ids"][0]],
                     "documents": ["node body"],
-                    "metadatas": [record_metadata()],
+                    "metadatas": [requested_namespace
+                        .as_deref()
+                        .map(record_metadata_for)
+                        .unwrap_or_else(|| json!({"kind": "node"}))],
                     "embeddings": [[0.1, 0.2]]
                 })
             } else {
@@ -294,8 +298,12 @@ async fn bounded_kind_snapshot_rejects_overflow_instead_of_returning_partial_dat
 }
 
 fn record_metadata() -> Value {
+    record_metadata_for("workspace-a")
+}
+
+fn record_metadata_for(namespace: &str) -> Value {
     json!({
-        "_kogwistar_namespace": "workspace-a",
+        "_kogwistar_namespace": namespace,
         "_kogwistar_original_metadata": "{\"kind\":\"node\"}",
         "kind": "node"
     })
@@ -324,14 +332,95 @@ fn paged_get_response(offset: usize, limit: usize) -> Value {
     })
 }
 
-fn query_response(distance: f64) -> Value {
+fn query_response_for(distance: f64, namespace: Option<&str>) -> Value {
     json!({
         "ids": [["node-1"]],
         "documents": [["node body"]],
-        "metadatas": [[record_metadata()]],
+        "metadatas": [[namespace
+            .map(record_metadata_for)
+            .unwrap_or_else(|| json!({"kind": "node"}))]],
         "embeddings": [[[0.1, 0.2]]],
         "distances": [[distance]]
     })
+}
+
+fn requested_namespace(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(object) => {
+            if let Some(namespace) = object
+                .get("_kogwistar_namespace")
+                .and_then(|item| item.get("$eq"))
+                .and_then(Value::as_str)
+            {
+                return Some(namespace.to_owned());
+            }
+            object.values().find_map(requested_namespace)
+        }
+        Value::Array(items) => items.iter().find_map(requested_namespace),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn dedicated_node_index_contract_uses_its_backend_collection_and_scope() {
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/search-index-entry-v1.json"
+    )))
+    .expect("shared search-index entry fixture");
+    let (endpoint, server) = fake_chroma(4, "cosine", 0.25).await;
+    let store = ChromaVectorCollectionStore::connect(ChromaStoreConfig {
+        endpoint,
+        collection: "nodes_index".to_owned(),
+        ..Default::default()
+    })
+    .await
+    .expect("connect node-index collection");
+    let expected = &fixture["expected"][0];
+    let mut record = GraphRecord::new(expected["index_key"].as_str().unwrap());
+    record.document = Some(expected["embedding_text"].as_str().unwrap().to_owned());
+    record.embedding = Some(vec![0.1, 0.2]);
+    record.metadata.insert(
+        "target_node_id".to_owned(),
+        fixture["request"]["index"][0]["node_id"].clone(),
+    );
+
+    NodeIndexStore::upsert_node_index(&store, "nodes_index", vec![record])
+        .await
+        .expect("node-index upsert");
+    let retrieved = NodeIndexStore::get_node_index(
+        &store,
+        "nodes_index",
+        &[expected["index_key"].as_str().unwrap().to_owned()],
+    )
+    .await
+    .expect("node-index get");
+    assert_eq!(retrieved[0].id, expected["index_key"]);
+    let matches = NodeIndexStore::query_node_index(
+        &store,
+        "nodes_index",
+        &VectorQuery {
+            embedding: vec![0.1, 0.2],
+            limit: 3,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        },
+    )
+    .await
+    .expect("node-index query");
+    assert_eq!(matches[0].distance, 0.25);
+
+    let requests = server.await.expect("fixture server");
+    assert_eq!(requests.len(), 4);
+    assert!(requests[1].0.contains("collection-nodes_index/upsert"));
+    assert_eq!(
+        requests[1].1["metadatas"][0]["target_node_id"],
+        fixture["request"]["index"][0]["node_id"]
+    );
+    assert!(requests[2].0.contains("collection-nodes_index/get"));
+    assert!(requests[2].1.get("where").is_none());
+    assert!(requests[3].0.contains("collection-nodes_index/query"));
+    assert!(requests[3].1.get("where").is_none());
 }
 
 #[tokio::test]
