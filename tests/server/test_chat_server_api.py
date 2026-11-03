@@ -1322,8 +1322,19 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             f"/api/conversations/{conversation_id}/snapshots/latest",
             headers=workflow_headers,
         )
+        assert latest.status_code == 200
         latest.raise_for_status()
-        assert latest.json()["snapshot_node_id"] == snapshot_id
+        snapshot = latest.json()
+        assert set(snapshot) == {
+            "snapshot_node_id",
+            "conversation_id",
+            "metadata",
+            "properties",
+        }
+        assert snapshot["snapshot_node_id"] == snapshot_id
+        assert snapshot["conversation_id"] == conversation_id
+        assert isinstance(snapshot["metadata"], dict)
+        assert isinstance(snapshot["properties"], dict)
 
         run_id = "seed-run"
         workflow_id = "wf.test"
