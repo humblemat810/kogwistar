@@ -26,6 +26,7 @@ mod provider_request;
 mod search_index;
 mod source_map;
 mod tool_audit;
+mod worker_identity;
 pub use agent_event::{
     DurableProviderEventPublicationV1, DurableProviderEventV1, EventTraceMetadataV1,
     durable_provider_event, durable_provider_event_id,
@@ -101,6 +102,10 @@ pub use source_map::{
 pub use tool_audit::{
     TOOL_AUDIT_WIRE_VERSION, ToolAuditContractError, ToolAuditItemV1, ToolAuditResponseV1,
     tool_audit_response_from_str,
+};
+pub use worker_identity::{
+    WORKER_IDENTITY_ATTESTATION_VERSION, WorkerIdentityAttestationError,
+    WorkerIdentityAttestationV1, worker_identity_attestation_from_str,
 };
 
 /// Return the stable graph-class names exposed by the versioned Python seam.

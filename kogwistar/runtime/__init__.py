@@ -46,6 +46,7 @@ if TYPE_CHECKING:
         source_map_from_wire,
         source_map_to_wire,
     )
+    from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
     from kogwistar.runtime.contract import (
         BasePredicate,
         WorkflowEdgeInfo,
@@ -138,6 +139,7 @@ __all__ = [
     "WorkflowRuntime",
     "WorkflowSpec",
     "WorkflowStepExecutionStats",
+    "WorkerIdentityAttestationV1",
     "budget_event_from_dict",
     "budget_event_to_dict",
     "estimate_token_cost_usd",
@@ -161,6 +163,7 @@ _EXPORTS = {
     "WorkflowEdgeInfo": "kogwistar.runtime.contract",
     "WorkflowNodeInfo": "kogwistar.runtime.contract",
     "WorkflowSpec": "kogwistar.runtime.contract",
+    "WorkerIdentityAttestationV1": "kogwistar.runtime.worker_identity",
     "BaseWorkflowDesigner": "kogwistar.runtime.design",
     "WorkflowDesignArtifact": "kogwistar.runtime.models",
     "WorkflowInvocationRequest": "kogwistar.runtime.models",
