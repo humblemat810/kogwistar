@@ -963,7 +963,9 @@ impl ApplicationService for PostgresRunApplicationService {
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
         if method == "GET" && path == "/api/search_index_hybrid" {
-            return self.embedding_provider.is_some() && self.search_index_fts.is_some();
+            return self.embedding_provider.is_some()
+                && self.search_index_fts.is_some()
+                && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path));
         }
         FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             && !is_transport_owned_http_route(method, path)

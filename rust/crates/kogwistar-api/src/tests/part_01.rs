@@ -2068,6 +2068,9 @@
 
     #[tokio::test]
     async fn pending_routes_fail_closed_for_every_rust_service() {
+        use kogwistar_engine::embedding::{EmbeddingProfile, OllamaEmbeddingProvider};
+        use std::sync::Arc;
+
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-document-route-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -2078,6 +2081,36 @@
             "document_route_contract",
         )
         .unwrap();
+        let search_index_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-pending-search-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let configured_postgres = postgres
+            .clone()
+            .with_search_index_path(&search_index_path)
+            .unwrap()
+            .with_embedding_provider(Arc::new(
+                OllamaEmbeddingProvider::new(
+                    EmbeddingProfile {
+                        provider: "ollama".to_owned(),
+                        model: "pending-route-test".to_owned(),
+                        dimension: 2,
+                        similarity_metric: "cosine".to_owned(),
+                        endpoint_fingerprint: None,
+                        max_sequence_length: None,
+                        crop_token_budget: None,
+                        tokenizer_fingerprint: None,
+                        crop_policy: None,
+                        embedding_kind: Some("single_vector".to_owned()),
+                        model_revision: None,
+                        preprocessing_fingerprint: None,
+                        max_image_patches: None,
+                    },
+                    "http://127.0.0.1:1",
+                    std::time::Duration::from_secs(1),
+                )
+                .unwrap(),
+            ));
         assert!(postgres.supports_http_operation(
             "GET",
             "/api/workflow/runs/{run_id}/lineage"
@@ -2085,7 +2118,14 @@
         assert!(postgres.supports_http_operation("POST", "/api/document.upsert_tree"));
         assert!(!sqlite.supports_http_operation("POST", "/api/document.upsert_tree"));
 
-        for service in [&sqlite as &dyn ApplicationService, &postgres] {
+        assert!(!configured_postgres
+            .supports_http_operation("GET", "/api/search_index_hybrid"));
+
+        for service in [
+            &sqlite as &dyn ApplicationService,
+            &postgres,
+            &configured_postgres,
+        ] {
             for &(method, path) in PENDING_SERVER_CUTOVER_ROUTES {
                 assert!(
                     !service.supports_http_operation(method, path),
@@ -2133,6 +2173,8 @@
         ));
 
         drop(sqlite);
+        drop(configured_postgres);
+        let _ = std::fs::remove_file(search_index_path);
         remove_test_sqlite(&sqlite_path);
     }
 
