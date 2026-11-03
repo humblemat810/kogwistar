@@ -239,6 +239,49 @@ mod tests {
     }
 
     #[test]
+    fn update_and_delete_keep_external_content_fts_in_sync() {
+        let (request, _) = fixture();
+        let mut connection = open_index(":memory:").expect("open in-memory index");
+        upsert_entries(&mut connection, &request.index).expect("initial upsert");
+
+        let mut revised = request.index[0].clone();
+        revised.keywords = vec!["revisedtoken".to_owned()];
+        revised.aliases.clear();
+        upsert_entries(&mut connection, &[revised.clone()]).expect("update entry");
+
+        assert!(
+            search_fts(&connection, "authorization", 10)
+                .expect("query removed alias")
+                .iter()
+                .all(|hit| hit.node_id != revised.node_id)
+        );
+        assert!(
+            search_fts(&connection, "revisedtoken", 10)
+                .expect("query revised keyword")
+                .iter()
+                .any(|hit| hit.node_id == revised.node_id)
+        );
+
+        let index_key = kogwistar_contracts::make_search_index_key(
+            &revised.node_id,
+            &revised.canonical_title,
+            &revised.provision,
+        );
+        connection
+            .execute(
+                "DELETE FROM semantic_index WHERE index_key=?1",
+                [&index_key],
+            )
+            .expect("delete canonical row");
+        assert!(
+            search_fts(&connection, "revisedtoken", 10)
+                .expect("query deleted entry")
+                .iter()
+                .all(|hit| hit.node_id != revised.node_id)
+        );
+    }
+
+    #[test]
     fn opening_legacy_contentless_fts_database_migrates_and_rebuilds() {
         let path = std::env::temp_dir().join(format!(
             "kogwistar-search-index-legacy-{}.sqlite3",
