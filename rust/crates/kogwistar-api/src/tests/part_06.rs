@@ -9036,6 +9036,15 @@
             .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
             .await
             .unwrap();
+        let parse_mcp_sse = |body: &str| -> Value {
+            let data = body
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap_or_else(|| panic!("Streamable HTTP MCP response omitted a data event: {body:?}"));
+            serde_json::from_str(data).unwrap_or_else(|error| {
+                panic!("invalid Streamable HTTP MCP data event ({error}): {data}")
+            })
+        };
         let public_events_response = client
             .get(format!(
                 "{base_url}/api/runs/rust-only-answer-e2e/events/poll?after_seq=0&limit=10000"
@@ -9074,6 +9083,7 @@
         let mcp_events_response = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&token)
+            .header("accept", "application/json, text/event-stream")
             .json(&json!({
                 "jsonrpc":"2.0",
                 "id":71,
@@ -9090,12 +9100,20 @@
             .send()
             .await
             .unwrap();
+        let mcp_events_status = mcp_events_response.status();
+        let mcp_events_content_type = mcp_events_response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("<missing>")
+            .to_owned();
+        let mcp_events_body = mcp_events_response.text().await.unwrap();
         assert!(
-            mcp_events_response.status().is_success(),
-            "authorized workflow.run_events MCP call should expose the durable event stream"
+            mcp_events_status.is_success(),
+            "authorized workflow.run_events MCP call should expose the durable event stream; status={mcp_events_status}, content_type={mcp_events_content_type}, body={mcp_events_body}"
         );
-        let mcp_events: Value = mcp_events_response.json().await.unwrap();
-        let mcp_provider_event = mcp_events["result"]["events"]
+        let mcp_events = parse_mcp_sse(&mcp_events_body);
+        let mcp_provider_event = mcp_events["result"]["structuredContent"]["events"]
             .as_array()
             .unwrap()
             .iter()
@@ -9108,12 +9126,14 @@
         let mcp_tools_response = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&token)
+            .header("accept", "application/json, text/event-stream")
             .json(&json!({"jsonrpc":"2.0","id":70,"method":"tools/list"}))
             .send()
             .await
             .unwrap();
         assert!(mcp_tools_response.status().is_success());
-        let mcp_tools: Value = mcp_tools_response.json().await.unwrap();
+        let mcp_tools_body = mcp_tools_response.text().await.unwrap();
+        let mcp_tools = parse_mcp_sse(&mcp_tools_body);
         assert!(
             mcp_tools["result"]["tools"]
                 .as_array()
@@ -9125,6 +9145,7 @@
         let mcp_timeline_response = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&token)
+            .header("accept", "application/json, text/event-stream")
             .json(&json!({
                 "jsonrpc":"2.0",
                 "id":72,
@@ -9141,13 +9162,14 @@
             mcp_timeline_response.status().is_success(),
             "authorized workflow.process_timeline MCP call should expose durable run events"
         );
-        let mcp_timeline: Value = mcp_timeline_response.json().await.unwrap();
+        let mcp_timeline_body = mcp_timeline_response.text().await.unwrap();
+        let mcp_timeline = parse_mcp_sse(&mcp_timeline_body);
         assert_eq!(
-            mcp_timeline["result"]["run_id"],
+            mcp_timeline["result"]["structuredContent"]["run_id"],
             "rust-only-answer-e2e",
             "unexpected process-timeline MCP response: {mcp_timeline:#?}"
         );
-        let timeline_provider_event = mcp_timeline["result"]["events"]
+        let timeline_provider_event = mcp_timeline["result"]["structuredContent"]["events"]
             .as_array()
             .unwrap()
             .iter()
@@ -9183,12 +9205,14 @@
         let process_table_tools = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&process_table_token)
+            .header("accept", "application/json, text/event-stream")
             .json(&json!({"jsonrpc":"2.0","id":73,"method":"tools/list"}))
             .send()
             .await
             .unwrap();
         assert!(process_table_tools.status().is_success());
-        let process_table_tools: Value = process_table_tools.json().await.unwrap();
+        let process_table_tools_body = process_table_tools.text().await.unwrap();
+        let process_table_tools = parse_mcp_sse(&process_table_tools_body);
         assert!(process_table_tools["result"]["tools"]
             .as_array()
             .unwrap()
@@ -9202,6 +9226,7 @@
         let process_table_response = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&process_table_token)
+            .header("accept", "application/json, text/event-stream")
             .json(&json!({
                 "jsonrpc":"2.0",
                 "id":74,
@@ -9223,8 +9248,9 @@
             process_table_response.status().is_success(),
             "authorized process-table MCP call should succeed"
         );
-        let process_table: Value = process_table_response.json().await.unwrap();
-        let processes = process_table["result"]["processes"]
+        let process_table_body = process_table_response.text().await.unwrap();
+        let process_table = parse_mcp_sse(&process_table_body);
+        let processes = process_table["result"]["structuredContent"]["processes"]
             .as_array()
             .unwrap_or_else(|| panic!("unexpected process-table MCP response: {process_table:#?}"));
         let process = processes
@@ -9237,6 +9263,7 @@
         let blocked_runs_response = client
             .post(format!("{base_url}/mcp/workflow"))
             .bearer_auth(&process_table_token)
+            .header("accept", "application/json, text/event-stream")
             .json(&json!({
                 "jsonrpc":"2.0",
                 "id":75,
@@ -9253,8 +9280,9 @@
             blocked_runs_response.status().is_success(),
             "authorized blocked-runs MCP call should succeed"
         );
-        let blocked_runs: Value = blocked_runs_response.json().await.unwrap();
-        let blocked_processes = blocked_runs["result"]["processes"]
+        let blocked_runs_body = blocked_runs_response.text().await.unwrap();
+        let blocked_runs = parse_mcp_sse(&blocked_runs_body);
+        let blocked_processes = blocked_runs["result"]["structuredContent"]["processes"]
             .as_array()
             .unwrap_or_else(|| panic!("unexpected blocked-runs response: {blocked_runs:#?}"));
         assert!(
