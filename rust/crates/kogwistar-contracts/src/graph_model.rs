@@ -3286,6 +3286,39 @@ mod tests {
     }
 
     #[test]
+    fn persistent_hyperedge_typed_round_trip_preserves_edge_incidences() {
+        let graph_fixture = fixture();
+        let case = graph_fixture["cases"]
+            .as_array()
+            .expect("fixture cases")
+            .iter()
+            .find(|case| case["kind"] == "edge_with_edge_endpoints")
+            .expect("Python hyperedge fixture");
+        let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, case["payload"].clone());
+        let PersistentGraphEntityV1::Edge(edge) = envelope
+            .decode_persistent_v1()
+            .expect("valid persistent hyperedge DTO")
+        else {
+            panic!("expected Edge DTO for hyperedge");
+        };
+        let serialized = serde_json::to_value(edge).expect("serialize typed Rust hyperedge");
+        assert_eq!(
+            serialized["source_edge_ids"],
+            serde_json::json!(["parity-edge"])
+        );
+        assert_eq!(
+            serialized["target_edge_ids"],
+            serde_json::json!(["parity-edge-target"])
+        );
+        assert_eq!(
+            crate::canonical_json(&serialized, false),
+            case["canonical_json"]
+                .as_str()
+                .expect("Python canonical hyperedge JSON")
+        );
+    }
+
+    #[test]
     fn workflow_runtime_edge_matches_python_metadata_defaults_and_requirements() {
         let contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
