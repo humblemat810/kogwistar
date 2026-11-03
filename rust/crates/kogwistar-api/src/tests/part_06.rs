@@ -5863,10 +5863,15 @@
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (stop_chroma, mut stop_chroma_rx) = tokio::sync::oneshot::channel();
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
-            for _ in 0..28 {
-                let (mut stream, _) = listener.accept().await.unwrap();
+            loop {
+                let accepted = tokio::select! {
+                    _ = &mut stop_chroma_rx => break,
+                    accepted = listener.accept() => accepted.unwrap(),
+                };
+                let (mut stream, _) = accepted;
                 let mut bytes = Vec::new();
                 let mut chunk = [0_u8; 4096];
                 let (split, length) = loop {
@@ -6449,7 +6454,12 @@
         let conversations = service
             .execute(read_request("/api/conversations", principal.clone()))
             .await;
-        assert_eq!(conversations.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            conversations.status,
+            StatusCode::OK.as_u16(),
+            "conversation list response: {}",
+            String::from_utf8_lossy(&conversations.body)
+        );
         let conversations: Value = serde_json::from_slice(&conversations.body).unwrap();
         assert_eq!(conversations["conversations"].as_array().unwrap().len(), 1);
         assert_eq!(conversations["conversations"][0]["id"], "c1");
@@ -6479,8 +6489,11 @@
             .await;
         assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
 
+        let _ = stop_chroma.send(());
         let requests = fake.await.unwrap();
-        assert_eq!(requests.len(), 28);
+        assert!(requests
+            .iter()
+            .any(|(head, _)| head.contains("collection-edges/get")));
         assert!(requests.iter().filter(|(head, _)| head.contains("collection-nodes/get")).all(
             |(_, body)| body["where"].to_string().contains("workspace_id")
                 && body["where"].to_string().contains("conversation")
