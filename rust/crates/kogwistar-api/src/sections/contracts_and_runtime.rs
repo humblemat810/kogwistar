@@ -13,6 +13,7 @@ const INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE: &str =
     "/internal/conversation/context-snapshot";
 const INTERNAL_GRAPH_NEIGHBORS_ROUTE: &str = "/internal/graph/neighbors";
 const INTERNAL_GRAPH_VECTOR_QUERY_ROUTE: &str = "/internal/graph/vector-query";
+const INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE: &str = "/internal/graph/propose-vector";
 const INTERNAL_GRAPH_FIND_EDGES_ROUTE: &str = "/internal/graph/find-edges";
 const INTERNAL_GRAPH_SHORTEST_PATH_ROUTE: &str = "/internal/graph/shortest-path";
 const INTERNAL_GRAPH_K_HOP_ROUTE: &str = "/internal/graph/k-hop";
@@ -29,6 +30,7 @@ const INTERNAL_APPLICATION_EFFECT_ROUTES: &[&str] = &[
     INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE,
     INTERNAL_GRAPH_NEIGHBORS_ROUTE,
     INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
+    INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE,
     INTERNAL_GRAPH_FIND_EDGES_ROUTE,
     INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
     INTERNAL_GRAPH_K_HOP_ROUTE,

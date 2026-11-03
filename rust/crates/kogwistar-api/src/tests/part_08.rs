@@ -1154,6 +1154,53 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         );
     }
 
+    let proposals = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"propose-vector",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"propose_vector",
+                            "arguments":{
+                                "new_node_ids":["n1"],
+                                "top_k":10,
+                                "include_edges":false,
+                                "max_distance":0.35,
+                                "where":{"label":{"$ne":"private"}}
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proposals.status(), StatusCode::OK);
+    let proposals: Value =
+        serde_json::from_slice(&to_bytes(proposals.into_body(), 65_536).await.unwrap()).unwrap();
+    assert!(proposals.get("error").is_none(), "{proposals}");
+    assert_eq!(proposals["result"]["implementation_authority"], "rust");
+    assert_eq!(proposals["result"]["seam_crossings"], json!([]));
+    let proposal_pairs = proposals["result"]["pairs"].as_array().unwrap();
+    assert!(proposal_pairs.iter().any(|pair| {
+        pair["left_id"] == "n1" && pair["right_id"] == "n2"
+    }));
+    assert!(proposal_pairs.iter().all(|pair| {
+        pair["left_id"] != "n3" && pair["right_id"] != "n3"
+    }));
+
     let vector_query = app
         .oneshot(
             Request::builder()
@@ -1183,9 +1230,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(vector_query.status(), StatusCode::OK);
     let vector_query: Value =
         serde_json::from_slice(&to_bytes(vector_query.into_body(), 65_536).await.unwrap()).unwrap();
-    assert_eq!(vector_query["ids"], json!([["n1", "n2"], ["n2", "n1"]]));
-    assert_eq!(vector_query["distances"][0].as_array().unwrap().len(), 2);
-    assert_eq!(vector_query["distances"][1].as_array().unwrap().len(), 2);
+    // The nearest ACL-denied node consumes a top-K slot; Rust matches Python
+    // by filtering it without backfilling from farther candidates.
+    assert_eq!(vector_query["ids"], json!([["n1"], ["n2"]]));
+    assert_eq!(vector_query["distances"][0].as_array().unwrap().len(), 1);
+    assert_eq!(vector_query["distances"][1].as_array().unwrap().len(), 1);
     assert!(vector_query.get("documents").is_none());
 }
 

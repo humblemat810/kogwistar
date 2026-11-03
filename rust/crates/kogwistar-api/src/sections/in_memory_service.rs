@@ -24,6 +24,7 @@ impl InMemoryGraphApplicationService {
                 | "kg_shortest_path"
                 | "kg_viz_cytoscape_json"
                 | "kg_viz_d3_json"
+                | "propose_vector"
         )
     }
 
@@ -86,6 +87,9 @@ impl InMemoryGraphApplicationService {
     async fn graph_read_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
             return self.graph_vector_query_effect(request).await;
+        }
+        if request.path_and_query == INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE {
+            return self.graph_vector_proposal_effect(request).await;
         }
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
@@ -226,6 +230,181 @@ impl InMemoryGraphApplicationService {
         json_effect(StatusCode::OK, rust_native_attested(result))
     }
 
+    // Mirrors Python's propose_vector contract for the in-memory backend only;
+    // PostgreSQL and SQLite+Chroma remain unadvertised until their snapshots
+    // can provide the same pre-top-K filtering and ACL guarantees.
+    async fn graph_vector_proposal_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let scope = match self.authorized_graph_scope(request) {
+            Ok(scope) => scope,
+            Err(response) => return response,
+        };
+        let input = match GraphVectorProposalRequest::parse(&request.body) {
+            Ok(input) => input,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let where_filter = input
+            .where_filter
+            .as_ref()
+            .filter(|value| value.is_object());
+        let validation = json!({"metadata": {}, "where": where_filter});
+        if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+            &validation.to_string(),
+        ) {
+            return invalid_graph_request(error.to_string());
+        }
+        let (all_nodes, all_edges) = match self.graph_snapshot(scope.clone()).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let scope_value = security_scope_value(&request.principal);
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
+            &all_nodes,
+            &all_edges,
+            "knowledge",
+            &principal,
+        );
+        let visible_node_ids = visible_nodes
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let visible_edge_ids = visible_edges
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let node_seeds = selected_proposal_seeds(&all_nodes, input.new_node_ids.as_deref());
+        let edge_seeds = selected_proposal_seeds(&all_edges, input.new_edge_ids.as_deref());
+        let mut pairs = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (seed, seed_kind) in node_seeds
+            .into_iter()
+            .map(|record| (record, "node"))
+            .chain(edge_seeds.into_iter().map(|record| (record, "edge")))
+        {
+            if seed.metadata.get("entity_type").and_then(Value::as_str) == Some("acl_record") {
+                continue;
+            }
+            if !(if seed_kind == "node" {
+                visible_node_ids.contains(seed.id.as_str())
+            } else {
+                visible_edge_ids.contains(seed.id.as_str())
+            }) {
+                continue;
+            }
+            let Some(query) = seed.embedding.as_deref() else {
+                continue;
+            };
+            let seed_doc = proposal_doc_id(seed);
+            for (candidates, candidate_kind) in [
+                (all_nodes.as_slice(), "node"),
+                (all_edges.as_slice(), "edge"),
+            ] {
+                if candidate_kind == "edge" && !input.include_edges {
+                    continue;
+                }
+                let mut ranked = Vec::new();
+                for candidate in candidates {
+                    if candidate.metadata.get("entity_type").and_then(Value::as_str)
+                        == Some("acl_record")
+                    {
+                        continue;
+                    }
+                    if candidate_kind == "node" && candidate.id == seed.id {
+                        continue;
+                    }
+                    if candidate
+                        .metadata
+                        .get("lifecycle_status")
+                        .and_then(Value::as_str)
+                        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                    {
+                        continue;
+                    }
+                    let where_matches = match proposal_where_matches(candidate, where_filter) {
+                        Ok(matches) => matches,
+                        Err(error) => return invalid_graph_request(error),
+                    };
+                    if !where_matches {
+                        continue;
+                    }
+                    let candidate_doc = proposal_doc_id(candidate);
+                    if input.allowed_docs.as_ref().is_some_and(|docs| {
+                        !docs.is_empty()
+                            && candidate_doc.is_none_or(|doc| !docs.iter().any(|d| d == doc))
+                    }) {
+                        continue;
+                    }
+                    if input.cross_doc_only
+                        && seed_doc.is_some()
+                        && seed_doc == candidate_doc
+                    {
+                        continue;
+                    }
+                    if input.anchor_doc_id.as_ref().is_some_and(|anchor| {
+                        input.anchor_only
+                            && seed_doc != Some(anchor.as_str())
+                            && candidate_doc != Some(anchor.as_str())
+                    }) {
+                        continue;
+                    }
+                    let Some(distance) = proposal_cosine_distance(query, candidate.embedding.as_deref()) else {
+                        continue;
+                    };
+                    let in_threshold = if input.score_mode == "distance" {
+                        distance <= input.max_distance
+                    } else {
+                        distance >= input.min_similarity
+                    };
+                    if in_threshold {
+                        ranked.push((candidate, distance));
+                    }
+                }
+                ranked.sort_by(|left, right| left.1.total_cmp(&right.1));
+                for (candidate, _) in ranked.into_iter().take(input.top_k) {
+                    let candidate_visible = if candidate_kind == "node" {
+                        visible_node_ids.contains(candidate.id.as_str())
+                    } else {
+                        visible_edge_ids.contains(candidate.id.as_str())
+                    };
+                    if !candidate_visible {
+                        continue;
+                    }
+                    let (left, right, left_kind, right_kind) =
+                        if seed.id <= candidate.id {
+                            (&seed.id, &candidate.id, seed_kind, candidate_kind)
+                        } else {
+                            (&candidate.id, &seed.id, candidate_kind, seed_kind)
+                        };
+                    let key = (left.clone(), right.clone());
+                    if seen.insert(key) {
+                        pairs.push(json!({
+                            "left_id": left,
+                            "left_kind": left_kind,
+                            "right_id": right,
+                            "right_kind": right_kind,
+                        }));
+                    }
+                }
+            }
+        }
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"pairs": pairs})),
+        )
+    }
+
     async fn graph_vector_query_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
@@ -297,7 +476,9 @@ impl InMemoryGraphApplicationService {
             let matches = matches
                 .into_iter()
                 .filter(|matched| {
-                    !matched
+                    matched.record.metadata.get("entity_type").and_then(Value::as_str)
+                        != Some("acl_record")
+                        && !matched
                         .record
                         .metadata
                         .get("lifecycle_status")
@@ -461,6 +642,76 @@ fn invalid_graph_request(message: String) -> ApiEffectResponse {
     )
 }
 
+fn selected_proposal_seeds<'a>(
+    records: &'a [GraphRecord],
+    selected_ids: Option<&[String]>,
+) -> Vec<&'a GraphRecord> {
+    let by_id = records
+        .iter()
+        .map(|record| (record.id.as_str(), record))
+        .collect::<BTreeMap<_, _>>();
+    match selected_ids {
+        Some(ids) => ids
+            .iter()
+            .filter_map(|id| by_id.get(id.as_str()).copied())
+            .collect(),
+        None => records.iter().collect(),
+    }
+}
+
+fn proposal_doc_id(record: &GraphRecord) -> Option<&str> {
+    record
+        .metadata
+        .get("doc_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            record
+                .metadata
+                .get("doc_ids")
+                .and_then(Value::as_array)
+                .and_then(|ids| ids.first())
+                .and_then(Value::as_str)
+        })
+}
+
+fn proposal_where_matches(
+    record: &GraphRecord,
+    where_filter: Option<&Value>,
+) -> Result<bool, String> {
+    let payload = json!({
+        "metadata": record.metadata,
+        "where": where_filter,
+    });
+    kogwistar_contracts::metadata_filter_matches_from_str(&payload.to_string())
+        .map_err(|error| error.to_string())
+}
+
+fn proposal_cosine_distance(query: &[f32], candidate: Option<&[f32]>) -> Option<f64> {
+    let candidate = candidate?;
+    if query.len() != candidate.len()
+        || query.iter().chain(candidate).any(|value| !value.is_finite())
+    {
+        return None;
+    }
+    let (dot, query_norm, candidate_norm) = query.iter().zip(candidate).fold(
+        (0.0, 0.0, 0.0),
+        |(dot, query_norm, candidate_norm), (left, right)| {
+            let left = f64::from(*left);
+            let right = f64::from(*right);
+            (
+                dot + left * right,
+                query_norm + left * left,
+                candidate_norm + right * right,
+            )
+        },
+    );
+    if query_norm == 0.0 || candidate_norm == 0.0 {
+        Some(2.0)
+    } else {
+        Some(1.0 - dot / (query_norm.sqrt() * candidate_norm.sqrt()))
+    }
+}
+
 impl ApplicationService for InMemoryGraphApplicationService {
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {
         self.store.graph_authority_capability()
@@ -498,6 +749,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
                     | Some(INTERNAL_GRAPH_NEIGHBORS_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
+                    | Some(INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
                     | Some(INTERNAL_GRAPH_K_HOP_ROUTE)
@@ -520,6 +772,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 request.path_and_query.as_str(),
                 INTERNAL_GRAPH_NEIGHBORS_ROUTE
                     | INTERNAL_GRAPH_VECTOR_QUERY_ROUTE
+                    | INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE
                     | INTERNAL_GRAPH_FIND_EDGES_ROUTE
                     | INTERNAL_GRAPH_SHORTEST_PATH_ROUTE
                     | INTERNAL_GRAPH_K_HOP_ROUTE

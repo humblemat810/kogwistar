@@ -301,6 +301,13 @@ async fn mcp_handler(
                 body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
                 principal: principal.clone(),
             }),
+            "propose_vector" => Some(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE.to_owned(),
+                body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
+                principal: principal.clone(),
+            }),
             "kg_shortest_path" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),

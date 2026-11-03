@@ -141,6 +141,87 @@ struct GraphVectorQueryRequest {
     include: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GraphVectorProposalRequest {
+    #[serde(default)]
+    new_node_ids: Option<Vec<String>>,
+    #[serde(default)]
+    new_edge_ids: Option<Vec<String>>,
+    #[serde(default = "default_graph_vector_n_results")]
+    top_k: usize,
+    #[serde(default = "default_graph_vector_score_mode")]
+    score_mode: String,
+    #[serde(default = "default_graph_vector_max_distance")]
+    max_distance: f64,
+    #[serde(default = "default_graph_vector_min_similarity")]
+    min_similarity: f64,
+    #[serde(default = "default_graph_vector_include_edges")]
+    include_edges: bool,
+    #[serde(default)]
+    allowed_docs: Option<Vec<String>>,
+    #[serde(default)]
+    anchor_doc_id: Option<String>,
+    #[serde(default)]
+    cross_doc_only: bool,
+    #[serde(default = "default_graph_vector_anchor_only")]
+    anchor_only: bool,
+    #[serde(default, rename = "where")]
+    where_filter: Option<Value>,
+}
+
+fn default_graph_vector_score_mode() -> String {
+    "distance".to_owned()
+}
+
+fn default_graph_vector_max_distance() -> f64 {
+    0.35
+}
+
+fn default_graph_vector_min_similarity() -> f64 {
+    0.65
+}
+
+fn default_graph_vector_include_edges() -> bool {
+    true
+}
+
+fn default_graph_vector_anchor_only() -> bool {
+    true
+}
+
+impl GraphVectorProposalRequest {
+    fn parse(body: &[u8]) -> Result<Self, String> {
+        let input: Self = serde_json::from_slice(body).map_err(|error| error.to_string())?;
+        if !(1..=1000).contains(&input.top_k) {
+            return Err("top_k must be between 1 and 1000".to_owned());
+        }
+        if !matches!(input.score_mode.as_str(), "distance" | "similarity") {
+            return Err("score_mode must be 'distance' or 'similarity'".to_owned());
+        }
+        if !input.max_distance.is_finite() || !input.min_similarity.is_finite() {
+            return Err("score thresholds must be finite numbers".to_owned());
+        }
+        for (field, ids) in [
+            ("new_node_ids", input.new_node_ids.as_ref()),
+            ("new_edge_ids", input.new_edge_ids.as_ref()),
+        ] {
+            if ids.is_some_and(|values| {
+                values.len() > 10_000 || values.iter().any(|id| id.trim().is_empty())
+            }) {
+                return Err(format!("{field} must contain at most 10000 non-empty IDs"));
+            }
+        }
+        if input
+            .allowed_docs
+            .as_ref()
+            .is_some_and(|docs| docs.iter().any(|doc| doc.trim().is_empty()))
+        {
+            return Err("allowed_docs must contain non-empty document IDs".to_owned());
+        }
+        Ok(input)
+    }
+}
+
 fn default_graph_vector_n_results() -> usize {
     10
 }

@@ -855,6 +855,7 @@ impl ApplicationService for PostgresRunApplicationService {
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         rust_mcp_tool_supported(surface, name)
+            && name != "propose_vector"
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
             && (name != "wisdom.kg_upsert_graph"
                 || (self.embedding_provider.is_some()
@@ -922,7 +923,8 @@ impl ApplicationService for PostgresRunApplicationService {
             | "kg_shortest_path"
             | "kg_semantic_seed_then_expand_text"
             | "kg_viz_cytoscape_json"
-            | "kg_viz_d3_json" => Some("docs"),
+            | "kg_viz_d3_json"
+            | "propose_vector" => Some("docs"),
             "wisdom.semantic_seed_then_expand" => Some("wisdom"),
             _ => None,
         };
