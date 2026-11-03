@@ -188,7 +188,75 @@
         assert_eq!(result["operation"], "emit-result");
         assert_eq!(result["schema_version"], 1);
 
+        let before_restart_events = service
+            .store
+            .list_server_run_events("pg-native-run", 0, 100)
+            .await
+            .unwrap();
+        let counter_transition = before_restart_events
+            .iter()
+            .find(|event| {
+                if event.event_type != "workflow.recorded_transition.v1" {
+                    return false;
+                }
+                serde_json::from_str::<Value>(&event.payload_json)
+                    .map(|payload| payload["reduced"]["state"]["state"]["counter"] == 2)
+                    .unwrap_or(false)
+            })
+            .expect("counter transition must be durably recorded before restart");
+        let counter_payload: Value =
+            serde_json::from_str(&counter_transition.payload_json).unwrap();
+        assert_eq!(counter_payload["reduced"]["state"]["state"]["counter"], 2);
+        let expected_state_digest = counter_payload["reduced"]["state_digest"]
+            .as_str()
+            .expect("recorded state must carry its canonical digest")
+            .to_owned();
+
         drop(service);
+        let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        reopened.ensure_schema().await.unwrap();
+        let reopened_run = reopened
+            .store
+            .get_server_run("pg-native-run")
+            .await
+            .unwrap()
+            .expect("completed native run must survive service reconstruction");
+        assert_eq!(reopened_run.status, "succeeded");
+        let reopened_result: Value = serde_json::from_str(
+            reopened_run
+                .result_json
+                .as_deref()
+                .expect("reopened run must retain its terminal result"),
+        )
+        .unwrap();
+        assert_eq!(reopened_result["operation"], "emit-result");
+        let reopened_events = reopened
+            .store
+            .list_server_run_events("pg-native-run", 0, 100)
+            .await
+            .unwrap();
+        let reopened_counter = reopened_events
+            .iter()
+            .find(|event| {
+                if event.event_type != "workflow.recorded_transition.v1" {
+                    return false;
+                }
+                serde_json::from_str::<Value>(&event.payload_json)
+                    .map(|payload| payload["reduced"]["state"]["state"]["counter"] == 2)
+                    .unwrap_or(false)
+            })
+            .expect("counter transition must survive service reconstruction");
+        let reopened_counter_payload: Value =
+            serde_json::from_str(&reopened_counter.payload_json).unwrap();
+        assert_eq!(
+            reopened_counter_payload["reduced"]["state"]["state"]["counter"],
+            2
+        );
+        assert_eq!(
+            reopened_counter_payload["reduced"]["state_digest"],
+            expected_state_digest
+        );
+        drop(reopened);
         let cleanup_dsn = dsn
             .strip_prefix("postgresql+psycopg://")
             .map(|rest| format!("postgresql://{rest}"))
