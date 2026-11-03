@@ -6233,6 +6233,19 @@ impl PostgresRunApplicationService {
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_VECTOR_QUERY_ROUTE {
             return self.graph_vector_query_effect(&request).await;
         }
+        if request.method == "POST"
+            && request.path_and_query.split('?').next() == Some("/api/add_index_entries")
+        {
+            return crate::search_index_fts::search_index_upsert_effect(
+                &request,
+                &self.capabilities,
+                &self.store,
+                &self.store,
+                self.search_index_fts.as_deref(),
+                self.embedding_provider.as_deref(),
+            )
+            .await;
+        }
         if request.method == "GET"
             && request.path_and_query.split('?').next() == Some("/api/search_index_hybrid")
         {

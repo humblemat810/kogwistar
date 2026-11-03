@@ -962,6 +962,11 @@ impl ApplicationService for PostgresRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "POST" && path == "/api/add_index_entries" {
+            return self.embedding_provider.is_some()
+                && self.search_index_fts.is_some()
+                && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path));
+        }
         if method == "GET" && path == "/api/search_index_hybrid" {
             return self.embedding_provider.is_some()
                 && self.search_index_fts.is_some()
@@ -1380,6 +1385,12 @@ impl ApplicationService for SqliteRunApplicationService {
             && self.embedding_provider.is_some()
             && self.chroma_graph.is_some()
             && self.chroma_node_index.is_some();
+        let is_composed_search_index_admission = method == "POST"
+            && path == "/api/add_index_entries"
+            && self.search_index_fts.is_some()
+            && self.embedding_provider.is_some()
+            && self.chroma_graph.is_some()
+            && self.chroma_node_index.is_some();
         if method == "GET" && path == "/api/search_index_hybrid" && !is_composed_search_index {
             return false;
         }
@@ -1430,7 +1441,8 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_conversation_list
             || is_composed_conversation_create
             || is_composed_conversation_answer
-            || is_composed_search_index)
+            || is_composed_search_index
+            || is_composed_search_index_admission)
             && !is_transport_owned_http_route(method, path)
             && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, path))
             && (path != "/api/workflow/runs/{run_id}/lineage"
@@ -1446,7 +1458,8 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_conversation_list
                 || is_composed_conversation_create
                 || is_composed_conversation_answer
-                || is_composed_search_index)
+                || is_composed_search_index
+                || is_composed_search_index_admission)
     }
 
     fn execute(
@@ -1454,6 +1467,31 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST"
+                && request.path_and_query.split('?').next() == Some("/api/add_index_entries")
+                && self.supports_http_operation("POST", "/api/add_index_entries")
+            {
+                let (Some(index_store), Some(fts), Some(provider)) = (
+                    self.chroma_node_index.as_ref(),
+                    self.search_index_fts.as_ref(),
+                    self.embedding_provider.as_deref(),
+                ) else {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_SEARCH_INDEX_UNAVAILABLE",
+                        "Search-index event, FTS, vector, or embedding services are not configured",
+                    );
+                };
+                return crate::search_index_fts::search_index_upsert_effect(
+                    &request,
+                    &self.capabilities,
+                    &self.store,
+                    index_store,
+                    Some(fts),
+                    Some(provider),
+                )
+                .await;
+            }
             if request.method == "GET"
                 && request.path_and_query.split('?').next()
                     == Some("/api/search_index_hybrid")

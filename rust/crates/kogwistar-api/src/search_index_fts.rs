@@ -6,7 +6,8 @@ use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
 use kogwistar_contracts::{
-    SearchIndexEntryV1, build_search_index_embedding_text, make_search_index_key,
+    SearchIndexEntryV1, SearchIndexUpsertV1, build_search_index_embedding_text,
+    make_search_index_key,
 };
 use kogwistar_engine::embedding::EmbeddingProvider;
 use kogwistar_store::{
@@ -355,6 +356,86 @@ pub struct SearchIndexAdmissionSummary {
     pub entries_admitted: usize,
     pub events_projected: usize,
     pub last_event_seq: i64,
+}
+
+/// Authenticated HTTP admission shared by the native backend services.
+/// The graph namespace is derived from verified principal scope, never from
+/// request JSON, so callers cannot redirect durable index events.
+///
+/// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_upsert_effect; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_upsert_effect_requires_write_scope_and_matches_python_response; python_test=tests/core/test_search_index_contract.py#test_search_index_entries_match_shared_rust_golden_fixture
+pub(crate) async fn search_index_upsert_effect<E, V>(
+    request: &crate::ApiEffectRequest,
+    capabilities: &crate::SharedCapabilityState,
+    event_store: &E,
+    vector_store: &V,
+    fts: Option<&std::sync::Mutex<Connection>>,
+    provider: Option<&dyn EmbeddingProvider>,
+) -> crate::ApiEffectResponse
+where
+    E: EventReadStore + EventWriteStore,
+    V: NodeIndexStore,
+{
+    let scope = crate::security_scope_value(&request.principal);
+    let namespace = scope["storage_namespace"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty());
+    let namespace_authorized = namespace.is_some_and(|namespace| {
+        crate::principal_strings(&request.principal, "ns")
+            .iter()
+            .any(|allowed| allowed == namespace || allowed == "*")
+    });
+    if crate::principal_role(&request.principal) != "rw"
+        || !namespace_authorized
+        || !crate::capability_allowed(request, capabilities, "write_graph", &["write_graph"])
+    {
+        return crate::effect_error(
+            axum::http::StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Search-index admission requires write_graph capability and an authorized storage namespace",
+        );
+    }
+    let input: SearchIndexUpsertV1 = match serde_json::from_slice(&request.body) {
+        Ok(input) => input,
+        Err(error) => {
+            return crate::effect_error(
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
+        }
+    };
+    if input.index.is_empty() {
+        return crate::json_effect(axum::http::StatusCode::OK, serde_json::json!({"ok": true}));
+    }
+    let (Some(fts), Some(provider), Some(namespace)) = (fts, provider, namespace) else {
+        return crate::effect_error(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "KOGWISTAR_SEARCH_INDEX_UNAVAILABLE",
+            "Search-index event, FTS, vector, or embedding services are not configured",
+        );
+    };
+    match admit_search_index_entries(
+        event_store,
+        vector_store,
+        fts,
+        provider,
+        namespace,
+        &input.index,
+    )
+    .await
+    {
+        Ok(_) => crate::json_effect(axum::http::StatusCode::OK, serde_json::json!({"ok": true})),
+        Err(error @ StoreError::InvalidEntityEventPayload { .. }) => crate::effect_error(
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        ),
+        Err(error) => crate::effect_error(
+            axum::http::StatusCode::BAD_GATEWAY,
+            "KOGWISTAR_SEARCH_INDEX_ADMISSION_FAILED",
+            error.to_string(),
+        ),
+    }
 }
 
 /// Durably admit search-index entries, then project through their event
@@ -1010,6 +1091,117 @@ mod tests {
                 .len(),
             1,
             "same namespace and entry must not append duplicate events"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_index_upsert_effect_requires_write_scope_and_matches_python_response() {
+        let (upsert, _) = fixture();
+        let body = serde_json::to_vec(&upsert).expect("fixture request serializes");
+        let store = InMemoryStore::default();
+        let fts = Mutex::new(open_index(":memory:").expect("open lexical index"));
+        let provider = FixedEmbeddingProvider {
+            profile: EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "fixed-test-embedding".to_owned(),
+                dimension: 2,
+                similarity_metric: "COSINE".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+        };
+        let capabilities = Arc::new(Mutex::new(crate::CapabilityState::default()));
+
+        let denied = super::search_index_upsert_effect(
+            &crate::ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/add_index_entries".to_owned(),
+                body: body.clone(),
+                principal: serde_json::json!({
+                    "sub": "reader",
+                    "role": "ro",
+                    "ns": ["docs"],
+                    "storage_ns": "docs",
+                    "capabilities": ["read_graph"]
+                }),
+            },
+            &capabilities,
+            &store,
+            &store,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(denied.status, axum::http::StatusCode::FORBIDDEN.as_u16());
+
+        let wrong_namespace = super::search_index_upsert_effect(
+            &crate::ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/add_index_entries".to_owned(),
+                body: body.clone(),
+                principal: serde_json::json!({
+                    "sub": "writer",
+                    "role": "rw",
+                    "ns": ["other"],
+                    "storage_ns": "docs",
+                    "capabilities": ["write_graph"]
+                }),
+            },
+            &capabilities,
+            &store,
+            &store,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            wrong_namespace.status,
+            axum::http::StatusCode::FORBIDDEN.as_u16()
+        );
+
+        let accepted = super::search_index_upsert_effect(
+            &crate::ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/add_index_entries".to_owned(),
+                body,
+                principal: serde_json::json!({
+                    "sub": "writer",
+                    "role": "rw",
+                    "ns": ["docs"],
+                    "storage_ns": "docs",
+                    "capabilities": ["write_graph"]
+                }),
+            },
+            &capabilities,
+            &store,
+            &store,
+            Some(&fts),
+            Some(&provider),
+        )
+        .await;
+        assert_eq!(accepted.status, axum::http::StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&accepted.body).expect("response JSON"),
+            serde_json::json!({"ok": true})
+        );
+        let events = EventReadStore::replay_events(&store, "docs", 0, 10)
+            .await
+            .expect("events are written only to the authorized namespace");
+        assert_eq!(events.len(), upsert.index.len());
+        assert!(
+            events
+                .iter()
+                .all(|event| event.entity_kind == "search_index")
         );
     }
 
