@@ -1445,6 +1445,79 @@ async def test_postgres_two_stage_async_rust_authority_rolls_back_event_and_stag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_postgres_two_stage_async_rust_admission_rolls_back_index_job(
+    async_pg_backend, monkeypatch, entity_kind: str
+) -> None:
+    for selector in (
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+    ):
+        monkeypatch.setenv(selector, "rust")
+    engine = GraphKnowledgeEngine(
+        backend=async_pg_backend,
+        persistence_mode="two_stage",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+    )
+    entity_id = f"async-rust-index-admission-{entity_kind}"
+    if entity_kind == "edge":
+        for node_id in ("async-index-source", "async-index-target"):
+            await engine.async_add_node(
+                build_entity_node(node_id=node_id, doc_id="d1", embedding=None)
+            )
+
+    adapter = engine.async_two_stage_projection_adapter
+    enqueue = adapter.enqueue_embedding_job
+
+    def fail_after_enqueue(*, entity_kind: str, entity_id: str, op: str) -> None:
+        enqueue(entity_kind=entity_kind, entity_id=entity_id, op=op)
+        raise RuntimeError("injected async embedding-job admission failure")
+
+    monkeypatch.setattr(adapter, "enqueue_embedding_job", fail_after_enqueue)
+    try:
+        with pytest.raises(
+            RuntimeError, match="injected async embedding-job admission failure"
+        ):
+            if entity_kind == "node":
+                await engine.async_add_node(
+                    build_entity_node(node_id=entity_id, doc_id="d1", embedding=None)
+                )
+            else:
+                await engine.async_add_edge(
+                    build_relationship_edge(
+                        edge_id=entity_id,
+                        src="async-index-source",
+                        tgt="async-index-target",
+                        doc_id="d1",
+                        embedding=None,
+                    )
+                )
+
+        events = list(
+            engine.metadata.iter_entity_events(namespace="default", from_seq=1)
+        )
+        assert not any(
+            event[1] == entity_kind and event[2] == entity_id for event in events
+        )
+        assert (
+            await async_pg_backend.stage1_projection_get_async(
+                namespace="default",
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            is None
+        )
+        assert engine.metadata.list_index_jobs(
+            namespace="default",
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+        ) == []
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
 async def test_postgres_two_stage_async_rust_authority_rejects_stale_inflight_promotion(
     async_pg_backend, monkeypatch
 ) -> None:
