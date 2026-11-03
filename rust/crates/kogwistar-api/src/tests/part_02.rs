@@ -541,10 +541,11 @@
             .iter()
             .filter(|tool| rust_mcp_tool_supported("root", tool["name"].as_str().unwrap()))
             .count();
-        assert_eq!(root_supported, 10);
+        assert_eq!(root_supported, 11);
         assert!(rust_mcp_tool_supported("root", "kg_find_edges"));
         assert!(rust_mcp_tool_supported("root", "kg_k_hop"));
         assert!(rust_mcp_tool_supported("root", "kg_neighbors"));
+        assert!(rust_mcp_tool_supported("root", "propose_vector"));
         assert!(rust_mcp_tool_supported(
             "root",
             "kg_semantic_seed_then_expand_text"
