@@ -3100,6 +3100,7 @@ impl SqliteRunApplicationService {
         ))
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#sqlite_search_index_hybrid_effect; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_06.rs#sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered; python_test=tests/core/test_search_index_acl.py#test_hybrid_search_filters_private_index_entries_by_graph_acl
     async fn sqlite_search_index_hybrid_effect(
         &self,
         request: &ApiEffectRequest,

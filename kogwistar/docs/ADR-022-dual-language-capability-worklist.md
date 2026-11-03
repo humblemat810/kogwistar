@@ -3,6 +3,12 @@
 **Updated:** 2026-11-03
 **Purpose:** Track bounded work beneath the coarse gates in [ADR-022-dual-language-capability-checklist.md](ADR-022-dual-language-capability-checklist.md).
 
+## Completion Snapshot
+
+- **Coarse checklist:** **154/177 PASS (87.0%)**.
+- **Fine worklist:** **3/47 PASS (6.4%)**; **1 IN PROGRESS**, **43 NOT STARTED**.
+- The route-protocol regression is now closed as one bounded task, while the live-Chroma route smoke is tracked separately. This is a one-time correction for that distinct deliverable, not newly discovered product scope. A granularity audit of the other rows remains open; do not claim the list is fully leaf-level until that audit is complete. Fine tasks are a breakdown of the 23 open coarse gates, not new coarse items.
+
 ## How To Track
 
 - This is the detailed execution list; the linked checklist remains the sole coarse progress and denominator source.
@@ -10,19 +16,15 @@
 - This is a first-pass decomposition of all open coarse gates, not yet a proven exhaustive leaf-level inventory of every code/test action. Rows marked as broad inventory or matrix work must be expanded into concrete child tasks before that row is started; do not silently treat an umbrella row as a completed implementation plan.
 - A fine task reaches `PASS` only when its stated acceptance evidence is recorded here or linked from its referenced test/report. Tests must exercise the named behavior, not merely compile the surrounding code.
 - Close a coarse ID only when its original exit criteria and all mapped required fine tasks pass. Do not reopen a passed coarse ID without a reproduced regression or new required contract.
-- Keep tasks at this slice size. If a task proves unexpectedly broad, split it only after recording the concrete blocker and preserve the original fine ID as a parent; do not expand scope speculatively.
+- A countable fine task must have one independently testable outcome, an explicit evidence target, and a bounded stopping point that can ordinarily be completed in one focused work session. Do not count a multi-backend inventory, whole conformance suite, or broad parity matrix as one leaf task. Complete the current granularity audit once; thereafter freeze the denominator unless an approved requirement changes.
+- If a task proves unexpectedly broad, preserve its original ID as a non-counted parent and split only the concrete remaining outcomes; do not expand scope speculatively.
 
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 
-## Dual Progress Reporting
-
-- **Coarse completion:** coarse checklist `PASS` count divided by its fixed total. Current: **154/177 = 87.0%**.
-- **Fine completion:** fine task `PASS` count divided by the current fine-task total. Current: **2/46 = 4.3%**. This is closure progress for the newly established residual-work tracker, not a claim that none of the underlying code or tests exist.
-- Report both numbers together. Do not average them, combine their denominators, or treat fine tasks as new coarse checklist items. When a parent work package is split, preserve the parent as a non-counted heading and count only its active child tasks in the fine denominator.
-
 | Fine ID | Coarse ID | Status | Bounded task and acceptance evidence |
 | --- | --- | --- | --- |
-| FW-02-01 | DL-02 | NOT STARTED | Complete the public search-index route matrix for configured PostgreSQL and SQLite+Chroma. Verify authentication, ACL denial, namespace isolation, and backend-unavailable behavior with focused HTTP tests. |
+| FW-02-01 | DL-02 | PASS | The SQLite+Chroma authenticated HTTP protocol/authorization route contract is covered in `tests::sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered`: successful canonical node resolution, missing-`read_graph` denial, fail-closed foreign-namespace handling, and metadata-only service rejection with `501 KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER` (**1 passed**). Paired Python ACL/fusion/fixture tests: **5 passed**. |
+| FW-02-01B | DL-02 | IN PROGRESS | Add a live-Chroma public-route smoke with the same request, scope, and ACL expectations as the fake-endpoint route test. CI pins `chromadb/chroma:1.5.9`; local Docker currently has no Chroma service running. Keep this as one bounded integration test and do not duplicate the already-passing fake-endpoint cases. |
 | FW-02-02 | DL-02 | NOT STARTED | Resolve the remaining write-route contract, including `POST /api/search_index_hybrid`/add-index behavior and deferred syscall gaps. Add paired Python/Rust request-response tests before advertising each path. |
 | FW-03-01 | DL-03 | NOT STARTED | Inventory public operations claimed by the capability crosswalk and map each to an executable Python/Rust evidence test; fail the drift test when a claimed operation lacks evidence. |
 | FW-03-02 | DL-03 | NOT STARTED | Run the required per-operation conformance suite for the advertised routes and record the exact pass/unsupported set; retain `not-verified` for any untested route. |
@@ -71,4 +73,4 @@
 
 ## Current Snapshot
 
-The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 46 tasks; 2 are `PASS` and 44 remain open. Mapping coverage is complete, but leaf-level exhaustiveness is not yet verified; refine umbrella inventory/matrix tasks before starting them. Update the two percentages whenever either list changes, and keep the linked coarse inventory as the authority for coarse status.
+The coarse checklist currently has 23 `IN PROGRESS` IDs. This worklist maps all 23 to 47 counted tasks; 3 are `PASS`, 1 is `IN PROGRESS`, and 43 are `NOT STARTED`. DL-02's protocol/authorization route contract is closed; live Chroma HTTP route evidence is separately active. Granularity for the other coarse gates remains under audit; refine broad rows before starting them, then freeze the denominator. Keep the completion snapshot at the top synchronized whenever either list changes, and keep the linked coarse inventory as the authority for coarse status.

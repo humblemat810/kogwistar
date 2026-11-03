@@ -5376,6 +5376,21 @@
                 let input: Value = serde_json::from_slice(&bytes[split + 4..split + 4 + length]).unwrap();
                 let payload = if line.contains("/collections HTTP") {
                     json!({"id": format!("collection-{}", input["name"].as_str().unwrap()), "metadata":{"hnsw:space":"cosine"}})
+                } else if line.contains("collection-nodes_index/query") {
+                    json!({
+                        "ids":[["idx:n2|Lung Cancer|review permit"]],
+                        "documents":[["Lung Cancer review permit"]],
+                        "metadatas":[[{
+                            "_kogwistar_namespace":"scope-a",
+                            "index_key":"n2|Lung Cancer|review permit",
+                            "target_node_id":"n2",
+                            "canonical_title":"Lung Cancer",
+                            "provision":"review permit",
+                            "doc_id":"doc-a"
+                        }]],
+                        "embeddings":[[[0.1,0.2]]],
+                        "distances":[[0.1]]
+                    })
                 } else if line.contains("collection-nodes/query") {
                     include_cross_doc_edge = input["where"].to_string().contains("doc-a");
                     let scoped = |document: &str| {
@@ -5501,6 +5516,24 @@
             "kogwistar-sqlite-chroma-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
+        let search_index_path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-chroma-search-index-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let mut fts = crate::search_index_fts::open_index(&search_index_path).unwrap();
+        crate::search_index_fts::upsert_entries(
+            &mut fts,
+            &[kogwistar_contracts::SearchIndexEntryV1 {
+                node_id: "n2".to_owned(),
+                canonical_title: "Lung Cancer".to_owned(),
+                keywords: vec!["review".to_owned()],
+                aliases: Vec::new(),
+                provision: "review permit".to_owned(),
+                doc_id: Some("doc-a".to_owned()),
+            }],
+        )
+        .unwrap();
+        drop(fts);
         let service = open_sqlite_application_service(
             &path,
             Some(SqliteChromaGraphConfig {
@@ -5513,7 +5546,10 @@
         .await
         .unwrap();
         assert!(!service.supports_mcp_tool("root", "kg_semantic_seed_then_expand_text"));
-        let service = service.with_embedding_provider(Arc::new(TestTextEmbedder));
+        let service = service
+            .with_search_index_path(&search_index_path)
+            .unwrap()
+            .with_embedding_provider(Arc::new(TestTextEmbedder));
         let graph = service.chroma_graph.as_ref().unwrap();
         let filter = MetadataFilter::default();
         let (nodes, edges) = tokio::try_join!(
@@ -5597,15 +5633,105 @@
             )
             .unwrap()
         };
+        let token_for_namespace = |namespace: &str, capabilities: &[&str]| {
+            encode(
+                &Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
+                    "sub":"reader-1", "storage_ns":namespace, "workspace_id":"workspace-a",
+                    "graph_space":"facts", "role":"ro", "ns":[namespace],
+                    "capabilities":capabilities, "exp":now + 300
+                }),
+                &EncodingKey::from_secret(b"sqlite-chroma-mcp-secret"),
+            )
+            .unwrap()
+        };
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
                 required_roles: vec![],
                 implementation: ImplementationSnapshot::default(),
-                auth,
+                auth: auth.clone(),
             },
             Arc::new(service.clone()),
         );
+        assert!(service.supports_http_operation("GET", "/api/search_index_hybrid"));
+        let hybrid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/search_index_hybrid?q=review&limit=5&resolve_node=true")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hybrid.status(), StatusCode::OK);
+        let hybrid: Value =
+            serde_json::from_slice(&to_bytes(hybrid.into_body(), 65_536).await.unwrap())
+                .unwrap();
+        let result = hybrid["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|result| result["node_id"] == "n2")
+            .unwrap_or_else(|| panic!("authorized Chroma-index hit missing: {hybrid}"));
+        assert_eq!(result["canonical_title"], "Lung Cancer");
+        assert!(result["documents"].is_string());
+        assert_eq!(result["metadatas"]["workspace_id"], "workspace-a");
+
+        let hybrid_denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/search_index_hybrid?q=review")
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hybrid_denied.status(), StatusCode::FORBIDDEN);
+
+        let hybrid_other_namespace = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/search_index_hybrid?q=review")
+                    .header(
+                        "authorization",
+                        format!(
+                            "Bearer {}",
+                            token_for_namespace("other-scope", &["read_graph"])
+                        ),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            hybrid_other_namespace.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "foreign-namespace Chroma rows must fail closed rather than leak indexed metadata"
+        );
+        let hybrid_other_namespace: Value = serde_json::from_slice(
+            &to_bytes(hybrid_other_namespace.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !hybrid_other_namespace.to_string().contains("Lung Cancer"),
+            "foreign search-index metadata must not be returned: {hybrid_other_namespace}"
+        );
+
         let conversation_visualization = app.clone().oneshot(
             Request::builder()
                 .method("GET")
@@ -6135,6 +6261,47 @@
         assert_eq!(vector_request.1["n_results"], 2);
         assert!(vector_request.1["where"].to_string().contains("workspace_id"));
         assert!(vector_request.1["where"].to_string().contains("graph_space"));
+        let metadata_only_path = std::env::temp_dir().join(format!(
+            "kogwistar-sqlite-search-index-unavailable-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let metadata_only = SqliteRunApplicationService::open(&metadata_only_path).unwrap();
+        assert!(!metadata_only.supports_http_operation(
+            "GET",
+            "/api/search_index_hybrid"
+        ));
+        let metadata_only_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: auth.clone(),
+            },
+            Arc::new(metadata_only),
+        );
+        let unavailable_search = metadata_only_app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/search_index_hybrid?q=review")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable_search.status(), StatusCode::NOT_IMPLEMENTED);
+        let unavailable_body = to_bytes(unavailable_search.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&unavailable_body).unwrap()["code"],
+            "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER"
+        );
+        let _ = std::fs::remove_file(metadata_only_path);
         drop(service);
         let _ = std::fs::remove_file(path);
     }
