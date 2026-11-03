@@ -611,6 +611,8 @@ async fn graph_mutation_retry_requires_identical_effect_when_dsn_available()
     let first = store
         .apply_graph_mutations_with_index_jobs_atomic(batch(mutation.clone()))
         .await?;
+    drop(store);
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
     let retry = store
         .apply_graph_mutations_with_index_jobs_atomic(batch(mutation.clone()))
         .await?;
