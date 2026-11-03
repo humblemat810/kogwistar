@@ -462,6 +462,75 @@ fn committed_canonical_graph_state_survives_reopen_after_injected_batch_failure(
 }
 
 #[test]
+fn canonical_graph_retry_after_reopen_does_not_duplicate_events_or_index_intents() {
+    let (store, path) = store("canonical-graph-retry-reopen");
+    let batch = || GraphMutationBatch {
+        mutations: vec![mutation("reopen-retry-event", "reopen-retry-node")],
+        index_jobs: vec![NewIndexJob {
+            job_id: "reopen-retry-explicit-intent".to_owned(),
+            namespace: "conversation".to_owned(),
+            entity_kind: "node".to_owned(),
+            entity_id: "reopen-retry-node".to_owned(),
+            index_kind: "reopen_retry_probe".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: Some("{\"source\":\"test\"}".to_owned()),
+            max_retries: 3,
+        }],
+    };
+    let first = store.apply_canonical_graph_mutation_batch(batch()).unwrap();
+    assert!(first[0].inserted && first[0].mutated);
+    let initial_jobs = store
+        .list_index_jobs(Some("conversation"), None, None, None, None, 100)
+        .unwrap();
+    let initial_job_ids = initial_jobs
+        .iter()
+        .map(|job| job.job_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let initial_event_seq = first[0].event.seq;
+    drop(store);
+
+    let reopened = SqliteStore::open(&path).unwrap();
+    let retry = reopened
+        .apply_canonical_graph_mutation_batch(batch())
+        .unwrap();
+    assert_eq!(retry.len(), 1);
+    assert!(!retry[0].inserted && !retry[0].mutated);
+    assert_eq!(retry[0].event.seq, initial_event_seq);
+    assert_eq!(
+        reopened
+            .replay_raw_events("conversation", 0, 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    let retried_jobs = reopened
+        .list_index_jobs(Some("conversation"), None, None, None, None, 100)
+        .unwrap();
+    let retried_job_ids = retried_jobs
+        .iter()
+        .map(|job| job.job_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(retried_job_ids, initial_job_ids);
+    assert_eq!(retried_jobs.len(), initial_jobs.len());
+    assert!(
+        retried_jobs
+            .iter()
+            .any(|job| { job.job_id == "reopen-retry-explicit-intent" && job.status == "PENDING" })
+    );
+    assert_eq!(
+        reopened
+            .get_stage1_node_projection("conversation", "node:reopen-retry-node")
+            .unwrap()
+            .expect("canonical projection remains available after retry")
+            .last_authoritative_seq,
+        initial_event_seq
+    );
+
+    drop(reopened);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
 fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     let (store, path) = store("canonical-edge-projection-kind");
     let mut edge = mutation("edge-event-1", "edge-1");
