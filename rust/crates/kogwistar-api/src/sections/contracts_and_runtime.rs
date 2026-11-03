@@ -9,6 +9,7 @@ const INTERNAL_RUNTIME_RESULTS_ROUTE: &str = "/internal/runtime/results";
 const INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE: &str = "/internal/runtime/native/execute";
 const INTERNAL_GRAPH_MUTATIONS_ROUTE: &str = "/internal/graph/mutations";
 const INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE: &str = "/internal/graph/load-persisted";
+const INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE: &str = "/internal/graph/propose-bruteforce";
 const INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE: &str = "/internal/conversation/transcript";
 const INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE: &str =
     "/internal/conversation/context-snapshot";
@@ -28,6 +29,7 @@ const INTERNAL_APPLICATION_EFFECT_ROUTES: &[&str] = &[
     INTERNAL_DOCUMENT_PROJECTION_ROUTE,
     INTERNAL_GRAPH_MUTATIONS_ROUTE,
     INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE,
+    INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE,
     INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE,
     INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE,
     INTERNAL_GRAPH_NEIGHBORS_ROUTE,
@@ -207,6 +209,7 @@ fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
             name,
             "document_id_from_file_name"
                 | "kg_load_persisted"
+                | "kg_propose_bruteforce"
                 | "kg_find_edges"
                 | "kg_k_hop"
                 | "kg_neighbors"

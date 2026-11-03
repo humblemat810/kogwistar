@@ -2280,6 +2280,75 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
             .await
             .unwrap();
     }
+    let latest = service
+        .store
+        .latest_entity_events("docs", "node", &["node-a".to_owned()])
+        .await
+        .unwrap();
+    let event = &latest["node-a"];
+    let canonical = read_canonical_entity_revision(
+        &[EntityEvent {
+            namespace: event.namespace.clone(),
+            seq: event.seq,
+            event_id: event.event_id.clone(),
+            entity_kind: event.entity_kind.clone(),
+            entity_id: event.entity_id.clone(),
+            op: event.op.clone(),
+            payload: serde_json::from_str(&event.payload_json).unwrap(),
+        }],
+        "docs",
+        "node",
+        "node-a",
+    )
+    .unwrap()
+    .unwrap();
+    let fingerprint_payload =
+        kogwistar_engine::canonical_revision::canonical_revision_job_payload(&canonical);
+    let fingerprint = serde_json::from_str::<Value>(&fingerprint_payload).unwrap()
+        ["source_fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let staged_document = mention_document("node-a").to_string();
+    let staged_metadata = json!({
+        "doc_id":"doc-a",
+        "entity_type":"node",
+        "lifecycle_status":"active",
+        "namespace":"docs"
+    });
+    let staged_metadata_json = staged_metadata.to_string();
+    let (stage_setup, stage_connection) =
+        tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let stage_task = tokio::spawn(stage_connection);
+    stage_setup
+        .execute(
+            &format!(
+                "DELETE FROM \"{schema}\".gke_node_docs WHERE metadata->>'node_id'=$1"
+            ),
+            &[&"node-a"],
+        )
+        .await
+        .unwrap();
+    stage_setup
+        .execute(
+            &format!(
+                "INSERT INTO \"{schema}\".gke_stage1_projections \
+                 (namespace,entity_kind,entity_id,document,metadata,source_fingerprint,revision,materialization_status,updated_at_ms) \
+                 VALUES ($1,'node',$2,$3,$4::text::jsonb,$5,$6,'pending',0)"
+            ),
+            &[
+                &"docs",
+                &"node-a",
+                &staged_document,
+                &staged_metadata_json,
+                &fingerprint,
+                &canonical.revision,
+            ],
+        )
+        .await
+        .unwrap();
+    drop(stage_setup);
+    stage_task.await.unwrap().unwrap();
     let edge_document = json!({
         "id":"edge-a",
         "mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}],
@@ -2362,6 +2431,16 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
         "kg_load_persisted",
         &json!({"sub":"graph-reader","role":"ro","ns":["docs"],"storage_ns":"docs","capabilities":["read_graph"]})
     ));
+    assert!(service.supports_mcp_tool_for_principal(
+        "root",
+        "kg_propose_bruteforce",
+        &json!({"sub":"graph-reader","role":"ro","ns":["docs"],"storage_ns":"docs","capabilities":["read_graph"]})
+    ));
+    assert!(!service.supports_mcp_tool_for_principal(
+        "root",
+        "kg_propose_bruteforce",
+        &json!({"sub":"graph-reader","role":"ro","ns":["docs"],"storage_ns":"docs","capabilities":[]})
+    ));
     let call = |id: &str, inp: Value| {
         Request::builder()
             .method("POST")
@@ -2416,6 +2495,101 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
     let canonical_json: Value = serde_json::from_slice(&canonical_body).unwrap();
     assert_eq!(canonical_json["result"]["node_ids"], json!(["node-a", "node-b"]));
     assert_eq!(canonical_json["result"]["edge_ids"], json!(["edge-a"]));
+
+    let proposal_call = |id: &str, input: Value| {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0","id":id,"method":"tools/call",
+                    "params":{"name":"kg_propose_bruteforce","arguments":{"inp":input}}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let brute_force_response = app
+        .clone()
+        .oneshot(proposal_call(
+            "brute",
+            json!({"pair_kind":"node_node","allowed_docs":["doc-a"]}),
+        ))
+        .await
+        .unwrap();
+    let brute_force_body = axum::body::to_bytes(brute_force_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let brute_force_json: Value = serde_json::from_slice(&brute_force_body).unwrap();
+    assert!(
+        brute_force_json.get("result").is_some(),
+        "MCP response: {brute_force_json}"
+    );
+    assert_eq!(
+        brute_force_json["result"]["pairs"],
+        json!([{
+            "left_id":"node-a","left_kind":"node",
+            "right_id":"node-b","right_kind":"node"
+        }])
+    );
+    let mixed_response = app
+        .clone()
+        .oneshot(proposal_call(
+            "mixed",
+            json!({"pair_kind":"any_any","anchor_doc_id":"doc-a"}),
+        ))
+        .await
+        .unwrap();
+    let mixed_body = axum::body::to_bytes(mixed_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let mixed_json: Value = serde_json::from_slice(&mixed_body).unwrap();
+    assert!(mixed_json.get("result").is_some(), "MCP response: {mixed_json}");
+    assert_eq!(mixed_json["result"]["pairs"].as_array().unwrap().len(), 3);
+    let empty_response = app
+        .clone()
+        .oneshot(proposal_call(
+            "empty-doc",
+            json!({"pair_kind":"node_node","allowed_docs":["doc-empty"]}),
+        ))
+        .await
+        .unwrap();
+    let empty_body = axum::body::to_bytes(empty_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let empty_json: Value = serde_json::from_slice(&empty_body).unwrap();
+    assert_eq!(empty_json["result"]["pairs"], json!([]));
+
+    let (stale_setup, stale_connection) =
+        tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let stale_task = tokio::spawn(stale_connection);
+    stale_setup
+        .execute(
+            &format!(
+                "UPDATE \"{schema}\".gke_stage1_projections \
+                 SET source_fingerprint='stale' WHERE entity_id='node-a'"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    drop(stale_setup);
+    stale_task.await.unwrap().unwrap();
+    let stale_response = app
+        .clone()
+        .oneshot(proposal_call(
+            "stale-stage1",
+            json!({"pair_kind":"node_node","allowed_docs":["doc-a"]}),
+        ))
+        .await
+        .unwrap();
+    let stale_body = axum::body::to_bytes(stale_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let stale_json: Value = serde_json::from_slice(&stale_body).unwrap();
+    assert_eq!(stale_json["result"]["pairs"], json!([]));
 
     drop(app);
     drop(service);

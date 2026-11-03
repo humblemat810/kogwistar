@@ -203,6 +203,18 @@ async fn mcp_handler(
                         .expect("load persisted arguments serialize"),
                     principal: principal.clone(),
                 }),
+            "kg_propose_bruteforce" => arguments
+                .get("inp")
+                .and_then(Value::as_object)
+                .filter(|_| arguments.len() == 1)
+                .map(|input| ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE.to_owned(),
+                    body: serde_json::to_vec(input)
+                        .expect("brute-force proposal arguments serialize"),
+                    principal: principal.clone(),
+                }),
             "conversation.create" => {
                 let user_id = arguments
                     .get("user_id")

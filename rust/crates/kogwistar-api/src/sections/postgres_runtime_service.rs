@@ -6237,6 +6237,11 @@ impl PostgresRunApplicationService {
         {
             return self.graph_load_persisted_effect(&request).await;
         }
+        if request.method == "POST"
+            && request.path_and_query == INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE
+        {
+            return self.graph_propose_bruteforce_effect(&request).await;
+        }
         if request.method == "POST" && request.path_and_query == INTERNAL_GRAPH_NEIGHBORS_ROUTE {
             return self.graph_neighbors_effect(&request).await;
         }

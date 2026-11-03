@@ -31,6 +31,36 @@ struct LoadPersistedGraphRequest {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct ProposeBruteForceRequest {
+    #[serde(default = "default_brute_force_pair_kind")]
+    pair_kind: String,
+    #[serde(default)]
+    allowed_docs: Option<Vec<String>>,
+    #[serde(default)]
+    anchor_doc_id: Option<String>,
+    #[serde(default)]
+    cross_doc_only: bool,
+    #[serde(default = "default_brute_force_anchor_only")]
+    anchor_only: bool,
+    #[serde(default = "default_brute_force_bucket_limit")]
+    limit_per_bucket: Option<i64>,
+    #[serde(default, rename = "where")]
+    where_filter: Option<Value>,
+}
+
+fn default_brute_force_pair_kind() -> String {
+    "any_any".to_owned()
+}
+
+fn default_brute_force_anchor_only() -> bool {
+    true
+}
+
+fn default_brute_force_bucket_limit() -> Option<i64> {
+    Some(200)
+}
+
+#[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GraphVisualizationRequest {
     #[serde(default)]
