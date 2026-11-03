@@ -6,9 +6,9 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **24/705 PASS (3.4%)**; **0 IN PROGRESS**, **681 NOT STARTED**, **0 BLOCKED**.
-- **Tasklet normalization:** The frozen DL-03 inventory is expanded into 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. Inventory/reconciliation is represented by non-counting parent groups, not duplicate leaves. The sizing audit converted 35 composite leaf rows into parent groups with 94 single-outcome children (+59 counted leaves); it split distinct visibility decisions, API families, runtime/fixture cells, trace transitions, and mixed operations without changing coarse IDs or prior PASS evidence. An inventory remains one tasklet only when it produces one generated manifest and one completeness assertion; manual coverage work is split by resource or capability family. The PostgreSQL Rust-native answer smoke verifies provider-event publication and handling; its transport test negotiates Streamable HTTP and inspects the structured MCP result. The percentage is raw leaf-status arithmetic, not a claim that remaining work is uniform or nearly complete.
-- **Equal-size tasklet unit (S=1):** one counted leaf is exactly one behavior x one implementation path x one independently reportable outcome. Plan each S=1 item as one focused edit/test loop targeting about 30 minutes, with a hard 60-minute ceiling; split before work if it plausibly exceeds that ceiling. Each leaf states one observable behavior, one expected result, and one focused test/check. A parameterized test is one tasklet only when every case is a fixture value for the same invariant and implementation path; different operations, authorization decisions, lifecycle transitions, backend/runtime/transport cells, independently passing outputs, or unrelated error outcomes require separate leaves. Inventory generation plus one completeness assertion is one tasklet when it is a single generated artifact and one assertion. Do not split by file, field, or raw test-case count. A leaf spanning more than one independently failing behavior is oversized and must become an uncounted `PARENT` with S=1 children. Word count is not the sizing measure.
+- **Fine worklist:** **25/709 PASS (3.5%)**; **0 IN PROGRESS**, **684 NOT STARTED**, **0 BLOCKED**.
+- **Tasklet normalization:** The frozen DL-03 inventory is expanded into 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. Inventory/reconciliation is represented by non-counting parent groups, not duplicate leaves. The sizing audit converted 39 composite leaf rows into parent groups with 102 single-outcome children (+63 counted leaves); it split distinct visibility decisions, API families, runtime/fixture cells, trace transitions, and mixed operations without changing coarse IDs or prior PASS evidence. An inventory remains one tasklet only when it produces one generated manifest and one completeness assertion; manual coverage work is split by resource or capability family. The PostgreSQL Rust-native answer smoke verifies provider-event publication and handling; its transport test negotiates Streamable HTTP and inspects the structured MCP result. The percentage is raw leaf-status arithmetic, not a claim that remaining work is uniform or nearly complete.
+- **Equal-size tasklet unit (S=1):** one counted leaf is exactly one contract assertion in one bounded execution cell with one independently reportable outcome. A cross-language parity assertion may exercise the paired Python and Rust paths together; split by language only when each path has an independently meaningful outcome. Plan each S=1 item as one focused edit/test loop targeting about 30 minutes, with a hard 60-minute ceiling; split before work if it plausibly exceeds that ceiling. Each leaf states one observable behavior, one expected result, and one focused test/check. A parameterized test is one tasklet only when every case is a fixture value for the same invariant and execution cell; different operations, authorization decisions, lifecycle transitions, backend/runtime/transport cells, independently passing outputs, or unrelated error outcomes require separate leaves. Inventory generation plus one completeness assertion is one tasklet when it is a single generated artifact and one assertion. Do not split by file, field, or raw test-case count. A leaf spanning more than one independently failing behavior is oversized and must become an uncounted `PARENT` with S=1 children. Word count is not the sizing measure.
 - The fine denominator counts leaf rows only; `PARENT` rows are retained ID/mapping records and are not progress items. When a row is split, preserve its ID as a parent and list all child IDs in its description. The parent remains uncounted and cannot pass; every child starts `NOT STARTED` unless prior evidence independently proves that exact child. Passed leaf IDs/evidence remain unchanged. Before adding new leaves, require a concrete independent failure mode and a separate acceptance assertion; do not subdivide a task merely to increase the denominator. Report coarse and fine percentages separately; neither percentage estimates schedule or nearness to completion.
 
 ## How To Track
@@ -290,7 +290,9 @@
 | FW-05-03A-PARTICIPATION | DL-05 | NOT STARTED | Verify Python/Rust hyperedge participation and endpoint serialization against one shared fixture. |
 | FW-05-03A-ENDPOINT-REJECT | DL-05 | NOT STARTED | Verify malformed hyperedge endpoints are rejected before graph effects in both languages. |
 | FW-05-03B | DL-05 | NOT STARTED | Verify graph mutation DTOs reject malformed entity batches before any document, event, or index effect. |
-| FW-05-03C | DL-05 | NOT STARTED | Verify lifecycle and tombstone DTOs preserve redirect and endpoint fields through Python/Rust round trips. |
+| FW-05-03C | DL-05 | PARENT | Parent scope; children: FW-05-03C-REDIRECT,FW-05-03C-ENDPOINT |
+| FW-05-03C-REDIRECT | DL-05 | NOT STARTED | Verify Python/Rust lifecycle DTO round trips preserve `redirect_to_id` for one tombstoned entity fixture. |
+| FW-05-03C-ENDPOINT | DL-05 | NOT STARTED | Verify Python/Rust edge lifecycle DTO round trips preserve canonical endpoint IDs for one edge fixture. |
 | FW-05-04 | DL-05 | PARENT | Parent scope; children: FW-05-04-REQUEST,FW-05-04-EVENT |
 | FW-05-04-REQUEST | DL-05 | NOT STARTED | Compare provider request DTO canonical serialization and stable validation errors. |
 | FW-05-04-EVENT | DL-05 | NOT STARTED | Compare provider event DTO canonical serialization and stable validation errors. |
@@ -302,7 +304,9 @@
 | FW-05-04B-MCP | DL-05 | NOT STARTED | Compare MCP error envelope fields for one shared invalid-request fixture. |
 | FW-05-02 | DL-05 | PARENT | Parent scope; children: FW-05-02-ID,FW-05-02-SPAN |
 | FW-05-02-ID | DL-05 | NOT STARTED | Verify identifier validity boundaries with shared valid/invalid fixtures and matching Python/Rust acceptance. |
-| FW-05-02-SPAN | DL-05 | NOT STARTED | Verify source-span boundary and offset validity with shared valid/invalid fixtures and matching Python/Rust acceptance. |
+| FW-05-02-SPAN | DL-05 | PARENT | Parent scope; children: FW-05-02-SPAN-BOUNDS,FW-05-02-SPAN-OFFSETS |
+| FW-05-02-SPAN-BOUNDS | DL-05 | NOT STARTED | Verify source-span start/end bounds against the shared valid/invalid fixtures in Python and Rust. |
+| FW-05-02-SPAN-OFFSETS | DL-05 | NOT STARTED | Verify source-span offset validity against the shared valid/invalid fixtures in Python and Rust. |
 | FW-05-02A | DL-05 | NOT STARTED | Verify additive schema-version evolution remains accepted in both languages for the declared compatible DTOs. |
 | FW-05-02B | DL-05 | NOT STARTED | Verify unsupported schema versions and unknown fields fail consistently before effects. |
 | FW-06-01 | DL-06 | NOT STARTED | Inventory canonical durable resources and their Python transaction owner, one resource family per evidence row. |
@@ -326,8 +330,12 @@
 | FW-06-05 | DL-06 | NOT STARTED | Inject failure before canonical transaction commit and assert no authoritative partial write remains. |
 | FW-06-05A | DL-06 | NOT STARTED | Inject failure after canonical commit but before projection/ack and assert replay converges without duplicate authoritative effects. |
 | FW-06-05B | DL-06 | NOT STARTED | Inject failure during multi-entity atomic mutation and assert transaction rollback or explicit unsupported atomicity. |
-| FW-06-02 | DL-06 | NOT STARTED | Reopen SQLite after injected failure and verify durable state and idempotent retry. |
-| FW-06-02A | DL-06 | NOT STARTED | Reopen PostgreSQL after injected failure and verify durable state and idempotent retry. |
+| FW-06-02 | DL-06 | PARENT | Parent scope; children: FW-06-02-REOPEN,FW-06-02-RETRY |
+| FW-06-02-REOPEN | DL-06 | NOT STARTED | Reopen SQLite after an injected failure and verify the committed canonical state is durable. |
+| FW-06-02-RETRY | DL-06 | NOT STARTED | Retry the same SQLite operation after reopen and verify it does not duplicate authoritative effects. |
+| FW-06-02A | DL-06 | PARENT | Parent scope; children: FW-06-02A-REOPEN,FW-06-02A-RETRY |
+| FW-06-02A-REOPEN | DL-06 | NOT STARTED | Reopen PostgreSQL after an injected failure and verify the committed canonical state is durable. |
+| FW-06-02A-RETRY | DL-06 | NOT STARTED | Retry the same PostgreSQL operation after reopen and verify it does not duplicate authoritative effects. |
 | FW-08-01 | DL-08 | NOT STARTED | Add a live PostgreSQL graph-neighbor read test for tenant/project scope and source-evidence authorization. |
 | FW-08-01A | DL-08 | NOT STARTED | Add a live PostgreSQL graph-snapshot test for edge endpoint dependency filtering and malformed backend records. |
 | FW-08-01B | DL-08 | PARENT | Parent scope; children: FW-08-01B-NEIGHBOR,FW-08-01B-SNAPSHOT,FW-08-01B-EDGE-DEPENDENCY,FW-08-01B-VECTOR |
@@ -411,7 +419,7 @@
 | FW-13-03-VERSIONED | DL-13 | NOT STARTED | Verify one valid versioned operation selects its declared native executor. |
 | FW-13-03-LEGACY | DL-13 | NOT STARTED | Verify one valid legacy request preserves the declared default routing behavior. |
 | FW-13-03A | DL-13 | NOT STARTED | Verify malformed operation payloads fail before effects. |
-| FW-13-03B | DL-13 | NOT STARTED | Verify unavailable native capabilities fail explicitly before effects and do not silently fallback. |
+| FW-13-03B | DL-13 | PASS | Enabling `KOGWISTAR_RUNTIME_NATIVE_INLINE` with the in-memory graph-only service fails with `InvalidInput` before listener binding; disabled in-memory and enabled SQLite/PostgreSQL configurations retain their declared behavior. Evidence: `server_backend_tests::inline_native_runtime_rejects_backends_without_a_runtime_executor` (**1 passed**). |
 | FW-13-04 | DL-13 | NOT STARTED | Verify native executor durable completion and final digest after SQLite service restart. |
 | FW-13-04A | DL-13 | PASS | After the native PostgreSQL counter workflow reaches `succeeded`, reconstruct the run service against the same schema and verify the terminal result, persisted `counter=2` state, and exact unchanged `state_digest`. Evidence: `tests::postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available` (**1 passed**, live disposable pgvector test on Windows). This verifies service reconstruction/reopen, not an OS process crash. |
 | FW-13-04B | DL-13 | NOT STARTED | Verify native executor error routing and recovery for one injected backend failure. |
