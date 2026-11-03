@@ -1,5 +1,7 @@
 {
+  "contract_version": 1,
   "doc_id": "doc-fixture-1",
+  "doc_type": "text",
   "content": "A stable document fixture.",
   "insertion_method": "api_upsert",
   "metadata": {

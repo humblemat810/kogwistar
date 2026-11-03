@@ -2613,16 +2613,12 @@
             }
         };
 
-        let first = send(
-            make_app(),
-            json!({
-                "doc_id": "document-1",
-                "content": "first body",
-                "doc_type": "text",
-                "insertion_method": "route-test"
-            }),
-        )
-        .await;
+        let first_payload: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-upsert-v1.json"
+        )))
+        .unwrap();
+        let first = send(make_app(), first_payload.clone()).await;
         let first_status = first.status();
         let first_body = to_bytes(first.into_body(), 4096).await.unwrap();
         assert_eq!(
@@ -2635,16 +2631,9 @@
             serde_json::from_slice::<Value>(&first_body).unwrap(),
             json!({"status": "ok"})
         );
-        let retry = send(
-            make_app(),
-            json!({
-                "doc_id": "document-1",
-                "content": "updated body",
-                "doc_type": "text",
-                "insertion_method": "route-test"
-            }),
-        )
-        .await;
+        let mut retry_payload = first_payload.clone();
+        retry_payload["content"] = json!("updated body");
+        let retry = send(make_app(), retry_payload).await;
         assert_eq!(retry.status(), StatusCode::OK);
 
         let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
@@ -2657,7 +2646,7 @@
                     graph_space: Some("knowledge".to_owned()),
                 },
                 table: "gke_documents".to_owned(),
-                ids: Some(vec!["document-1".to_owned()]),
+                ids: Some(vec![first_payload["doc_id"].as_str().unwrap().to_owned()]),
                 metadata: MetadataFilter::default(),
                 limit: 10,
             })
@@ -2668,7 +2657,10 @@
         assert_eq!(rows[0].metadata["namespace"], "docs");
         assert_eq!(rows[0].metadata["workspace_id"], "workspace-a");
         assert_eq!(rows[0].metadata["graph_space"], "knowledge");
-        assert_eq!(rows[0].metadata["insertion_method"], "route-test");
+        assert_eq!(
+            rows[0].metadata["insertion_method"],
+            first_payload["insertion_method"]
+        );
 
         let (cleanup, cleanup_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await

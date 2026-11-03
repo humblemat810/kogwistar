@@ -192,6 +192,7 @@ fn document_projection_input(
     Ok(input)
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#document_projection_write; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
 fn document_projection_write(
     request: &ApiEffectRequest,
     capabilities: &SharedCapabilityState,
