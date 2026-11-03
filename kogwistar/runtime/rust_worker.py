@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 import httpx
+from pydantic import ValidationError
 
 from kogwistar.id_provider import stable_id
 from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
@@ -34,6 +35,7 @@ from kogwistar.implementation_selection import (
 )
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
+from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 
 from .contract import Predicate
 from .strict_json import normalize_json_value, strict_json_dumps
@@ -250,6 +252,7 @@ class RustStepResolverAdapter:
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
         implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
+        worker_identity: WorkerIdentityAttestationV1 | None = None,
     ) -> None:
         if not callable(step_resolver):
             raise TypeError("step_resolver must be callable")
@@ -257,6 +260,7 @@ class RustStepResolverAdapter:
         self.predicate_registry = dict(predicate_registry or {})
         self.dependency_provider = dependency_provider
         self.cache_dir = os.fspath(cache_dir) if cache_dir is not None else None
+        self.worker_identity = worker_identity
         self._implementation_selection_snapshot = (
             implementation_selection_snapshot or capture_implementation_selection()
         )
@@ -421,6 +425,21 @@ class RustStepResolverAdapter:
             )
         return requested
 
+    def _validate_worker_identity(self, payload: Mapping[str, JsonValue]) -> None:
+        requested = payload.get("required_worker_identity")
+        if requested is None and self.worker_identity is None:
+            return
+        if requested is None:
+            raise RustWorkerError("claimed work is missing required worker identity")
+        if self.worker_identity is None:
+            raise RustWorkerError("Python worker has no configured identity")
+        try:
+            required = WorkerIdentityAttestationV1.model_validate(requested)
+        except ValidationError as error:
+            raise RustWorkerError("claimed work has an invalid worker identity") from error
+        if required != self.worker_identity:
+            raise RustWorkerError("claimed work requires a different worker identity")
+
     @staticmethod
     def _validate_executor_target(
         payload: Mapping[str, JsonValue], op: str
@@ -469,6 +488,7 @@ class RustStepResolverAdapter:
         self._validate_executor_target(payload, op)
         self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
+        self._validate_worker_identity(payload)
 
     @implementation_selection_bound
     def __call__(self, work: JsonObject) -> JsonObject:
@@ -779,6 +799,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         self._validate_executor_target(payload, op)
         self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
+        self._validate_worker_identity(payload)
 
     @implementation_selection_bound
     async def execute(self, work: JsonObject) -> JsonObject:
@@ -1030,6 +1051,7 @@ class RustRuntimeWorker:
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
         implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
+        worker_identity: WorkerIdentityAttestationV1 | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.Client | None = None,
@@ -1040,6 +1062,7 @@ class RustRuntimeWorker:
             dependency_provider=dependency_provider,
             cache_dir=cache_dir,
             implementation_selection_snapshot=implementation_selection_snapshot,
+            worker_identity=worker_identity,
         )
         return cls(
             base_url=base_url,
@@ -1303,6 +1326,7 @@ class AsyncRustRuntimeWorker:
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
         implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
+        worker_identity: WorkerIdentityAttestationV1 | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
@@ -1313,6 +1337,7 @@ class AsyncRustRuntimeWorker:
             dependency_provider=dependency_provider,
             cache_dir=cache_dir,
             implementation_selection_snapshot=implementation_selection_snapshot,
+            worker_identity=worker_identity,
         )
         return cls(
             base_url=base_url,

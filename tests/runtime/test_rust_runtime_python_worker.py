@@ -27,6 +27,7 @@ from kogwistar.runtime.rust_worker import (
     RustWorkerError,
     WorkerResultJournal,
 )
+from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 from kogwistar.implementation_selection import (
     capture_implementation_selection,
     transaction_authority_scope,
@@ -794,6 +795,100 @@ def test_python_worker_checks_environment_before_numerical_callback() -> None:
     with pytest.raises(RustWorkerError, match="requires environment None"):
         adapter(_adapter_work(op="numerical", op_version="v2"))
     assert calls == ["numpy-cpu-2"]
+
+
+def _worker_identity() -> WorkerIdentityAttestationV1:
+    return WorkerIdentityAttestationV1(
+        schema_version=1,
+        environment_id="python-cpu-v1",
+        artifact_sha256="a" * 64,
+        dependency_lock_sha256="b" * 64,
+    )
+
+
+@pytest.mark.parametrize(
+    ("required_identity", "error"),
+    [
+        (None, "missing required worker identity"),
+        (
+            {
+                "schema_version": 1,
+                "environment_id": "python-cpu-v1",
+                "artifact_sha256": "c" * 64,
+                "dependency_lock_sha256": "b" * 64,
+            },
+            "different worker identity",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "environment_id": "python-cpu-v2",
+                "artifact_sha256": "a" * 64,
+                "dependency_lock_sha256": "b" * 64,
+            },
+            "different worker identity",
+        ),
+    ],
+)
+def test_python_worker_identity_admission_rejects_before_callback(
+    required_identity: dict[str, Any] | None, error: str
+) -> None:
+    resolver = MappingStepResolver()
+    calls: list[str] = []
+
+    @resolver.register("identity-check")
+    def execute(_ctx):
+        calls.append("called")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work(op="identity-check")
+    if required_identity is not None:
+        work["payload"]["required_worker_identity"] = required_identity
+    adapter = RustStepResolverAdapter(resolver, worker_identity=_worker_identity())
+
+    with pytest.raises(RustWorkerError, match=error):
+        adapter.validate_work(work)
+    assert calls == []
+
+
+def test_python_worker_identity_admission_accepts_registered_identity() -> None:
+    resolver = MappingStepResolver()
+    calls: list[str] = []
+
+    @resolver.register("identity-check")
+    def execute(_ctx):
+        calls.append("called")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work(op="identity-check")
+    work["payload"]["required_worker_identity"] = _worker_identity().to_wire()
+    adapter = RustStepResolverAdapter(resolver, worker_identity=_worker_identity())
+
+    assert adapter(work)["status"] == "success"
+    assert calls == ["called"]
+
+
+@pytest.mark.asyncio
+async def test_async_python_worker_identity_admission_rejects_before_callback() -> None:
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    resolver = AsyncMappingStepResolver()
+    calls: list[str] = []
+
+    @resolver.register("identity-check")
+    async def execute(_ctx):
+        calls.append("called")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work(op="identity-check")
+    work["payload"]["worker_protocol"] = "async-v2"
+    work["payload"]["required_worker_identity"] = _worker_identity().to_wire()
+    worker = _worker_identity().model_copy(update={"artifact_sha256": "c" * 64})
+    adapter = AsyncRustStepResolverAdapter(resolver, worker_identity=worker)
+
+    with pytest.raises(RustWorkerError, match="different worker identity"):
+        adapter.validate_work(work)
+    assert calls == []
 
 
 def test_python_worker_dispatches_legacy_and_versioned_handlers_in_one_resolver() -> None:
