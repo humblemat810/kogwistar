@@ -86,6 +86,46 @@ pub fn short_id_for(
     Ok(short_id)
 }
 
+pub fn canonical_id_for(
+    root: impl AsRef<Path>,
+    map_key: &str,
+    short_id: &str,
+) -> Result<String, ShortIdStoreError> {
+    validate_map_key(map_key)?;
+    let root = root.as_ref();
+    fs::create_dir_all(root)?;
+    let state_path = root.join(format!("{map_key}.json"));
+    let lock_path = root.join(format!("{map_key}.lock"));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    lock.lock_shared()?;
+
+    let state = read_state(&state_path)?;
+    let input = json!({
+        "state": state,
+        "input": short_id,
+        "direction": "s2l",
+        "depth": 0,
+        "scalar_keys": ["id", "doc_id", "node_id", "edge_id", "edge_endpoint_id"],
+        "list_keys": ["source_ids", "target_ids", "source_edge_ids", "target_edge_ids"],
+        "primitive": true
+    });
+    let transformed = kogwistar_contracts::short_id_transform_from_str(&input.to_string())
+        .map_err(|error| ShortIdStoreError::Transform(error.to_string()))?;
+    let result: Value = serde_json::from_str(&transformed)?;
+    let canonical_id = result
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ShortIdStoreError::InvalidState("missing string value".to_owned()))?
+        .to_owned();
+    FileExt::unlock(&lock)?;
+    Ok(canonical_id)
+}
+
 fn validate_map_key(map_key: &str) -> Result<(), ShortIdStoreError> {
     if map_key.len() != 32
         || !map_key
@@ -189,7 +229,7 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), ShortIdStoreErr
 
 #[cfg(test)]
 mod tests {
-    use super::{short_id_for, short_id_map_key};
+    use super::{canonical_id_for, short_id_for, short_id_map_key};
     use serde_json::Value;
     use std::path::PathBuf;
 
@@ -218,9 +258,11 @@ mod tests {
         .expect("seed shared state");
         let next = short_id_for(&directory, &key, "node-c").expect("next short id");
         let repeated = short_id_for(&directory, &key, "node-a").expect("stable id");
+        let canonical = canonical_id_for(&directory, &key, "<sid>2").expect("canonical ID");
 
         assert_eq!(next, "<sid>3");
         assert_eq!(repeated, "<sid>1");
+        assert_eq!(canonical, "node-b");
         let state: Value = serde_json::from_slice(
             &std::fs::read(directory.join(format!("{key}.json"))).expect("persisted state"),
         )
