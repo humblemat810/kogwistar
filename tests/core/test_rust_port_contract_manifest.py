@@ -148,6 +148,23 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     )
 
 
+def test_dual_language_open_tasklets_use_one_bounded_work_unit() -> None:
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    assert "every counted leaf row is one tasklet" in worklist
+    assert "targets 20 minutes and has a hard cap of 30 minutes" in worklist
+    assert "| Active: <=30 min`" in worklist
+
+    in_progress_rows = [
+        line
+        for line in worklist.splitlines()
+        if line.startswith("| FW-") and "| IN PROGRESS |" in line
+    ]
+    required_fields = ("Invariant:", "Cell:", "Oracle:", "Check:", "Active:")
+    for line in in_progress_rows:
+        missing = [field for field in required_fields if field not in line]
+        assert not missing, f"in-progress tasklet lacks bounded definition fields: {missing}"
+
+
 def test_ci_full_uses_postgres_image_with_pgvector_extension() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
 

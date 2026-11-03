@@ -605,19 +605,52 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         target_item_id: str | None = None,
     ) -> tuple[ACLRecord, ...]:
         # Canonical ACL read path. Used by ACLGraph cache miss and by repair/rebuild.
-        where_terms: list[JsonObject] = [
-            {"entity_type": "acl_record"},
-            {"acl_truth_graph": truth_graph},
-        ]
+        metadata_filter: JsonObject = {
+            "entity_type": "acl_record",
+            "acl_truth_graph": truth_graph,
+        }
         if entity_id:
-            where_terms.append({"acl_target_entity_id": entity_id})
+            metadata_filter["acl_target_entity_id"] = entity_id
         if grain is not None:
-            where_terms.append({"acl_target_grain": grain})
-        nodes = self._e.raw_read.get_nodes(
-            node_type=Node,
-            where=cast(JsonObject, {"$and": where_terms}),
-            limit=400,
-        )
+            metadata_filter["acl_target_grain"] = grain
+        if target_item_id is not None:
+            metadata_filter["acl_target_item_id"] = target_item_id
+
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        metadata = getattr(self._e, "metadata", None)
+        if isinstance(metadata, RustEnginePostgresMetaStore):
+            # ACL supersession lookup runs under the Rust-owned UoW. Read the
+            # authoritative projection through that owner rather than opening
+            # a Python SQL transaction on the shared PostgreSQL database.
+            projection_rows = metadata.graph_projection_records(
+                namespace=str(getattr(self._e, "namespace", "default")),
+                workspace_id=None,
+                graph_space=None,
+                table=self._e.backend.nodes.name,
+                ids=None,
+                metadata=metadata_filter,
+                limit=400,
+                for_update=True,
+            )
+            got: JsonObject = {
+                "ids": [str(row["id"]) for row in projection_rows],
+                "documents": [str(row["document"]) for row in projection_rows],
+                "metadatas": [
+                    cast(JsonObject, row.get("metadata") or {})
+                    for row in projection_rows
+                ],
+            }
+            nodes = self._e.raw_read.nodes_from_single_or_id_query_result(
+                got, node_type=Node
+            )
+        else:
+            where_terms = [{key: value} for key, value in metadata_filter.items()]
+            nodes = self._e.raw_read.get_nodes(
+                node_type=Node,
+                where=cast(JsonObject, {"$and": where_terms}),
+                limit=400,
+            )
         records: list[ACLRecord] = []
         for node in nodes:
             record = self._record_from_acl_node(node)

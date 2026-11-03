@@ -303,6 +303,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ids=None if ids is None else list(ids),
             metadata=metadata,
             limit=int(limit),
+            for_update=meta.transaction_active,
         )
         result: JsonObject = {
             "ids": [str(record.get("id") or "") for record in records]

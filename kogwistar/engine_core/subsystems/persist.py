@@ -407,16 +407,44 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         edge-before-node ingest ordering, so callers that receive out-of-order
         events must retry or stage those edges outside this write path.
         """
-        need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
-        if need_nodes:
-            got = set(
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        metadata = getattr(self._e, "metadata", None)
+
+        def existing_endpoint_ids(
+            *, entity_kind: str, entity_ids: set[str]
+        ) -> set[str]:
+            if not entity_ids:
+                return set()
+            if isinstance(metadata, RustEnginePostgresMetaStore):
+                table_attr = "nodes" if entity_kind == "node" else "edges"
+                table = getattr(self._e.backend, table_attr).name
+                records = metadata.graph_projection_records(
+                    namespace=str(getattr(self._e, "namespace", "default")),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=table,
+                    ids=sorted(entity_ids),
+                    metadata={},
+                    limit=len(entity_ids),
+                    for_update=metadata.transaction_active,
+                )
+                return {str(record["id"]) for record in records}
+            getter = (
+                self._e.backend.node_get
+                if entity_kind == "node"
+                else self._e.backend.edge_get
+            )
+            return set(
                 _backend_mapping(
-                    run_awaitable_blocking(
-                        self._e.backend.node_get(ids=list(need_nodes))
-                    )
+                    run_awaitable_blocking(getter(ids=sorted(entity_ids)))
                 ).get("ids")
                 or []
             )
+
+        need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
+        if need_nodes:
+            got = existing_endpoint_ids(entity_kind="node", entity_ids=need_nodes)
             if got != need_nodes:
                 got.update(
                     node_id for node_id in need_nodes - got
@@ -426,22 +454,17 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
 
         for attr in ("source_edge_ids", "target_edge_ids"):
-            ids = getattr(edge, attr, None) or []
+            ids = set(getattr(edge, attr, None) or [])
             if ids:
-                got = set(
-                    _backend_mapping(
-                        run_awaitable_blocking(self._e.backend.edge_get(ids=ids))
-                    ).get("ids")
-                    or []
-                )
-                if got != set(ids):
+                got = existing_endpoint_ids(entity_kind="edge", entity_ids=ids)
+                if got != ids:
                     got.update(
-                        edge_id for edge_id in set(ids) - got
+                        edge_id for edge_id in ids - got
                         if self._stage1_endpoint_exists("edge", edge_id)
                     )
-                if got != set(ids):
+                if got != ids:
                     raise ValueError(
-                        f"Missing edge endpoints in {attr}: {sorted(set(ids) - got)}"
+                        f"Missing edge endpoints in {attr}: {sorted(ids - got)}"
                     )
 
     async def assert_endpoints_exist_async(

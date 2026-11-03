@@ -977,6 +977,110 @@ def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
     assert all(job.entity_id != "public-rolled-back" for job in python.list_index_jobs())
 
 
+def test_python_acl_supersession_uses_one_rust_postgres_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+    tmp_path: Path,
+) -> None:
+    """The Python ACL facade must roll its node and supersession edge back together."""
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    for name in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+    ):
+        monkeypatch.setenv(name, "rust")
+
+    namespace = f"rust-acl-supersession-{uuid.uuid4().hex}"
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "rust_acl_supersession"),
+        backend=backend,
+        namespace=namespace,
+        embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+        acl_enabled=True,
+    )
+    assert isinstance(engine.metadata, RustEnginePostgresMetaStore)
+    meta = engine.metadata
+    assert isinstance(meta, RustEnginePostgresMetaStore)
+
+    built_nodes: list[Node] = []
+    built_edges: list[Edge] = []
+    build_node = engine.acl._build_acl_record_node
+    build_edge = engine.acl._build_acl_supersedes_edge
+
+    def track_node(record: Any) -> Node:
+        node = build_node(record)
+        built_nodes.append(node)
+        return node
+
+    def track_edge(*, current: Any, previous: Any) -> Edge:
+        edge = build_edge(current=current, previous=previous)
+        built_edges.append(edge)
+        return edge
+
+    monkeypatch.setattr(engine.acl, "_build_acl_record_node", track_node)
+    monkeypatch.setattr(engine.acl, "_build_acl_supersedes_edge", track_edge)
+    target_id = f"acl-target-{uuid.uuid4().hex}"
+    engine.acl.record_acl(
+        truth_graph="knowledge",
+        entity_id=target_id,
+        version=1,
+        mode="public",
+    )
+    assert len(built_nodes) == 1
+
+    native_calls: list[tuple[str, str | None]] = []
+    original_call = meta.native_session.call
+
+    def capture_native_call(kind: str, **values: Any) -> Any:
+        native_calls.append((kind, meta.native_session._transaction_id.get()))
+        return original_call(kind, **values)
+
+    monkeypatch.setattr(meta.native_session, "call", capture_native_call)
+
+    def fail_after_supersession_edge(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("injected ACL edge index failure")
+
+    monkeypatch.setattr(engine, "enqueue_index_jobs_for_edge", fail_after_supersession_edge)
+    with pytest.raises(RuntimeError, match="injected ACL edge index failure"):
+        engine.acl.record_acl(
+            truth_graph="knowledge",
+            entity_id=target_id,
+            version=2,
+            mode="private",
+            supersedes_version=1,
+        )
+
+    assert len(built_nodes) == 2
+    assert len(built_edges) == 1
+    second_transaction_calls = native_calls
+    assert [kind for kind, _ in second_transaction_calls].count("begin_transaction") == 1
+    assert [kind for kind, _ in second_transaction_calls].count("rollback_transaction") == 1
+    graph_transactions = [
+        transaction_id
+        for kind, transaction_id in second_transaction_calls
+        if kind == "graph_mutation"
+    ]
+    assert len(graph_transactions) == 2
+    assert graph_transactions[0] is not None
+    assert graph_transactions[0] == graph_transactions[1]
+
+    persisted_events = list(meta.iter_entity_events(namespace=namespace))
+    persisted_ids = {entity_id for _, _, entity_id, _, _ in persisted_events}
+    assert built_nodes[0].id in persisted_ids
+    assert built_nodes[1].id not in persisted_ids
+    assert built_edges[0].id not in persisted_ids
+    assert backend.node_get(ids=[built_nodes[1].id], include=[])['ids'] == []
+    assert backend.edge_get(ids=[built_edges[0].id], include=[])['ids'] == []
+    engine.close()
+
+
 def test_python_postgres_node_add_rolls_back_event_when_projection_write_fails(
     monkeypatch: pytest.MonkeyPatch,
     pg_dsn: str | None,
