@@ -183,14 +183,26 @@ impl PostgresRunApplicationService {
                         {
                             initial_state.extend(overrides.clone());
                         }
+                        initial_state.remove("_rt_node_worker_identities");
                         let created_run_id = uuid::Uuid::new_v4().to_string();
                         let message_id = format!("lane|{}", uuid::Uuid::new_v4());
-                        let graph_plan = exact_runtime_graph_plan(
-                            uow.get_named_projection("workflow_design", &target_ref)
-                                .await?,
-                            uow.get_workflow_design_snapshot(&target_ref, i64::MAX, 1)
-                                .await?,
-                        );
+                        let graph_projection = uow
+                            .get_named_projection("workflow_design", &target_ref)
+                            .await?;
+                        let graph_snapshot = uow
+                            .get_workflow_design_snapshot(&target_ref, i64::MAX, 1)
+                            .await?;
+                        let graph_plan =
+                            exact_runtime_graph_plan(graph_projection, graph_snapshot.clone());
+                        if graph_plan.is_none()
+                            && runtime_snapshot_declares_worker_identity(graph_snapshot.as_ref())
+                        {
+                            return Err(
+                                kogwistar_store_postgres::PostgresStoreError::TransactionAborted(
+                                    "KOGWISTAR_INVALID_WORKER_IDENTITY".to_owned(),
+                                ),
+                            );
+                        }
                         let runtime_routes = graph_plan
                             .as_ref()
                             .map(|plan| plan.routes.clone())
@@ -219,6 +231,10 @@ impl PostgresRunApplicationService {
                             .as_ref()
                             .map(|plan| plan.node_environment_ids.clone())
                             .unwrap_or_default();
+                        let node_worker_identities = graph_plan
+                            .as_ref()
+                            .map(|plan| plan.node_worker_identities.clone())
+                            .unwrap_or_default();
                         let node_executor_targets = graph_plan
                             .as_ref()
                             .map(|plan| plan.node_executor_targets.clone())
@@ -227,6 +243,8 @@ impl PostgresRunApplicationService {
                         let start_op_version = node_versions.get(&start_node_id).cloned();
                         let start_environment_id =
                             node_environment_ids.get(&start_node_id).cloned();
+                        let start_worker_identity =
+                            node_worker_identities.get(&start_node_id).cloned();
                         let start_executor_target =
                             node_executor_targets.get(&start_node_id).cloned();
                         if !runtime_routes.is_empty() {
@@ -255,6 +273,13 @@ impl PostgresRunApplicationService {
                                 "_rt_node_environment_ids".to_owned(),
                                 serde_json::to_value(&node_environment_ids)
                                     .expect("runtime node environment ids serialize"),
+                            );
+                        }
+                        if !node_worker_identities.is_empty() {
+                            initial_state.insert(
+                                "_rt_node_worker_identities".to_owned(),
+                                serde_json::to_value(&node_worker_identities)
+                                    .expect("runtime node worker identities serialize"),
                             );
                         }
                         install_authoritative_node_executor_targets(
@@ -342,6 +367,7 @@ impl PostgresRunApplicationService {
                                 start_op.as_deref().unwrap_or("noop"),
                                 start_environment_id.as_deref(),
                                 start_executor_target.as_deref(),
+                                start_worker_identity.as_ref(),
                             ),
                             sender_id: "rust-scheduler".to_owned(),
                             msg_type: "workflow.run.execute".to_owned(),

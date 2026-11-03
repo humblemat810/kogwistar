@@ -241,6 +241,18 @@ def _environment_recipient_id(environment_id: str) -> str:
     return f"python-worker-env-{digest.decode().rstrip('=')}"
 
 
+def _worker_identity_recipient_id(identity: WorkerIdentityAttestationV1) -> str:
+    value = "\0".join(
+        (
+            identity.environment_id,
+            identity.artifact_sha256,
+            identity.dependency_lock_sha256,
+        )
+    )
+    digest = base64.urlsafe_b64encode(hashlib.sha256(value.encode()).digest())
+    return f"python-worker-identity-{digest.decode().rstrip('=')}"
+
+
 class RustStepResolverAdapter:
     """Map one frozen Rust lane request onto an existing sync Python resolver."""
 
@@ -292,10 +304,11 @@ class RustStepResolverAdapter:
         environment_ids = (
             {str(value) for value in environment_values if isinstance(value, str)}
         )
-        return tuple(
-            sorted(_environment_recipient_id(value) for value in environment_ids)
-            + ["python-worker"]
-        )
+        recipients = sorted(_environment_recipient_id(value) for value in environment_ids)
+        if self.worker_identity is not None:
+            recipients.append(_worker_identity_recipient_id(self.worker_identity))
+        recipients.append("python-worker")
+        return tuple(recipients)
 
     def _routes(self, payload: Mapping[str, JsonValue], node_id: str) -> list[_FrozenWorkerRoute]:
         raw_routes = payload.get("runtime_routes", [])

@@ -177,6 +177,7 @@ def freeze_runtime_plan(
     )
     node_versions: dict[str, str] = {}
     node_environment_ids: dict[str, str] = {}
+    node_worker_identities: dict[str, dict[str, int | str]] = {}
     node_executor_targets: dict[str, str] = {}
     resolver = runtime.step_resolver
     registered_versions = getattr(resolver, "op_versions", {})
@@ -232,6 +233,27 @@ def freeze_runtime_plan(
                 f"{environment_id!r} for {op!r}, but the Python resolver registers "
                 f"{declared_environment!r}"
             )
+        raw_worker_identity = metadata.get("wf_worker_identity")
+        if raw_worker_identity is not None:
+            from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
+
+            try:
+                worker_identity = WorkerIdentityAttestationV1.model_validate(
+                    raw_worker_identity
+                )
+            except ValueError as error:
+                raise RustRuntimeAuthorityError(
+                    f"workflow node {node_id!r} has an invalid worker identity"
+                ) from error
+            if target == "rust-native":
+                raise RustRuntimeAuthorityError(
+                    f"Rust-native workflow node {node_id!r} cannot require a Python worker identity"
+                )
+            if environment_id != worker_identity.environment_id:
+                raise RustRuntimeAuthorityError(
+                    f"workflow node {node_id!r} worker identity environment does not match wf_environment_id"
+                )
+            node_worker_identities[str(node_id)] = worker_identity.to_wire()
         node_versions[str(node_id)] = version
         if environment_id is not None:
             node_environment_ids[str(node_id)] = environment_id
@@ -288,6 +310,8 @@ def freeze_runtime_plan(
         "node_environment_ids": node_environment_ids,
         "runtime_routes": routes,
     }
+    if node_worker_identities:
+        plan["node_worker_identities"] = node_worker_identities
     if node_executor_targets:
         plan["node_executor_targets"] = node_executor_targets
     return plan
@@ -417,6 +441,9 @@ def _validate_resume_plan(
     stored_environment_ids = contract.get("node_environment_ids")
     if not isinstance(stored_environment_ids, dict):
         stored_environment_ids = {}
+    stored_worker_identities = contract.get("node_worker_identities")
+    if not isinstance(stored_worker_identities, dict):
+        stored_worker_identities = {}
     stored_executor_targets = contract.get("node_executor_targets")
     if not isinstance(stored_executor_targets, dict):
         stored_executor_targets = {}
@@ -425,6 +452,7 @@ def _validate_resume_plan(
         or contract.get("node_ops") != plan["node_ops"]
         or stored_versions != plan["node_versions"]
         or stored_environment_ids != plan["node_environment_ids"]
+        or stored_worker_identities != plan.get("node_worker_identities", {})
         or stored_executor_targets != plan.get("node_executor_targets", {})
     ):
         raise RustRuntimeAuthorityError(
@@ -641,6 +669,7 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
         state.pop("_rt_node_ops", None)
         state.pop("_rt_node_versions", None)
         state.pop("_rt_node_environment_ids", None)
+        state.pop("_rt_node_worker_identities", None)
         state.pop("_rt_node_executor_targets", None)
         if dependencies:
             state["_deps"] = dependencies
@@ -1038,6 +1067,7 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
         state.pop("_rt_node_ops", None)
         state.pop("_rt_node_versions", None)
         state.pop("_rt_node_environment_ids", None)
+        state.pop("_rt_node_worker_identities", None)
         state.pop("_rt_node_executor_targets", None)
         if dependencies:
             state["_deps"] = dependencies

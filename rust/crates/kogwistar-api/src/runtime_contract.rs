@@ -39,3 +39,14 @@ pub(crate) fn runtime_worker_recipient(environment_id: Option<&str>) -> String {
         .encode(Sha256::digest(environment_id.as_bytes()));
     format!("python-worker-env-{digest}")
 }
+
+pub(crate) fn runtime_worker_identity_recipient(
+    environment_id: &str,
+    artifact_sha256: &str,
+    dependency_lock_sha256: &str,
+) -> String {
+    let identity = format!("{environment_id}\0{artifact_sha256}\0{dependency_lock_sha256}");
+    let digest = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(identity.as_bytes()));
+    format!("python-worker-identity-{digest}")
+}

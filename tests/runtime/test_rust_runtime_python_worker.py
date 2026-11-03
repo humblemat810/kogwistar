@@ -866,6 +866,9 @@ def test_python_worker_identity_admission_accepts_registered_identity() -> None:
 
     assert adapter(work)["status"] == "success"
     assert calls == ["called"]
+    assert "python-worker-identity-Pg8kjaa_r5hcsnNN8gIUMKd6x7EO4Sugfo92UM4XSVg" in (
+        adapter.claim_recipient_ids
+    )
 
 
 @pytest.mark.asyncio

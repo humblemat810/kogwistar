@@ -1682,6 +1682,11 @@ fn resume_contract_value(state: RecordedRuntimeState) -> Value {
         .get("_rt_node_environment_ids")
         .cloned()
         .unwrap_or_else(|| json!({}));
+    let node_worker_identities = state
+        .state
+        .get("_rt_node_worker_identities")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let node_executor_targets = state
         .state
         .get("_rt_node_executor_targets")
@@ -1698,6 +1703,7 @@ fn resume_contract_value(state: RecordedRuntimeState) -> Value {
         "node_ops": node_ops,
         "node_versions": node_versions,
         "node_environment_ids": node_environment_ids,
+        "node_worker_identities": node_worker_identities,
     });
     if node_executor_targets
         .as_object()
@@ -1729,6 +1735,7 @@ struct RuntimeGraphPlan {
     node_ops: std::collections::BTreeMap<String, String>,
     node_versions: std::collections::BTreeMap<String, String>,
     node_environment_ids: std::collections::BTreeMap<String, String>,
+    node_worker_identities: std::collections::BTreeMap<String, Value>,
     node_executor_targets: std::collections::BTreeMap<String, String>,
 }
 
@@ -1954,7 +1961,31 @@ fn submitted_runtime_graph_conflicts(
         || graph_plan.node_ops != input.node_ops
         || graph_plan.node_versions != submitted_versions
         || graph_plan.node_environment_ids != submitted_environment_ids
+        || graph_plan.node_worker_identities != input.node_worker_identities
         || graph_plan.node_executor_targets != input.node_executor_targets
+}
+
+fn runtime_worker_identity_map_is_valid(
+    identities: &BTreeMap<String, Value>,
+    environment_ids: &BTreeMap<String, String>,
+    executor_targets: &BTreeMap<String, String>,
+) -> bool {
+    identities.iter().all(|(node_id, raw_identity)| {
+        if node_id.trim().is_empty() {
+            return false;
+        }
+        let Ok(identity) = kogwistar_contracts::worker_identity_attestation_from_str(
+            &raw_identity.to_string(),
+        ) else {
+            return false;
+        };
+        environment_ids.get(node_id) == Some(&identity.environment_id)
+            && executor_targets
+                .get(node_id)
+                .map(String::as_str)
+                .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
+                == kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+    })
 }
 
 fn runtime_join_outstanding(join_count: usize, start_join_mask: i64) -> Vec<i64> {
@@ -2045,12 +2076,28 @@ fn runtime_worker_recipient_for_operation(
     operation: &str,
     environment_id: Option<&str>,
     executor_target: Option<&str>,
+    worker_identity: Option<&Value>,
 ) -> String {
     let target = executor_target.or_else(|| {
         native_operation_name(operation).map(|_| kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
     });
     if target == Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET) {
         kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned() + "-worker"
+    } else if let Some(identity) = worker_identity {
+        let Some(environment_id) = identity["environment_id"].as_str() else {
+            return "python-worker-identity-invalid".to_owned();
+        };
+        let Some(artifact_sha256) = identity["artifact_sha256"].as_str() else {
+            return "python-worker-identity-invalid".to_owned();
+        };
+        let Some(dependency_lock_sha256) = identity["dependency_lock_sha256"].as_str() else {
+            return "python-worker-identity-invalid".to_owned();
+        };
+        runtime_worker_identity_recipient(
+            environment_id,
+            artifact_sha256,
+            dependency_lock_sha256,
+        )
     } else {
         runtime_worker_recipient(environment_id)
     }
@@ -2076,7 +2123,17 @@ fn runtime_worker_recipient_for_state(state: &RecordedRuntimeState, node_id: &st
         .and_then(Value::as_object)
         .and_then(|targets| targets.get(node_id))
         .and_then(Value::as_str);
-    runtime_worker_recipient_for_operation(operation, environment_id, executor_target)
+    let worker_identity = state
+        .state
+        .get("_rt_node_worker_identities")
+        .and_then(Value::as_object)
+        .and_then(|identities| identities.get(node_id));
+    runtime_worker_recipient_for_operation(
+        operation,
+        environment_id,
+        executor_target,
+        worker_identity,
+    )
 }
 
 fn install_authoritative_node_executor_targets(
@@ -2148,6 +2205,8 @@ struct RuntimeSubmitRun {
     node_versions: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     node_environment_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    node_worker_identities: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     node_executor_targets: BTreeMap<String, String>,
 }
@@ -2633,7 +2692,7 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
             Some((node_id.to_owned(), version.to_owned()))
         })
         .collect();
-    let node_environment_ids = nodes
+    let node_environment_ids: std::collections::BTreeMap<String, String> = nodes
         .iter()
         .filter_map(|node| {
             let node_id = node["id"].as_str()?;
@@ -2662,6 +2721,34 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
             return None;
         }
         node_executor_targets.insert(node_id.to_owned(), target.to_owned());
+    }
+    let mut node_worker_identities = std::collections::BTreeMap::new();
+    for node in nodes {
+        let Some(raw_identity) = node["metadata"].get("wf_worker_identity") else {
+            continue;
+        };
+        if raw_identity.is_null() {
+            continue;
+        }
+        let node_id = node["id"].as_str()?;
+        let identity = kogwistar_contracts::worker_identity_attestation_from_str(
+            &raw_identity.to_string(),
+        )
+        .ok()?;
+        let environment_id = node_environment_ids.get(node_id)?;
+        if environment_id != &identity.environment_id
+            || node_executor_targets
+                .get(node_id)
+                .map(String::as_str)
+                .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
+                != kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+        {
+            return None;
+        }
+        node_worker_identities.insert(
+            node_id.to_owned(),
+            serde_json::to_value(identity).ok()?,
+        );
     }
     let node_aliases = nodes
         .iter()
@@ -2829,6 +2916,7 @@ fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPl
         node_ops,
         node_versions,
         node_environment_ids,
+        node_worker_identities,
         node_executor_targets,
     })
 }
@@ -2850,4 +2938,18 @@ fn exact_runtime_graph_plan(
         return None;
     }
     runtime_graph_plan_from_snapshot(&snapshot.payload_json)
+}
+
+fn runtime_snapshot_declares_worker_identity(snapshot: Option<&WorkflowDesignSnapshot>) -> bool {
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(&snapshot.payload_json) else {
+        return false;
+    };
+    payload["nodes"].as_array().is_some_and(|nodes| {
+        nodes
+            .iter()
+            .any(|node| !node["metadata"]["wf_worker_identity"].is_null())
+    })
 }

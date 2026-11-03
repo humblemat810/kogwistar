@@ -3357,6 +3357,48 @@ def test_freeze_runtime_plan_requires_matching_worker_environment(
         freeze_runtime_plan(runtime, "wf-1")
 
 
+def test_freeze_runtime_plan_pins_python_worker_identity_and_rejects_environment_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {
+        "schema_version": 1,
+        "environment_id": "science-cpu-v3",
+        "artifact_sha256": "a" * 64,
+        "dependency_lock_sha256": "b" * 64,
+    }
+    node = SimpleNamespace(
+        id="wf|start",
+        op="numerical",
+        fanout=False,
+        metadata={
+            "wf_start": True,
+            "wf_op": "numerical",
+            "wf_environment_id": "science-cpu-v3",
+            "wf_worker_identity": identity,
+        },
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.validate_workflow_design",
+        lambda **_kwargs: (node, {"wf|start": node}, {"wf|start": []}),
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
+        lambda **_kwargs: {"wf|start": 0},
+    )
+    resolver = lambda _op: None
+    resolver.op_environment_ids = {"numerical": "science-cpu-v3"}
+    runtime = SimpleNamespace(
+        workflow_engine=object(), predicate_registry={}, step_resolver=resolver
+    )
+
+    plan = freeze_runtime_plan(runtime, "wf-1")
+
+    assert plan["node_worker_identities"] == {"wf|start": identity}
+    node.metadata["wf_worker_identity"] = {**identity, "environment_id": "stale-env"}
+    with pytest.raises(RustRuntimeAuthorityError, match="identity environment"):
+        freeze_runtime_plan(runtime, "wf-1")
+
+
 def test_async_runtime_dispatches_to_async_rust_authority_when_selected(
     monkeypatch,
 ) -> None:

@@ -3419,17 +3419,39 @@ impl PostgresRunApplicationService {
             input.runtime_kind.clone()
         };
         let worker_protocol = worker_protocol_for_runtime_kind(&runtime_kind);
-        let graph_plan = match (
-            self.store
-                .get_named_projection("workflow_design", &workflow_id)
-                .await,
-            self.store
-                .get_workflow_design_snapshot(&workflow_id, i64::MAX, 1)
-                .await,
-        ) {
-            (Ok(projection), Ok(snapshot)) => exact_runtime_graph_plan(projection, snapshot),
-            _ => None,
-        };
+        let graph_projection = self
+            .store
+            .get_named_projection("workflow_design", &workflow_id)
+            .await
+            .ok()
+            .flatten();
+        let graph_snapshot = self
+            .store
+            .get_workflow_design_snapshot(&workflow_id, i64::MAX, 1)
+            .await
+            .ok()
+            .flatten();
+        let graph_plan = exact_runtime_graph_plan(graph_projection, graph_snapshot.clone());
+        if graph_plan.is_none() && runtime_snapshot_declares_worker_identity(graph_snapshot.as_ref()) {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_INVALID_WORKER_IDENTITY",
+                "workflow worker identity pin is invalid or its authoritative plan is unavailable",
+            );
+        }
+        if graph_plan.is_none()
+            && !runtime_worker_identity_map_is_valid(
+                &input.node_worker_identities,
+                &input.node_environment_ids,
+                &input.node_executor_targets,
+            )
+        {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_WORKER_IDENTITY",
+                "submitted worker identity pins must be valid and match Python executor environments",
+            );
+        }
         if !answer_workflow_admission_ready(
             &workflow_id,
             graph_plan.as_ref(),
@@ -3496,6 +3518,10 @@ impl PostgresRunApplicationService {
             .as_ref()
             .map(|plan| plan.node_environment_ids.clone())
             .unwrap_or(input.node_environment_ids);
+        let effective_node_worker_identities = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_worker_identities.clone())
+            .unwrap_or(input.node_worker_identities);
         let effective_node_executor_targets = graph_plan
             .as_ref()
             .map(|plan| plan.node_executor_targets.clone())
@@ -3514,12 +3540,16 @@ impl PostgresRunApplicationService {
         let effective_start_environment_id = effective_node_environment_ids
             .get(&effective_start_node_id)
             .cloned();
+        let effective_start_worker_identity = effective_node_worker_identities
+            .get(&effective_start_node_id)
+            .cloned();
         let effective_start_executor_target = effective_node_executor_targets
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state;
         initial_state.remove("_rt_graph_scope");
         initial_state.remove("_rt_run_owner_id");
+        initial_state.remove("_rt_node_worker_identities");
         initial_state.insert(
             "_rt_graph_scope".to_owned(),
             security_scope_value(&request.principal),
@@ -3563,6 +3593,13 @@ impl PostgresRunApplicationService {
                 "_rt_node_environment_ids".to_owned(),
                 serde_json::to_value(&effective_node_environment_ids)
                     .expect("runtime node environment ids serialize"),
+            );
+        }
+        if !effective_node_worker_identities.is_empty() {
+            initial_state.insert(
+                "_rt_node_worker_identities".to_owned(),
+                serde_json::to_value(&effective_node_worker_identities)
+                    .expect("runtime node worker identities serialize"),
             );
         }
         initial_state.insert(
@@ -3882,6 +3919,7 @@ impl PostgresRunApplicationService {
                             &effective_start_op,
                             effective_start_environment_id.as_deref(),
                             effective_start_executor_target.as_deref(),
+                            effective_start_worker_identity.as_ref(),
                         ),
                         sender_id: "rust-scheduler".to_owned(),
                         msg_type: "workflow.run.execute".to_owned(),
