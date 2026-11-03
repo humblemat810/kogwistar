@@ -963,3 +963,77 @@ async fn recorded_runtime_and_claimed_handoff_are_atomic_when_dsn_available()
         .await
         .map_err(backend)
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_run_starts_have_one_transaction_owner_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("concurrent_runtime_start");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store
+            .apply_recorded_runtime_transition(runtime_start("shared-run", "start-first"), false)
+            .await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store
+            .apply_recorded_runtime_transition(runtime_start("shared-run", "start-second"), false)
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    let results = [first, second];
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "exactly one concurrent start may establish the run"
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(PostgresStoreError::RecordedRuntimeConflict(_))))
+            .count(),
+        1,
+        "the losing start must observe the established sequence and conflict"
+    );
+
+    let events = first_store
+        .list_server_run_events("shared-run", 0, usize::MAX)
+        .await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].seq, 1);
+    let run = first_store
+        .get_server_run("shared-run")
+        .await?
+        .expect("winning start must create one durable server run");
+    assert_eq!(run.status, "running");
+    let state = first_store
+        .read_recorded_runtime_state("shared-run", "wf-1", "conv-1")
+        .await?
+        .expect("winning start must materialize one runtime state");
+    assert_eq!(state.state["answer"], serde_json::json!("seed"));
+    assert_eq!(state.last_step_seq, -1);
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
