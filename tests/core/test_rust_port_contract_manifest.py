@@ -150,9 +150,10 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
 
 def test_dual_language_open_tasklets_use_one_bounded_work_unit() -> None:
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
-    assert "every counted leaf row is one tasklet" in worklist
-    assert "targets 20 minutes and has a hard cap of 30 minutes" in worklist
+    assert "every counted leaf row is exactly one unit of work" in worklist
+    assert "Target 20 minutes, hard cap 30 minutes" in worklist
     assert "| Active: <=30 min`" in worklist
+    assert "The old ID remains the parent, and the three children each have one backend cell and one oracle." in worklist
 
     in_progress_rows = [
         line
