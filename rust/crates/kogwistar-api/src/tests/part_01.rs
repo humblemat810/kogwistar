@@ -838,6 +838,8 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available() {
+        use sha2::Digest;
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_snapshot_route_{}", uuid::Uuid::new_v4().simple());
@@ -1102,8 +1104,69 @@
                 "snapshot": expected
             })
         );
+        let initial_invoke_digest = format!(
+            "{:x}",
+            sha2::Sha256::digest(
+                kogwistar_contracts::canonical_json(&invoke_snapshot["result"], false).as_bytes(),
+            )
+        );
 
         drop(service);
+        let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        reopened.ensure_graph_type_schemas().await.unwrap();
+        reopened
+            .conversation_store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+        let retried_invoke_snapshot = reopened
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "latest_snapshot",
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "run-1",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            retried_invoke_snapshot.status,
+            StatusCode::OK.as_u16()
+        );
+        let retried_invoke_snapshot: Value =
+            serde_json::from_slice(&retried_invoke_snapshot.body).unwrap();
+        assert_eq!(retried_invoke_snapshot["op"], "invoke_tool");
+        assert_eq!(
+            format!(
+                "{:x}",
+                sha2::Sha256::digest(
+                    kogwistar_contracts::canonical_json(
+                        &retried_invoke_snapshot["result"],
+                        false,
+                    )
+                    .as_bytes(),
+                )
+            ),
+            initial_invoke_digest,
+            "PostgreSQL syscall retry returns the same result after service reopen"
+        );
+
+        drop(reopened);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
