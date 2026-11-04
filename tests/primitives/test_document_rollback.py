@@ -236,7 +236,7 @@ def test_document_rollback_replacement_ids_are_stable(engine):
     ).id
 
 
-@pytest.mark.parametrize("backend_kind", ["fake"], indirect=True)
+@pytest.mark.parametrize("backend_kind", ["fake", "chroma", "pg"], indirect=True)
 @pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
 def test_document_rollback_retry_after_replacement_write_reuses_id(
     engine, monkeypatch
