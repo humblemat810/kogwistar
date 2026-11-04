@@ -630,65 +630,21 @@ def admin_delete_doc(doc_id: str) -> object:
     require_role("rw")
     eng = engine.get()
     try:
-        node_ids = eng.read.node_ids_by_doc(doc_id)
-        edge_ids = eng.read.edge_ids_by_doc(doc_id)
+        result = eng.rollback.rollback_document(doc_id)
     except Exception as exc:
-        logger.exception("Failed to enumerate graph rows for admin delete: doc_id=%s", doc_id)
+        logger.exception("Failed to roll back document: doc_id=%s", doc_id)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to inspect document {doc_id!r} before deletion",
+            detail=f"Failed to roll back document {doc_id!r}",
         ) from exc
-
-    def _delete_step(step_name: str, fn: Callable[[], object]) -> None:
-        try:
-            fn()
-        except Exception as exc:
-            logger.exception(
-                "Admin document delete failed at step '%s': doc_id=%s",
-                step_name,
-                doc_id,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to delete document {doc_id!r} during {step_name}",
-            ) from exc
-
-    _delete_step(
-        "edge_endpoints_delete",
-        lambda: eng.backend.edge_endpoints_delete(where={"doc_id": doc_id}),
-    )
-    _delete_step(
-        "node_docs_delete",
-        lambda: eng.backend.node_docs_delete(where={"doc_id": doc_id}),
-    )
-
-    if edge_ids:
-        _delete_step("edge_refs_delete", lambda: eng.backend.edge_refs_delete(ids=edge_ids))
-        _delete_step("edge_delete", lambda: eng.backend.edge_delete(ids=edge_ids))
-    else:
-        _delete_step(
-            "edge_delete",
-            lambda: eng.backend.edge_delete(where={"doc_id": doc_id}),
-        )
-
-    if node_ids:
-        _delete_step("node_refs_delete", lambda: eng.backend.node_refs_delete(ids=node_ids))
-        _delete_step("node_delete", lambda: eng.backend.node_delete(ids=node_ids))
-    else:
-        _delete_step(
-            "node_delete",
-            lambda: eng.backend.node_delete(where={"doc_id": doc_id}),
-        )
-
-    _delete_step(
-        "document_delete",
-        lambda: eng.backend.document_delete(where={"doc_id": doc_id}),
-    )
 
     return {
         "ok": True,
         "doc_id": doc_id,
-        "deleted": {"nodes": len(node_ids), "edges": len(edge_ids)},
+        "deleted": {
+            "nodes": len(result["tombstoned_node_ids"]),
+            "edges": len(result["tombstoned_edge_ids"]),
+        },
     }
 
 # http://localhost:28110/api/viz/d3.json?doc_id=pytest-doc-upsert-1&mode=reify
