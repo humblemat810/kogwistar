@@ -3959,6 +3959,44 @@ mod tests {
     }
 
     #[test]
+    fn tombstoned_edge_preserves_redirect_target_from_shared_fixture() {
+        let contract_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-model-lifecycle-redirect-v1.json"
+        )))
+        .expect("valid edge redirect lifecycle fixture");
+        assert_eq!(contract_fixture["schema_version"], 1);
+        assert_eq!(contract_fixture["model_class"], "edge");
+
+        let baseline = fixture();
+        let mut payload = baseline["cases"]
+            .as_array()
+            .expect("graph model cases")
+            .iter()
+            .find(|case| case["kind"] == contract_fixture["source_fixture_kind"])
+            .expect("edge model case")["payload"]
+            .clone();
+        payload["metadata"]["lifecycle_status"] =
+            contract_fixture["input_lifecycle_status"].clone();
+        payload["metadata"]["redirect_to_id"] = contract_fixture["redirect_to_id"].clone();
+
+        let decoded = GraphModelEnvelope::new(GraphModelClass::Edge, payload)
+            .decode_persistent_v1()
+            .expect("legacy deleted edge with redirect remains valid");
+        let PersistentGraphEntityV1::Edge(edge) = decoded else {
+            panic!("edge fixture decoded as a non-edge model");
+        };
+        assert_eq!(
+            edge.core.metadata["lifecycle_status"],
+            contract_fixture["expected_lifecycle_status"]
+        );
+        assert_eq!(
+            edge.core.metadata["redirect_to_id"],
+            contract_fixture["redirect_to_id"]
+        );
+    }
+
+    #[test]
     fn raw_family_validator_accepts_oversized_python_hierarchy_levels() {
         let fixture = fixture();
         let baseline = fixture["cases"][0]["payload"].clone();

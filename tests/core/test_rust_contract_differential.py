@@ -601,14 +601,18 @@ def test_tombstoned_edge_lifecycle_is_shared_by_python_and_rust(monkeypatch) -> 
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
     from kogwistar import _rust
 
+    fixture_path = ROOT / "contracts" / "golden" / "graph-model-lifecycle-redirect-v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
     payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
-    payload["metadata"]["lifecycle_status"] = "deleted"
-    payload["metadata"]["redirect_to_id"] = "parity-edge-replacement"
+    payload["metadata"]["lifecycle_status"] = fixture["input_lifecycle_status"]
+    payload["metadata"]["redirect_to_id"] = fixture["redirect_to_id"]
 
     normalized = Edge.model_validate(payload).model_dump(
         field_mode="backend", dump_format="json"
     )
-    assert normalized["metadata"]["lifecycle_status"] == "tombstoned"
+    assert normalized["metadata"]["lifecycle_status"] == fixture["expected_lifecycle_status"]
+    assert normalized["metadata"]["redirect_to_id"] == fixture["redirect_to_id"]
     _rust.validate_graph_model_family(
         json.dumps(
             {"schema_version": 1, "model_class": "edge", "payload": normalized},
