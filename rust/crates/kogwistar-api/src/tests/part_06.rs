@@ -6619,6 +6619,7 @@
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use jsonwebtoken::{EncodingKey, Header, encode};
+        use sha2::Digest;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tower::ServiceExt;
 
@@ -6725,7 +6726,7 @@
         let service = open_sqlite_application_service(
             &path,
             Some(SqliteChromaGraphConfig {
-                endpoint,
+                endpoint: endpoint.clone(),
                 metric: DistanceMetric::Cosine,
                 node_collection: "nodes".to_owned(),
                 edge_collection: "edges".to_owned(),
@@ -6864,6 +6865,9 @@
         assert_invoke_result_shape("list_transcript", &invoked_transcript["result"]);
         assert_eq!(invoked_transcript["result"]["tool_name"], "list_transcript");
         assert_eq!(invoked_transcript["result"]["messages"].as_array().unwrap().len(), 2);
+        let initial_transcript_digest = format!("{:x}", sha2::Sha256::digest(
+            kogwistar_contracts::canonical_json(&invoked_transcript["result"], false).as_bytes(),
+        ));
 
         let invoked_snapshot = service
             .execute(request(
@@ -7255,6 +7259,42 @@
             .await;
         assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
 
+        // A read-only syscall retry must keep returning the same canonical result
+        // after the SQLite authority is reopened; Chroma remains the graph projection.
+        drop(service);
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: "nodes".to_owned(),
+                edge_collection: "edges".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let retried_transcript = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"list_transcript","conversation_id":"c1"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation",
+                    "ns":["conversation"], "capabilities":["invoke_tool","read_graph"]
+                }),
+            ))
+            .await;
+        assert_eq!(retried_transcript.status, StatusCode::OK.as_u16());
+        let retried_transcript: Value = serde_json::from_slice(&retried_transcript.body).unwrap();
+        assert_eq!(retried_transcript["op"], "invoke_tool");
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(
+                kogwistar_contracts::canonical_json(&retried_transcript["result"], false)
+                    .as_bytes(),
+            )),
+            initial_transcript_digest,
+            "the same scoped syscall result survives retry after service restart"
+        );
         let _ = stop_chroma.send(());
         let requests = fake.await.unwrap();
         assert!(requests
