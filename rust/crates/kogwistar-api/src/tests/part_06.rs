@@ -6045,7 +6045,8 @@
         ).await.unwrap();
         assert_eq!(listing.status(), StatusCode::OK);
         let listing: Value = serde_json::from_slice(&to_bytes(listing.into_body(), 65_536).await.unwrap()).unwrap();
-        let advertised = listing["result"]["tools"].as_array().unwrap().iter()
+        let advertised_tools = listing["result"]["tools"].as_array().unwrap();
+        let advertised = advertised_tools.iter()
             .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
         let advertised_graph_tools = advertised
             .iter()
@@ -6056,6 +6057,31 @@
             advertised_graph_tools,
             graph_read_tools.into_iter().collect(),
             "SQLite+Chroma must advertise exactly the implemented read-only graph surface"
+        );
+        let advertised_graph_contracts = advertised_tools
+            .iter()
+            .filter_map(|tool| {
+                let name = tool["name"].as_str()?;
+                graph_read_tools
+                    .contains(&name)
+                    .then(|| (name.to_owned(), tool.clone()))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let frozen_tools: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON).unwrap();
+        let expected_graph_contracts = frozen_tools["surfaces"]["root"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| {
+                let name = tool["name"].as_str()?;
+                graph_read_tools
+                    .contains(&name)
+                    .then(|| (name.to_owned(), tool.clone()))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            advertised_graph_contracts, expected_graph_contracts,
+            "Rust tools/list must preserve Python's graph-tool schemas and metadata"
         );
 
         let denied = app.clone().oneshot(
