@@ -4,6 +4,7 @@ import pytest
 from kogwistar.engine_core.models import (
     Document,
     LLMGraphExtraction,
+    Node,
     Span,
 )
 from kogwistar.llm_tasks import (
@@ -17,7 +18,8 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
-from tests._kg_factories import kg_document
+from tests._kg_factories import kg_document, kg_grounding
+from tests._helpers.graph_builders import build_relationship_edge
 
 pytestmark = pytest.mark.core
 
@@ -177,6 +179,61 @@ def _batch_document_rollback(engine, *, fake_backend: bool) -> None:
             where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]}
         )["ids"]
         assert not engine.document_collection.get(where={"doc_id": doc.id})["ids"]
+
+
+@pytest.mark.parametrize("backend_kind", ["fake"], indirect=True)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
+def test_document_rollback_replacement_ids_are_stable(engine):
+    removed_doc = "doc:rollback-idempotency:removed"
+    surviving_doc = "doc:rollback-idempotency:surviving"
+    mentions = [kg_grounding(removed_doc), kg_grounding(surviving_doc)]
+    node = Node(
+        id="node:rollback-idempotency",
+        label="Shared entity",
+        type="entity",
+        summary="Shared entity",
+        mentions=mentions,
+        doc_id=None,
+        metadata={},
+    )
+    edge = build_relationship_edge(
+        edge_id="edge:rollback-idempotency",
+        src=node.id,
+        tgt="node:rollback-target",
+        doc_id=removed_doc,
+        mentions=mentions,
+    )
+
+    first_node = engine.rollback._replacement_node(
+        node, [mentions[1]], removed_doc
+    )
+    retried_node = engine.rollback._replacement_node(
+        node, [mentions[1]], removed_doc
+    )
+    first_edge = engine.rollback._replacement_edge(
+        edge,
+        mentions=[mentions[1]],
+        source_ids=["node:replacement"],
+        target_ids=["node:rollback-target"],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        document_id=removed_doc,
+    )
+    retried_edge = engine.rollback._replacement_edge(
+        edge,
+        mentions=[mentions[1]],
+        source_ids=["node:replacement"],
+        target_ids=["node:rollback-target"],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        document_id=removed_doc,
+    )
+
+    assert first_node.id == retried_node.id != node.id
+    assert first_edge.id == retried_edge.id != edge.id
+    assert first_node.id != engine.rollback._replacement_node(
+        node, [mentions[1]], "doc:rollback-idempotency:other"
+    ).id
 
 
 @pytest.mark.parametrize(

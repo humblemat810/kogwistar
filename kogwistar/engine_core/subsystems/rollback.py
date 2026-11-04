@@ -7,7 +7,9 @@ from typing_extensions import TypedDict
 
 from ..async_compat import run_awaitable_blocking
 from ...implementation_selection import implementation_selection_bound
-from ...json_types import JsonObject
+from ...id_provider import stable_id
+from ...json_types import JsonObject, JsonValue
+from ...runtime.serialize import stable_json_dumps
 from ..models import Edge, Grounding, Node
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import extract_doc_ids_from_refs
@@ -145,7 +147,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         run_awaitable_blocking(self._e.backend.edge_refs_delete(where={"edge_id": edge_id}))
 
     def _replacement_node(
-        self, node: Node, mentions: list[Grounding] | None
+        self, node: Node, mentions: list[Grounding] | None, document_id: str
     ) -> Node:
         payload = node.model_dump(field_mode="backend", exclude={"id", "embedding"})
         payload["mentions"] = list(mentions or [])
@@ -153,6 +155,17 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         payload["metadata"] = self._clean_metadata_for_replacement(node.metadata)
         replacement = Node.model_validate(payload)
         replacement.embedding = None
+        stable_payload = replacement.model_dump(
+            field_mode="backend", dump_format="json", exclude={"id", "embedding"}
+        )
+        replacement.id = str(
+            stable_id(
+                "rollback.node",
+                node.safe_get_id(),
+                document_id,
+                stable_json_dumps(cast(JsonValue, stable_payload)),
+            )
+        )
         return replacement
 
     def _replacement_edge(
@@ -164,6 +177,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         target_ids: list[str],
         source_edge_ids: list[str],
         target_edge_ids: list[str],
+        document_id: str,
     ) -> Edge:
         payload = edge.model_dump(field_mode="backend", exclude={"id", "embedding"})
         payload["mentions"] = list(mentions or [])
@@ -175,6 +189,17 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         payload["metadata"] = self._clean_metadata_for_replacement(edge.metadata)
         replacement = Edge.model_validate(payload)
         replacement.embedding = None
+        stable_payload = replacement.model_dump(
+            field_mode="backend", dump_format="json", exclude={"id", "embedding"}
+        )
+        replacement.id = str(
+            stable_id(
+                "rollback.edge",
+                edge.safe_get_id(),
+                document_id,
+                stable_json_dumps(cast(JsonValue, stable_payload)),
+            )
+        )
         return replacement
 
     def _load_nodes(self, node_ids: list[str]) -> list[Node]:
@@ -264,7 +289,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if not changed:
                 continue
             if surviving_mentions:
-                replacement = self._replacement_node(node, surviving_mentions)
+                replacement = self._replacement_node(node, surviving_mentions, document_id)
                 self._e.write.add_node(replacement)
                 self._e.redirect_node(
                     node.safe_get_id(),
@@ -382,6 +407,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 target_ids=mapped_target_ids,
                 source_edge_ids=mapped_source_edge_ids,
                 target_edge_ids=mapped_target_edge_ids,
+                document_id=document_id,
             )
             self._e.write.add_edge(replacement_edge)
             self._e.redirect_edge(
