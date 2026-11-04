@@ -236,6 +236,59 @@ def test_document_rollback_replacement_ids_are_stable(engine):
     ).id
 
 
+@pytest.mark.parametrize("backend_kind", ["fake"], indirect=True)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
+def test_document_rollback_retry_after_replacement_write_reuses_id(
+    engine, monkeypatch
+):
+    removed_doc = kg_document(
+        doc_id="doc:rollback-retry:removed",
+        content="removed source",
+        source="rollback-retry-test",
+    )
+    surviving_doc = kg_document(
+        doc_id="doc:rollback-retry:surviving",
+        content="surviving source",
+        source="rollback-retry-test",
+    )
+    engine.write.add_document(removed_doc)
+    engine.write.add_document(surviving_doc)
+    node = Node(
+        label="Shared retry entity",
+        type="entity",
+        summary="Shared retry entity",
+        mentions=[kg_grounding(removed_doc.id), kg_grounding(surviving_doc.id)],
+    )
+    engine.write.add_node(node)
+
+    redirect_node = engine.lifecycle.redirect_node
+    attempts = 0
+
+    def fail_first_redirect(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("simulated interruption after replacement write")
+        return redirect_node(*args, **kwargs)
+
+    monkeypatch.setattr(engine.lifecycle, "redirect_node", fail_first_redirect)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        engine.rollback.rollback_document(removed_doc.id)
+
+    first_replacement = engine.backend.node_get(
+        where={"doc_id": surviving_doc.id}, include=["metadatas"]
+    )["ids"]
+    assert len(first_replacement) == 1
+
+    result = engine.rollback.rollback_document(removed_doc.id)
+
+    assert result["node_redirects"][node.id] == first_replacement[0]
+    assert engine.backend.node_get(
+        where={"doc_id": surviving_doc.id}, include=["metadatas"]
+    )["ids"] == first_replacement
+
+
 @pytest.mark.parametrize(
     "backend_kind",
     [
