@@ -1012,6 +1012,33 @@
         }
     }
 
+    #[test]
+    fn native_operation_registry_matches_shared_inventory_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-native-operation-inventory-v1.json"
+        )))
+        .unwrap();
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(fixture["registry_scope"], "builtins");
+        let expected: Vec<(String, String)> = fixture["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| {
+                (
+                    entry["operation"].as_str().unwrap().to_owned(),
+                    entry["version"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        let registry = NativeOperationRegistry::default();
+        assert_eq!(registry.registered_operations(), expected);
+        assert!(expected
+            .iter()
+            .all(|(operation, version)| registry.supports(operation, version)));
+    }
+
 #[test]
 fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
     let legacy: RecordedWorkerSuccessEffect = serde_json::from_value(serde_json::json!({

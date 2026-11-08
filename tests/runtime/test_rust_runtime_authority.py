@@ -30,6 +30,7 @@ from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
     RustRuntimeAuthority,
     RustRuntimeAuthorityError,
+    _native_operation_for_target,
     _server_managed_inline_worker_enabled,
     _server_advertises_inline_native_worker,
     _python_worker_required_for_plan,
@@ -48,6 +49,25 @@ RUST_SERVER = (
     / "debug"
     / ("kogwistar-server.exe" if os.name == "nt" else "kogwistar-server")
 )
+
+
+def test_native_operation_inventory_routes_through_shared_python_contract() -> None:
+    fixture = json.loads(
+        (
+            ROOT
+            / "contracts"
+            / "golden"
+            / "runtime-native-operation-inventory-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["schema_version"] == 1
+    assert fixture["registry_scope"] == "builtins"
+    operations = fixture["operations"]
+    assert operations
+    for entry in operations:
+        operation = entry["operation"]
+        assert entry["version"]
+        assert _native_operation_for_target(operation, "rust-native") == operation
 
 
 def test_rust_authority_excludes_noncheckpointed_runtime_bucket() -> None:

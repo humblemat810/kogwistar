@@ -617,6 +617,18 @@ impl NativeOperationRegistry {
     pub fn supports(&self, operation: &str, version: &str) -> bool {
         self.handler(operation, version).is_some()
     }
+
+    /// Return registered operation identities in deterministic order.
+    pub fn registered_operations(&self) -> Vec<(String, String)> {
+        self.handlers
+            .iter()
+            .flat_map(|(operation, versions)| {
+                versions
+                    .keys()
+                    .map(move |version| (operation.clone(), version.clone()))
+            })
+            .collect()
+    }
 }
 
 const MAX_EVENT_ADVISORY_ANNOTATION_CHARS: usize = 6_000;
