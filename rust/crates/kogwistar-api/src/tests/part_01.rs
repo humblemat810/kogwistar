@@ -2670,6 +2670,114 @@
         connection_task.await.unwrap().unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+    async fn postgres_graph_neighbors_omit_cross_scope_endpoint() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_neighbor_scope_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let namespace = format!("neighbor-scope-{}", uuid::Uuid::new_v4().simple());
+        let source_scope = GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let foreign_scope = GraphScope {
+            workspace_id: Some("workspace-b".to_owned()),
+            ..source_scope.clone()
+        };
+        for (scope, table, id, metadata, document) in [
+            (
+                source_scope.clone(),
+                "gke_nodes",
+                "source-a",
+                json!({"entity_type":"node","workspace_id":"workspace-a","graph_space":"facts"}),
+                json!({"id":"source-a","label":"Source"}),
+            ),
+            (
+                foreign_scope,
+                "gke_nodes",
+                "target-b",
+                json!({"entity_type":"node","workspace_id":"workspace-b","graph_space":"facts"}),
+                json!({"id":"target-b","label":"Foreign target"}),
+            ),
+            (
+                source_scope.clone(),
+                "gke_edges",
+                "edge-a-b",
+                json!({"entity_type":"edge","workspace_id":"workspace-a","graph_space":"facts","source_ids":["source-a"],"target_ids":["target-b"]}),
+                json!({"id":"edge-a-b","source_ids":["source-a"],"target_ids":["target-b"]}),
+            ),
+        ] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope,
+                    table: table.to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(document.to_string()),
+                        metadata: metadata.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let response = service
+            .graph_neighbors_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/neighbors".to_owned(),
+                body: br#"{"rid":"source-a"}"#.to_vec(),
+                principal: json!({
+                    "sub":"reader-a",
+                    "storage_ns":namespace,
+                    "workspace":"workspace-a",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(result["nodes"], json!([]));
+        assert_eq!(result["edges"], json!([]));
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA \"{schema}\" CASCADE"
+            ))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
     #[test]
     fn graph_traversal_requests_preserve_defaults_and_fail_closed() {
         let shortest: GraphShortestPathRequest =
