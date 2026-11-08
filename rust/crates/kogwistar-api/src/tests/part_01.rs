@@ -3653,6 +3653,50 @@
             },
             "payload": work["payload"]
         });
+        let fault_connection = rusqlite::Connection::open(&path).unwrap();
+        fault_connection
+            .execute_batch(
+                "CREATE TRIGGER reject_native_transition BEFORE INSERT ON server_run_events \
+                 WHEN NEW.run_id = 'native-run' \
+                 AND NEW.event_type = 'workflow.recorded_transition.v1' \
+                 BEGIN SELECT RAISE(ABORT, 'injected native transition failure'); END;",
+            )
+            .unwrap();
+        let event_count_before_failed_commit = store
+            .list_server_run_events("native-run", 0, 100)
+            .unwrap()
+            .len();
+        let failed_execute = client
+            .post(format!("{base_url}/internal/runtime/native/execute"))
+            .header("x-kogwistar-roles", "reader")
+            .json(&execute_payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(failed_execute.status(), StatusCode::CONFLICT);
+        let failed_body: Value = failed_execute.json().await.unwrap();
+        assert_eq!(failed_body["code"], "KOGWISTAR_RUNTIME_RESULT_CONFLICT");
+        assert_eq!(
+            store
+                .list_server_run_events("native-run", 0, 100)
+                .unwrap()
+                .len(),
+            event_count_before_failed_commit,
+            "failed transition must leave canonical run history unchanged"
+        );
+        assert_eq!(
+            store
+                .get_projected_lane_message(work["message_id"].as_str().unwrap())
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed",
+            "failed result commit must not acknowledge the native work item"
+        );
+        fault_connection
+            .execute_batch("DROP TRIGGER reject_native_transition;")
+            .unwrap();
+
         let execute = client
             .post(format!("{base_url}/internal/runtime/native/execute"))
             .header("x-kogwistar-roles", "reader")
@@ -4185,6 +4229,7 @@
             expected_state_digest
         );
         drop(reopened_store);
+        drop(fault_connection);
         std::fs::remove_file(path).unwrap();
     }
 
