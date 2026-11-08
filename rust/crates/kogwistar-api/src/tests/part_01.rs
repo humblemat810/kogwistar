@@ -4122,9 +4122,69 @@
         assert_eq!(legacy_work["payload"]["op"], "application.process");
         assert!(legacy_work["payload"].get("executor_target").is_none());
 
+        let native_events_before_restart = store
+            .list_server_run_events("native-run", 0, 100)
+            .unwrap();
+        let final_transition = native_events_before_restart
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "workflow.recorded_transition.v1")
+            .expect("native run must have a terminal recorded transition");
+        let final_transition_payload: Value =
+            serde_json::from_str(&final_transition.payload_json).unwrap();
+        let expected_state_digest = final_transition_payload["reduced"]["state_digest"]
+            .as_str()
+            .expect("terminal transition must persist a state digest")
+            .to_owned();
+        let expected_runtime_state = store
+            .read_recorded_runtime_state(
+                "native-run",
+                "native-workflow",
+                "native-conversation",
+            )
+            .unwrap()
+            .expect("native runtime state must be reconstructable before reopen");
+        assert_eq!(expected_runtime_state.status.server_status(), "succeeded");
+        assert_eq!(expected_runtime_state.state["counter"], json!(2));
+
         server.abort();
         let _ = server.await;
         drop(store);
+
+        let reopened_store = SqliteStore::open(&path).unwrap();
+        let reopened_run = reopened_store
+            .get_server_run("native-run")
+            .unwrap()
+            .expect("completed native run must survive SQLite reopen");
+        assert_eq!(reopened_run.status, "succeeded");
+        let reopened_runtime_state = reopened_store
+            .read_recorded_runtime_state(
+                "native-run",
+                "native-workflow",
+                "native-conversation",
+            )
+            .unwrap()
+            .expect("runtime state must reconstruct from durable transitions");
+        assert_eq!(reopened_runtime_state, expected_runtime_state);
+        assert_eq!(
+            kogwistar_runtime::state_digest(&reopened_runtime_state).unwrap(),
+            expected_state_digest
+        );
+        let reopened_events = reopened_store
+            .list_server_run_events("native-run", 0, 100)
+            .unwrap();
+        let reopened_final_transition = reopened_events
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "workflow.recorded_transition.v1")
+            .expect("terminal recorded transition must survive SQLite reopen");
+        let reopened_transition_payload: Value =
+            serde_json::from_str(&reopened_final_transition.payload_json).unwrap();
+        assert_eq!(
+            reopened_transition_payload["reduced"]["state_digest"],
+            expected_state_digest
+        );
+        drop(reopened_store);
         std::fs::remove_file(path).unwrap();
     }
 
