@@ -1,12 +1,12 @@
 # ADR-022 Remaining Worklist
 
-**Updated:** 2026-11-04
+**Updated:** 2026-11-09
 **Purpose:** Track bounded work beneath the coarse gates in [ADR-022-dual-language-capability-checklist.md](ADR-022-dual-language-capability-checklist.md).
 
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **113/742 PASS (15.2%)**; **0 IN PROGRESS**, **629 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **114/742 PASS (15.4%)**; **0 IN PROGRESS**, **628 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -384,7 +384,7 @@
 | FW-08-01B-VECTOR | DL-08 | NOT STARTED | Verify a conflicting-scope record is omitted from live PostgreSQL vector results. |
 | FW-08-03 | DL-08 | NOT STARTED | Verify live SQLite+Chroma public graph reads revalidate canonical scope and ACL after vector/backend response. |
 | FW-08-03A | DL-08 | NOT STARTED | Verify live SQLite+Chroma endpoint dependencies and stale-projection handling on graph reads. |
-| FW-08-04 | DL-08 | NOT STARTED | Verify in-memory authenticated node reads match Python scope/ACL behavior for allowed and denied records. |
+| FW-08-04 | DL-08 | PASS | Invariant: authenticated in-memory `kg_neighbors` returns only ACL-visible nodes and edges in the authorized graph scope | Cell: Python/Rust MCP read over `graph-acl-traversal-v1.json` | Oracle: owner sees expected private topology; reader sees none | Check: Python `test_mcp_neighbors_preserve_acl_visibility_and_hide_topology` (**1 passed**) and Rust `tests::in_memory_mcp_acl_traversal_matches_shared_python_contract` (**1 passed**, 325 filtered) | Active: <=20 min. |
 | FW-08-04A | DL-08 | NOT STARTED | Verify in-memory edge/adjacency reads fail closed for absent, malformed, or cross-scope endpoints. |
 | FW-08-02 | DL-08 | PARENT | Parent scope; children: FW-08-02-PG,FW-08-02-SQLITE-CHROMA,FW-08-02-MEMORY |
 | FW-08-02-PG | DL-08 | NOT STARTED | After ACL revocation, verify PostgreSQL public reads omit the revoked record. |
