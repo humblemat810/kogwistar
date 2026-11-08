@@ -2778,6 +2778,129 @@
         connection_task.await.unwrap().unwrap();
     }
 
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+    async fn postgres_graph_snapshot_omits_conflicting_workspace_node() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_snapshot_scope_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let namespace = format!("snapshot-scope-{}", uuid::Uuid::new_v4().simple());
+        for (workspace, id) in [
+            ("workspace-a", "source-a"),
+            ("workspace-b", "foreign-node-b"),
+        ] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: GraphScope {
+                        namespace: namespace.clone(),
+                        workspace_id: Some(workspace.to_owned()),
+                        graph_space: Some("facts".to_owned()),
+                    },
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(json!({"id":id,"label":id}).to_string()),
+                        metadata: Map::from_iter([
+                            ("entity_type".to_owned(), json!("node")),
+                            ("workspace_id".to_owned(), json!(workspace)),
+                            ("graph_space".to_owned(), json!("facts")),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: GraphScope {
+                        namespace: namespace.clone(),
+                        workspace_id: Some(workspace.to_owned()),
+                        graph_space: Some("facts".to_owned()),
+                    },
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: Map::from_iter([
+                            ("entity_type".to_owned(), json!("acl_record")),
+                            ("acl_truth_graph".to_owned(), json!("knowledge")),
+                            ("acl_target_grain".to_owned(), json!("node")),
+                            ("acl_target_entity_id".to_owned(), json!(id)),
+                            ("acl_mode".to_owned(), json!("public")),
+                            ("acl_version".to_owned(), json!(1)),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+                body: br#"{"graph_type":"knowledge"}"#.to_vec(),
+                principal: json!({
+                    "sub":"reader-a",
+                    "storage_ns":namespace,
+                    "workspace":"workspace-a",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        let response_status = response.status;
+        let response_body = response.body;
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA \"{schema}\" CASCADE"
+            ))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+
+        assert_eq!(response_status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&response_body).unwrap();
+        let node_ids = result["nodes"]
+            .as_array()
+            .expect("D3 snapshot has node array")
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect::<Vec<_>>();
+        assert!(node_ids.contains(&"source-a"), "snapshot: {result}");
+        assert!(!node_ids.contains(&"foreign-node-b"), "snapshot: {result}");
+    }
+
     #[test]
     fn graph_traversal_requests_preserve_defaults_and_fail_closed() {
         let shortest: GraphShortestPathRequest =
