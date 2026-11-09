@@ -11,13 +11,215 @@ use kogwistar_runtime::{
     worker_effect_digest,
 };
 use kogwistar_store::{
-    NewProjectedLaneMessage, ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE,
-    ServerRunCreate, StoreError, StoreResult, runtime_checkpoint_namespace,
-    runtime_projection_write, runtime_status_namespace, timestamp_i64,
+    EntityEvent, GraphMutation, GraphMutationBatch, NewProjectedLaneMessage, ProjectedLaneMessage,
+    RUNTIME_CURRENT_STATE_NAMESPACE, ServerRunCreate, StoreError, StoreResult,
+    runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
+    timestamp_i64, validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
 use serde_json::Value;
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
+
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#persist_provider_event_publication; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently; python_test=tests/agent/test_provider_event_cross_language_contract.py; note=Rust memory backend atomically publishes graph projection, inbox record, and trace under one process-local lock; Python components remain independently callable.
+/// One provider event and every graph/runtime projection derived from it.
+/// The in-memory backend commits this bundle under one process-local lock.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProviderEventPublicationCommit {
+    pub run_id: String,
+    pub owner_id: String,
+    pub conversation_id: String,
+    pub namespace: String,
+    pub provider_event_json: String,
+    pub graph_mutations: Vec<GraphMutation>,
+    pub lane: NewProjectedLaneMessage,
+    pub run_event_type: String,
+    pub run_event_payload_json: String,
+}
+
+impl InMemoryStore {
+    /// Atomically publishes a provider event to graph, inbox, and run trace.
+    /// This is process-local atomicity only; InMemoryStore is not durable.
+    pub fn persist_provider_event_publication(
+        &self,
+        publication: ProviderEventPublicationCommit,
+    ) -> StoreResult<bool> {
+        let ProviderEventPublicationCommit {
+            run_id,
+            owner_id,
+            conversation_id,
+            namespace,
+            provider_event_json,
+            graph_mutations,
+            lane,
+            run_event_type,
+            run_event_payload_json,
+        } = publication;
+        let batch = GraphMutationBatch {
+            mutations: graph_mutations,
+            index_jobs: Vec::new(),
+        };
+        let provider_event: kogwistar_contracts::DurableProviderEventV1 =
+            serde_json::from_str(&provider_event_json).map_err(json_error)?;
+        provider_event.event.validate().map_err(runtime_error)?;
+        let event_id = provider_event.event_id;
+        validate_graph_mutation_batch(&batch)?;
+        if run_id.trim().is_empty()
+            || owner_id.trim().is_empty()
+            || conversation_id.trim().is_empty()
+            || namespace.trim().is_empty()
+            || event_id.trim().is_empty()
+            || run_event_type != "workflow.provider_event.v1"
+            || batch.mutations.iter().any(|mutation| {
+                mutation.scope.namespace != namespace
+                    || mutation.scope.graph_space.as_deref() != Some("conversation")
+            })
+            || lane.message_id != format!("msg:{event_id}")
+            || lane.namespace != namespace
+            || lane.purpose != "agent_event"
+            || lane.inbox_id != "agent-provider-events"
+            || lane.conversation_id != conversation_id
+            || lane.recipient_id != "agent-event-consumer"
+            || lane.sender_id != "agent-runtime"
+            || lane.msg_type != "agent.provider_event"
+            || lane.status != "pending"
+            || lane.run_id.as_deref() != Some(run_id.as_str())
+            || lane.correlation_id.as_deref() != Some(event_id.as_str())
+            || provider_event.trace.run_id != run_id
+            || provider_event.trace.turn_id.trim().is_empty()
+            || provider_event.trace.workflow_node_id.trim().is_empty()
+            || provider_event.trace.step_id.trim().is_empty()
+            || provider_event.trace.provider_id.trim().is_empty()
+            || provider_event.trace.attempt <= 0
+            || lane.payload_json.as_deref() != Some(provider_event_json.as_str())
+        {
+            return Err(runtime_conflict(
+                "provider-event publication fields do not match its graph, lane, or run scope",
+            ));
+        }
+        let run_trace: Value = serde_json::from_str(&run_event_payload_json).map_err(json_error)?;
+        if run_trace.get("event_id").and_then(Value::as_str) != Some(event_id.as_str()) {
+            return Err(runtime_conflict(
+                "provider-event run trace must identify the published event",
+            ));
+        }
+        let now = now_ms();
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let run = state
+            .server_runs
+            .get(&run_id)
+            .ok_or_else(|| runtime_conflict("provider-event run does not exist"))?;
+        if run.user_id.as_deref() != Some(owner_id.as_str())
+            || run.conversation_id != conversation_id
+            || run.cancel_requested
+        {
+            return Err(runtime_conflict(
+                "provider-event owner, conversation, or run state changed",
+            ));
+        }
+
+        let existing_lane = state.lane_messages.get(&lane.message_id);
+        let existing_run_event = state.server_run_events.get(&run_id).and_then(|events| {
+            events.iter().find(|event| {
+                event.event_type == run_event_type
+                    && serde_json::from_str::<Value>(&event.payload_json)
+                        .ok()
+                        .is_some_and(|payload| payload["event_id"] == event_id)
+            })
+        });
+        if existing_lane.is_some() || existing_run_event.is_some() {
+            let lane_matches = existing_lane.is_some_and(|stored| {
+                stored.namespace == lane.namespace
+                    && stored.purpose == lane.purpose
+                    && stored.inbox_id == lane.inbox_id
+                    && stored.conversation_id == lane.conversation_id
+                    && stored.recipient_id == lane.recipient_id
+                    && stored.sender_id == lane.sender_id
+                    && stored.msg_type == lane.msg_type
+                    && stored.run_id == lane.run_id
+                    && stored.step_id == lane.step_id
+                    && stored.correlation_id == lane.correlation_id
+                    && stored.payload_json == lane.payload_json
+            });
+            let trace_matches = existing_run_event
+                .is_some_and(|stored| stored.payload_json == run_event_payload_json);
+            if !lane_matches || !trace_matches {
+                return Err(runtime_conflict(
+                    "provider-event replay conflicts with stored lane or trace",
+                ));
+            }
+            for mutation in &batch.mutations {
+                let event = state
+                    .namespaces
+                    .get(&namespace)
+                    .and_then(|scope| {
+                        scope
+                            .event_seq_by_id
+                            .get(&mutation.event_id)
+                            .and_then(|seq| scope.events.iter().find(|event| event.seq == *seq))
+                    })
+                    .ok_or_else(|| {
+                        runtime_conflict("provider-event replay is missing graph projection")
+                    })?;
+                validate_graph_mutation_replay(mutation, event)?;
+            }
+            return Ok(false);
+        }
+        if state.server_run_events.get(&run_id).is_some_and(|events| {
+            events.iter().any(|event| {
+                event.event_type == run_event_type
+                    && serde_json::from_str::<Value>(&event.payload_json)
+                        .ok()
+                        .is_some_and(|payload| payload["event_id"] == event_id)
+            })
+        }) {
+            return Err(runtime_conflict("provider-event run trace already exists"));
+        }
+        for mutation in &batch.mutations {
+            if state
+                .namespaces
+                .get(&namespace)
+                .is_some_and(|scope| scope.event_seq_by_id.contains_key(&mutation.event_id))
+            {
+                return Err(runtime_conflict(
+                    "provider-event graph event ID is already in use",
+                ));
+            }
+        }
+
+        for mutation in batch.mutations {
+            let scope = InMemoryStore::scope_mut(&mut state, &namespace);
+            let seq = scope.next_event_seq + 1;
+            let event = EntityEvent {
+                namespace: namespace.clone(),
+                seq,
+                event_id: mutation.event_id.clone(),
+                entity_kind: mutation.entity_kind,
+                entity_id: mutation.record.id.clone(),
+                op: mutation.op,
+                payload: mutation.payload,
+            };
+            scope.next_event_seq = seq;
+            scope.event_seq_by_id.insert(event.event_id.clone(), seq);
+            scope.events.push(event);
+            let projection = state.graph_projections.entry(mutation.scope).or_default();
+            let key = (mutation.table, mutation.record.id.clone());
+            if !projection.records.contains_key(&key) {
+                projection.record_order.push(key.clone());
+            }
+            projection.records.insert(key, mutation.record);
+        }
+        insert_initial_lane(&mut state, lane);
+        let events = state.server_run_events.entry(run_id.clone()).or_default();
+        events.push(ServerRunEvent {
+            seq: events.last().map_or(1, |event| event.seq + 1),
+            run_id,
+            event_type: run_event_type,
+            payload_json: run_event_payload_json,
+            created_at_ms: now,
+        });
+        Ok(true)
+    }
+}
 
 // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_recorded_runtime_transition; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event+update_server_run; rust_test=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#recorded_transition_is_atomic_replayable_and_projected_in_memory; python_test=tests/core/test_recorded_transition_identity.py#test_metadata_stores_reject_duplicate_recorded_transition_ids; note=Rust adds an atomic reducer transaction; Python remains primitive append/update and rejects duplicate IDs.
 // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#admit_server_run_with_start; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; rust_test=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#runtime_admission_atomically_records_start_and_first_lane; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract,tests/core/test_lane_message_meta_store_contract.py#test_lane_message_projection_contract; note=Rust admission is one process-local atomic write; Python's in-memory primitives remain separately callable.
@@ -927,8 +1129,8 @@ fn runtime_conflict(message: impl Into<String>) -> StoreError {
 mod tests {
     use super::*;
     use kogwistar_store::{
-        LaneMessageClaimFilter, LaneMessageReadStore, LaneMessageWriteStore,
-        NewProjectedLaneMessage, ProjectionReadStore, ServerRunReadStore,
+        GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageReadStore,
+        LaneMessageWriteStore, NewProjectedLaneMessage, ProjectionReadStore, ServerRunReadStore,
     };
     use serde_json::json;
     use std::future::Future;
@@ -1042,6 +1244,99 @@ mod tests {
             step_id: "noop".to_owned(),
             correlation_id: "memory-run".to_owned(),
         }
+    }
+
+    fn provider_publication(event_id: &str) -> ProviderEventPublicationCommit {
+        let namespace = "docs".to_owned();
+        let conversation_id = "memory-conversation".to_owned();
+        let scope = GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: Some("workspace-1".to_owned()),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("namespace".to_owned(), json!(namespace));
+        metadata.insert("workspace_id".to_owned(), json!("workspace-1"));
+        metadata.insert("graph_space".to_owned(), json!("conversation"));
+        let trace_payload = json!({"event_id": event_id, "trace_id": "trace-1"}).to_string();
+        let provider_event_json = json!({
+            "event_id": event_id,
+            "trace": {
+                "run_id": "memory-run",
+                "turn_id": "turn-1",
+                "workflow_node_id": "provider-request",
+                "step_id": "provider-request",
+                "provider_id": "test-provider"
+            },
+            "event": {"kind": "response_started"}
+        })
+        .to_string();
+        ProviderEventPublicationCommit {
+            run_id: "memory-run".to_owned(),
+            owner_id: "user-1".to_owned(),
+            conversation_id: conversation_id.clone(),
+            namespace: namespace.clone(),
+            provider_event_json: provider_event_json.clone(),
+            graph_mutations: vec![GraphMutation {
+                scope,
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("graph-{event_id}"),
+                op: "ADD".to_owned(),
+                payload: json!({"id": format!("event-node-{event_id}")}),
+                record: GraphRecord {
+                    id: format!("event-node-{event_id}"),
+                    document: None,
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }],
+            lane: NewProjectedLaneMessage {
+                message_id: format!("msg:{event_id}"),
+                namespace,
+                purpose: "agent_event".to_owned(),
+                inbox_id: "agent-provider-events".to_owned(),
+                conversation_id,
+                recipient_id: "agent-event-consumer".to_owned(),
+                sender_id: "agent-runtime".to_owned(),
+                msg_type: "agent.provider_event".to_owned(),
+                status: "pending".to_owned(),
+                created_at: now_seconds(),
+                available_at: now_seconds(),
+                run_id: Some("memory-run".to_owned()),
+                step_id: Some("provider-request".to_owned()),
+                correlation_id: Some(event_id.to_owned()),
+                payload_json: Some(provider_event_json),
+                error_json: None,
+            },
+            run_event_type: "workflow.provider_event.v1".to_owned(),
+            run_event_payload_json: trace_payload,
+        }
+    }
+
+    fn admitted_store() -> InMemoryStore {
+        let store = InMemoryStore::new();
+        let run = ServerRunCreate {
+            run_id: "memory-run".to_owned(),
+            conversation_id: "memory-conversation".to_owned(),
+            workflow_id: "memory-workflow".to_owned(),
+            user_id: Some("user-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "queued".to_owned(),
+        };
+        let mut transition = pending_start();
+        transition.expected_event_seq = 1;
+        transition.node_id = Some("noop".to_owned());
+        store
+            .admit_server_run_with_start(
+                run,
+                runtime_admission_payload(),
+                transition,
+                worker_lane(),
+            )
+            .unwrap();
+        store
     }
 
     #[test]
@@ -1207,6 +1502,111 @@ mod tests {
             .admit_server_run_with_start(run, runtime_admission_payload(), transition, lane)
             .unwrap();
         assert!(replay.idempotent);
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently() {
+        let store = admitted_store();
+        let publication = provider_publication("provider-event-1");
+        assert!(
+            store
+                .persist_provider_event_publication(publication.clone())
+                .unwrap()
+        );
+        assert!(
+            !store
+                .persist_provider_event_publication(publication.clone())
+                .unwrap()
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("msg:provider-event-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 10))
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "workflow.provider_event.v1")
+                .count(),
+            1
+        );
+        assert!(
+            store
+                .state
+                .read()
+                .unwrap()
+                .graph_projections
+                .values()
+                .any(|projection| projection.records.contains_key(&(
+                    "gke_nodes".to_owned(),
+                    "event-node-provider-event-1".to_owned()
+                )))
+        );
+
+        let mut conflicting_replay = publication;
+        conflicting_replay.run_event_payload_json =
+            json!({"event_id": "provider-event-1", "trace_id": "changed"}).to_string();
+        assert!(
+            store
+                .persist_provider_event_publication(conflicting_replay)
+                .is_err()
+        );
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 10))
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "workflow.provider_event.v1")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn invalid_provider_event_publication_leaves_no_partial_projection() {
+        let store = admitted_store();
+        let mut publication = provider_publication("provider-event-invalid");
+        publication.graph_mutations[0].scope.namespace = "other-namespace".to_owned();
+        assert!(
+            store
+                .persist_provider_event_publication(publication)
+                .is_err()
+        );
+        assert!(
+            block_on(store.projected_lane_message("msg:provider-event-invalid"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let mut mismatched_trace = provider_publication("provider-event-trace-mismatch");
+        mismatched_trace.run_event_payload_json = json!({
+            "event_id": "different-event"
+        })
+        .to_string();
+        assert!(
+            store
+                .persist_provider_event_publication(mismatched_trace)
+                .is_err()
+        );
+        assert!(
+            block_on(store.projected_lane_message("msg:provider-event-trace-mismatch"))
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             block_on(store.server_run_events("memory-run", 0, 10))
                 .unwrap()
