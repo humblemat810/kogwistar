@@ -5681,6 +5681,8 @@
                             json!({"workspace_id":workspace,"graph_space":"facts"})
                         } else if document == "doc2" {
                             json!({"workspace_id":workspace,"graph_space":"facts","doc_id":"doc-a","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":1})
+                        } else if document == "doc6" {
+                            json!({"workspace_id":workspace,"graph_space":"facts","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":4})
                         } else {
                             json!({"workspace_id":workspace,"graph_space":"facts","_kogwistar_stage2_ready":true,"_kogwistar_source_revision":2})
                         };
@@ -5694,19 +5696,19 @@
                     };
                     if input["where"].to_string().contains("doc-a") {
                         json!({
-                            "ids":[["n2"]],
-                            "documents":[[r#"{"id":"n2","label":"Lung Cancer"}"#]],
-                            "metadatas":[[scoped("doc2")]],
-                            "embeddings":[[[0.1,0.2]]],
-                            "distances":[[0.1]]
+                            "ids":[["n2","n6"]],
+                            "documents":[[r#"{"id":"n2","label":"Lung Cancer"}"#,r#"{"id":"n6","label":"Project scoped node"}"#]],
+                            "metadatas":[[scoped("doc2"),scoped("doc6")]],
+                            "embeddings":[[[0.1,0.2],[0.1,0.2]]],
+                            "distances":[[0.1,0.02]]
                         })
                     } else {
                         json!({
-                            "ids":[["n4","n2","n5"]],
-                            "documents":[["doc4","doc2","doc5"]],
-                            "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5")]],
-                            "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
-                            "distances":[[0.03,0.1,0.01]]
+                            "ids":[["n4","n2","n5","n6"]],
+                            "documents":[["doc4","doc2","doc5",r#"{"id":"n6","label":"Project scoped node"}"#]],
+                            "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5"),scoped("doc6")]],
+                            "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
+                            "distances":[[0.03,0.1,0.01,0.02]]
                         })
                     }
                 } else if line.contains("collection-edges/query") {
@@ -5718,15 +5720,16 @@
                         "_test_document": document
                     });
                     json!({
-                        "ids":[["e2","e1","e3"]],
+                        "ids":[["e2","e1","e3","e6"]],
                         "documents":[[
                             r#"{"source_ids":["n1"],"target_ids":["n3"]}"#,
                             r#"{"source_ids":["n1"],"target_ids":["n2"]}"#,
-                            r#"{"source_ids":["n1"],"target_ids":["n5"]}"#
+                            r#"{"source_ids":["n1"],"target_ids":["n5"]}"#,
+                            r#"{"id":"e6","source_ids":["n1"],"target_ids":["n2"]}"#
                         ]],
-                        "metadatas":[[scoped("edge2"),scoped("edge1"),scoped("edge3")]],
-                        "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
-                        "distances":[[0.02,0.1,0.01]]
+                        "metadatas":[[scoped("edge2"),scoped("edge1"),scoped("edge3"),scoped("edge6")]],
+                        "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
+                        "distances":[[0.02,0.1,0.01,0.04]]
                     })
                 } else if line.contains("collection-nodes/get") {
                     let metas = [
@@ -5750,6 +5753,9 @@
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"e1","acl_target_item_id":"e1::mention::0::span::0","acl_version":1,"acl_mode":"public"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"n3","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"node","label":"Project scoped node"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n6","acl_version":1,"acl_mode":"scope","owner_id":"other-owner","security_scope":"project-a"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e6","acl_version":1,"acl_mode":"scope","owner_id":"other-owner","security_scope":"project-a"}),
                     ];
                     let source_doc = |doc_id: &str, with_mention: bool| {
                         if !with_mention {
@@ -5757,9 +5763,9 @@
                         }
                         json!({"mentions":[{"spans":[{"doc_id":doc_id,"insertion_method":"parser"}]}]}).to_string()
                     };
-                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-e4","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation"];
+                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-e4","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation","n6","acl-n6","acl-e6"];
                     json!({"ids":ids,
-                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
+                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
                         "metadatas":metas.into_iter().enumerate().map(|(index, m)| {
                             let workspace = if index == 4 || index == 9 {"workspace-b"} else {"workspace-a"};
                             let mut original = m.as_object().unwrap().clone();
@@ -5771,7 +5777,7 @@
                             }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
                         }).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
+                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
                 } else if include_cross_doc_edge {
                     include_cross_doc_edge = false;
                     json!({"ids":["e1","e4"],
@@ -5782,10 +5788,14 @@
                         ],
                         "embeddings":[null,null]})
                 } else {
-                    json!({"ids":["e1"],
-                        "documents":[r#"{"id":"e1","source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#],
-                        "metadatas":[json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-a\"}"})],
-                        "embeddings":[null]})
+                    json!({"ids":["e1","e6"],
+                        "documents":[r#"{"id":"e1","source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#,
+                            r#"{"id":"e6","source_ids":["n1"],"target_ids":["n2"]}"#],
+                        "metadatas":[
+                            json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-a\"}"}),
+                            json!({"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\"}"})
+                        ],
+                        "embeddings":[null,null]})
                 };
                 let body = payload.to_string();
                 let response = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}", body.len(), body);
@@ -5839,8 +5849,8 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 20, "decoded node records: {nodes:?}");
-        assert_eq!(edges.len(), 1, "decoded edge records: {edges:?}");
+        assert_eq!(nodes.len(), 23, "decoded node records: {nodes:?}");
+        assert_eq!(edges.len(), 2, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
         assert_eq!(visible_nodes.len(), 4, "ACL-visible nodes: {visible_nodes:?}");
@@ -5862,16 +5872,18 @@
             .await
             .unwrap();
         assert_eq!(batched.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), ["n2"]);
-        for (event_id, entity_id, op) in [
-            ("n2-current", "n2", "ADD"),
-            ("n4-old", "n4", "ADD"),
-            ("n4-current", "n4", "REPLACE"),
+        for (event_id, entity_kind, entity_id, op) in [
+            ("n2-current", "node", "n2", "ADD"),
+            ("n4-old", "node", "n4", "ADD"),
+            ("n4-current", "node", "n4", "REPLACE"),
+            ("n6-project", "node", "n6", "ADD"),
+            ("e6-project", "edge", "e6", "ADD"),
         ] {
             service.store.append_raw_entity_event(
                 "scope-a",
                 SqliteNewRawEntityEvent {
                     event_id: event_id.to_owned(),
-                    entity_kind: "node".to_owned(),
+                    entity_kind: entity_kind.to_owned(),
                     entity_id: entity_id.to_owned(),
                     op: op.to_owned(),
                     payload_json: "{}".to_owned(),
@@ -5927,6 +5939,18 @@
             )
             .unwrap()
         };
+        let token_for_project = |project: &str| {
+            encode(
+                &Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+                    "graph_space":"facts", "project":project,
+                    "role":"ro", "ns":["docs"], "capabilities":["read_graph"], "exp":now + 300
+                }),
+                &EncodingKey::from_secret(b"sqlite-chroma-mcp-secret"),
+            )
+            .unwrap()
+        };
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -5937,6 +5961,50 @@
             Arc::new(service.clone()),
         );
         assert!(service.supports_http_operation("GET", "/api/search_index_hybrid"));
+        for (project, truth_graph, should_see_project_records) in [
+            ("project-a", "knowledge", true),
+            ("project-b", "knowledge", false),
+            ("project-a", "conversation", false),
+        ] {
+            for (kind, target_id) in [("node", "n6"), ("edge", "e6")] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/internal/graph/vector-query")
+                            .header("content-type", "application/json")
+                            .header(
+                                "authorization",
+                                format!("Bearer {}", token_for_project(project)),
+                            )
+                            .body(Body::from(
+                                json!({
+                                    "entity_kind":kind,
+                                    "query_embeddings":[[0.1,0.2]],
+                                    "metric":"cosine",
+                                    "truth_graph":truth_graph,
+                                    "n_results":10,
+                                    "include":["distances"]
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let result: Value =
+                    serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap())
+                        .unwrap();
+                let ids = result["ids"][0].as_array().unwrap();
+                assert_eq!(
+                    ids.iter().any(|id| id == target_id),
+                    should_see_project_records,
+                    "unexpected project ACL result for {kind}, project={project}, truth_graph={truth_graph}: {result}"
+                );
+            }
+        }
         let hybrid = app
             .clone()
             .oneshot(
