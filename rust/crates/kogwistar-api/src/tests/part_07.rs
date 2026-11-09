@@ -7283,6 +7283,53 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         .collect::<Vec<_>>();
     assert_eq!(jobs_after_invalid, jobs_before_invalid);
 
+    let malformed_hyperedge: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-extraction-invalid-hyperedge-v1.json"
+    )))
+    .unwrap();
+    let rejected_hyperedge = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&malformed_hyperedge).unwrap(),
+            principal: json!({
+                "sub": "alice", "user_id": "alice", "role": "rw",
+                "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(
+        rejected_hyperedge.status,
+        StatusCode::UNPROCESSABLE_ENTITY.as_u16()
+    );
+    assert_eq!(
+        service.store.replay_raw_events("docs", 0, 100).unwrap().len(),
+        committed_events,
+        "malformed hyperedge must not append graph or ACL events"
+    );
+    let document_after_hyperedge_rejection = service
+        .store
+        .source_document_projection(
+            &GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: Some(String::new()),
+                graph_space: Some(String::new()),
+            },
+            "doc-invalid-hyperedge",
+        )
+        .unwrap();
+    assert!(document_after_hyperedge_rejection.is_none());
+    let jobs_after_hyperedge_rejection = service
+        .store
+        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|job| (job.entity_id, job.status))
+        .collect::<Vec<_>>();
+    assert_eq!(jobs_after_hyperedge_rejection, jobs_before_invalid);
+
     drop(service);
     drop(standalone);
     remove_test_sqlite(&sqlite_path);

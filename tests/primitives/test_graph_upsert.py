@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -64,6 +67,40 @@ def test_graph_upsert_validates_entity_shape_before_document_write(monkeypatch) 
     )
     with pytest.raises(server.HTTPException) as error:
         server.api_graph_upsert_llm(invalid)
+
+    assert error.value.status_code == 422
+    assert fake_engine.documents_added == []
+
+
+def test_graph_upsert_rejects_malformed_hyperedge_before_document_write(
+    monkeypatch,
+) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.documents_added: list[object] = []
+            self.write = self
+            self.extract = self
+
+        def add_document(self, document: object) -> None:
+            self.documents_added.append(document)
+
+        def fetch_document_text(self, document_id: str) -> None:
+            return None
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-extraction-invalid-hyperedge-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    fake_engine = FakeEngine()
+    monkeypatch.setattr(server, "require_role", lambda _role: None)
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
+
+    with pytest.raises(server.HTTPException) as error:
+        server.api_graph_upsert_llm(server.GraphUpsertLLMIn.model_validate(fixture))
 
     assert error.value.status_code == 422
     assert fake_engine.documents_added == []

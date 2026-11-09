@@ -1,0 +1,29 @@
+{
+  "contract_version": 1,
+  "doc_id": "doc-invalid-hyperedge",
+  "content": "Alpha connects to Beta.",
+  "doc_type": "text",
+  "insertion_method": "api_upsert",
+  "nodes": [],
+  "edges": [
+    {
+      "local_id": "ne:invalid-hyperedge",
+      "label": "invalid hyperedge",
+      "type": "relationship",
+      "summary": "A hyperedge with an empty edge endpoint must be rejected.",
+      "relation": "qualifies",
+      "source_ids": [],
+      "target_ids": [],
+      "source_edge_ids": [""],
+      "target_edge_ids": [],
+      "references": [
+        {
+          "doc_id": "doc-invalid-hyperedge",
+          "start_char": 0,
+          "end_char": 5,
+          "excerpt": "Alpha"
+        }
+      ]
+    }
+  ]
+}

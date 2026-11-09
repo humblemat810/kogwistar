@@ -375,6 +375,9 @@ pub(crate) fn graph_upsert_external_endpoints(
                 let id = endpoint
                     .as_str()
                     .ok_or_else(|| format!("edge {field} entries must be strings"))?;
+                if id.is_empty() {
+                    return Err(format!("edge {field} endpoint IDs must not be empty"));
+                }
                 if !local_node_ids.contains(id) && !id.starts_with("nn:") {
                     external.node_ids.insert(id.to_owned());
                 }
@@ -388,6 +391,9 @@ pub(crate) fn graph_upsert_external_endpoints(
                 let id = endpoint
                     .as_str()
                     .ok_or_else(|| format!("edge {field} entries must be strings"))?;
+                if id.is_empty() {
+                    return Err(format!("edge {field} endpoint IDs must not be empty"));
+                }
                 if !local_edge_ids.contains(id) && !id.starts_with("ne:") {
                     external.edge_ids.insert(id.to_owned());
                 }
