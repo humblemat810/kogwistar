@@ -1017,8 +1017,14 @@ fn normalize_chroma_distance(metric: DistanceMetric, distance: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::ChromaGraphStore;
     use super::normalize_chroma_distance;
-    use kogwistar_store::{DistanceMetric, similarity_from_distance};
+    use crate::ChromaStoreConfig;
+    use kogwistar_store::{
+        DistanceMetric, GraphEntityKind, GraphReadStore, VectorQuery, similarity_from_distance,
+    };
+    use serde_json::{Value, json};
+    use std::time::Duration;
 
     #[test]
     fn chroma_distances_match_kogwistar_metric_conventions() {
@@ -1152,5 +1158,211 @@ mod tests {
                 assert!((similarity - expected_similarity).abs() < 1e-6);
             }
         }
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract
+    #[tokio::test]
+    async fn chroma_http_graph_queries_match_shared_metric_order_and_scores() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        fn raw_chroma_distance(metric: &str, query: &[f64], vector: &[f64]) -> f64 {
+            let dot = query
+                .iter()
+                .zip(vector)
+                .map(|(left, right)| left * right)
+                .sum::<f64>();
+            match metric {
+                "cosine" => {
+                    let query_norm = query.iter().map(|value| value * value).sum::<f64>();
+                    let vector_norm = vector.iter().map(|value| value * value).sum::<f64>();
+                    1.0 - dot / (query_norm.sqrt() * vector_norm.sqrt())
+                }
+                "l2" => query
+                    .iter()
+                    .zip(vector)
+                    .map(|(left, right)| (left - right).powi(2))
+                    .sum(),
+                "ip" => 1.0 - dot,
+                other => panic!("unknown Chroma metric {other:?}"),
+            }
+        }
+
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+        )))
+        .expect("shared graph vector metric contract");
+        let query = fixture["query_embedding"]
+            .as_array()
+            .expect("query embedding")
+            .iter()
+            .map(|value| value.as_f64().expect("query component"))
+            .collect::<Vec<_>>();
+        let vectors = fixture["vectors"]
+            .as_array()
+            .expect("vectors")
+            .iter()
+            .map(|vector| {
+                (
+                    vector["id"].as_str().expect("vector id").to_owned(),
+                    vector["embedding"]
+                        .as_array()
+                        .expect("embedding")
+                        .iter()
+                        .map(|value| value.as_f64().expect("embedding component"))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server_vectors = vectors.clone();
+        let server_query = query.clone();
+        let fake_chroma = tokio::spawn(async move {
+            for _ in 0..9 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0_u8; 2048];
+                let (header_end, content_length) = loop {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0, "Chroma closed before request body");
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(header_end) =
+                        bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= header_end + 4 + content_length {
+                            break (header_end, content_length);
+                        }
+                    }
+                };
+                let request: Value =
+                    serde_json::from_slice(&bytes[header_end + 4..header_end + 4 + content_length])
+                        .unwrap();
+                let request_line = String::from_utf8_lossy(&bytes[..header_end])
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+                let payload = if path.ends_with("/collections") {
+                    json!({
+                        "id": request["name"],
+                        "metadata": request["metadata"]
+                    })
+                } else if path.ends_with("/query") {
+                    let collection = path.split('/').rev().nth(1).expect("query collection id");
+                    let metric = collection
+                        .strip_prefix("metric-")
+                        .and_then(|value| value.strip_suffix("-nodes"))
+                        .expect("metric collection name");
+                    let mut results = server_vectors
+                        .iter()
+                        .map(|(id, embedding)| {
+                            (
+                                id.clone(),
+                                embedding.clone(),
+                                raw_chroma_distance(metric, &server_query, embedding),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    results.sort_by(|left, right| left.2.total_cmp(&right.2));
+                    json!({
+                        "ids": [results.iter().map(|result| result.0.clone()).collect::<Vec<_>>()],
+                        "documents": [results.iter().map(|result| result.0.clone()).collect::<Vec<_>>()],
+                        "metadatas": [results.iter().map(|_| json!({
+                            "_kogwistar_namespace":"metric-contract",
+                            "_kogwistar_original_metadata":"{}"
+                        })).collect::<Vec<_>>()],
+                        "embeddings": [results.iter().map(|result| result.1.clone()).collect::<Vec<_>>()],
+                        "distances": [results.iter().map(|result| result.2).collect::<Vec<_>>()]
+                    })
+                } else {
+                    panic!("unexpected Chroma request path: {path}");
+                };
+                let response = payload.to_string();
+                let wire = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                );
+                stream.write_all(wire.as_bytes()).await.unwrap();
+            }
+        });
+
+        for case in fixture["cases"].as_array().expect("metric cases") {
+            let metric_name = case["metric"].as_str().expect("metric");
+            let metric = match metric_name {
+                "cosine" => DistanceMetric::Cosine,
+                "l2" => DistanceMetric::L2,
+                "ip" => DistanceMetric::InnerProduct,
+                other => panic!("unknown metric in fixture: {other:?}"),
+            };
+            let config = |collection: String| ChromaStoreConfig {
+                endpoint: endpoint.clone(),
+                tenant: Some("default_tenant".to_owned()),
+                database: Some("default_database".to_owned()),
+                collection,
+                metric,
+                request_timeout: Duration::from_secs(5),
+                headers: Default::default(),
+            };
+            let store = ChromaGraphStore::connect_entity_collections(
+                config(format!("metric-{metric_name}-nodes")),
+                config(format!("metric-{metric_name}-edges")),
+            )
+            .await
+            .unwrap();
+            let matches = store
+                .vector_query_of_kind(
+                    "metric-contract",
+                    GraphEntityKind::Node,
+                    &VectorQuery {
+                        embedding: query.iter().map(|value| *value as f32).collect(),
+                        limit: vectors.len(),
+                        metadata: Default::default(),
+                        metric,
+                    },
+                )
+                .await
+                .unwrap();
+
+            let expected_ids = case["expected_ids"]
+                .as_array()
+                .expect("expected ids")
+                .iter()
+                .map(|value| value.as_str().expect("expected id"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matches
+                    .iter()
+                    .map(|item| item.record.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_ids
+            );
+            for (index, item) in matches.iter().enumerate() {
+                let expected_distance = case["expected_distances"][index]
+                    .as_f64()
+                    .expect("expected distance");
+                let expected_similarity = case["expected_similarities"][index]
+                    .as_f64()
+                    .expect("expected similarity");
+                assert!((item.distance - expected_distance).abs() < 1e-6);
+                let similarity = similarity_from_distance(Some(item.distance), metric)
+                    .expect("finite similarity");
+                assert!((similarity - expected_similarity).abs() < 1e-6);
+            }
+        }
+        fake_chroma.await.unwrap();
     }
 }
