@@ -6552,6 +6552,40 @@
             find_edges_contract["expected_structured_content"]["edges"]
         );
 
+        let k_hop_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-k-hop-mcp-v1.json"
+        )))
+        .unwrap();
+        let k_hop_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"k-hop","method":"tools/call",
+                            "params":{"name":k_hop_contract["operation"],"arguments":k_hop_contract["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(k_hop_response.status(), StatusCode::OK);
+        let k_hop_response: Value = serde_json::from_slice(
+            &to_bytes(k_hop_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            k_hop_response["result"]["layers"],
+            k_hop_contract["expected_structured_content"]["layers"]
+        );
+
         let redirected_read = app
             .clone()
             .oneshot(
