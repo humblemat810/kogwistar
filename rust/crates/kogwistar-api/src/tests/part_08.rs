@@ -2757,6 +2757,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let private_entity_id = private_policy["id"].as_str().unwrap();
     let private_owner_id = private_policy["owner_id"].as_str().unwrap();
+    let no_acl_node_id = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "node-no-acl")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
     let edge_policy = acl_fixture["targets"]
         .as_array()
         .unwrap()
@@ -3255,6 +3263,13 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         mutations[index]["record"]["embedding"] = embedding;
         mutations[index]["embedding_dim"] = json!(2);
     }
+    mutations.push(mutation(
+        no_acl_node_id,
+        "gke_nodes",
+        "node",
+        json!({"label":"Node without an ACL record"}),
+        Some("Node without an ACL record"),
+    ));
     let body = json!({"contract_version":1,"atomic":true,"mutations":mutations,"index_jobs":[]});
 
     let denied_write = app
@@ -3832,6 +3847,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             assert!(
                 !rendered_nodes.contains(scope_entity_id),
                 "a principal without the matching security scope must not see the scoped node: {payload}"
+            );
+            assert!(
+                !rendered_nodes.contains(no_acl_node_id),
+                "a node without an ACL record must be denied by default: {payload}"
             );
             for share_policy in &share_policies {
                 assert!(
