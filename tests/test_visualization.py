@@ -134,6 +134,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     owner_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "node-owner"
     )
+    private_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "node-private"
+    )
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -216,6 +219,37 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     mode=owner_policy["mode"],
                     owner_id=owner_policy["owner_id"],
                 )
+        private_node = Node(
+            id=private_policy["id"],
+            label="Other owner's graph node",
+            type="entity",
+            summary="Private node owned by another principal",
+            mentions=[_g()],
+            metadata={"entity_type": "fixture"},
+            embedding=None,
+            doc_id=None,
+            level_from_root=0,
+        )
+        owner_engine.raw_write.add_node(private_node)
+        owner_engine.acl_graph.add_record(
+            truth_graph=acl_fixture["truth_graph"],
+            entity_id=private_node.id,
+            version=1,
+            mode=private_policy["mode"],
+            owner_id=private_policy["owner_id"],
+        )
+        grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(private_node)
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                owner_engine.acl_graph.add_record(
+                    grain=grain,
+                    truth_graph=acl_fixture["truth_graph"],
+                    entity_id=private_node.id,
+                    target_item_id=target_id,
+                    version=1,
+                    mode=private_policy["mode"],
+                    owner_id=private_policy["owner_id"],
+                )
 
         token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
         try:
@@ -272,6 +306,12 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             node["id"] for node in owner_d3_payload["nodes"]
         ]
         assert owner_policy["id"] in [
+            item["data"]["id"] for item in owner_cytoscape_payload["elements"]
+        ]
+        assert private_policy["id"] not in [
+            node["id"] for node in owner_d3_payload["nodes"]
+        ]
+        assert private_policy["id"] not in [
             item["data"]["id"] for item in owner_cytoscape_payload["elements"]
         ]
     finally:

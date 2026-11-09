@@ -2749,6 +2749,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let owner_entity_id = owner_policy["id"].as_str().unwrap();
     let owner_id = owner_policy["owner_id"].as_str().unwrap();
+    let private_policy = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "node-private")
+        .unwrap();
+    let private_entity_id = private_policy["id"].as_str().unwrap();
+    let private_owner_id = private_policy["owner_id"].as_str().unwrap();
     let isolation_cases = isolation["cases"].as_array().unwrap();
     let knowledge_policy = isolation_cases
         .iter()
@@ -2976,6 +2984,28 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "acl_version":1,
                 "acl_mode":owner_policy["mode"],
                 "owner_id":owner_id
+            }),
+            None,
+        ),
+        mutation(
+            private_entity_id,
+            "gke_nodes",
+            "node",
+            json!({"label":"another owner's node"}),
+            Some("another owner's node"),
+        ),
+        mutation(
+            "acl-node-private",
+            "gke_nodes",
+            "node",
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":acl_fixture["truth_graph"],
+                "acl_target_grain":private_policy["grain"],
+                "acl_target_entity_id":private_entity_id,
+                "acl_version":1,
+                "acl_mode":private_policy["mode"],
+                "owner_id":private_owner_id
             }),
             None,
         ),
@@ -3524,6 +3554,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 !rendered_nodes.contains(owner_entity_id),
                 "a non-owner must not see the private fixture node: {payload}"
             );
+            assert!(
+                !rendered_nodes.contains(private_entity_id),
+                "a non-owner must not see another principal's private node: {payload}"
+            );
         }
         if truth_graph == "workflow" || truth_graph == "wisdom" {
             assert!(
@@ -3562,6 +3596,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .iter()
             .any(|node| node["id"] == owner_entity_id),
         "the ACL fixture owner must see the private node: {owner_payload}"
+    );
+    assert!(
+        !owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == private_entity_id),
+        "the fixture owner must not see another principal's private node: {owner_payload}"
     );
 
     let deferred_visualization = app
