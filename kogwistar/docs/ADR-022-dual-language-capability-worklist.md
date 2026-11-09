@@ -508,7 +508,7 @@
 | FW-14-02 | DL-14 | NOT STARTED | Add a mixed-mode crash-before-commit recovery test and verify final digest. |
 | FW-14-02A | DL-14 | NOT STARTED | Add a mixed-mode crash-after-commit-before-ack recovery test and verify no duplicate effect. |
 | FW-14-02B | DL-14 | NOT STARTED | Add a mixed-mode reopen/replay test and verify canonical final-state digest. |
-| FW-14A-01 | DL-14A | PASS | Real Rust server + synchronous Python worker complete claim, execute, submit, and continue through a Rust-native step with durable final state. Evidence: `tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server` passed for `[sqlite]` and `[sqlite-chroma]` (2 passed); `[pg]` skipped because no PostgreSQL DSN was configured. |
+| FW-14A-01 | DL-14A | PASS | Real Rust server + synchronous Python worker complete claim, execute, submit, and continue through a Rust-native step with durable final state. Evidence: `tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server` passed for `[sqlite]`, `[sqlite-chroma]`, and `[pg]` (3 passed), covering synchronous and asynchronous workers; PostgreSQL uses the shared `{base}_knowledge` graph schema. |
 | FW-14A-01A | DL-14A | NOT STARTED | Verify Rust-owned scheduler claims and receives a result from one asynchronous Python worker. |
 | FW-14A-01B | DL-14A | NOT STARTED | Verify worker loss is detected and the durable claim can be recovered after scheduler restart. |
 | FW-14A-03 | DL-14A | NOT STARTED | Verify result run/step identity and correlation match the active claim before acceptance. |

@@ -1383,7 +1383,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         PgVectorBackend(
             engine=graph_sqlalchemy_engine,
             embedding_dim=3,
-            schema=pg_schema,
+            schema=f"{pg_schema}_knowledge",
         ).ensure_schema()
     elif backend == "sqlite-chroma":
         chroma_server, chroma_endpoint, chroma_requests, _ = (
@@ -1586,7 +1586,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 )
 
                 graph_store = RustEnginePostgresMetaStore(
-                    dsn=pg_dsn, schema=pg_schema
+                    dsn=pg_dsn, schema=f"{pg_schema}_knowledge"
                 )
                 graph_events = list(
                     graph_store.iter_entity_events(namespace=graph_namespace)
@@ -1662,7 +1662,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 projected = PgVectorBackend(
                     engine=graph_sqlalchemy_engine,
                     embedding_dim=3,
-                    schema=pg_schema,
+                    schema=f"{pg_schema}_knowledge",
                 ).node_get(ids=[graph_entity_id], include=["documents"])
                 assert projected["ids"] == [graph_entity_id]
                 assert projected["documents"] == ["worker effect"]
