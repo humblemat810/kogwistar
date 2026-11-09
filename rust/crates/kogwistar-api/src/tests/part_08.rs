@@ -2757,6 +2757,13 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let private_entity_id = private_policy["id"].as_str().unwrap();
     let private_owner_id = private_policy["owner_id"].as_str().unwrap();
+    let edge_policy = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "edge-public")
+        .unwrap();
+    let public_edge_id = edge_policy["id"].as_str().unwrap();
     let scope_policy = acl_fixture["targets"]
         .as_array()
         .unwrap()
@@ -3087,6 +3094,35 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             None,
         ));
     }
+    let public_edge_data = json!({
+        "source_ids":[shared_entity_id],
+        "target_ids":[shared_entity_id],
+        "source_edge_ids":[],
+        "target_edge_ids":[],
+        "relation":"references"
+    });
+    let public_edge_document = public_edge_data.to_string();
+    mutations.push(mutation(
+        public_edge_id,
+        "gke_edges",
+        "edge",
+        public_edge_data,
+        Some(&public_edge_document),
+    ));
+    mutations.push(mutation(
+        "acl-edge-public",
+        "gke_nodes",
+        "node",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":acl_fixture["truth_graph"],
+            "acl_target_grain":edge_policy["grain"],
+            "acl_target_entity_id":public_edge_id,
+            "acl_version":1,
+            "acl_mode":edge_policy["mode"]
+        }),
+        None,
+    ));
     for (index, embedding) in [
         (0, json!([1.0, 0.0])),
         (1, json!([0.8, 0.2])),
@@ -3644,6 +3680,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "selected graph={truth_graph} used the wrong ACL policy: {payload}"
         );
         if truth_graph == acl_fixture["truth_graph"].as_str().unwrap() {
+            assert!(
+                rendered_nodes.contains(public_edge_id),
+                "a public edge with visible endpoints must appear in reified graph output: {payload}"
+            );
             assert!(
                 !rendered_nodes.contains(owner_entity_id),
                 "a non-owner must not see the private fixture node: {payload}"

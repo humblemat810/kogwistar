@@ -146,6 +146,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         if target.get("grain") == "node"
         and target.get("mode") in {"shared", "group"}
     ]
+    edge_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "edge-public"
+    )
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -321,7 +324,6 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                         target_item_id=target_id,
                         **share_acl,
                     )
-
         token = claims_ctx.set(
             {"agent_id": "reader-b", "ns": "knowledge"}
         )
@@ -356,6 +358,64 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert [
                 item["data"]["id"] for item in cytoscape_payload["elements"]
             ] == expected_ids
+        public_edge = Edge(
+            id=edge_policy["id"],
+            label="Public fixture edge",
+            type="relationship",
+            summary="Public edge ACL fixture",
+            relation="references",
+            source_ids=[isolation["entity_id"]],
+            target_ids=[isolation["entity_id"]],
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[_g()],
+            doc_id=None,
+            properties={},
+            metadata={"entity_type": "fixture"},
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        owner_engine.raw_write.add_edge(public_edge)
+        edge_acl: dict[str, Any] = {
+            "truth_graph": acl_fixture["truth_graph"],
+            "entity_id": public_edge.id,
+            "version": 1,
+            "mode": edge_policy["mode"],
+        }
+        owner_engine.acl_graph.add_record(grain="edge", **edge_acl)
+        grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(public_edge)
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                owner_engine.acl_graph.add_record(
+                    grain=grain,
+                    target_item_id=target_id,
+                    **edge_acl,
+                )
+        token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
+        try:
+            public_edge_d3 = cast(
+                JSONResponse,
+                server.api_viz_d3(
+                    mode="reify", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            public_edge_cytoscape = cast(
+                JSONResponse,
+                server.api_viz_cytoscape(
+                    mode="reify", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            public_edge_d3_payload = json.loads(bytes(public_edge_d3.body))
+            public_edge_cytoscape_payload = json.loads(bytes(public_edge_cytoscape.body))
+        finally:
+            claims_ctx.reset(token)
+        assert edge_policy["id"] in [
+            node["id"] for node in public_edge_d3_payload["nodes"]
+        ]
+        assert edge_policy["id"] in [
+            item["data"]["id"] for item in public_edge_cytoscape_payload["elements"]
+        ]
 
         token = claims_ctx.set(
             {
