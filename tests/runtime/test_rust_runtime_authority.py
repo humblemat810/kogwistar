@@ -25,6 +25,7 @@ from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.rust_worker import (
     AsyncRustRuntimeWorker,
     RustRuntimeWorker,
+    RustWorkerError,
 )
 from kogwistar.runtime.rust_runtime_authority import (
     AsyncRustRuntimeAuthority,
@@ -1558,6 +1559,60 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             worker_probe.extend(["--auth-token", worker_token])
             worker_env["JWT_SECRET"] = env["JWT_SECRET"]
             worker_env["JWT_ALG"] = "HS256"
+        if backend == "pg":
+            import sqlite3
+
+            rejected_journal = tmp_path / "unresolved-postgres-worker.sqlite"
+            checkpoints_before_rejection = httpx.get(
+                f"{base_url}/api/workflow/runs/mixed-live-run/checkpoints",
+                headers=headers,
+                timeout=10,
+            )
+            assert checkpoints_before_rejection.status_code == 200
+            with RustRuntimeWorker.from_step_resolver(
+                base_url=base_url,
+                worker_id="python-worker-unresolved",
+                journal_path=rejected_journal,
+                step_resolver=MappingStepResolver(),
+                headers=headers,
+            ) as rejecting_worker:
+                rejected_work = rejecting_worker.claim(
+                    run_id="mixed-live-run", lease_seconds=1
+                )
+                assert len(rejected_work) == 1
+                assert rejected_work[0]["step_id"] == "python-before"
+                with pytest.raises(
+                    RustWorkerError,
+                    match="cannot resolve frozen op 'application.before'",
+                ):
+                    rejecting_worker.process(rejected_work[0])
+
+            with sqlite3.connect(rejected_journal) as connection:
+                assert connection.execute(
+                    "SELECT COUNT(*) FROM rust_worker_results"
+                ).fetchone()[0] == 0
+            checkpoints_after_rejection = httpx.get(
+                f"{base_url}/api/workflow/runs/mixed-live-run/checkpoints",
+                headers=headers,
+                timeout=10,
+            )
+            assert checkpoints_after_rejection.status_code == 200
+            assert (
+                checkpoints_after_rejection.json()["checkpoints"]
+                == checkpoints_before_rejection.json()["checkpoints"]
+            )
+            assert graph_sqlalchemy_engine is not None
+            from kogwistar.engine_core.rust_postgres_session import (
+                RustEnginePostgresMetaStore,
+            )
+
+            graph_store = RustEnginePostgresMetaStore(
+                dsn=pg_dsn, schema=f"{pg_schema}_knowledge"
+            )
+            assert list(
+                graph_store.iter_entity_events(namespace=graph_namespace)
+            ) == []
+            time.sleep(1.2)
         prepare = subprocess.run(
             [*worker_probe, "--worker-id", "python-worker-a", "--mode", "prepare"],
             cwd=ROOT,
