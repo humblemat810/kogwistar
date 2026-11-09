@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **176/751 PASS (23.4%)**; **0 IN PROGRESS**, **575 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **177/751 PASS (23.6%)**; **0 IN PROGRESS**, **574 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -517,7 +517,7 @@
 | FW-14A-04 | DL-14A | NOT STARTED | Verify process-local Python dependencies are absent from durable run state. |
 | FW-14A-04A | DL-14A | NOT STARTED | Verify process-local dependencies are re-resolved by run identity after scheduler restart. |
 | FW-14A-04B | DL-14A | NOT STARTED | Verify Python objects/callback closures are never serialized into durable state or worker effects. |
-| FW-14A-05 | DL-14A | NOT STARTED | Verify exact idempotent result replay on SQLite does not rerun callback or duplicate effects. |
+| FW-14A-05 | DL-14A | PASS | Verified exact result replay on SQLite does not rerun the callback or duplicate graph effects: the subprocess retry returns the original `event_seq`, the callback marker contains one invocation, and the durable event query contains one event. Evidence: `tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]` passed; its full three-backend run also passed `[sqlite-chroma]` and `[pg]`. |
 | FW-14A-05A | DL-14A | NOT STARTED | Verify worker loss and lease mismatch recovery on SQLite. |
 | FW-14A-05B | DL-14A | NOT STARTED | Verify exact idempotent result replay and crash recovery on PostgreSQL. |
 | FW-14A-05C | DL-14A | NOT STARTED | Verify worker loss and lease mismatch recovery on PostgreSQL. |
