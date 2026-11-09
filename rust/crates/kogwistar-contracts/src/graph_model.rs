@@ -4044,6 +4044,14 @@ mod tests {
             edge.core.metadata["redirect_to_id"],
             contract_fixture["redirect_to_id"]
         );
+        assert_eq!(edge.source_ids[0].0, "parity-node");
+        assert_eq!(edge.target_ids[0].0, "external:target");
+        let serialized = serde_json::to_value(&edge).expect("serialize persistent Edge DTO");
+        assert_eq!(serialized["source_ids"], serde_json::json!(["parity-node"]));
+        assert_eq!(
+            serialized["target_ids"],
+            serde_json::json!(["external:target"])
+        );
     }
 
     #[test]

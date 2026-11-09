@@ -685,6 +685,12 @@ def test_tombstoned_edge_lifecycle_is_shared_by_python_and_rust(monkeypatch) -> 
     )
     assert normalized["metadata"]["lifecycle_status"] == fixture["expected_lifecycle_status"]
     assert normalized["metadata"]["redirect_to_id"] == fixture["redirect_to_id"]
+    assert normalized["source_ids"] == payload["source_ids"]
+    assert normalized["target_ids"] == payload["target_ids"]
+    restored = Edge.model_validate(normalized).model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert restored == normalized
     _rust.validate_graph_model_family(
         json.dumps(
             {"schema_version": 1, "model_class": "edge", "payload": normalized},
