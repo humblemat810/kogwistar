@@ -292,6 +292,9 @@ def main() -> None:
                 raise AssertionError(f"unexpected reclaimed work: {work!r}")
             work_item = work[0]
         if args.mode == "prepare":
+            Path(args.work_record).write_text(
+                json.dumps({"work": work_item}), encoding="utf-8"
+            )
             try:
                 worker.process(work_item)
             except RustWorkerError as exc:
@@ -300,6 +303,26 @@ def main() -> None:
             else:
                 raise AssertionError("expected the first result delivery to fail")
         elif args.mode == "replay":
+            stale_record = json.loads(Path(args.work_record).read_text(encoding="utf-8"))
+            if not isinstance(stale_record, dict) or not isinstance(
+                stale_record.get("work"), dict
+            ):
+                raise AssertionError("stale-worker record must contain a work object")
+            with RustRuntimeWorker.from_step_resolver(
+                base_url=args.base_url,
+                worker_id="python-worker-a",
+                journal_path=args.journal,
+                step_resolver=resolver,
+                dependency_provider=(lambda _work: dependencies) if dependencies else None,
+                headers=worker_headers,
+            ) as stale_worker:
+                try:
+                    stale_worker.process(stale_record["work"])
+                except RustWorkerError as exc:
+                    if "409" not in str(exc):
+                        raise
+                else:
+                    raise AssertionError("expired worker claim must be rejected")
             Path(args.work_record).write_text(
                 json.dumps({"work": work_item}), encoding="utf-8"
             )
