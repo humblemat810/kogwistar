@@ -1176,6 +1176,161 @@ async fn in_memory_inline_native_result_is_persisted_and_completes_run() {
 }
 
 #[tokio::test]
+async fn in_memory_native_receive_claims_visible_event_and_routes_it() {
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-event-receive-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "alice".to_owned(),
+        email: "alice@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "alice".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "alpha".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = InMemoryGraphApplicationService::default()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let principal = json!({
+        "user_id":"alice",
+        "sub":"alice",
+        "role":"rw",
+        "ns":["workflow", "alpha"],
+        "storage_ns":"alpha",
+        "capabilities":["workflow.run.write", "read_graph", "write_graph"]
+    });
+    let admitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"memory-event-receive-run",
+                "workflow_id":"memory-event-receive-workflow",
+                "conversation_id":"memory-event-receive-conversation",
+                "node_ops":{"start":"rust-native/agent.event.receive"},
+                "node_executor_targets":{"start":"rust-native"}
+            }))
+            .unwrap(),
+            principal,
+        })
+        .await;
+    assert_eq!(admitted.status, StatusCode::ACCEPTED.as_u16());
+
+    let request = kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: "rust-native".to_owned(),
+        operation: "agent.event.request".to_owned(),
+        op_version: "v1".to_owned(),
+        run_id: "memory-event-receive-run".to_owned(),
+        workflow_id: "memory-event-receive-workflow".to_owned(),
+        node_id: "request".to_owned(),
+        conversation_id: "memory-event-receive-conversation".to_owned(),
+        turn_node_id: Some("memory-event-receive-turn".to_owned()),
+        token_id: "memory-event-receive-run".to_owned(),
+        parent_token_id: None,
+        step_seq: 0,
+        state: Default::default(),
+        runtime_routes: Vec::new(),
+        ephemeral_context: Default::default(),
+    };
+    service
+        .persist_in_memory_native_stream_semantic_event(
+            &request,
+            kogwistar_contracts::ProviderEventV1::ResponseStarted {
+                contract_version: "v1".to_owned(),
+                provider_event_id: Some("fixture-started".to_owned()),
+                provider_sequence: Some(1),
+                response_id: Some("memory-response".to_owned()),
+            },
+            "fixture-provider",
+            "fixture-model",
+            1,
+        )
+        .await
+        .unwrap();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    kogwistar_store::LaneMessageWriteStore::project_lane_message(
+        &service.store,
+        NewProjectedLaneMessage {
+            message_id: "msg:hidden-event-without-acl".to_owned(),
+            namespace: "alpha".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: "memory-event-receive-conversation".to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now,
+            available_at: now,
+            run_id: Some("memory-event-receive-run".to_owned()),
+            step_id: Some("provider-response:hidden".to_owned()),
+            correlation_id: Some("hidden-event-without-acl".to_owned()),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let run =
+        kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-event-receive-run")
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(run.status, "succeeded");
+    let state = kogwistar_store::ProjectionReadStore::named_projection(
+        &service.store,
+        kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE,
+        "memory-event-receive-run",
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .payload;
+    assert_eq!(
+        state["state"]["agent_event_current"]["event"]["kind"],
+        "response_started"
+    );
+    assert_eq!(state["state"]["agent_event_route"], "no_action");
+    let event_id = state["state"]["agent_event_current"]["event_id"]
+        .as_str()
+        .unwrap();
+    let event_lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        &format!("msg:{event_id}"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(event_lane.status, "claimed");
+    let hidden_lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        "msg:hidden-event-without-acl",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(hidden_lane.status, "pending");
+}
+
+#[tokio::test]
 async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
     let service = InMemoryGraphApplicationService::default();
     let now = std::time::SystemTime::now()

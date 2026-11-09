@@ -118,6 +118,82 @@ impl InMemoryGraphApplicationService {
         .map_err(|error| error.to_string())
     }
 
+    async fn claim_in_memory_native_provider_event(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<Option<Value>, String> {
+        let principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
+            .await
+            .map_err(|_| "provider-event owner authorization is unavailable".to_owned())?;
+        let security_scope = security_scope_value(&principal);
+        let namespace = security_scope["storage_namespace"]
+            .as_str()
+            .ok_or_else(|| "provider-event owner has no storage namespace".to_owned())?;
+        let scope = GraphScope {
+            namespace: namespace.to_owned(),
+            workspace_id: security_scope["workspace"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let acl_principal =
+            graph_acl_principal_from_claims(&principal, security_scope["security_scope"].as_str());
+        let claimed_by = format!("rust-native-agent-event:{}", uuid::Uuid::new_v4());
+        let mut claimed = self
+            .store
+            .claim_visible_provider_event(
+                &scope,
+                &request.conversation_id,
+                &acl_principal,
+                LaneMessageClaimFilter {
+                    namespace: scope.namespace.clone(),
+                    inbox_id: "agent-provider-events".to_owned(),
+                    claimed_by: claimed_by.clone(),
+                    message_ids: None,
+                    run_id: Some(request.run_id.clone()),
+                    msg_type: Some("agent.provider_event".to_owned()),
+                    recipient_id: Some("agent-event-consumer".to_owned()),
+                    limit: 1,
+                    lease_seconds: 60,
+                },
+            )
+            .map_err(|_| "provider-event claim failed closed".to_owned())?;
+        let Some(lane) = claimed.pop() else {
+            return Ok(None);
+        };
+        let event: kogwistar_contracts::DurableProviderEventV1 =
+            serde_json::from_str(lane.payload_json.as_deref().unwrap_or(""))
+                .map_err(|_| "claimed provider event payload is invalid".to_owned())?;
+        if lane.namespace != namespace
+            || lane.purpose != "agent_event"
+            || lane.inbox_id != "agent-provider-events"
+            || lane.conversation_id != request.conversation_id
+            || lane.recipient_id != "agent-event-consumer"
+            || lane.sender_id != "agent-runtime"
+            || lane.msg_type != "agent.provider_event"
+            || lane.status != "claimed"
+            || lane.claimed_by.as_deref() != Some(claimed_by.as_str())
+            || lane.run_id.as_deref() != Some(request.run_id.as_str())
+            || lane.correlation_id.as_deref() != Some(event.event_id.as_str())
+            || lane.message_id != format!("msg:{}", event.event_id)
+            || event.trace.run_id != request.run_id
+        {
+            return Err(
+                "claimed provider event does not match its authorized run and lane".to_owned(),
+            );
+        }
+        Ok(Some(json!({
+            "event": event,
+            "claim": {
+                "message_id": lane.message_id,
+                "claimed_by": claimed_by,
+                "event_id": event.event_id,
+            }
+        })))
+    }
+
     async fn execute_native_step_once(&self) -> Result<bool, String> {
         let claimed_by = format!("rust-native-worker#{}", uuid::Uuid::new_v4());
         let mut claimed =
@@ -188,7 +264,13 @@ impl InMemoryGraphApplicationService {
             });
         if !matches!(
             operation.as_deref(),
-            Some("noop" | "increment-counter" | "emit-result" | "agent.event.request")
+            Some(
+                "noop"
+                    | "increment-counter"
+                    | "emit-result"
+                    | "agent.event.request"
+                    | "agent.event.receive"
+            )
         ) {
             self.dead_letter_native_lane(
                 &message_id,
@@ -200,7 +282,7 @@ impl InMemoryGraphApplicationService {
         }
         let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
         let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
-        let (handoff, native_request) = match native_request_for_claimed_work(&work) {
+        let (handoff, mut native_request) = match native_request_for_claimed_work(&work) {
             Ok(value) => value,
             Err(error) => {
                 self.dead_letter_native_lane(
@@ -216,6 +298,36 @@ impl InMemoryGraphApplicationService {
             self.execute_in_memory_native_provider_event_request(handoff.clone(), native_request)
                 .await
         } else {
+            if operation.as_deref() == Some("agent.event.receive") {
+                match self
+                    .claim_in_memory_native_provider_event(&native_request)
+                    .await
+                {
+                    Ok(Some(context)) => {
+                        native_request.ephemeral_context.insert(
+                            "authorized_provider_event".to_owned(),
+                            context["event"].clone(),
+                        );
+                        native_request.ephemeral_context.insert(
+                            "authorized_provider_event_claim".to_owned(),
+                            context["claim"].clone(),
+                        );
+                    }
+                    Ok(None) => {
+                        kogwistar_store::LaneMessageWriteStore::requeue_projected_lane_message(
+                            &self.store,
+                            &message_id,
+                            &claimed_by,
+                            None,
+                            1,
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                        return Ok(true);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             native_result_from_request(
                 handoff.clone(),
                 native_request,
@@ -2005,7 +2117,11 @@ impl InMemoryGraphApplicationService {
                 || operation.is_none_or(|operation| {
                     !matches!(
                         operation,
-                        "noop" | "increment-counter" | "emit-result" | "agent.event.request"
+                        "noop"
+                            | "increment-counter"
+                            | "emit-result"
+                            | "agent.event.request"
+                            | "agent.event.receive"
                     )
                 })
                 || version != Some("v1")
@@ -2086,7 +2202,13 @@ impl InMemoryGraphApplicationService {
         if executor_target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
             || !matches!(
                 native_operation,
-                Some("noop" | "increment-counter" | "emit-result" | "agent.event.request")
+                Some(
+                    "noop"
+                        | "increment-counter"
+                        | "emit-result"
+                        | "agent.event.request"
+                        | "agent.event.receive"
+                )
             )
             || input
                 .node_executor_targets

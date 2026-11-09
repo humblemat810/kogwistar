@@ -1118,6 +1118,136 @@ impl InMemoryStore {
         Ok((rows_for_table("gke_nodes"), rows_for_table("gke_edges")))
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#claim_visible_provider_event; python=kogwistar/agent/event_journal.py#claim_one,kogwistar/messaging/service.py#claim_pending_attempt; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_receive_claims_visible_event_and_routes_it; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=ACL visibility and queue claim share one in-memory writer lock.
+    /// Claim one provider-event lane only while holding the same lock used by
+    /// graph projection writes, so ACL revocation cannot race visibility and
+    /// claim in this process-local backend.
+    pub fn claim_visible_provider_event(
+        &self,
+        scope: &GraphScope,
+        conversation_id: &str,
+        principal: &kogwistar_store::GraphAclPrincipal,
+        filter: LaneMessageClaimFilter,
+    ) -> StoreResult<Vec<ProjectedLaneMessage>> {
+        if filter.namespace != scope.namespace || filter.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let now = now_seconds();
+        let allowed_ids = filter
+            .message_ids
+            .as_ref()
+            .map(|ids| ids.iter().collect::<std::collections::HashSet<_>>());
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.get(scope);
+        let graph_nodes = projection
+            .into_iter()
+            .flat_map(|projection| projection.record_order.iter())
+            .filter(|(table, _)| table == "gke_nodes")
+            .filter_map(|key| projection.and_then(|projection| projection.records.get(key)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let graph_edges = projection
+            .into_iter()
+            .flat_map(|projection| projection.record_order.iter())
+            .filter(|(table, _)| table == "gke_edges")
+            .filter_map(|key| projection.and_then(|projection| projection.records.get(key)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let eligible = |row: &&ProjectedLaneMessage| {
+            row.namespace == filter.namespace
+                && row.purpose == "agent_event"
+                && row.inbox_id == filter.inbox_id
+                && row.conversation_id == conversation_id
+                && row.sender_id == "agent-runtime"
+                && allowed_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&row.message_id))
+                && filter
+                    .run_id
+                    .as_ref()
+                    .is_none_or(|value| row.run_id.as_deref() == Some(value))
+                && filter
+                    .msg_type
+                    .as_ref()
+                    .is_none_or(|value| row.msg_type == *value)
+                && filter
+                    .recipient_id
+                    .as_ref()
+                    .is_none_or(|value| row.recipient_id == *value)
+                && ((row.status == "pending" && row.available_at <= now)
+                    || (row.status == "claimed"
+                        && row
+                            .lease_until
+                            .as_ref()
+                            .is_some_and(|value| timestamp_i64(value) < now)))
+        };
+        let candidate_lanes = state
+            .lane_messages
+            .values()
+            .filter(eligible)
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidate_lanes.len() > 20_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-provider-event-claim".to_owned(),
+                message: "provider-event receive exceeded its 20000-candidate safety bound"
+                    .to_owned(),
+            });
+        }
+        let candidate_ids = candidate_lanes
+            .iter()
+            .map(|lane| lane.message_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut acl_nodes = graph_nodes.clone();
+        acl_nodes.extend(candidate_lanes.iter().map(|lane| {
+            let mut candidate = GraphRecord::new(lane.message_id.clone());
+            candidate.metadata = serde_json::json!({
+                "entity_type": "lane_message",
+                "mentions": []
+            })
+            .as_object()
+            .expect("lane candidate metadata is an object")
+            .clone();
+            candidate
+        }));
+        let (visible_nodes, _) = kogwistar_store::graph_records_visible_by_acl(
+            &acl_nodes,
+            &graph_edges,
+            "conversation",
+            principal,
+        );
+        let visible_ids = visible_nodes
+            .into_iter()
+            .filter(|node| candidate_ids.contains(&node.id))
+            .map(|node| node.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut ids = state
+            .lane_messages
+            .values()
+            .filter(eligible)
+            .filter(|row| visible_ids.contains(&row.message_id))
+            .map(|row| row.message_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| {
+            let row = &state.lane_messages[id];
+            (row.seq, row.created_at)
+        });
+        ids.truncate(filter.limit);
+        for id in &ids {
+            let row = state
+                .lane_messages
+                .get_mut(id)
+                .expect("selected provider event lane disappeared");
+            row.status = "claimed".to_owned();
+            row.claimed_by = Some(filter.claimed_by.clone());
+            row.lease_until = Some(integer_timestamp(now + filter.lease_seconds));
+        }
+        Ok(ids
+            .into_iter()
+            .map(|id| state.lane_messages[&id].clone())
+            .collect())
+    }
+
     /// Read graph rows and their vector candidates from one projection revision.
     /// ACL filtering can then use the returned rows without racing a concurrent
     /// atomic graph mutation between topology and vector-index reads.
@@ -2384,9 +2514,11 @@ mod tests {
                 .len(),
             1
         );
-        assert!(block_on(InMemoryStore::new().replay_events(&scope.namespace, 0, 10))
-            .expect("fresh store has independent volatile state")
-            .is_empty());
+        assert!(
+            block_on(InMemoryStore::new().replay_events(&scope.namespace, 0, 10))
+                .expect("fresh store has independent volatile state")
+                .is_empty()
+        );
     }
 
     #[test]
