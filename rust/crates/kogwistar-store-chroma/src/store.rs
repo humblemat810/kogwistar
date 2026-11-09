@@ -1065,4 +1065,92 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#normalize_chroma_distance; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_graph_metric_order_and_scores_match_shared_python_rust_contract; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract
+    fn chroma_graph_metric_order_and_scores_match_shared_python_rust_contract() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+        )))
+        .expect("shared graph vector metric contract");
+        let query = fixture["query_embedding"]
+            .as_array()
+            .expect("query embedding")
+            .iter()
+            .map(|value| value.as_f64().expect("query component"))
+            .collect::<Vec<_>>();
+        let vectors = fixture["vectors"].as_array().expect("vectors");
+
+        for case in fixture["cases"].as_array().expect("metric cases") {
+            let (metric, expected_ids) = match case["metric"].as_str() {
+                Some("cosine") => (
+                    DistanceMetric::Cosine,
+                    case["expected_ids"].as_array().expect("expected ids"),
+                ),
+                Some("l2") => (
+                    DistanceMetric::L2,
+                    case["expected_ids"].as_array().expect("expected ids"),
+                ),
+                Some("ip") => (
+                    DistanceMetric::InnerProduct,
+                    case["expected_ids"].as_array().expect("expected ids"),
+                ),
+                other => panic!("unknown metric in shared fixture: {other:?}"),
+            };
+            let mut chroma_results = vectors
+                .iter()
+                .map(|vector| {
+                    let embedding = vector["embedding"]
+                        .as_array()
+                        .expect("embedding")
+                        .iter()
+                        .map(|value| value.as_f64().expect("embedding component"))
+                        .collect::<Vec<_>>();
+                    let dot = query
+                        .iter()
+                        .zip(&embedding)
+                        .map(|(left, right)| left * right)
+                        .sum::<f64>();
+                    let raw = match metric {
+                        DistanceMetric::Cosine => {
+                            let query_norm = query.iter().map(|value| value * value).sum::<f64>();
+                            let candidate_norm =
+                                embedding.iter().map(|value| value * value).sum::<f64>();
+                            1.0 - dot / (query_norm.sqrt() * candidate_norm.sqrt())
+                        }
+                        DistanceMetric::L2 => query
+                            .iter()
+                            .zip(&embedding)
+                            .map(|(left, right)| (left - right).powi(2))
+                            .sum::<f64>(),
+                        DistanceMetric::InnerProduct => 1.0 - dot,
+                    };
+                    (vector["id"].as_str().expect("vector id"), raw)
+                })
+                .collect::<Vec<_>>();
+            chroma_results.sort_by(|left, right| left.1.total_cmp(&right.1));
+
+            let ids = chroma_results.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+            let expected_ids = expected_ids
+                .iter()
+                .map(|value| value.as_str().expect("expected id"))
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected_ids);
+
+            for (index, (_, chroma_distance)) in chroma_results.iter().enumerate() {
+                let kogwistar_distance = normalize_chroma_distance(metric, *chroma_distance);
+                let expected_distance = case["expected_distances"][index]
+                    .as_f64()
+                    .expect("expected distance");
+                assert!((kogwistar_distance - expected_distance).abs() < 1e-6);
+                let similarity = similarity_from_distance(Some(kogwistar_distance), metric)
+                    .expect("finite similarity");
+                let expected_similarity = case["expected_similarities"][index]
+                    .as_f64()
+                    .expect("expected similarity");
+                assert!((similarity - expected_similarity).abs() < 1e-6);
+            }
+        }
+    }
 }

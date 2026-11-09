@@ -4185,6 +4185,83 @@ mod tests {
     }
 
     #[test]
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#InMemoryStore::vector_query; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-memory/src/lib.rs#graph_vector_metrics_match_shared_python_rust_contract; python_test=tests/core/test_search_nodes_as_of.py#test_postgres_vector_metric_contract_is_shared_with_rust
+    fn graph_vector_metrics_match_shared_python_rust_contract() {
+        block_on(async {
+            let fixture: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+            )))
+            .expect("shared graph vector metric contract");
+            let store = InMemoryStore::new();
+            let query_embedding = fixture["query_embedding"]
+                .as_array()
+                .expect("query embedding")
+                .iter()
+                .map(|value| value.as_f64().expect("query component") as f32)
+                .collect::<Vec<_>>();
+            for vector in fixture["vectors"].as_array().expect("vectors") {
+                let id = vector["id"].as_str().expect("vector id");
+                let embedding = vector["embedding"]
+                    .as_array()
+                    .expect("embedding")
+                    .iter()
+                    .map(|value| value.as_f64().expect("embedding component") as f32)
+                    .collect::<Vec<_>>();
+                store
+                    .upsert_graph_record("metric-contract", record(id, "keep", &embedding))
+                    .await
+                    .unwrap();
+            }
+
+            for case in fixture["cases"].as_array().expect("metric cases") {
+                let metric = match case["metric"].as_str() {
+                    Some("cosine") => DistanceMetric::Cosine,
+                    Some("l2") => DistanceMetric::L2,
+                    Some("ip") => DistanceMetric::InnerProduct,
+                    other => panic!("unknown metric in shared fixture: {other:?}"),
+                };
+                let results = store
+                    .vector_query(
+                        "metric-contract",
+                        &VectorQuery {
+                            embedding: query_embedding.clone(),
+                            limit: 10,
+                            metadata: MetadataFilter::default(),
+                            metric,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let ids = results
+                    .iter()
+                    .map(|result| result.record.id.as_str())
+                    .collect::<Vec<_>>();
+                let expected_ids = case["expected_ids"]
+                    .as_array()
+                    .expect("expected ids")
+                    .iter()
+                    .map(|value| value.as_str().expect("expected id"))
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, expected_ids);
+                for (index, result) in results.iter().enumerate() {
+                    let expected_distance = case["expected_distances"][index]
+                        .as_f64()
+                        .expect("expected distance");
+                    let expected_similarity = case["expected_similarities"][index]
+                        .as_f64()
+                        .expect("expected similarity");
+                    assert!((result.distance - expected_distance).abs() < 1e-6);
+                    let similarity =
+                        kogwistar_store::similarity_from_distance(Some(result.distance), metric)
+                            .expect("finite similarity");
+                    assert!((similarity - expected_similarity).abs() < 1e-6);
+                }
+            }
+        });
+    }
+
+    #[test]
     fn shadow_inspection_is_read_only_and_does_not_mutate_state() {
         block_on(async {
             let store = InMemoryStore::new();
