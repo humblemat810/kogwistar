@@ -5202,8 +5202,26 @@ impl SqliteRunApplicationService {
         };
         let nodes = graph_snapshot.nodes();
         let edges = graph_snapshot.edges();
-        let neighbors =
-            graph_neighbors_from_records(input.rid.trim(), &nodes, &edges, input.doc_id.as_deref());
+        let rid = match input.resolve_mode {
+            GraphNeighborsResolveModeV1::ActiveOnly => Some(input.rid.trim().to_owned()),
+            GraphNeighborsResolveModeV1::Redirect => match self
+                .resolve_chroma_node_redirect_target(
+                    request,
+                    input.rid.trim(),
+                    &graph_snapshot,
+                )
+                .await
+            {
+                Ok(target) => target,
+                Err(response) => return response,
+            },
+        };
+        let neighbors = graph_neighbors_from_records(
+            rid.as_deref().unwrap_or_default(),
+            nodes,
+            edges,
+            input.doc_id.as_deref(),
+        );
         json_effect(
             StatusCode::OK,
             rust_native_attested(json!({
@@ -5211,6 +5229,70 @@ impl SqliteRunApplicationService {
                 "edges": neighbors.edges.into_iter().collect::<Vec<_>>(),
             })),
         )
+    }
+
+    async fn resolve_chroma_node_redirect_target(
+        &self,
+        request: &ApiEffectRequest,
+        node_id: &str,
+        visible_graph: &GraphAclProjection,
+    ) -> Result<Option<String>, ApiEffectResponse> {
+        const MAX_REDIRECT_HOPS: usize = 10_000;
+        let scope = security_scope_value(&request.principal);
+        let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
+        let graph = self.chroma_graph.as_ref().ok_or_else(|| {
+            effect_error(
+                StatusCode::NOT_IMPLEMENTED,
+                "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                "The SQLite service has no configured graph projection",
+            )
+        })?;
+        let mut chain = Vec::new();
+        let mut visited = std::collections::BTreeSet::new();
+        let mut current = node_id.to_owned();
+
+        for _ in 0..MAX_REDIRECT_HOPS {
+            if !visited.insert(current.clone()) {
+                return Ok(None);
+            }
+            let record = match kogwistar_store::GraphReadStore::graph_record_of_kind(
+                graph,
+                namespace,
+                GraphEntityKind::Node,
+                &current,
+            )
+            .await
+            {
+                Ok(Some(record)) => record,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    return Err(effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ));
+                }
+            };
+            if !chroma_record_matches_principal_scope(&record, &request.principal) {
+                return Ok(None);
+            }
+            let redirect_to = record
+                .metadata
+                .get("redirect_to_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .map(str::to_owned);
+            chain.push(record);
+            let Some(target) = redirect_to else {
+                let resolved = resolve_graph_node_redirect_id(node_id, &chain);
+                return Ok(resolved.filter(|target| {
+                    visible_graph.nodes().iter().any(|node| &node.id == target)
+                }));
+            };
+            current = target;
+        }
+        Ok(None)
     }
 
     async fn chroma_graph_find_edges_effect(

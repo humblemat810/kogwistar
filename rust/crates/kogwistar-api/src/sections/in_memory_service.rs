@@ -1181,6 +1181,19 @@ impl InMemoryGraphApplicationService {
                 );
             }
         };
+        let redirect_rid = if request.path_and_query == INTERNAL_GRAPH_NEIGHBORS_ROUTE {
+            match parse_graph_neighbors_request(&request.body) {
+                Ok(input) => match input.resolve_mode {
+                    GraphNeighborsResolveModeV1::ActiveOnly => Some(input.rid.trim().to_owned()),
+                    GraphNeighborsResolveModeV1::Redirect => {
+                        resolve_graph_node_redirect_id(input.rid.trim(), &nodes)
+                    }
+                },
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         let scope_value = security_scope_value(&request.principal);
         let principal = graph_acl_principal_from_claims(
             &request.principal,
@@ -1195,7 +1208,7 @@ impl InMemoryGraphApplicationService {
                     Err(error) => return invalid_graph_request(error),
                 };
                 let neighbors = graph_neighbors_from_records(
-                    input.rid.trim(),
+                    redirect_rid.as_deref().unwrap_or_default(),
                     &nodes,
                     &edges,
                     input.doc_id.as_deref(),

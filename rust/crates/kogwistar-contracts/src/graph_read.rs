@@ -10,6 +10,18 @@ fn default_truth_graph() -> String {
     "knowledge".to_owned()
 }
 
+fn default_resolve_mode() -> GraphNeighborsResolveModeV1 {
+    GraphNeighborsResolveModeV1::ActiveOnly
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphNeighborsResolveModeV1 {
+    #[default]
+    ActiveOnly,
+    Redirect,
+}
+
 /// Shared request DTO for graph-neighbor reads.
 ///
 /// The schema version is optional on input so existing internal callers keep
@@ -24,6 +36,8 @@ pub struct GraphNeighborsRequestV1 {
     pub doc_id: Option<String>,
     #[serde(default = "default_truth_graph")]
     pub truth_graph: String,
+    #[serde(default = "default_resolve_mode")]
+    pub resolve_mode: GraphNeighborsResolveModeV1,
 }
 
 impl GraphNeighborsRequestV1 {
@@ -57,12 +71,23 @@ mod tests {
         assert_eq!(request.schema_version, GRAPH_NEIGHBORS_REQUEST_VERSION);
         assert_eq!(request.doc_id, None);
         assert_eq!(request.truth_graph, "knowledge");
+        assert_eq!(
+            request.resolve_mode,
+            GraphNeighborsResolveModeV1::ActiveOnly
+        );
         assert!(request.validate().is_ok());
     }
 
     #[test]
     fn graph_neighbor_request_rejects_unknown_or_invalid_fields() {
         assert!(graph_neighbors_request_from_str(r#"{"rid":"n1","write":true}"#).is_err());
+        assert!(
+            graph_neighbors_request_from_str(r#"{"rid":"n1","resolve_mode":"include_tombstones"}"#)
+                .is_err()
+        );
+        let redirect =
+            graph_neighbors_request_from_str(r#"{"rid":"n1","resolve_mode":"redirect"}"#).unwrap();
+        assert_eq!(redirect.resolve_mode, GraphNeighborsResolveModeV1::Redirect);
         let empty = graph_neighbors_request_from_str(r#"{"schema_version":1,"rid":" "}"#).unwrap();
         assert_eq!(empty.validate(), Err("rid is required"));
         let empty_graph = graph_neighbors_request_from_str(

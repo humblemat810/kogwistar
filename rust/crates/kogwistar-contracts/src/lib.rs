@@ -68,7 +68,8 @@ pub use graph_mutation::{
     GraphMutationV1, GraphMutationValidationError, GraphRecordV1, GraphScopeV1,
 };
 pub use graph_read::{
-    GRAPH_NEIGHBORS_REQUEST_VERSION, GraphNeighborsRequestV1, graph_neighbors_request_from_str,
+    GRAPH_NEIGHBORS_REQUEST_VERSION, GraphNeighborsRequestV1, GraphNeighborsResolveModeV1,
+    graph_neighbors_request_from_str,
 };
 pub use graph_slice::{
     GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceChildLocation,

@@ -20,9 +20,9 @@ use kogwistar_contracts::{
     ContextSnapshotV1, ConversationTranscriptV1, DelegationAuthorityV1, DocumentUpsertV1,
     GraphExtractionRequestV1, GraphIndexJobV1 as GraphIndexJobInput, GraphModelClass,
     GraphModelEnvelope, GraphMutationBatchV1 as GraphMutationBatchInput,
-    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1, ToolAuditResponseV1,
-    attach_rust_native_seam_attestation, attenuate_capabilities, graph_neighbors_request_from_str,
-    worker_identity_attestation_from_str,
+    GraphMutationV1 as GraphMutationInput, GraphNeighborsRequestV1, GraphNeighborsResolveModeV1,
+    ToolAuditResponseV1, attach_rust_native_seam_attestation, attenuate_capabilities,
+    graph_neighbors_request_from_str, worker_identity_attestation_from_str,
 };
 use kogwistar_engine::canonical_revision::read_canonical_entity_revision;
 use kogwistar_engine::embedding::EmbeddingProvider;
@@ -47,7 +47,7 @@ use kogwistar_store::{
     graph_find_edges_from_records, graph_k_hop_from_records, graph_neighbors_from_records,
     graph_projection_records_all, graph_records_visible_by_acl,
     graph_records_visible_by_acl_with_index, graph_shortest_path_from_records,
-    graph_viz_cytoscape_from_records, graph_viz_d3_from_records,
+    graph_viz_cytoscape_from_records, graph_viz_d3_from_records, resolve_graph_node_redirect_id,
     tool_audit_items_from_visible_records, validate_typed_graph_mutation,
 };
 use kogwistar_store_postgres::{

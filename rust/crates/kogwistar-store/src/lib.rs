@@ -952,6 +952,40 @@ pub fn graph_neighbors_from_records(
     graph_neighbors_from_records_with_jump(rid, nodes, edges, doc_id, true)
 }
 
+/// Resolve a node ID to its active redirect target using a scoped graph snapshot.
+///
+/// This mirrors Python's `resolve_mode="redirect"`: active nodes resolve to
+/// themselves, tombstones without a target and broken/cyclic chains resolve to
+/// no node. Callers must still apply ACL filtering to the returned target.
+pub fn resolve_graph_node_redirect_id(rid: &str, nodes: &[GraphRecord]) -> Option<String> {
+    let mut current = rid.trim().to_owned();
+    if current.is_empty() {
+        return None;
+    }
+
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current.clone()) {
+            return None;
+        }
+        let node = nodes.iter().find(|node| node.id == current)?;
+        if let Some(target) = node
+            .metadata
+            .get("redirect_to_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|target| !target.is_empty())
+        {
+            current = target.to_owned();
+            continue;
+        }
+        if is_tombstoned(&node.metadata) {
+            return None;
+        }
+        return Some(current);
+    }
+}
+
 /// Compute adjacency with the caller-selected node-to-opposite-node jump.
 ///
 /// Python's `GraphQuery.k_hop` intentionally disables this jump so traversal
@@ -4138,6 +4172,59 @@ mod tests {
                 nodes: BTreeSet::from(["n1".to_owned(), "n2".to_owned(), "n3".to_owned()]),
                 edges: BTreeSet::from(["e0".to_owned(), "e2".to_owned()]),
             }
+        );
+    }
+
+    #[test]
+    fn node_redirect_resolution_matches_python_lifecycle_modes() {
+        let mut redirected = node_record("old");
+        redirected
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        redirected
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("middle"));
+        let mut middle = node_record("middle");
+        middle
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        middle
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("current"));
+        let nodes = vec![redirected.clone(), middle, node_record("current")];
+
+        assert_eq!(
+            resolve_graph_node_redirect_id("old", &nodes),
+            Some("current".into())
+        );
+        assert_eq!(
+            resolve_graph_node_redirect_id("current", &nodes),
+            Some("current".into())
+        );
+        assert_eq!(resolve_graph_node_redirect_id("missing", &nodes), None);
+
+        let mut tombstone = node_record("gone");
+        tombstone
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        let mut broken = redirected;
+        broken
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("missing"));
+        assert_eq!(resolve_graph_node_redirect_id("gone", &[tombstone]), None);
+        assert_eq!(resolve_graph_node_redirect_id("old", &[broken]), None);
+
+        let mut cycle_a = node_record("cycle-a");
+        cycle_a
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("cycle-b"));
+        let mut cycle_b = node_record("cycle-b");
+        cycle_b
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("cycle-a"));
+        assert_eq!(
+            resolve_graph_node_redirect_id("cycle-a", &[cycle_a, cycle_b]),
+            None
         );
     }
 

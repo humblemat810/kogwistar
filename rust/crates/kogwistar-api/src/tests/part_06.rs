@@ -5731,6 +5731,24 @@
                         "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
                         "distances":[[0.02,0.1,0.01,0.04]]
                     })
+                } else if line.contains("collection-nodes/get")
+                    && input["ids"].as_array().is_some_and(|ids| ids == &[json!("redirect-old")])
+                {
+                    json!({
+                        "ids":["redirect-old"],
+                        "documents":[r#"{"id":"redirect-old","label":"redirect source","metadata":{"lifecycle_status":"tombstoned","redirect_to_id":"n2"}}"#],
+                        "metadatas":[{"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"lifecycle_status\":\"tombstoned\",\"redirect_to_id\":\"n2\"}"}],
+                        "embeddings":[null]
+                    })
+                } else if line.contains("collection-nodes/get")
+                    && input["ids"].as_array().is_some_and(|ids| ids == &[json!("n2")])
+                {
+                    json!({
+                        "ids":["n2"],
+                        "documents":[r#"{"id":"n2","label":"Lung Cancer"}"#],
+                        "metadatas":[{"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_ids\":[\"doc-a\"],\"_kogwistar_stage2_ready\":true,\"_kogwistar_source_revision\":2}"}],
+                        "embeddings":[null]
+                    })
                 } else if line.contains("collection-nodes/get") {
                     let metas = [
                         json!({}),
@@ -6288,6 +6306,32 @@
         let mcp_read: Value = serde_json::from_slice(&to_bytes(mcp_read.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(mcp_read["result"]["nodes"], json!(["n2"]));
         assert_eq!(mcp_read["result"]["edges"], json!(["e1"]));
+
+        let redirected_read = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/graph/neighbors")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        r#"{"rid":"redirect-old","resolve_mode":"redirect"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redirected_read.status(), StatusCode::OK);
+        let redirected_read: Value = serde_json::from_slice(
+            &to_bytes(redirected_read.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(redirected_read["nodes"], json!(["n1"]));
+        assert_eq!(redirected_read["edges"], json!(["e1"]));
 
         let semantic_read = app
             .clone()

@@ -3652,6 +3652,160 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         cross_kind_fixture["expected"]["edge_ids"]
     );
 
+    let redirect_mutations = [
+        mutation(
+            "redirect-old",
+            "gke_nodes",
+            "node",
+            json!({"label":"old node","lifecycle_status":"tombstoned","redirect_to_id":"redirect-current"}),
+            Some("old node"),
+        ),
+        mutation(
+            "redirect-current",
+            "gke_nodes",
+            "node",
+            json!({"label":"current node"}),
+            Some("current node"),
+        ),
+        mutation(
+            "redirect-neighbor",
+            "gke_nodes",
+            "node",
+            json!({"label":"neighbor"}),
+            Some("neighbor"),
+        ),
+        mutation(
+            "redirect-edge",
+            "gke_edges",
+            "edge",
+            json!({"source_ids":["redirect-current"],"target_ids":["redirect-neighbor"]}),
+            Some(r#"{"source_ids":["redirect-current"],"target_ids":["redirect-neighbor"]}"#),
+        ),
+        mutation(
+            "redirect-old-private",
+            "gke_nodes",
+            "node",
+            json!({"label":"old private node","lifecycle_status":"tombstoned","redirect_to_id":"redirect-private"}),
+            Some("old private node"),
+        ),
+        mutation(
+            "redirect-private",
+            "gke_nodes",
+            "node",
+            json!({"label":"private target"}),
+            Some("private target"),
+        ),
+        mutation(
+            "redirect-private-edge",
+            "gke_edges",
+            "edge",
+            json!({"source_ids":["redirect-private"],"target_ids":["redirect-neighbor"]}),
+            Some(r#"{"source_ids":["redirect-private"],"target_ids":["redirect-neighbor"]}"#),
+        ),
+        mutation(
+            "acl-redirect-current",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"redirect-current","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-redirect-neighbor",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"redirect-neighbor","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-redirect-edge",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"redirect-edge","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-redirect-private",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"redirect-private","acl_version":1,"acl_mode":"private","acl_owner_id":"other-user"}),
+            None,
+        ),
+        mutation(
+            "acl-redirect-private-edge",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"redirect-private-edge","acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, mut value)| {
+        value["event_id"] = json!(format!("redirect-event-{index}"));
+        value
+    })
+    .collect::<Vec<_>>();
+    let redirect_body = json!({
+        "contract_version":1,
+        "atomic":true,
+        "mutations":redirect_mutations,
+        "index_jobs":[]
+    });
+    let redirect_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["write_graph"])),
+                )
+                .body(Body::from(serde_json::to_vec(&redirect_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(redirect_write.status(), StatusCode::OK);
+
+    let read_redirect = |rid: &str, resolve_mode: &str| {
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/neighbors")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(
+                    json!({"rid":rid,"resolve_mode":resolve_mode,"truth_graph":"knowledge"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+    };
+    let redirected = read_redirect("redirect-old", "redirect").await.unwrap();
+    assert_eq!(redirected.status(), StatusCode::OK);
+    let redirected: Value =
+        serde_json::from_slice(&to_bytes(redirected.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(redirected["nodes"], json!(["redirect-neighbor"]));
+    assert_eq!(redirected["edges"], json!(["redirect-edge"]));
+
+    let private_redirect = read_redirect("redirect-old-private", "redirect")
+        .await
+        .unwrap();
+    assert_eq!(private_redirect.status(), StatusCode::OK);
+    let private_redirect: Value = serde_json::from_slice(
+        &to_bytes(private_redirect.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(private_redirect["nodes"], json!([]));
+    assert_eq!(private_redirect["edges"], json!([]));
+
     let conversation_scope = json!({
         "namespace": "tenant-a",
         "workspace_id": "workspace-a",

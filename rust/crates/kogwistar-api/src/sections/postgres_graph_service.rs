@@ -1930,13 +1930,22 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        let resolved_rid = match input.resolve_mode {
+            GraphNeighborsResolveModeV1::ActiveOnly => Some(rid.to_owned()),
+            GraphNeighborsResolveModeV1::Redirect => resolve_graph_node_redirect_id(rid, &nodes),
+        };
         let principal = graph_acl_principal_from_claims(
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
         let (nodes, edges) =
             graph_records_visible_by_acl(&nodes, &edges, input.truth_graph.trim(), &principal);
-        let neighbors = graph_neighbors_from_records(rid, &nodes, &edges, doc_id);
+        let neighbors = graph_neighbors_from_records(
+            resolved_rid.as_deref().unwrap_or_default(),
+            &nodes,
+            &edges,
+            doc_id,
+        );
         json_effect(
             StatusCode::OK,
             rust_native_attested(json!({
