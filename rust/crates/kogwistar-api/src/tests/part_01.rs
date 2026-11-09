@@ -2891,6 +2891,211 @@
 
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+    async fn postgres_graph_neighbors_enforce_project_and_source_evidence_acl() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_neighbor_acl_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(2, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let namespace = format!("neighbor-acl-{}", uuid::Uuid::new_v4().simple());
+        let scope = GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let mut records = Vec::new();
+        for (id, mentions) in [
+            ("project-root", json!([])),
+            ("project-target", json!([])),
+            ("evidence-root", json!([])),
+            (
+                "evidence-target",
+                json!([{"spans":[{"doc_id":"restricted-source"}]}]),
+            ),
+            ("control-root", json!([])),
+            ("control-target", json!([])),
+        ] {
+            records.push((
+                "gke_nodes",
+                id,
+                json!({
+                    "entity_type":"node",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "mentions":mentions
+                }),
+                json!({"id":id,"label":id,"mentions":mentions}),
+            ));
+        }
+        for (id, source_id, target_id) in [
+            ("project-edge", "project-root", "project-target"),
+            ("evidence-edge", "evidence-root", "evidence-target"),
+            ("control-edge", "control-root", "control-target"),
+        ] {
+            records.push((
+                "gke_edges",
+                id,
+                json!({
+                    "entity_type":"edge",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "source_ids":[source_id],
+                    "target_ids":[target_id]
+                }),
+                json!({"id":id,"source_ids":[source_id],"target_ids":[target_id]}),
+            ));
+        }
+        for (table, id, metadata, document) in records {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(document.to_string()),
+                        metadata: metadata.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let mut acl_cases = Vec::new();
+        for id in [
+            "project-root",
+            "evidence-root",
+            "evidence-target",
+            "control-root",
+            "control-target",
+        ] {
+            acl_cases.push((format!("acl-{id}"), "node", id.to_owned(), None, "public", None));
+        }
+        for id in ["project-edge", "evidence-edge", "control-edge"] {
+            acl_cases.push((format!("acl-{id}"), "edge", id.to_owned(), None, "public", None));
+        }
+        acl_cases.push((
+            "acl-project-target".to_owned(),
+            "node",
+            "project-target".to_owned(),
+            None,
+            "scope",
+            Some("project-b"),
+        ));
+        acl_cases.push((
+            "acl-evidence-grounding".to_owned(),
+            "grounding",
+            "evidence-target".to_owned(),
+            Some("evidence-target::mention::0"),
+            "public",
+            None,
+        ));
+        acl_cases.push((
+            "acl-evidence-span".to_owned(),
+            "span",
+            "evidence-target".to_owned(),
+            Some("evidence-target::mention::0::span::0"),
+            "private",
+            Some("another-principal"),
+        ));
+        for (acl_id, grain, entity_id, item_id, mode, security_scope) in acl_cases {
+            let mut metadata = json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"knowledge",
+                "acl_target_grain":grain,
+                "acl_target_entity_id":entity_id,
+                "acl_version":1,
+                "acl_mode":mode
+            });
+            if let Some(item_id) = item_id {
+                metadata["acl_target_item_id"] = json!(item_id);
+            }
+            if let Some(security_scope) = security_scope {
+                metadata["security_scope"] = json!(security_scope);
+            }
+            if mode == "private" {
+                metadata["owner_id"] = json!("another-principal");
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: acl_id,
+                        document: None,
+                        metadata: metadata.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let read_neighbors = |root: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/graph/neighbors".to_owned(),
+            body: serde_json::to_vec(&json!({"rid":root,"truth_graph":"knowledge"})).unwrap(),
+            principal: json!({
+                "sub":"reader-a",
+                "storage_ns":namespace,
+                "workspace":"workspace-a",
+                "workspace_id":"workspace-a",
+                "graph_space":"facts",
+                "security_scope":"project-a",
+                "capabilities":["read_graph"]
+            }),
+        };
+        for root in ["project-root", "evidence-root"] {
+            let response = service.graph_neighbors_effect(&read_neighbors(root)).await;
+            assert_eq!(response.status, StatusCode::OK.as_u16());
+            let result: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(result["nodes"], json!([]), "root={root}: {result}");
+            assert_eq!(result["edges"], json!([]), "root={root}: {result}");
+        }
+        let control = service
+            .graph_neighbors_effect(&read_neighbors("control-root"))
+            .await;
+        assert_eq!(control.status, StatusCode::OK.as_u16());
+        let control: Value = serde_json::from_slice(&control.body).unwrap();
+        assert_eq!(control["nodes"], json!(["control-target"]));
+        assert_eq!(control["edges"], json!(["control-edge"]));
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA \"{schema}\" CASCADE"
+            ))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
     async fn postgres_graph_snapshot_omits_conflicting_workspace_node() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
