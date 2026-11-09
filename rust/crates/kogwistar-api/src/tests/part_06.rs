@@ -404,6 +404,18 @@
             })
             .await
             .unwrap();
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: "other-owned-run".to_owned(),
+                conversation_id: "other-conversation".to_owned(),
+                workflow_id: "other-workflow".to_owned(),
+                user_id: Some("run-owner".to_owned()),
+                user_turn_node_id: "other-turn".to_owned(),
+                status: "queued".to_owned(),
+            })
+            .await
+            .unwrap();
         let runtime_start: kogwistar_runtime::RecordedRuntimeTransition =
             serde_json::from_value(json!({
                 "contract_version": 1,
@@ -472,7 +484,7 @@
         assert_eq!(claimed[0].message_id, "lane-1");
         assert_eq!(claimed[0].status, "claimed");
 
-        let worker_result = json!({
+        let mut worker_result = json!({
                     "handoff": {
                         "message_id": "lane-1",
                         "claimed_by": "worker-1",
@@ -560,7 +572,11 @@
             .unwrap();
         for field in ["message_id", "claimed_by", "run_id", "step_id", "correlation_id"] {
             let mut invalid_handoff = worker_result.clone();
-            invalid_handoff["handoff"][field] = json!(format!("forged-{field}"));
+            invalid_handoff["handoff"][field] = if field == "run_id" {
+                json!("other-owned-run")
+            } else {
+                json!(format!("forged-{field}"))
+            };
             let rejected = client
                 .post(format!("{base}/internal/runtime/results"))
                 .bearer_auth(&owner_token)
@@ -568,14 +584,9 @@
                 .send()
                 .await
                 .unwrap();
-            let expected_status = if field == "run_id" {
-                StatusCode::FORBIDDEN
-            } else {
-                StatusCode::CONFLICT
-            };
             assert_eq!(
                 rejected.status(),
-                expected_status,
+                StatusCode::CONFLICT,
                 "mismatched handoff field {field} must not be accepted"
             );
             assert_eq!(
@@ -635,6 +646,73 @@
             .await
             .unwrap();
         assert!(records.is_empty(), "unauthorized graph effects must not persist");
+
+        let (lease_expiry, connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let lease_expiry_task = tokio::spawn(connection);
+        let expired = lease_expiry
+            .execute(
+                &format!(
+                    "UPDATE \"{schema}\".projected_lane_messages SET lease_until = NOW() - INTERVAL '1 second' WHERE message_id = $1 AND status = 'claimed' AND claimed_by = $2"
+                ),
+                &[&"lane-1", &"worker-1"],
+            )
+            .await
+            .unwrap();
+        assert_eq!(expired, 1, "test must expire the original worker lease");
+        drop(lease_expiry);
+        lease_expiry_task.await.unwrap().unwrap();
+        let reclaimed = service
+            .store
+            .claim_projected_lane_messages("workflow", "workflow-runtime", "worker-2", 1, 30)
+            .await
+            .unwrap();
+        assert_eq!(reclaimed.len(), 1);
+        assert_eq!(reclaimed[0].message_id, "lane-1");
+        assert_ne!(reclaimed[0].claimed_by.as_deref(), Some("worker-1"));
+        let run_events_before_stale_result = service
+            .store
+            .list_server_run_events("owned-run", 0, usize::MAX)
+            .await
+            .unwrap();
+        let stale = client
+            .post(format!("{base}/internal/runtime/results"))
+            .bearer_auth(&owner_token)
+            .json(&worker_result)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            service
+                .store
+                .list_server_run_events("owned-run", 0, usize::MAX)
+                .await
+                .unwrap(),
+            run_events_before_stale_result,
+            "stale worker result must not append runtime events"
+        );
+        assert!(service
+            .store
+            .replay_raw_events("alpha", 0, 100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|event| event.event_id != "owner-check-event"));
+        assert_eq!(
+            service
+                .store
+                .get_projected_lane_message("lane-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .claimed_by
+                .as_deref(),
+            reclaimed[0].claimed_by.as_deref(),
+            "stale worker must not disturb the newer claim"
+        );
+        worker_result["handoff"]["claimed_by"] =
+            json!(reclaimed[0].claimed_by.as_deref().unwrap());
 
         let (fault_setup, fault_connection) =
             tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
