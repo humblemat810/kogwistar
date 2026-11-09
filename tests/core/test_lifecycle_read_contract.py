@@ -217,6 +217,8 @@ def test_semantic_queries_filter_tombstones_from_stale_projections(
     engine.write.add_edge(edge)
     assert engine.lifecycle.tombstone_node(node.id)
     assert engine.lifecycle.tombstone_edge(edge.id)
+    assert engine.read.get_nodes(ids=[node.id]) == []
+    assert engine.read.get_edges(ids=[edge.id]) == []
     node = engine.read.get_nodes(ids=[node.id], resolve_mode="include_tombstones")[0]
     edge = engine.read.get_edges(ids=[edge.id], resolve_mode="include_tombstones")[0]
     assert node.metadata["lifecycle_status"] == "tombstoned"
