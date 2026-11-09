@@ -10,6 +10,8 @@
     "edge.invalid_redirect_id",
     "edge.empty_node_endpoint_id",
     "edge.empty_edge_endpoint_id",
+    "edge_with_edge_endpoints.empty_source_edge_endpoint_id",
+    "edge_with_edge_endpoints.empty_target_edge_endpoint_id",
     "edge.missing_relation",
     "node.properties_not_mapping",
     "edge.properties_not_mapping",

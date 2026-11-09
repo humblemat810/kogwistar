@@ -442,17 +442,26 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
     baseline_by_kind["pure_chroma_node"].pop("mentions")
     baseline_by_kind["pure_chroma_edge"] = copy.deepcopy(baseline_by_kind["edge"])
     baseline_by_kind["pure_chroma_edge"].pop("mentions")
+    baseline_by_kind["edge_with_edge_endpoints"] = copy.deepcopy(
+        next(
+            case["payload"]
+            for case in GRAPH_MODEL_FIXTURE["cases"]
+            if case["kind"] == "edge_with_edge_endpoints"
+        )
+    )
     model_by_kind = {
         "node": Node,
         "edge": Edge,
         "pure_chroma_node": PureChromaNode,
         "pure_chroma_edge": PureChromaEdge,
+        "edge_with_edge_endpoints": Edge,
     }
     rust_class_by_kind = {
         "node": "node",
         "edge": "edge",
         "pure_chroma_node": "pure_chroma_node",
         "pure_chroma_edge": "pure_chroma_edge",
+        "edge_with_edge_endpoints": "edge",
     }
     assert GRAPH_MODEL_INVALID_FIXTURE["schema_version"] == 1
     for case_id in GRAPH_MODEL_INVALID_FIXTURE["cases"]:
@@ -468,6 +477,10 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
             payload["source_ids"] = [""]
         elif mutation == "empty_edge_endpoint_id" and kind == "edge":
             payload["source_edge_ids"] = [""]
+        elif mutation == "empty_source_edge_endpoint_id" and kind == "edge_with_edge_endpoints":
+            payload["source_edge_ids"] = [""]
+        elif mutation == "empty_target_edge_endpoint_id" and kind == "edge_with_edge_endpoints":
+            payload["target_edge_ids"] = [""]
         elif mutation == "missing_relation" and kind == "edge":
             payload.pop("relation")
         elif mutation == "properties_not_mapping":
