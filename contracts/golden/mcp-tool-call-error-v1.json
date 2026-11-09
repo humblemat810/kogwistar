@@ -1,0 +1,16 @@
+{
+  "contract_version": "v1",
+  "tool_name": "conversation.get_transcript",
+  "arguments": {
+    "conversation_id": "fixture-conversation",
+    "unexpected": true
+  },
+  "expected": {
+    "http_status": 200,
+    "content_type": "text/event-stream",
+    "result_is_error": true,
+    "content_item_type": "text",
+    "content_text_non_empty": true,
+    "top_level_error": false
+  }
+}

@@ -1041,6 +1041,69 @@
             },
             Arc::new(TranscriptRecorder(Arc::clone(&seen))),
         );
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/mcp-tool-call-error-v1.json"
+        ))
+        .unwrap();
+        let negotiated_error = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "jsonrpc":"2.0",
+                            "id":"invalid-tool-call",
+                            "method":"tools/call",
+                            "params":{
+                                "name":fixture["tool_name"],
+                                "arguments":fixture["arguments"],
+                            }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            negotiated_error.status().as_u16(),
+            fixture["expected"]["http_status"].as_u64().unwrap() as u16
+        );
+        assert!(negotiated_error
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with(fixture["expected"]["content_type"].as_str().unwrap()));
+        let negotiated_body = to_bytes(negotiated_error.into_body(), 4096)
+            .await
+            .unwrap();
+        let negotiated_sse = std::str::from_utf8(&negotiated_body).unwrap();
+        let data = negotiated_sse
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let message: Value = serde_json::from_str(data).unwrap();
+        let result = &message["result"];
+        assert_eq!(message["id"], "invalid-tool-call");
+        assert_eq!(result["isError"], fixture["expected"]["result_is_error"]);
+        assert_eq!(
+            result["content"][0]["type"],
+            fixture["expected"]["content_item_type"]
+        );
+        assert_eq!(
+            !result["content"][0]["text"].as_str().unwrap_or_default().is_empty(),
+            fixture["expected"]["content_text_non_empty"]
+        );
+        assert_eq!(message.get("error").is_some(), fixture["expected"]["top_level_error"]);
+        assert!(seen.lock().unwrap().is_none());
+
         let malformed = app
             .clone()
             .oneshot(
