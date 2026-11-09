@@ -3722,6 +3722,84 @@ mod tests {
             assert_eq!(matches[0].distance, -1.0);
         });
     }
+
+    #[test]
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract; fixture=contracts/golden/graph-mutation-scope-memory-v1.json
+    fn memory_mutation_scope_matches_shared_python_contract() {
+        block_on(async {
+            let fixture: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../contracts/golden/graph-mutation-scope-memory-v1.json"
+            )))
+            .expect("shared graph mutation scope contract");
+            let store = InMemoryStore::new();
+
+            for record in fixture["records"].as_array().expect("records") {
+                let scope = &record["scope"];
+                let graph_scope = GraphScope {
+                    namespace: scope["namespace"].as_str().unwrap().to_owned(),
+                    workspace_id: scope["workspace_id"].as_str().map(str::to_owned),
+                    graph_space: scope["graph_space"].as_str().map(str::to_owned),
+                };
+                let id = record["id"].as_str().expect("record id");
+                let embedding = record["embedding"]
+                    .as_array()
+                    .expect("record embedding")
+                    .iter()
+                    .map(|value| value.as_f64().expect("embedding component") as f32)
+                    .collect::<Vec<_>>();
+                let applied = store
+                    .apply_graph_mutation(graph_mutation(
+                        graph_scope,
+                        &format!("event-{id}"),
+                        id,
+                        &embedding,
+                    ))
+                    .await
+                    .expect("scoped graph mutation");
+                assert!(applied.inserted && applied.mutated);
+            }
+
+            let embedding = fixture["query_embedding"]
+                .as_array()
+                .expect("query embedding")
+                .iter()
+                .map(|value| value.as_f64().expect("query component") as f32)
+                .collect::<Vec<_>>();
+            for case in fixture["queries"].as_array().expect("queries") {
+                let scope = &case["scope"];
+                let matches = store
+                    .graph_projection_vector_query(GraphProjectionVectorQuery {
+                        scope: GraphScope {
+                            namespace: scope["namespace"].as_str().unwrap().to_owned(),
+                            workspace_id: scope["workspace_id"].as_str().map(str::to_owned),
+                            graph_space: scope["graph_space"].as_str().map(str::to_owned),
+                        },
+                        table: "gke_nodes".to_owned(),
+                        query: VectorQuery {
+                            embedding: embedding.clone(),
+                            limit: 10,
+                            metadata: MetadataFilter::default(),
+                            metric: DistanceMetric::Cosine,
+                        },
+                        embedding_dim: embedding.len(),
+                    })
+                    .await
+                    .expect("scope-filtered vector query");
+                let actual = matches
+                    .iter()
+                    .map(|item| item.record.id.as_str())
+                    .collect::<Vec<_>>();
+                let expected = case["expected_ids"]
+                    .as_array()
+                    .expect("expected IDs")
+                    .iter()
+                    .map(|id| id.as_str().expect("expected ID"))
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected);
+            }
+        });
+    }
     fn record(id: &str, team: &str, embedding: &[f32]) -> GraphRecord {
         let mut result = GraphRecord::new(id);
         result.document = Some(format!("document-{id}"));

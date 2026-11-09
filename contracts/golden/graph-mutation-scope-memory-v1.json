@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "query_embedding": [1.0, 0.0, 0.0],
+  "records": [
+    {
+      "id": "scope-tenant-a-ws-a-facts",
+      "scope": {"namespace": "tenant-a", "workspace_id": "ws-a", "graph_space": "facts"},
+      "embedding": [1.0, 0.0, 0.0]
+    },
+    {
+      "id": "scope-tenant-a-ws-b-facts",
+      "scope": {"namespace": "tenant-a", "workspace_id": "ws-b", "graph_space": "facts"},
+      "embedding": [0.9, 0.1, 0.0]
+    },
+    {
+      "id": "scope-tenant-a-ws-a-other",
+      "scope": {"namespace": "tenant-a", "workspace_id": "ws-a", "graph_space": "other"},
+      "embedding": [0.8, 0.2, 0.0]
+    },
+    {
+      "id": "scope-tenant-b-ws-a-facts",
+      "scope": {"namespace": "tenant-b", "workspace_id": "ws-a", "graph_space": "facts"},
+      "embedding": [0.7, 0.3, 0.0]
+    }
+  ],
+  "queries": [
+    {
+      "scope": {"namespace": "tenant-a", "workspace_id": "ws-a", "graph_space": "facts"},
+      "expected_ids": ["scope-tenant-a-ws-a-facts"]
+    },
+    {
+      "scope": {"namespace": "tenant-a", "workspace_id": "ws-b", "graph_space": "facts"},
+      "expected_ids": ["scope-tenant-a-ws-b-facts"]
+    },
+    {
+      "scope": {"namespace": "tenant-a", "workspace_id": "ws-a", "graph_space": "other"},
+      "expected_ids": ["scope-tenant-a-ws-a-other"]
+    },
+    {
+      "scope": {"namespace": "tenant-b", "workspace_id": "ws-a", "graph_space": "facts"},
+      "expected_ids": ["scope-tenant-b-ws-a-facts"]
+    }
+  ]
+}
