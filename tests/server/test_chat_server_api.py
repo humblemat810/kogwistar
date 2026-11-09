@@ -1492,8 +1492,25 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         checkpoints = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
         )
-        checkpoints.raise_for_status()
-        assert checkpoints.json()["checkpoints"][0]["state"]["counter"] == 1
+        checkpoint_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoints-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert checkpoints.status_code == checkpoint_contract["success_status"]
+        checkpoints_payload = checkpoints.json()
+        assert set(checkpoint_contract["required_envelope_fields"]).issubset(
+            checkpoints_payload
+        )
+        checkpoint_items = checkpoints_payload["checkpoints"]
+        assert checkpoint_items
+        for checkpoint_item in checkpoint_items:
+            assert set(checkpoint_contract["required_checkpoint_fields"]).issubset(
+                checkpoint_item
+            )
+            assert isinstance(checkpoint_item["state"], dict)
+        assert checkpoint_items[0]["state"]["counter"] == 1
 
         checkpoint = client.get(
             f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers
