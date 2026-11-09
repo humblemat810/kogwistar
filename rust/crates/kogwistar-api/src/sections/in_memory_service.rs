@@ -19,7 +19,7 @@ impl Default for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#execute_native_noop_once; python=kogwistar/runtime/rust_worker.py#RustRuntimeWorker; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_inline_native_noop_completes_claimed_run_atomically; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_sync_python_worker_rejects_native_operation_without_target; note=native no-op stays Rust-owned and is never sent to Python worker.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#execute_native_step_once; python=kogwistar/runtime/rust_worker.py#RustRuntimeWorker; fixture=contracts/golden/runtime-native-noop-v1.json,contracts/golden/runtime-native-increment-counter-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_inline_native_counter_matches_shared_effect_atomically; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_python_worker_increment_counter_matches_shared_native_effect_golden; note=native operations stay Rust-owned and never fall back to Python.
     async fn dead_letter_native_lane(
         &self,
         message_id: &str,
@@ -36,7 +36,7 @@ impl InMemoryGraphApplicationService {
         .map_err(|error| error.to_string())
     }
 
-    async fn execute_native_noop_once(&self) -> Result<bool, String> {
+    async fn execute_native_step_once(&self) -> Result<bool, String> {
         let claimed_by = format!("rust-native-worker#{}", uuid::Uuid::new_v4());
         let mut claimed =
             kogwistar_store::LaneMessageWriteStore::claim_projected_lane_messages_filtered(
@@ -100,11 +100,11 @@ impl InMemoryGraphApplicationService {
                 payload["executor_target"].as_str(),
             )
         });
-        if operation != Some("noop") {
+        if !matches!(operation, Some("noop" | "increment-counter")) {
             self.dead_letter_native_lane(
                 &message_id,
                 &claimed_by,
-                "in-memory inline runtime supports native noop only",
+                "in-memory inline runtime does not support this native operation",
             )
             .await?;
             return Ok(true);
@@ -1201,7 +1201,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
     fn execute_inline_native_work_once(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
-        Box::pin(self.execute_native_noop_once())
+        Box::pin(self.execute_native_step_once())
     }
 
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {

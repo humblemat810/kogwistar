@@ -176,6 +176,130 @@ async fn in_memory_inline_native_noop_completes_claimed_run_atomically() {
 }
 
 #[tokio::test]
+async fn in_memory_inline_native_counter_matches_shared_effect_atomically() {
+    let service = InMemoryGraphApplicationService::default();
+    let counter_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/runtime-native-increment-counter-v1.json"
+    )))
+    .unwrap();
+    let start: RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "memory-counter-start",
+        "expected_event_seq": 0,
+        "kind": "start",
+        "run_id": "memory-counter-run",
+        "workflow_id": "memory-counter-workflow",
+        "conversation_id": "memory-counter-conversation",
+        "user_id": "operator",
+        "user_turn_node_id": "turn-1",
+        "step_seq": 0,
+        "initial_state": {"counter": 1},
+        "frontier": {
+            "pending": [["increment", 0, "token-1", null]],
+            "suspended": [],
+            "join_node_ids": [],
+            "join_outstanding": [],
+            "join_waiters": {}
+        }
+    }))
+    .unwrap();
+    service
+        .store
+        .apply_recorded_runtime_transition(start, false)
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    kogwistar_store::LaneMessageWriteStore::project_lane_message(
+        &service.store,
+        NewProjectedLaneMessage {
+            message_id: "memory-counter-lane".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "memory-counter-conversation".to_owned(),
+            recipient_id: "rust-native-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now,
+            available_at: now,
+            run_id: Some("memory-counter-run".to_owned()),
+            step_id: Some("increment".to_owned()),
+            correlation_id: Some("memory-counter-run".to_owned()),
+            payload_json: Some(
+                json!({
+                    "contract_version": 1,
+                    "kind": "workflow.step.execute",
+                    "run_id": "memory-counter-run",
+                    "workflow_id": "memory-counter-workflow",
+                    "conversation_id": "memory-counter-conversation",
+                    "node_id": "increment",
+                    "op": "increment-counter",
+                    "executor_target": "rust-native",
+                    "join_mask": 0,
+                    "token_id": "token-1",
+                    "step_seq": 0,
+                    "expected_event_seq": 1,
+                    "state": {"counter": 1}
+                })
+                .to_string(),
+            ),
+            error_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let run = kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-counter-run")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, "succeeded");
+    assert_eq!(
+        serde_json::from_str::<Value>(run.result_json.as_deref().unwrap()).unwrap(),
+        counter_fixture["result"]
+    );
+    let projection = kogwistar_store::ProjectionReadStore::named_projection(
+        &service.store,
+        kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE,
+        "memory-counter-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(projection.payload["status"], "completed");
+    assert_eq!(projection.payload["state"]["counter"], 2);
+    let lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        "memory-counter-lane",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(lane.status, "completed");
+    let events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-counter-run",
+        0,
+        10,
+    )
+    .await
+    .unwrap();
+    let step_effect: Value = serde_json::from_str(&events[1].payload_json).unwrap();
+    assert_eq!(step_effect["reduced"]["state"]["state"]["counter"], 2);
+    assert_eq!(events[3].event_type, "workflow.trace.v1");
+    assert_eq!(
+        serde_json::from_str::<Value>(&events[3].payload_json).unwrap()["trace"]["event"],
+        "runtime.native.step.completed"
+    );
+    assert!(!service.execute_inline_native_work_once().await.unwrap());
+}
+
+#[tokio::test]
 async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
     let service = InMemoryGraphApplicationService::default();
     let now = std::time::SystemTime::now()
@@ -197,7 +321,7 @@ async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
             created_at: now,
             available_at: now,
             run_id: Some("memory-unsupported-run".to_owned()),
-            step_id: Some("increment".to_owned()),
+            step_id: Some("unsupported".to_owned()),
             correlation_id: Some("memory-unsupported-run".to_owned()),
             payload_json: Some(
                 json!({
@@ -206,8 +330,8 @@ async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
                     "run_id": "memory-unsupported-run",
                     "workflow_id": "memory-unsupported-workflow",
                     "conversation_id": "memory-unsupported-conversation",
-                    "node_id": "increment",
-                    "op": "increment-counter",
+                    "node_id": "unsupported",
+                    "op": "emit-result",
                     "executor_target": "rust-native",
                     "token_id": "token-1"
                 })
