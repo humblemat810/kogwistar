@@ -5756,6 +5756,10 @@
                         json!({"entity_type":"node","label":"Project scoped node"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n6","acl_version":1,"acl_mode":"scope","owner_id":"other-owner","security_scope":"project-a"}),
                         json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"e6","acl_version":1,"acl_mode":"scope","owner_id":"other-owner","security_scope":"project-a"}),
+                        json!({"entity_type":"node","label":"Evidence protected node"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n7","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":"n7","acl_target_item_id":"n7::mention::0","acl_version":1,"acl_mode":"public"}),
+                        json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":"n7","acl_target_item_id":"n7::mention::0::span::0","acl_version":1,"acl_mode":"private","owner_id":"other-owner"}),
                     ];
                     let source_doc = |doc_id: &str, with_mention: bool| {
                         if !with_mention {
@@ -5763,9 +5767,9 @@
                         }
                         json!({"mentions":[{"spans":[{"doc_id":doc_id,"insertion_method":"parser"}]}]}).to_string()
                     };
-                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-e4","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation","n6","acl-n6","acl-e6"];
+                    let ids = ["n1","n2","n3","n4","n5","acl-n1","acl-n2","acl-n3","acl-n4","acl-n5","acl-e1","acl-e3","acl-e4","acl-n1-mention","acl-n1-span","acl-n2-mention","acl-n2-span","acl-e1-mention","acl-e1-span","acl-n3-conversation","n6","acl-n6","acl-e6","n7","acl-n7","acl-n7-mention","acl-n7-span"];
                     json!({"ids":ids,
-                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
+                        "documents":[source_doc("doc-a", true),source_doc("doc-a", true),source_doc("doc-a", false),source_doc("doc-b", false),source_doc("doc-c", false),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),"{}".to_owned(),source_doc("doc-a", true),"{}".to_owned(),"{}".to_owned(),"{}".to_owned()],
                         "metadatas":metas.into_iter().enumerate().map(|(index, m)| {
                             let workspace = if index == 4 || index == 9 {"workspace-b"} else {"workspace-a"};
                             let mut original = m.as_object().unwrap().clone();
@@ -5777,7 +5781,7 @@
                             }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
                         }).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
+                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
                 } else if include_cross_doc_edge {
                     include_cross_doc_edge = false;
                     json!({"ids":["e1","e4"],
@@ -5832,6 +5836,14 @@
                     provision: "review permit".to_owned(),
                     doc_id: Some("doc-a".to_owned()),
                 },
+                kogwistar_contracts::SearchIndexEntryV1 {
+                    node_id: "n7".to_owned(),
+                    canonical_title: "Evidence protected node".to_owned(),
+                    keywords: vec!["review".to_owned()],
+                    aliases: Vec::new(),
+                    provision: "review permit".to_owned(),
+                    doc_id: Some("doc-a".to_owned()),
+                },
             ],
         )
         .unwrap();
@@ -5852,6 +5864,13 @@
             .with_search_index_path(&search_index_path)
             .unwrap()
             .with_embedding_provider(Arc::new(TestTextEmbedder));
+        let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
+        let lexical_candidates = crate::search_index_fts::search_fts(&fts, "review", 10).unwrap();
+        assert!(
+            lexical_candidates.iter().any(|hit| hit.node_id == "n7"),
+            "private-span node must be a real lexical candidate: {lexical_candidates:?}"
+        );
+        drop(fts);
         let graph = service.chroma_graph.as_ref().unwrap();
         let filter = MetadataFilter::default();
         let (nodes, edges) = tokio::try_join!(
@@ -5859,11 +5878,15 @@
             graph.graph_records_of_kind_bounded("scope-a", GraphEntityKind::Edge, &filter, 100),
         )
         .unwrap();
-        assert_eq!(nodes.len(), 23, "decoded node records: {nodes:?}");
+        assert_eq!(nodes.len(), 27, "decoded node records: {nodes:?}");
         assert_eq!(edges.len(), 2, "decoded edge records: {edges:?}");
         let principal = GraphAclPrincipal { principal_id: "reader-1".to_owned(), ..Default::default() };
         let (visible_nodes, visible_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
         assert_eq!(visible_nodes.len(), 4, "ACL-visible nodes: {visible_nodes:?}");
+        assert!(
+            !visible_nodes.iter().any(|record| record.id == "n7"),
+            "node with a private source span must be rejected by the ACL projection"
+        );
         assert_eq!(visible_edges.len(), 1, "ACL-visible edges: {visible_edges:?}");
         let (conversation_nodes, _) =
             graph_records_visible_by_acl(&nodes, &edges, "conversation", &principal);
@@ -6075,6 +6098,10 @@
                 ids.contains(&"n6"),
                 should_see_n6,
                 "project scope leaked or hid a hybrid hit for {project}: {result}"
+            );
+            assert!(
+                !ids.contains(&"n7"),
+                "hybrid search leaked a node whose source span is private: {result}"
             );
         }
 
