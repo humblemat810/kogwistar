@@ -131,6 +131,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         (ROOT / "contracts/golden/graph-acl-v1.json").read_text(encoding="utf-8")
     )
     isolation = acl_fixture["graph_type_isolation"]
+    owner_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "node-owner"
+    )
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -181,6 +184,39 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                             mode="public",
                         )
 
+        owner_engine = graph_engines[acl_fixture["truth_graph"]]
+        owner_node = Node(
+            id=owner_policy["id"],
+            label="Owner-only graph node",
+            type="entity",
+            summary="Private node visible to its owner",
+            mentions=[_g()],
+            metadata={"entity_type": "fixture"},
+            embedding=None,
+            doc_id=None,
+            level_from_root=0,
+        )
+        owner_engine.raw_write.add_node(owner_node)
+        owner_engine.acl_graph.add_record(
+            truth_graph=acl_fixture["truth_graph"],
+            entity_id=owner_node.id,
+            version=1,
+            mode=owner_policy["mode"],
+            owner_id=owner_policy["owner_id"],
+        )
+        grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(owner_node)
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                owner_engine.acl_graph.add_record(
+                    grain=grain,
+                    truth_graph=acl_fixture["truth_graph"],
+                    entity_id=owner_node.id,
+                    target_item_id=target_id,
+                    version=1,
+                    mode=owner_policy["mode"],
+                    owner_id=owner_policy["owner_id"],
+                )
+
         token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
         try:
             route_results: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
@@ -213,6 +249,31 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert [
                 item["data"]["id"] for item in cytoscape_payload["elements"]
             ] == expected_ids
+
+        token = claims_ctx.set(
+            {"agent_id": owner_policy["owner_id"], "ns": acl_fixture["truth_graph"]}
+        )
+        try:
+            owner_d3 = cast(
+                JSONResponse,
+                server.api_viz_d3(mode="classic", graph_type=acl_fixture["truth_graph"]),
+            )
+            owner_cytoscape = cast(
+                JSONResponse,
+                server.api_viz_cytoscape(
+                    mode="classic", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            owner_d3_payload = json.loads(bytes(owner_d3.body))
+            owner_cytoscape_payload = json.loads(bytes(owner_cytoscape.body))
+        finally:
+            claims_ctx.reset(token)
+        assert owner_policy["id"] in [
+            node["id"] for node in owner_d3_payload["nodes"]
+        ]
+        assert owner_policy["id"] in [
+            item["data"]["id"] for item in owner_cytoscape_payload["elements"]
+        ]
     finally:
         for engine in graph_engines.values():
             engine.close()

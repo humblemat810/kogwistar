@@ -2741,6 +2741,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     .unwrap();
     let isolation = &acl_fixture["graph_type_isolation"];
     let shared_entity_id = isolation["entity_id"].as_str().unwrap();
+    let owner_policy = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "node-owner")
+        .unwrap();
+    let owner_entity_id = owner_policy["id"].as_str().unwrap();
+    let owner_id = owner_policy["owner_id"].as_str().unwrap();
     let isolation_cases = isolation["cases"].as_array().unwrap();
     let knowledge_policy = isolation_cases
         .iter()
@@ -2762,11 +2770,13 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let token_for_graph_space = |namespace: &str, capabilities: &[&str], graph_space: &str| {
+    let token_for_subject =
+        |subject: &str, namespace: &str, capabilities: &[&str], graph_space: &str| {
         encode(
             &Header::new(Algorithm::HS256),
             &json!({
-                "sub": "writer",
+                "sub": subject,
+                "user_id": subject,
                 "role": "rw",
                 "ns": [namespace],
                 "storage_ns": "tenant-a",
@@ -2779,6 +2789,9 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             &EncodingKey::from_secret(secret.as_bytes()),
         )
         .unwrap()
+    };
+    let token_for_graph_space = |namespace: &str, capabilities: &[&str], graph_space: &str| {
+        token_for_subject("writer", namespace, capabilities, graph_space)
     };
     let token = |namespace: &str, capabilities: &[&str]| {
         token_for_graph_space(namespace, capabilities, "facts")
@@ -2944,6 +2957,28 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"node","acl_target_entity_id":"n3","acl_version":1,"acl_mode":"private","acl_owner_id":"another-user"}),
             None,
         ),
+        mutation(
+            owner_entity_id,
+            "gke_nodes",
+            "node",
+            json!({"label":"owner only"}),
+            Some("owner only"),
+        ),
+        mutation(
+            "acl-node-owner",
+            "gke_nodes",
+            "node",
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":acl_fixture["truth_graph"],
+                "acl_target_grain":owner_policy["grain"],
+                "acl_target_entity_id":owner_entity_id,
+                "acl_version":1,
+                "acl_mode":owner_policy["mode"],
+                "owner_id":owner_id
+            }),
+            None,
+        ),
     ];
     for (index, embedding) in [
         (0, json!([1.0, 0.0])),
@@ -3036,7 +3071,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     let written: Value =
         serde_json::from_slice(&to_bytes(written.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(written["atomic"], true);
-    assert_eq!(written["results"].as_array().unwrap().len(), 16);
+    assert_eq!(
+        written["results"].as_array().unwrap().len(),
+        body["mutations"].as_array().unwrap().len()
+    );
     let load_persisted = |id: &str, input: Value| {
         Request::builder()
             .method("POST")
@@ -3481,6 +3519,12 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             expected_visible,
             "selected graph={truth_graph} used the wrong ACL policy: {payload}"
         );
+        if truth_graph == acl_fixture["truth_graph"].as_str().unwrap() {
+            assert!(
+                !rendered_nodes.contains(owner_entity_id),
+                "a non-owner must not see the private fixture node: {payload}"
+            );
+        }
         if truth_graph == "workflow" || truth_graph == "wisdom" {
             assert!(
                 !rendered_nodes.contains("n1") && !rendered_nodes.contains("conversation-node"),
@@ -3488,6 +3532,37 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             );
         }
     }
+
+    let owner_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/viz/d3.json?graph_type=knowledge")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject(owner_id, "docs", &["read_graph"], "facts")
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(owner_response.status(), StatusCode::OK);
+    let owner_payload: Value =
+        serde_json::from_slice(&to_bytes(owner_response.into_body(), 65_536).await.unwrap())
+            .unwrap();
+    assert!(
+        owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == owner_entity_id),
+        "the ACL fixture owner must see the private node: {owner_payload}"
+    );
 
     let deferred_visualization = app
         .clone()
