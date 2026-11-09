@@ -11,9 +11,9 @@ use kogwistar_runtime::{
     worker_effect_digest,
 };
 use kogwistar_store::{
-    EntityEvent, GraphMutation, GraphMutationBatch, NewProjectedLaneMessage, ProjectedLaneMessage,
-    RUNTIME_CURRENT_STATE_NAMESPACE, ServerRunCreate, StoreError, StoreResult,
-    runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
+    EntityEvent, GraphMutation, GraphMutationBatch, NewIndexJob, NewProjectedLaneMessage,
+    ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE, ServerRunCreate, StoreError,
+    StoreResult, runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
     timestamp_i64, validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
 use serde_json::Value;
@@ -31,6 +31,7 @@ pub struct ProviderEventPublicationCommit {
     pub namespace: String,
     pub provider_event_json: String,
     pub graph_mutations: Vec<GraphMutation>,
+    pub index_jobs: Vec<NewIndexJob>,
     pub lane: NewProjectedLaneMessage,
     pub run_event_type: String,
     pub run_event_payload_json: String,
@@ -50,13 +51,14 @@ impl InMemoryStore {
             namespace,
             provider_event_json,
             graph_mutations,
+            index_jobs,
             lane,
             run_event_type,
             run_event_payload_json,
         } = publication;
         let batch = GraphMutationBatch {
             mutations: graph_mutations,
-            index_jobs: Vec::new(),
+            index_jobs,
         };
         let provider_event: kogwistar_contracts::DurableProviderEventV1 =
             serde_json::from_str(&provider_event_json).map_err(json_error)?;
@@ -174,19 +176,22 @@ impl InMemoryStore {
         }) {
             return Err(runtime_conflict("provider-event run trace already exists"));
         }
-        for mutation in &batch.mutations {
-            if state
-                .namespaces
-                .get(&namespace)
-                .is_some_and(|scope| scope.event_seq_by_id.contains_key(&mutation.event_id))
-            {
-                return Err(runtime_conflict(
-                    "provider-event graph event ID is already in use",
-                ));
+        let mut new_mutations = Vec::new();
+        for mutation in batch.mutations {
+            let existing = state.namespaces.get(&namespace).and_then(|scope| {
+                scope
+                    .event_seq_by_id
+                    .get(&mutation.event_id)
+                    .and_then(|seq| scope.events.iter().find(|event| event.seq == *seq))
+            });
+            if let Some(existing) = existing {
+                validate_graph_mutation_replay(&mutation, existing)?;
+            } else {
+                new_mutations.push(mutation);
             }
         }
 
-        for mutation in batch.mutations {
+        for mutation in new_mutations {
             let scope = InMemoryStore::scope_mut(&mut state, &namespace);
             let seq = scope.next_event_seq + 1;
             let event = EntityEvent {
@@ -207,6 +212,9 @@ impl InMemoryStore {
                 projection.record_order.push(key.clone());
             }
             projection.records.insert(key, mutation.record);
+        }
+        for job in batch.index_jobs {
+            super::enqueue_index_job_into_state(&mut state, job);
         }
         insert_initial_lane(&mut state, lane);
         let events = state.server_run_events.entry(run_id.clone()).or_default();
@@ -1292,6 +1300,7 @@ mod tests {
                 },
                 embedding_dim: 0,
             }],
+            index_jobs: Vec::new(),
             lane: NewProjectedLaneMessage {
                 message_id: format!("msg:{event_id}"),
                 namespace,

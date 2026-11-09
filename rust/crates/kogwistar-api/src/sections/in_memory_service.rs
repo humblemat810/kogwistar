@@ -4,6 +4,8 @@ struct InMemoryGraphApplicationService {
     store: InMemoryStore,
     capabilities: SharedCapabilityState,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
+    transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
     search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
     owner_auth_store: Option<AuthStore>,
 }
@@ -14,6 +16,8 @@ impl Default for InMemoryGraphApplicationService {
             store: InMemoryStore::default(),
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
             embedding_provider: None,
+            chat_completion_provider: None,
+            transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
             search_index_fts: None,
             owner_auth_store: None,
         }
@@ -21,7 +25,6 @@ impl Default for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
-    #[allow(dead_code)] // Wired by the in-memory provider-request worker slice.
     async fn resolve_inline_native_owner_principal(
         &self,
         run_id: &str,
@@ -173,15 +176,19 @@ impl InMemoryGraphApplicationService {
                 return Err(format!("invalid native step payload: {error}"));
             }
         };
-        let operation = payload["op"].as_str().and_then(|operation| {
-            kogwistar_runtime::native_operation_for_target(
-                operation,
-                payload["executor_target"].as_str(),
-            )
-        });
+        let operation = payload["op"]
+            .as_str()
+            .map(str::to_owned)
+            .and_then(|operation| {
+                kogwistar_runtime::native_operation_for_target(
+                    &operation,
+                    payload["executor_target"].as_str(),
+                )
+                .map(str::to_owned)
+            });
         if !matches!(
-            operation,
-            Some("noop" | "increment-counter" | "emit-result")
+            operation.as_deref(),
+            Some("noop" | "increment-counter" | "emit-result" | "agent.event.request")
         ) {
             self.dead_letter_native_lane(
                 &message_id,
@@ -205,11 +212,16 @@ impl InMemoryGraphApplicationService {
                 return Err(error);
             }
         };
-        let result = match native_result_from_request(
-            handoff.clone(),
-            native_request,
-            &kogwistar_runtime::NativeOperationRegistry::default(),
-        ) {
+        let result = match if operation.as_deref() == Some("agent.event.request") {
+            self.execute_in_memory_native_provider_event_request(handoff.clone(), native_request)
+                .await
+        } else {
+            native_result_from_request(
+                handoff.clone(),
+                native_request,
+                &kogwistar_runtime::NativeOperationRegistry::default(),
+            )
+        } {
             Ok(result) => result,
             Err(error) => {
                 self.dead_letter_native_lane(
@@ -245,6 +257,436 @@ impl InMemoryGraphApplicationService {
         Ok(true)
     }
 
+    async fn execute_in_memory_native_provider_event_request(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        mut request: kogwistar_runtime::RuntimeNativeStepRequest,
+    ) -> Result<RuntimeWorkerResultRequest, String> {
+        let Some(provider) = self.chat_completion_provider.as_ref() else {
+            return Ok(failed_native_result(
+                handoff,
+                &request,
+                "KOGWISTAR_CHAT_PROVIDER_NOT_CONFIGURED",
+                "Rust-native provider-event streaming requires a configured chat provider",
+            ));
+        };
+        let provider_request: kogwistar_contracts::ProviderRequestV1 = serde_json::from_value(
+            request
+                .state
+                .get("provider_request")
+                .cloned()
+                .ok_or_else(|| "agent.event.request requires provider_request state".to_owned())?,
+        )
+        .map_err(|_| "provider_request does not match the v1 contract".to_owned())?;
+        provider_request
+            .validate()
+            .map_err(|_| "provider_request does not match the v1 contract".to_owned())?;
+        if provider_request.model != provider.model() {
+            return Err("provider_request model does not match the configured model".to_owned());
+        }
+        let principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
+            .await
+            .map_err(|_| "provider-event request owner authorization is unavailable".to_owned())?;
+        if !capability_allowed_for_principal(
+            &principal,
+            &self.capabilities,
+            "write_graph.provider_event.request",
+            &["write_graph"],
+        ) || !principal_strings(&principal, "capabilities")
+            .iter()
+            .any(|capability| capability == "write_graph")
+        {
+            return Err(
+                "provider-event request requires current run-owner write_graph authority"
+                    .to_owned(),
+            );
+        }
+        let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, &request.run_id)
+            .await
+            .map_err(|_| "provider-event run could not be verified".to_owned())?
+            .ok_or_else(|| "provider-event run is missing".to_owned())?;
+        if run.conversation_id != request.conversation_id {
+            return Err("provider-event conversation does not match the admitted run".to_owned());
+        }
+
+        use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+        let client_sequence = Arc::new(AtomicI64::new(
+            request
+                .state
+                .get("agent_event_client_sse_sequence")
+                .and_then(Value::as_i64)
+                .filter(|sequence| *sequence >= 0)
+                .unwrap_or(0),
+        ));
+        let semantic_count = Arc::new(AtomicI64::new(0));
+        let provider_sequence = Arc::new(AtomicI64::new(0));
+        let saw_failure = Arc::new(AtomicBool::new(false));
+        let summaries = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let sink_error = Arc::new(Mutex::new(None::<String>));
+        let provider_id = "openai_compatible_chat_completions";
+        let model = provider.model().to_owned();
+        let stream_result = provider
+            .stream_request_events(&provider_request, |event| {
+                let client_sequence = Arc::clone(&client_sequence);
+                let semantic_count = Arc::clone(&semantic_count);
+                let provider_sequence = Arc::clone(&provider_sequence);
+                let saw_failure = Arc::clone(&saw_failure);
+                let summaries = Arc::clone(&summaries);
+                let sink_error = Arc::clone(&sink_error);
+                let request = request.clone();
+                let model = model.clone();
+                async move {
+                    if let kogwistar_contracts::ProviderEventV1::TextDelta { delta, .. } = &event {
+                        if delta.chars().count() > 4096 {
+                            return Err(
+                                "transient text delta exceeds the configured size limit".to_owned()
+                            );
+                        }
+                        let sequence = client_sequence
+                            .fetch_add(1, Ordering::Relaxed)
+                            .saturating_add(1);
+                        let _ = self
+                            .transient_run_deltas
+                            .publish(&request.run_id, sequence, delta);
+                        return Ok(());
+                    }
+                    let event_value = serde_json::to_value(&event)
+                        .map_err(|_| "provider event could not be encoded".to_owned())?;
+                    provider_sequence.fetch_max(
+                        event_value
+                            .get("provider_sequence")
+                            .and_then(Value::as_i64)
+                            .unwrap_or(0),
+                        Ordering::Relaxed,
+                    );
+                    if matches!(
+                        event,
+                        kogwistar_contracts::ProviderEventV1::ResponseFailed { .. }
+                    ) {
+                        saw_failure.store(true, Ordering::Relaxed);
+                    }
+                    match self
+                        .persist_in_memory_native_stream_semantic_event(
+                            &request,
+                            event,
+                            provider_id,
+                            &model,
+                            client_sequence.load(Ordering::Relaxed),
+                        )
+                        .await
+                    {
+                        Ok(summary) => {
+                            semantic_count.fetch_add(1, Ordering::Relaxed);
+                            if let Ok(mut values) = summaries.lock() {
+                                values.push(summary);
+                            }
+                            Ok(())
+                        }
+                        Err(error) => {
+                            if let Ok(mut saved) = sink_error.lock() {
+                                *saved = Some(error.clone());
+                            }
+                            Err(error)
+                        }
+                    }
+                }
+            })
+            .await;
+        if let Some(error) = sink_error.lock().ok().and_then(|mut saved| saved.take()) {
+            return Err(error);
+        }
+        if (stream_result.is_err() || semantic_count.load(Ordering::Relaxed) == 0)
+            && !saw_failure.load(Ordering::Relaxed)
+        {
+            let failure = kogwistar_contracts::ProviderEventV1::ResponseFailed {
+                contract_version: kogwistar_contracts::PROVIDER_EVENT_CONTRACT_VERSION.to_owned(),
+                provider_event_id: None,
+                provider_sequence: Some(provider_sequence.load(Ordering::Relaxed)),
+                response_id: None,
+                error_code: if stream_result.is_err() {
+                    "provider_stream_error"
+                } else {
+                    "empty_provider_stream"
+                }
+                .to_owned(),
+                message: "provider request did not complete with semantic output".to_owned(),
+                retryable: false,
+            };
+            let summary = self
+                .persist_in_memory_native_stream_semantic_event(
+                    &request,
+                    failure,
+                    provider_id,
+                    &model,
+                    client_sequence.load(Ordering::Relaxed),
+                )
+                .await?;
+            semantic_count.fetch_add(1, Ordering::Relaxed);
+            summaries
+                .lock()
+                .map_err(|_| "provider trace summary is unavailable".to_owned())?
+                .push(summary);
+        }
+        request.ephemeral_context.insert(
+            "provider_event_request_result".to_owned(),
+            json!({
+                "provider_sequence": provider_sequence.load(Ordering::Relaxed),
+                "client_sse_sequence": client_sequence.load(Ordering::Relaxed),
+                "semantic_event_count": semantic_count.load(Ordering::Relaxed),
+            }),
+        );
+        request.ephemeral_context.insert(
+            "_provider_event_trace_summaries".to_owned(),
+            Value::Array(
+                summaries
+                    .lock()
+                    .map_err(|_| "provider trace summary is unavailable".to_owned())?
+                    .clone(),
+            ),
+        );
+        request
+            .ephemeral_context
+            .insert("provider_model".to_owned(), json!(model));
+        native_result_from_request(
+            handoff,
+            request,
+            &kogwistar_runtime::NativeOperationRegistry::default(),
+        )
+    }
+
+    async fn persist_in_memory_native_stream_semantic_event(
+        &self,
+        request: &kogwistar_runtime::RuntimeNativeStepRequest,
+        event: kogwistar_contracts::ProviderEventV1,
+        provider_id: &str,
+        model: &str,
+        client_sse_sequence: i64,
+    ) -> Result<Value, String> {
+        let summary = crate::native_answer_generation::semantic_event_trace_summary(&event)
+            .ok_or_else(|| "provider emitted a non-semantic event".to_owned())?;
+        let event_value = serde_json::to_value(&event)
+            .map_err(|_| "provider event could not be encoded".to_owned())?;
+        let trace_context = kogwistar_runtime::native_trace_context_fields(request);
+        let attempt = trace_context
+            .get("attempt")
+            .and_then(Value::as_i64)
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        let trace = kogwistar_contracts::EventTraceMetadataV1 {
+            run_id: request.run_id.clone(),
+            turn_id: request
+                .turn_node_id
+                .clone()
+                .or_else(|| {
+                    request
+                        .state
+                        .get("turn_node_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default(),
+            workflow_node_id: request.node_id.clone(),
+            step_id: request.step_seq.to_string(),
+            attempt,
+            producer_step_seq: Some(request.step_seq),
+            producer_attempt: Some(attempt),
+            trace_id: trace_context
+                .get("trace_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            span_id: trace_context
+                .get("span_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            parent_span_id: trace_context
+                .get("parent_span_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            provider_id: provider_id.to_owned(),
+            provider_response_id: event_value
+                .get("response_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            provider_sequence: event_value.get("provider_sequence").and_then(Value::as_i64),
+            client_sse_sequence: Some(client_sse_sequence),
+        };
+        let durable = kogwistar_contracts::durable_provider_event(&trace, event);
+        let principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
+            .await
+            .map_err(|_| {
+                "provider-event owner authorization is unavailable at commit".to_owned()
+            })?;
+        let security_scope = security_scope_value(&principal);
+        if !capability_allowed_for_principal(
+            &principal,
+            &self.capabilities,
+            "write_graph.provider_event.commit",
+            &["write_graph"],
+        ) || !principal_strings(&principal, "capabilities")
+            .iter()
+            .any(|value| value == "write_graph")
+        {
+            return Err(
+                "provider-event write_graph capability was revoked before commit".to_owned(),
+            );
+        }
+        let scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "provider-event owner has no storage namespace".to_owned())?
+                .to_owned(),
+            workspace_id: security_scope["workspace"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let publication = kogwistar_contracts::DurableProviderEventPublicationV1 {
+            namespace: scope.namespace.clone(),
+            conversation_id: request.conversation_id.clone(),
+            event: durable.clone(),
+        };
+        let mut mutations = provider_event_graph_mutations(
+            &publication,
+            &scope,
+            security_scope["security_scope"]
+                .as_str()
+                .unwrap_or_default(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "system clock is before Unix epoch".to_owned())?
+                .as_secs() as i64,
+        );
+        validate_provider_event_publications(
+            std::slice::from_ref(&publication),
+            &mutations,
+            &request.run_id,
+        )?;
+        if mutations
+            .iter()
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+        {
+            return Err(
+                "provider event publication is outside the run owner's admitted scope".to_owned(),
+            );
+        }
+        let owner_id = authenticated_run_owner_id(&principal)
+            .ok_or_else(|| "provider event requires authenticated owner".to_owned())?
+            .to_owned();
+        let message_id = format!("msg:{}", durable.event_id);
+        let mut metadata = MetadataFilter::default();
+        metadata
+            .equals
+            .insert("entity_type".to_owned(), json!("acl_record"));
+        metadata
+            .equals
+            .insert("acl_truth_graph".to_owned(), json!("conversation"));
+        metadata
+            .equals
+            .insert("acl_target_entity_id".to_owned(), json!(message_id));
+        let existing_acl = self
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata,
+                limit: 10000,
+            })
+            .await
+            .map_err(|_| "provider-event ACL projection lookup failed".to_owned())?;
+        let commit_principal = self
+            .resolve_inline_native_owner_principal(&request.run_id, "write_graph")
+            .await
+            .map_err(|_| "provider-event owner authorization changed before commit".to_owned())?;
+        let commit_scope = security_scope_value(&commit_principal);
+        if authenticated_run_owner_id(&commit_principal) != Some(owner_id.as_str())
+            || commit_scope != security_scope
+            || !capability_allowed_for_principal(
+                &commit_principal,
+                &self.capabilities,
+                "write_graph.provider_event.commit",
+                &["write_graph"],
+            )
+            || !principal_strings(&commit_principal, "capabilities")
+                .iter()
+                .any(|capability| capability == "write_graph")
+        {
+            return Err(
+                "provider-event owner capability or scope changed before commit".to_owned(),
+            );
+        }
+        let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            &mutations,
+            acl_targets_for_graph_mutations(&mutations).0,
+            existing_acl,
+            "conversation",
+            &owner_id,
+            security_scope["security_scope"].as_str(),
+            &durable.event_id,
+        )?;
+        mutations.extend(acl_mutations);
+        let event_payload = serde_json::to_string(&durable)
+            .map_err(|_| "provider event could not be serialized".to_owned())?;
+        let mut trace_payload = json!({
+            "run_id": request.run_id, "trace_id": request.run_id,
+            "workflow_id": request.workflow_id, "conversation_id": request.conversation_id,
+            "turn_node_id": request.turn_node_id, "step_id": request.node_id,
+            "step_seq": request.step_seq, "token_id": request.token_id,
+            "parent_token_id": request.parent_token_id, "executor_target": "rust-native",
+            "provider_id": provider_id, "provider_model": model,
+            "client_sse_sequence": client_sse_sequence, "provider_event": summary,
+            "event_id": durable.event_id,
+        });
+        if let Some(fields) = trace_payload.as_object_mut() {
+            fields.extend(trace_context);
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "system clock is before Unix epoch".to_owned())?
+            .as_secs() as i64;
+        let lane = NewProjectedLaneMessage {
+            message_id,
+            namespace: scope.namespace.clone(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: request.conversation_id.clone(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now,
+            available_at: now,
+            run_id: Some(request.run_id.clone()),
+            step_id: Some(durable.trace.step_id.clone()),
+            correlation_id: Some(durable.event_id.clone()),
+            payload_json: Some(event_payload.clone()),
+            error_json: None,
+        };
+        self.store
+            .persist_provider_event_publication(
+                kogwistar_store_memory::ProviderEventPublicationCommit {
+                    run_id: request.run_id.clone(),
+                    owner_id,
+                    conversation_id: request.conversation_id.clone(),
+                    namespace: scope.namespace,
+                    provider_event_json: event_payload,
+                    graph_mutations: mutations,
+                    index_jobs: acl_jobs,
+                    lane,
+                    run_event_type: "workflow.provider_event.v1".to_owned(),
+                    run_event_payload_json: serde_json::to_string(&trace_payload)
+                        .map_err(|_| "provider event trace could not be serialized".to_owned())?,
+                },
+            )
+            .map_err(|_| "provider event in-memory commit failed".to_owned())?;
+        Ok(summary)
+    }
+
     fn supports_graph_tool(name: &str) -> bool {
         matches!(
             name,
@@ -263,6 +705,14 @@ impl InMemoryGraphApplicationService {
 
     fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
+        self
+    }
+
+    fn with_chat_completion_provider(
+        mut self,
+        provider: crate::native_answer_generation::OpenAiCompatibleChatConfig,
+    ) -> Self {
+        self.chat_completion_provider = Some(provider);
         self
     }
 
@@ -1553,7 +2003,10 @@ impl InMemoryGraphApplicationService {
                 || !plan.node_environment_ids.is_empty()
                 || !plan.node_worker_identities.is_empty()
                 || operation.is_none_or(|operation| {
-                    !matches!(operation, "noop" | "increment-counter" | "emit-result")
+                    !matches!(
+                        operation,
+                        "noop" | "increment-counter" | "emit-result" | "agent.event.request"
+                    )
                 })
                 || version != Some("v1")
                 || executor_target != Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
@@ -1633,7 +2086,7 @@ impl InMemoryGraphApplicationService {
         if executor_target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
             || !matches!(
                 native_operation,
-                Some("noop" | "increment-counter" | "emit-result")
+                Some("noop" | "increment-counter" | "emit-result" | "agent.event.request")
             )
             || input
                 .node_executor_targets

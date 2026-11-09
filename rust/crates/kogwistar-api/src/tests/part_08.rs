@@ -338,10 +338,21 @@ async fn in_memory_run_owner_revalidation_rejects_revoked_inactive_and_changed_s
         auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
         ..AuthConfig::default()
     };
+    let provider_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider_address = provider_listener.local_addr().unwrap();
     let service = InMemoryGraphApplicationService::default()
         .with_owner_auth_config(&auth_config)
         .await
-        .unwrap();
+        .unwrap()
+        .with_chat_completion_provider(
+            crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+                format!("http://{provider_address}/v1/chat/completions"),
+                "memory-event-model",
+                None,
+            )
+            .unwrap()
+            .with_streaming(true),
+        );
     let principal = json!({
         "user_id":"alice",
         "sub":"alice",
@@ -359,8 +370,12 @@ async fn in_memory_run_owner_revalidation_rejects_revoked_inactive_and_changed_s
                 "run_id":"memory-owner-revalidation",
                 "workflow_id":"memory-owner-workflow",
                 "conversation_id":"memory-owner-conversation",
-                "node_ops":{"start":"noop"},
-                "node_executor_targets":{"start":"rust-native"}
+                "node_ops":{"start":"rust-native/agent.event.request"},
+                "node_executor_targets":{"start":"rust-native"},
+                "initial_state":{"provider_request":{
+                    "contract_version":"v1", "model":"memory-event-model",
+                    "instructions":"fixture only", "input":"not sent after revocation"
+                }}
             }))
             .unwrap(),
             principal,
@@ -381,6 +396,40 @@ async fn in_memory_run_owner_revalidation_rejects_revoked_inactive_and_changed_s
             [],
         )
         .unwrap();
+    assert!(service.execute_inline_native_work_once().await.is_err());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            provider_listener.accept()
+        )
+        .await
+        .is_err()
+    );
+    let provider_messages = kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+        &service.store,
+        LaneMessageFilter {
+            inbox_id: Some("agent-provider-events".to_owned()),
+            conversation_id: Some("memory-owner-conversation".to_owned()),
+            limit: 10,
+            ..LaneMessageFilter::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(provider_messages.is_empty());
+    let run_events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-owner-revalidation",
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    assert!(
+        !run_events
+            .iter()
+            .any(|event| event.event_type == "workflow.provider_event.v1")
+    );
     assert!(matches!(
         service
             .resolve_inline_native_owner_principal("memory-owner-revalidation", "write_graph")
@@ -414,6 +463,192 @@ async fn in_memory_run_owner_revalidation_rejects_revoked_inactive_and_changed_s
         Err(InlineOwnerPrincipalError::Denied(_))
     ));
     drop(auth_connection);
+    drop(service);
+    let _ = std::fs::remove_file(auth_path);
+}
+
+#[tokio::test]
+async fn in_memory_native_provider_request_persists_semantic_events_and_keeps_deltas_transient() {
+    use crate::native_answer_generation::OpenAiCompatibleChatConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-provider-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "memory-provider-owner".to_owned(),
+        email: "memory-provider-owner@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "memory-provider-owner".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "conversation".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let provider_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        let (header_end, content_length) = loop {
+            let mut chunk = [0_u8; 4096];
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert!(count > 0);
+            bytes.extend_from_slice(&chunk[..count]);
+            if let Some(index) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let end = index + 4;
+                let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .unwrap()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap();
+                if bytes.len() >= end + length {
+                    break (end, length);
+                }
+            }
+        };
+        let request: Value =
+            serde_json::from_slice(&bytes[header_end..header_end + content_length]).unwrap();
+        assert_eq!(request["model"], "memory-event-model");
+        assert_eq!(request["stream"], true);
+        let body = concat!(
+            "data: {\"id\":\"memory-response\",\"choices\":[{\"delta\":{\"content\":\"transient text\"},\"finish_reason\":null}]}\r\n\r\n",
+            "data: {\"id\":\"memory-response\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\n",
+            "data: [DONE]\r\n\r\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let provider = OpenAiCompatibleChatConfig::new(
+        format!("http://{address}/v1/chat/completions"),
+        "memory-event-model",
+        None,
+    )
+    .unwrap()
+    .with_streaming(true);
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = InMemoryGraphApplicationService::default()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap()
+        .with_chat_completion_provider(provider);
+    let principal = json!({
+        "user_id":"memory-provider-owner", "sub":"memory-provider-owner", "role":"rw",
+        "ns":["workflow", "conversation"], "storage_ns":"conversation",
+        "workspace":"workspace-a", "graph_space":"conversation",
+        "capabilities":["workflow.run.write", "workflow.run.read", "write_graph"]
+    });
+    let admission = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"memory-provider-event-run",
+                "workflow_id":"memory-provider-event-workflow",
+                "conversation_id":"memory-provider-event-conversation",
+                "turn_node_id":"turn-1",
+            "start_node_id":"request",
+                "node_ops":{"request":"rust-native/agent.event.request"},
+                "initial_state":{"provider_request":{
+                    "contract_version":"v1", "model":"memory-event-model",
+                    "instructions":"fixture only", "input":"emit one response"
+                }}
+            }))
+            .unwrap(),
+            principal,
+        })
+        .await;
+    assert_eq!(
+        admission.status,
+        StatusCode::ACCEPTED.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&admission.body)
+    );
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    provider_task.await.unwrap();
+
+    let lane = kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+        &service.store,
+        LaneMessageFilter {
+            namespace: Some("conversation".to_owned()),
+            inbox_id: Some("agent-provider-events".to_owned()),
+            conversation_id: Some("memory-provider-event-conversation".to_owned()),
+            limit: 20,
+            ..LaneMessageFilter::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(lane.iter().any(|message| {
+        message
+            .payload_json
+            .as_deref()
+            .is_some_and(|payload| payload.contains("response_completed"))
+    }));
+    assert!(lane.iter().all(|message| {
+        message
+            .payload_json
+            .as_deref()
+            .is_some_and(|payload| !payload.contains("text_delta"))
+    }));
+    let events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-provider-event-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == "workflow.provider_event.v1"
+                && event.payload_json.contains("response_completed"))
+    );
+    assert!(
+        service
+            .transient_run_deltas
+            .last_sequence("memory-provider-event-run")
+            .unwrap()
+            > 0
+    );
+    let run = kogwistar_store::ServerRunReadStore::server_run(
+        &service.store,
+        "memory-provider-event-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let result: Value = serde_json::from_str(run.result_json.as_deref().unwrap()).unwrap();
+    assert!(
+        result["provider_event_request_result"]["semantic_event_count"]
+            .as_i64()
+            .unwrap()
+            >= 2
+    );
+    assert!(
+        result["provider_event_request_result"]["provider_sequence"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+
     drop(service);
     let _ = std::fs::remove_file(auth_path);
 }

@@ -752,6 +752,11 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
             .with_owner_auth_config(&state.auth)
             .await
             .map_err(std::io::Error::other)?;
+        if let Some(provider) =
+            chat_completion_provider_from_environment().map_err(std::io::Error::other)?
+        {
+            service = service.with_chat_completion_provider(provider);
+        }
         let embedding_provider = embedding_provider_from_settings(
             std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
                 .ok()
@@ -1121,6 +1126,24 @@ fn native_result_from_request(
     let mut effect =
         kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
             .map_err(|error| format!("native execution rejected: {error}"))?;
+    if let Some(provider_result) = native_request
+        .ephemeral_context
+        .get("provider_event_request_result")
+    {
+        let result = effect.result.get_or_insert_with(|| json!({}));
+        if let Some(fields) = result.as_object_mut() {
+            fields.insert(
+                "provider_event_request_result".to_owned(),
+                provider_result.clone(),
+            );
+        } else {
+            let operation_result = result.clone();
+            *result = json!({
+                "operation_result": operation_result,
+                "provider_event_request_result": provider_result,
+            });
+        }
+    }
     if let Some(events) = native_request
         .ephemeral_context
         .get("_provider_event_trace_summaries")
