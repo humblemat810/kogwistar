@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Callable, Protocol, cast
 
 import httpx
 from pydantic import ValidationError
@@ -499,9 +499,28 @@ class RustStepResolverAdapter:
         if not op:
             raise RustWorkerError("claimed work requires a frozen workflow op")
         self._validate_executor_target(payload, op)
-        self._validate_op_version(op, payload)
+        op_version = self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
         self._validate_worker_identity(payload)
+        self._resolve_sync_handler(op, op_version)
+
+    def _resolve_sync_handler(
+        self, op: str, op_version: str
+    ) -> Callable[..., object]:
+        resolve_version = getattr(self.step_resolver, "resolve_version", None)
+        try:
+            resolver = (
+                resolve_version(op, op_version)
+                if callable(resolve_version)
+                else self.step_resolver(op)
+            )
+        except Exception as error:
+            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
+        if not callable(resolver):
+            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        if inspect.iscoroutinefunction(resolver):
+            raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        return resolver
 
     @implementation_selection_bound
     def __call__(self, work: JsonObject) -> JsonObject:
@@ -548,19 +567,7 @@ class RustStepResolverAdapter:
         before = _json_object_copy(raw_state, field="claimed work state")
         state = self._runtime_state(work, before)
 
-        try:
-            resolve_version = getattr(self.step_resolver, "resolve_version", None)
-            resolver = (
-                resolve_version(op, op_version)
-                if callable(resolve_version)
-                else self.step_resolver(op)
-            )
-        except Exception as error:
-            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
-        if not callable(resolver):
-            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
-        if inspect.iscoroutinefunction(resolver):
-            raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        resolver = self._resolve_sync_handler(op, op_version)
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
 
@@ -810,9 +817,32 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         if not op:
             raise RustWorkerError("claimed work requires a frozen workflow op")
         self._validate_executor_target(payload, op)
-        self._validate_op_version(op, payload)
+        op_version = self._validate_op_version(op, payload)
         self._validate_op_environment(op, payload)
         self._validate_worker_identity(payload)
+        self._resolve_async_handler(op, op_version)
+
+    def _resolve_async_handler(
+        self, op: str, op_version: str
+    ) -> Callable[..., object]:
+        resolve_async = getattr(self.step_resolver, "resolve_async", None)
+        resolve_async_version = getattr(
+            self.step_resolver, "resolve_async_version", None
+        )
+        try:
+            if callable(resolve_async_version):
+                resolver = resolve_async_version(op, op_version)
+            else:
+                resolver = (
+                    resolve_async(op)
+                    if callable(resolve_async)
+                    else self.step_resolver(op)
+                )
+        except Exception as error:
+            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
+        if not callable(resolver):
+            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        return resolver
 
     @implementation_selection_bound
     async def execute(self, work: JsonObject) -> JsonObject:
@@ -851,23 +881,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             raise RustWorkerError("claimed work state must be an object")
         before = _json_object_copy(raw_state, field="claimed work state")
         state = self._runtime_state(work, before)
-        try:
-            resolve_async = getattr(self.step_resolver, "resolve_async", None)
-            resolve_async_version = getattr(
-                self.step_resolver, "resolve_async_version", None
-            )
-            if callable(resolve_async_version):
-                resolver = resolve_async_version(op, op_version)
-            else:
-                resolver = (
-                    resolve_async(op)
-                    if callable(resolve_async)
-                    else self.step_resolver(op)
-                )
-        except Exception as error:
-            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
-        if not callable(resolver):
-            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        resolver = self._resolve_async_handler(op, op_version)
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
 

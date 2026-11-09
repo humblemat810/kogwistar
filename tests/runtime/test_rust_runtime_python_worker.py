@@ -1201,6 +1201,69 @@ def test_step_resolver_adapter_rejects_missing_op_and_predicate() -> None:
         )
 
 
+@pytest.mark.parametrize("async_worker", [False, True], ids=["sync", "async"])
+def test_worker_rejects_unresolvable_op_before_journaling_or_submission(
+    tmp_path: Path, async_worker: bool
+) -> None:
+    resolver = MappingStepResolver()
+    journal_path = tmp_path / "rejected-worker.sqlite"
+    requests: list[httpx.Request] = []
+
+    def reject_any_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise AssertionError("unresolved work must not be submitted")
+
+    if async_worker:
+        work = _work()
+        work["payload"]["worker_protocol"] = "async-v2"
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(reject_any_request), base_url="http://rust"
+        )
+        worker = AsyncRustRuntimeWorker.from_step_resolver(
+            base_url="http://rust",
+            worker_id="worker-1",
+            journal_path=journal_path,
+            step_resolver=resolver,
+            client=client,
+        )
+
+        async def reject_async() -> None:
+            with pytest.raises(
+                RustWorkerError, match="cannot resolve frozen op 'start'"
+            ):
+                await worker.process(work)
+
+        try:
+            asyncio.run(reject_async())
+        finally:
+            asyncio.run(client.aclose())
+    else:
+        client = httpx.Client(
+            transport=httpx.MockTransport(reject_any_request), base_url="http://rust"
+        )
+        try:
+            with RustRuntimeWorker(
+                base_url="http://rust",
+                worker_id="worker-1",
+                journal_path=journal_path,
+                execute=RustStepResolverAdapter(resolver),
+                client=client,
+            ) as worker:
+                with pytest.raises(
+                    RustWorkerError, match="cannot resolve frozen op 'start'"
+                ):
+                    worker.process(_work())
+        finally:
+            client.close()
+
+    with sqlite3.connect(journal_path) as connection:
+        journal_rows = connection.execute(
+            "SELECT COUNT(*) FROM rust_worker_results"
+        ).fetchone()[0]
+    assert journal_rows == 0
+    assert requests == []
+
+
 def test_step_resolver_adapter_uses_optional_claim_retry_attempt() -> None:
     observed: list[dict[str, Any]] = []
     resolver = MappingStepResolver()
