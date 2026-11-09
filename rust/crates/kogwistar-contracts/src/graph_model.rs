@@ -3465,7 +3465,7 @@ mod tests {
             }
             let model_class = match kind {
                 "node" => GraphModelClass::Node,
-                "edge" => GraphModelClass::Edge,
+                "edge" | "edge_with_edge_endpoints" => GraphModelClass::Edge,
                 "pure_chroma_node" => GraphModelClass::PureChromaNode,
                 "pure_chroma_edge" => GraphModelClass::PureChromaEdge,
                 _ => panic!("unexpected fixture model class: {kind}"),
@@ -3486,11 +3486,28 @@ mod tests {
                 "empty_edge_endpoint_id" if kind == "edge" => {
                     payload["source_edge_ids"] = serde_json::json!([""]);
                 }
+                "empty_source_edge_endpoint_id" if kind == "edge_with_edge_endpoints" => {
+                    payload["source_edge_ids"] = serde_json::json!([""]);
+                }
+                "empty_target_edge_endpoint_id" if kind == "edge_with_edge_endpoints" => {
+                    payload["target_edge_ids"] = serde_json::json!([""]);
+                }
                 "missing_relation" if kind == "edge" => {
                     payload
                         .as_object_mut()
                         .expect("edge payload object")
                         .remove("relation");
+                }
+                "negative_span_start_char" if kind == "node" => {
+                    payload["mentions"][0]["spans"][0]["start_char"] = serde_json::json!(-1);
+                }
+                "span_end_not_after_start" if kind == "node" => {
+                    payload["mentions"][0]["spans"][0]["start_char"] = serde_json::json!(8);
+                    payload["mentions"][0]["spans"][0]["end_char"] = serde_json::json!(8);
+                }
+                "span_offset_exceeds_u64" if kind == "node" => {
+                    payload["mentions"][0]["spans"][0]["end_char"] =
+                        serde_json::json!(18446744073709551616_u128);
                 }
                 "properties_not_mapping" => {
                     payload["properties"] = serde_json::json!(["not", "a", "mapping"]);
