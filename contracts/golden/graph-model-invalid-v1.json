@@ -12,6 +12,8 @@
     "edge.empty_edge_endpoint_id",
     "edge_with_edge_endpoints.empty_source_edge_endpoint_id",
     "edge_with_edge_endpoints.empty_target_edge_endpoint_id",
+    "node.negative_span_start_char",
+    "node.span_end_not_after_start",
     "edge.missing_relation",
     "node.properties_not_mapping",
     "edge.properties_not_mapping",

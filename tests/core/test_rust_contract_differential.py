@@ -481,6 +481,12 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
             payload["source_edge_ids"] = [""]
         elif mutation == "empty_target_edge_endpoint_id" and kind == "edge_with_edge_endpoints":
             payload["target_edge_ids"] = [""]
+        elif mutation == "negative_span_start_char" and kind == "node":
+            payload["mentions"][0]["spans"][0]["start_char"] = -1
+        elif mutation == "span_end_not_after_start" and kind == "node":
+            span = payload["mentions"][0]["spans"][0]
+            span["start_char"] = 8
+            span["end_char"] = 8
         elif mutation == "missing_relation" and kind == "edge":
             payload.pop("relation")
         elif mutation == "properties_not_mapping":

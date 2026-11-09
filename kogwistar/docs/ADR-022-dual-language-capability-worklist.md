@@ -1,12 +1,12 @@
 # ADR-022 Remaining Worklist
 
-**Updated:** 2026-11-09
+**Updated:** 2026-11-10
 **Purpose:** Track bounded work beneath the coarse gates in [ADR-022-dual-language-capability-checklist.md](ADR-022-dual-language-capability-checklist.md).
 
 ## Completion Snapshot
 
 - **Coarse checklist:** **157/177 PASS (88.7%)**.
-- **Fine worklist:** **223/775 PASS (28.8%)**; **0 IN PROGRESS**, **552 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **224/775 PASS (28.9%)**; **0 IN PROGRESS**, **551 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -309,7 +309,7 @@
 | FW-05-02 | DL-05 | PARENT | Parent scope; children: FW-05-02-ID,FW-05-02-SPAN |
 | FW-05-02-ID | DL-05 | NOT STARTED | Verify identifier validity boundaries with shared valid/invalid fixtures and matching Python/Rust acceptance. |
 | FW-05-02-SPAN | DL-05 | PARENT | Parent scope; children: FW-05-02-SPAN-BOUNDS,FW-05-02-SPAN-OFFSETS |
-| FW-05-02-SPAN-BOUNDS | DL-05 | NOT STARTED | Verify source-span start/end bounds against the shared valid/invalid fixtures in Python and Rust. |
+| FW-05-02-SPAN-BOUNDS | DL-05 | PASS | Invariant: Python and Rust reject invalid persistent source-span bounds | Cell: shared `graph-model-invalid-v1.json` Node payload | Oracle: negative `start_char` and `end_char == start_char` are rejected before persistence in both languages | Check: `tests/core/test_rust_contract_differential.py::test_python_and_rust_reject_shared_invalid_persistent_graph_cases` (**1 passed**); Ruff and `git diff --check` passed. |
 | FW-05-02-SPAN-OFFSETS | DL-05 | NOT STARTED | Verify source-span offset validity against the shared valid/invalid fixtures in Python and Rust. |
 | FW-05-02A | DL-05 | NOT STARTED | Verify additive schema-version evolution remains accepted in both languages for the declared compatible DTOs. |
 | FW-05-02B | DL-05 | NOT STARTED | Verify unsupported schema versions and unknown fields fail consistently before effects. |
