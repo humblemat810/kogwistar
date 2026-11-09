@@ -3897,6 +3897,13 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         "target_edge_ids": [],
         "relation": "conversation cross-kind reference"
     });
+    let workflow_parent_edge = json!({
+        "source_ids": [shared_entity_id],
+        "target_ids": [],
+        "source_edge_ids": [shared_entity_id],
+        "target_edge_ids": [],
+        "relation": "workflow cross-kind reference"
+    });
     let conversation_body = json!({
         "contract_version": 1,
         "atomic": true,
@@ -3946,6 +3953,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "conversation-parent-edge",
                 conversation_parent_edge.clone(),
                 Some(&conversation_parent_edge.to_string()),
+            ),
+            scoped_edge_mutation(
+                "workflow-parent-edge",
+                workflow_parent_edge.clone(),
+                Some(&workflow_parent_edge.to_string()),
             ),
             scoped_edge_mutation(
                 "workflow-private-edge",
@@ -4046,11 +4058,46 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             None,
         );
         graph_acl["event_id"] = json!(format!("{truth_graph}-event-acl"));
+        let mut graph_mutations = vec![graph_acl];
+        if truth_graph == "workflow" {
+            let mut edge_acl = mutation(
+                "workflow-acl-cross-kind-edge",
+                "gke_nodes",
+                "node",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"workflow",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":shared_entity_id,
+                    "acl_version":1,
+                    "acl_mode":"public"
+                }),
+                None,
+            );
+            edge_acl["event_id"] = json!("workflow-event-acl-edge");
+            graph_mutations.push(edge_acl);
+            let mut parent_edge_acl = mutation(
+                "workflow-acl-parent-edge",
+                "gke_nodes",
+                "node",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"workflow",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":"workflow-parent-edge",
+                    "acl_version":1,
+                    "acl_mode":"public"
+                }),
+                None,
+            );
+            parent_edge_acl["event_id"] = json!("workflow-event-acl-parent-edge");
+            graph_mutations.push(parent_edge_acl);
+        }
         let graph_body = json!({
             "contract_version":1,
             "atomic":true,
             "index_jobs":[],
-            "mutations":[graph_acl]
+            "mutations":graph_mutations
         });
         let written = app
             .clone()
@@ -4213,6 +4260,41 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     .unwrap();
     assert_eq!(conversation_cross_kind["nodes"], json!([shared_entity_id]));
     assert_eq!(conversation_cross_kind["edges"], json!([shared_entity_id]));
+
+    let workflow_cross_kind_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/neighbors")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject("writer", "docs", &["read_graph"], "facts")
+                    ),
+                )
+                .body(Body::from(
+                    json!({
+                        "rid":"workflow-parent-edge",
+                        "truth_graph":"workflow"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(workflow_cross_kind_response.status(), StatusCode::OK);
+    let workflow_cross_kind: Value = serde_json::from_slice(
+        &to_bytes(workflow_cross_kind_response.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(workflow_cross_kind["nodes"], json!([shared_entity_id]));
+    assert_eq!(workflow_cross_kind["edges"], json!([shared_entity_id]));
 
     for case in isolation_cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
