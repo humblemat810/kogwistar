@@ -3194,6 +3194,35 @@
                 }),
                 Value::Null,
             ),
+            (
+                "gke_edges",
+                "edge-malformed-endpoint",
+                json!({
+                    "entity_type":"edge",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "source_ids":"source-a",
+                    "target_ids":["source-a"]
+                }),
+                json!({
+                    "id":"edge-malformed-endpoint",
+                    "source_ids":"source-a",
+                    "target_ids":["source-a"]
+                }),
+            ),
+            (
+                "gke_nodes",
+                "acl-edge-malformed-endpoint",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"knowledge",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":"edge-malformed-endpoint",
+                    "acl_mode":"public",
+                    "acl_version":1
+                }),
+                Value::Null,
+            ),
         ] {
             service
                 .store
@@ -3272,11 +3301,17 @@
             "snapshot reified an edge with an out-of-scope endpoint: {result}"
         );
         assert!(
+            !node_ids.contains(&"edge-malformed-endpoint"),
+            "snapshot reified an edge with malformed endpoint data: {result}"
+        );
+        assert!(
             result["links"].as_array().unwrap().iter().all(|link| {
                 link["source"] != "edge-to-foreign-node"
                     && link["target"] != "edge-to-foreign-node"
+                    && link["source"] != "edge-malformed-endpoint"
+                    && link["target"] != "edge-malformed-endpoint"
             }),
-            "snapshot linked an edge with an out-of-scope endpoint: {result}"
+            "snapshot linked an edge with an invalid endpoint: {result}"
         );
     }
 
