@@ -577,6 +577,7 @@ async fn auth_me_handler(State(state): State<Arc<ServerState>>, headers: HeaderM
     .into_response()
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/auth_handlers.rs#auth_logout_handler; python=kogwistar/server/auth/router.py#logout; fixture=contracts/golden/auth-logout-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_02.rs#dev_token_me_and_logout_share_verified_jwt_contract; python_test=tests/auth/test_auth_router.py#test_logout
 async fn auth_logout_handler() -> Json<Value> {
     Json(json!({"ok": true}))
 }

@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -210,9 +212,17 @@ def test_login_redirect(client):
 
 
 def test_logout(client):
-    response = client.post("/api/auth/logout")
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "auth-logout-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    response = client.request(contract["method"], contract["path"])
+    assert response.status_code == contract["expected_status"]
+    assert response.json() == contract["expected_json"]
 
 
 def test_callback_success_redirects_with_token(client, monkeypatch):

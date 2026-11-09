@@ -2023,17 +2023,31 @@ asyncio.run(main())
             .await
             .unwrap();
         assert_eq!(forged.status(), StatusCode::UNAUTHORIZED);
+        let logout_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/auth-logout-v1.json"
+        )))
+        .unwrap();
         let logout = app
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri("/api/auth/logout")
+                    .method(logout_contract["method"].as_str().unwrap())
+                    .uri(logout_contract["path"].as_str().unwrap())
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(logout.status(), StatusCode::OK);
+        assert_eq!(
+            logout.status(),
+            StatusCode::from_u16(logout_contract["expected_status"].as_u64().unwrap() as u16)
+                .unwrap()
+        );
+        let logout_body: Value = serde_json::from_slice(
+            &to_bytes(logout.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(logout_body, logout_contract["expected_json"]);
         let _ = std::fs::remove_file(auth_path);
     }
 
