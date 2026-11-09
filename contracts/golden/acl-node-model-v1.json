@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "model_class": "acl_node",
+  "payload": {
+    "label": "ACL parity node",
+    "type": "entity",
+    "summary": "A complete Pydantic node payload crosses the Rust persistence seam.",
+    "domain_id": null,
+    "canonical_entity_id": "entity:parity-node",
+    "properties": {
+      "attributes": ["unicode-雪", "nested-payload"]
+    },
+    "mentions": [
+      {
+        "spans": [
+          {
+            "collection_page_url": "https://example.test/source",
+            "document_page_url": "https://example.test/source#span",
+            "doc_id": "doc:rust-python-parity",
+            "insertion_method": "contract-test",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 13,
+            "excerpt": "Node evidence",
+            "context_before": "",
+            "context_after": "",
+            "source_cluster_id": null,
+            "verification": {
+              "method": "heuristic",
+              "is_verified": false,
+              "score": null,
+              "notes": "no explicit verification from LLM"
+            }
+          }
+        ],
+        "multimodal_spans": []
+      }
+    ],
+    "id": "acl-parity-node",
+    "embedding": [1.0, 0.0, 0.0],
+    "doc_id": "doc:rust-python-parity",
+    "metadata": {
+      "entity_type": "acl_record",
+      "acl_truth_graph": "truth:parity",
+      "acl_target_entity_id": "entity:target",
+      "acl_target_grain": "node",
+      "acl_target_item_id": "",
+      "acl_version": 2,
+      "acl_mode": "shared",
+      "created_by": null,
+      "owner_id": null,
+      "security_scope": null,
+      "tombstoned": false,
+      "supersedes_version": null,
+      "level_from_root": 0,
+      "share_extension": "retained",
+      "lifecycle_status": "active",
+      "redirect_to_id": null
+    },
+    "level_from_root": 0
+  }
+}

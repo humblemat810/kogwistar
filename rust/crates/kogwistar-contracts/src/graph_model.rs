@@ -3627,6 +3627,39 @@ mod tests {
     }
 
     #[test]
+    fn acl_node_family_round_trip_preserves_python_tag_and_extension_metadata() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/acl-node-model-v1.json"
+        )))
+        .expect("valid Python ACLNode fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope = RawGraphModelEnvelopeV1::from_json(&wire).expect("valid ACLNode envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::AclNode);
+        envelope
+            .validate_family_v1()
+            .expect("valid typed ACLNode metadata");
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], fixture["model_class"]);
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+        assert_eq!(
+            round_trip["payload"]["metadata"]["share_extension"],
+            "retained"
+        );
+    }
+
+    #[test]
     fn node_and_edge_endpoint_ids_are_distinct_rust_types() {
         let payload = fixture()["cases"][2]["payload"].clone();
         let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, payload);

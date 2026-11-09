@@ -84,6 +84,11 @@ GRAPH_MODEL_FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
+ACL_NODE_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "acl-node-model-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
 GRAPH_MODEL_INVALID_FIXTURE = json.loads(
     (ROOT / "contracts" / "golden" / "graph-model-invalid-v1.json").read_text(
         encoding="utf-8"
@@ -396,6 +401,32 @@ def test_python_node_edge_backend_payloads_round_trip_through_rust_json(
         assert wire_json == case["canonical_json"]
         restored = type(model).model_validate(json.loads(wire_json))
         assert restored.model_dump(field_mode="backend", dump_format="json") == payload
+
+
+@pytest.mark.requires_rust
+def test_acl_node_type_tag_and_extension_metadata_round_trip_through_rust(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = ACL_NODE_FIXTURE
+    model = ACLNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["share_extension"] == "retained"
+
+    wire = stable_json_dumps(
+        {
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": payload,
+        }
+    )
+    _rust.validate_graph_model_family(wire)
+    round_trip = json.loads(_rust.round_trip_raw_graph_model_envelope(wire))
+    assert round_trip["model_class"] == fixture["model_class"]
+    assert round_trip["payload"] == payload
 
 
 @pytest.mark.requires_rust
