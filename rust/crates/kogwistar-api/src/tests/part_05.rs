@@ -1277,6 +1277,10 @@
         use std::time::{SystemTime, UNIX_EPOCH};
         use tower::ServiceExt;
 
+        let events_sse_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-events-sse-v1.json"
+        ))
+        .unwrap();
         let events_poll_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/run-events-poll-v1.json"
         ))
@@ -3041,7 +3045,7 @@
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/workflow/runs/run-1/events")
+                    .uri("/api/runs/run-1/events")
                     .header("x-kogwistar-roles", "reader")
                     .header("last-event-id", "0")
                     .body(Body::empty())
@@ -3049,15 +3053,37 @@
             )
             .await
             .unwrap();
-        assert_eq!(sse.status(), StatusCode::OK);
         assert_eq!(
-            sse.headers()["content-type"],
-            "text/event-stream; charset=utf-8"
+            sse.status().as_u16(),
+            events_sse_contract["success_status"].as_u64().unwrap() as u16
         );
+        assert!(sse.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with(events_sse_contract["media_type"].as_str().unwrap()));
         let sse_body =
             String::from_utf8(to_bytes(sse.into_body(), 8192).await.unwrap().to_vec()).unwrap();
-        assert!(sse_body.contains("event: run.started"));
-        assert!(sse_body.contains("id: 1"));
+        let event_name = events_sse_contract["event_name"].as_str().unwrap();
+        assert!(sse_body.contains(&format!("event: {event_name}")));
+        let event_id = sse_body
+            .lines()
+            .find_map(|line| line.strip_prefix("id: "))
+            .expect("SSE event ID");
+        assert!(event_id.parse::<u64>().is_ok());
+        let data_line = sse_body
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("SSE event data");
+        let data: Value = serde_json::from_str(data_line).unwrap();
+        for field in events_sse_contract["required_data_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(data.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(data["run_id"], "run-1");
+        assert_eq!(data["event_type"], event_name);
 
         let mcp_status = app
             .clone()

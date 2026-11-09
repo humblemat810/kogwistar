@@ -1028,6 +1028,41 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert "output.completed" in names
         assert names[-1] == "run.completed"
 
+        sse_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-events-sse-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        with client.stream(
+            "GET", f"/api/runs/{run_id}/events", headers=ro_headers
+        ) as response:
+            assert response.status_code == sse_contract["success_status"]
+            assert response.headers["content-type"].startswith(
+                sse_contract["media_type"]
+            )
+            sse_body = "".join(response.iter_text())
+        lines = sse_body.splitlines()
+        event_line = next(
+            index
+            for index, line in enumerate(lines)
+            if line == f"event: {sse_contract['event_name']}"
+        )
+        frame_start = event_line - 1 if event_line > 0 and lines[event_line - 1].startswith("id: ") else event_line
+        frame_end = next(
+            (index for index in range(frame_start + 1, len(lines)) if not lines[index]),
+            len(lines),
+        )
+        frame_lines = lines[frame_start:frame_end]
+        event_id = next(line[4:] for line in frame_lines if line.startswith("id: "))
+        assert event_id.isdigit()
+        event_data = json.loads(
+            next(line[6:] for line in frame_lines if line.startswith("data: "))
+        )
+        assert set(sse_contract["required_data_fields"]).issubset(event_data)
+        assert event_data["run_id"] == run_id
+        assert event_data["event_type"] == sse_contract["event_name"]
+
         reopened = client.get(
             f"/api/conversations/{conversation_id}", headers=ro_headers
         )
