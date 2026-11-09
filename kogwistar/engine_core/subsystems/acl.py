@@ -1334,19 +1334,8 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                     security_scope=security_scope,
                 )
                 return retry.visible
-            repaired_truth = self._e.acl.repair_default_acl_for_item(node, grain="node")
-            if repaired_truth:
-                retry = self._e.acl.decide_acl_node_read(
-                    item_grain="span",
-                    truth_graph=self._e.kg_graph_type,
-                    entity_id=_acl_entity_id(node),
-                    grounding_item_ids=grounding_ids,
-                    target_item_ids=span_ids,
-                    principal_id=principal_id,
-                    principal_groups=groups,
-                    security_scope=security_scope,
-                )
-                return retry.visible
+            # A read must not create an ACL owned by its requester. Legacy
+            # backfill belongs to the explicit startup/admin repair path.
         return False
 
     def _edge_visible(

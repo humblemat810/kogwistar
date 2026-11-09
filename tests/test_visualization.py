@@ -140,6 +140,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     scope_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "node-scope"
     )
+    no_acl_node_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "node-no-acl"
+    )
     share_policies = [
         target
         for target in acl_fixture["targets"]
@@ -212,6 +215,18 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                         )
 
         owner_engine = graph_engines[acl_fixture["truth_graph"]]
+        no_acl_node = Node(
+            id=no_acl_node_policy["id"],
+            label="Node without an ACL record",
+            type="entity",
+            summary="Must fail closed when no ACL exists",
+            mentions=[_g()],
+            metadata={"entity_type": "fixture"},
+            embedding=None,
+            doc_id=None,
+            level_from_root=0,
+        )
+        owner_engine.raw_write.add_node(no_acl_node)
         owner_node = Node(
             id=owner_policy["id"],
             label="Owner-only graph node",
@@ -452,6 +467,14 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert share_policy["id"] not in [
                 node["id"] for node in public_edge_d3_payload["nodes"]
             ]
+        assert no_acl_node_policy["id"] not in [
+            node["id"] for node in public_edge_d3_payload["nodes"]
+        ]
+        assert owner_engine.acl_graph.latest_record(
+            grain="node",
+            truth_graph=acl_fixture["truth_graph"],
+            entity_id=no_acl_node_policy["id"],
+        ) is None
 
         for principal_id, expected_visible in (
             (owner_policy["owner_id"], False),
