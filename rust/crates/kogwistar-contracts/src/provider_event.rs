@@ -204,8 +204,24 @@ mod tests {
             let event = provider_event_from_str(&expected.to_string()).unwrap();
             assert_eq!(serde_json::to_value(event).unwrap(), expected);
         }
-        for invalid in fixture.invalid_events {
-            assert!(provider_event_from_str(&invalid.to_string()).is_err());
+        let expected_errors = ["empty_call_id", "invalid_version", "invalid_payload"];
+        assert_eq!(fixture.invalid_events.len(), expected_errors.len());
+        for (invalid, expected) in fixture.invalid_events.into_iter().zip(expected_errors) {
+            let error = provider_event_from_str(&invalid.to_string()).unwrap_err();
+            match expected {
+                "empty_call_id" => assert_eq!(
+                    error,
+                    ProviderEventContractError::EmptyField { field: "call_id" }
+                ),
+                "invalid_version" => {
+                    assert_eq!(error, ProviderEventContractError::InvalidVersion)
+                }
+                "invalid_payload" => assert!(matches!(
+                    error,
+                    ProviderEventContractError::InvalidPayload { .. }
+                )),
+                other => panic!("unknown provider-event fixture error {other}"),
+            }
         }
     }
 

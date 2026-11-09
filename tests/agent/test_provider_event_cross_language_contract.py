@@ -33,9 +33,18 @@ def test_python_provider_events_match_shared_rust_golden_fixture() -> None:
 
 def test_python_provider_events_reject_the_shared_invalid_cases() -> None:
     fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
-    for invalid in fixture["invalid_events"]:
-        with pytest.raises(ValidationError):
+    expected_error_types = (
+        "string_too_short",
+        "literal_error",
+        "extra_forbidden",
+    )
+    assert len(fixture["invalid_events"]) == len(expected_error_types)
+    for invalid, expected_error_type in zip(
+        fixture["invalid_events"], expected_error_types, strict=True
+    ):
+        with pytest.raises(ValidationError) as error:
             _EVENT_ADAPTER.validate_python(invalid)
+        assert error.value.errors()[0]["type"] == expected_error_type
 
 
 def test_python_provider_requests_match_shared_rust_golden_fixture() -> None:
