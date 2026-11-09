@@ -918,7 +918,15 @@ async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
             }
 
     monkeypatch.setattr(mcp_tools, "wisdom_engine", _FixedResource(WisdomStore()))
-    arguments = {"inp": {"nodes": [], "edges": []}}
+    contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "wisdom-graph-upsert-mcp-v1.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert contract["operation"] == "wisdom.kg_upsert_graph"
+    arguments = contract["arguments"]
 
     for role, namespace in (("ro", "wisdom"), ("rw", "docs")):
         with _claims(role, namespace):
@@ -937,12 +945,7 @@ async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
             "wisdom.kg_upsert_graph", arguments, enforce_visibility=True
         )
 
-    assert result.structured_content == {
-        "node_ids": [],
-        "edge_ids": [],
-        "nodes_added": 0,
-        "edges_added": 0,
-    }
+    assert result.structured_content == contract["expected_structured_content"]
     assert len(persist_calls) == 1
     assert persist_calls[0][:2] == (0, 0)
     assert persist_calls[0][2].startswith("wisdom:")

@@ -1,0 +1,16 @@
+{
+  "contract_version": 1,
+  "operation": "wisdom.kg_upsert_graph",
+  "arguments": {
+    "inp": {
+      "nodes": [],
+      "edges": []
+    }
+  },
+  "expected_structured_content": {
+    "node_ids": [],
+    "edge_ids": [],
+    "nodes_added": 0,
+    "edges_added": 0
+  }
+}

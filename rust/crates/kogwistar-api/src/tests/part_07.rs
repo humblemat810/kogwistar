@@ -6791,6 +6791,90 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
         .unwrap()
         .with_chroma_graph(graph)
         .with_embedding_provider(provider);
+    let mcp_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/wisdom-graph-upsert-mcp-v1.json"
+    )))
+    .unwrap();
+    let mcp_secret = "mcp-wisdom-contract-test-secret";
+    let mcp_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice", "user_id": "alice", "role": "rw", "roles": ["writer"],
+            "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
+            "capabilities": ["write_graph"], "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(mcp_secret.as_bytes()),
+    )
+    .unwrap();
+    let mcp_app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec!["writer".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(mcp_secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let mcp_response = mcp_app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {mcp_token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0", "id": "wisdom-upsert-contract",
+                        "method": "tools/call",
+                        "params": {
+                            "name": mcp_contract["operation"],
+                            "arguments": mcp_contract["arguments"]
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_response.status(), StatusCode::OK);
+    assert_eq!(
+        mcp_response.headers()["content-type"],
+        "text/event-stream; charset=utf-8"
+    );
+    let mcp_body = axum::body::to_bytes(mcp_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let mcp_wire = String::from_utf8(mcp_body.to_vec()).unwrap();
+    let mcp_json = mcp_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("Streamable HTTP wraps the JSON-RPC response in an SSE data field");
+    let mcp_payload: Value = serde_json::from_str(mcp_json).unwrap();
+    assert!(mcp_payload.get("error").is_none(), "{mcp_payload}");
+    assert_eq!(
+        mcp_payload["result"]["structuredContent"]["node_ids"],
+        mcp_contract["expected_structured_content"]["node_ids"]
+    );
+    assert_eq!(
+        mcp_payload["result"]["structuredContent"]["edge_ids"],
+        mcp_contract["expected_structured_content"]["edge_ids"]
+    );
+    assert_eq!(
+        mcp_payload["result"]["structuredContent"]["nodes_added"],
+        mcp_contract["expected_structured_content"]["nodes_added"]
+    );
+    assert_eq!(
+        mcp_payload["result"]["structuredContent"]["edges_added"],
+        mcp_contract["expected_structured_content"]["edges_added"]
+    );
     assert!(service.supports_mcp_tool("root", "wisdom.kg_upsert_graph"));
     assert!(service.supports_http_operation("POST", PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE));
 
