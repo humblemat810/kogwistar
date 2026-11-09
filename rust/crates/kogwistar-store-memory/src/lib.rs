@@ -2775,6 +2775,186 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_scoped_adjacency_fails_closed_on_invalid_endpoints() {
+        use kogwistar_store::{
+            GraphAclPrincipal, graph_neighbors_from_records, graph_records_visible_by_acl,
+        };
+        use std::collections::BTreeSet;
+
+        fn mutation(
+            scope: &GraphScope,
+            id: &str,
+            table: &str,
+            kind: &str,
+            metadata: serde_json::Map<String, Value>,
+            document: Option<String>,
+        ) -> GraphMutation {
+            GraphMutation {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                entity_kind: kind.to_owned(),
+                event_id: format!("event-{id}"),
+                op: "ADD".to_owned(),
+                payload: json!({"id": id, "metadata": metadata}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document,
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }
+        }
+
+        fn acl_mutation(scope: &GraphScope, id: &str, grain: &str) -> GraphMutation {
+            let metadata = json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_grain": grain,
+                "acl_target_entity_id": id,
+                "acl_version": 1,
+                "acl_mode": "public"
+            })
+            .as_object()
+            .expect("ACL metadata is an object")
+            .clone();
+            mutation(
+                scope,
+                &format!("acl-{id}"),
+                "gke_nodes",
+                "node",
+                metadata,
+                None,
+            )
+        }
+
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "endpoint-scope-test".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let foreign_scope = GraphScope {
+            graph_space: Some("other-facts".to_owned()),
+            ..scope.clone()
+        };
+        let mut mutations = vec![
+            mutation(
+                &scope,
+                "source-public",
+                "gke_nodes",
+                "node",
+                json!({"label":"source"}).as_object().unwrap().clone(),
+                None,
+            ),
+            acl_mutation(&scope, "source-public", "node"),
+            mutation(
+                &scope,
+                "target-public",
+                "gke_nodes",
+                "node",
+                json!({"label":"target"}).as_object().unwrap().clone(),
+                None,
+            ),
+            acl_mutation(&scope, "target-public", "node"),
+        ];
+
+        let edges = [
+            (
+                "edge-valid",
+                json!(["source-public"]),
+                json!(["target-public"]),
+            ),
+            (
+                "edge-absent-endpoint",
+                json!(["source-public"]),
+                json!(["missing-node"]),
+            ),
+            (
+                "edge-malformed-endpoint",
+                json!([123]),
+                json!(["target-public"]),
+            ),
+            (
+                "edge-cross-scope-endpoint",
+                json!(["source-public"]),
+                json!(["foreign-node"]),
+            ),
+        ];
+        for (id, source_ids, target_ids) in edges {
+            let metadata = json!({
+                "source_ids": source_ids,
+                "target_ids": target_ids,
+                "relation": "links"
+            });
+            mutations.push(mutation(
+                &scope,
+                id,
+                "gke_edges",
+                "edge",
+                metadata.as_object().unwrap().clone(),
+                Some(metadata.to_string()),
+            ));
+            mutations.push(acl_mutation(&scope, id, "edge"));
+        }
+        let foreign_mutations = vec![
+            mutation(
+                &foreign_scope,
+                "foreign-node",
+                "gke_nodes",
+                "node",
+                json!({"label":"out-of-scope"}).as_object().unwrap().clone(),
+                None,
+            ),
+            acl_mutation(&foreign_scope, "foreign-node", "node"),
+        ];
+
+        block_on(
+            store.apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                mutations,
+                index_jobs: Vec::new(),
+            }),
+        )
+        .expect("fixture graph writes succeed");
+        block_on(
+            store.apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                mutations: foreign_mutations,
+                index_jobs: Vec::new(),
+            }),
+        )
+        .expect("foreign-scope fixture graph writes succeed");
+
+        let (nodes, edges) = store
+            .graph_node_edge_snapshot(&scope, 100)
+            .expect("scoped snapshot reads");
+        assert!(nodes.iter().all(|node| node.id != "foreign-node"));
+        assert_eq!(edges.len(), 4);
+
+        let principal = GraphAclPrincipal {
+            principal_id: "reader".to_owned(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        assert_eq!(
+            visible_edges
+                .iter()
+                .map(|edge| edge.id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["edge-valid"])
+        );
+
+        let neighbors =
+            graph_neighbors_from_records("source-public", &visible_nodes, &visible_edges, None);
+        assert_eq!(neighbors.edges, BTreeSet::from(["edge-valid".to_owned()]));
+        assert_eq!(
+            neighbors.nodes,
+            BTreeSet::from(["target-public".to_owned()])
+        );
+    }
+
+    #[test]
     fn conflicting_graph_writes_are_serialized_within_process() {
         let store = InMemoryStore::new();
         let scope = GraphScope {
