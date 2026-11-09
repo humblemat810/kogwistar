@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,20 +26,26 @@ class _LoseResultBeforeDelivery(httpx.BaseTransport):
         self._inner.close()
 
 
-class _LoseDuplicateAckAfterCommit(httpx.BaseTransport):
+class _LoseResultAcknowledgementAfterCommit(httpx.BaseTransport):
     def __init__(self) -> None:
         self._inner = httpx.HTTPTransport()
         self._result_calls = 0
+        self.event_seq: int | None = None
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         response = self._inner.handle_request(request)
         if request.url.path == "/internal/runtime/results":
             self._result_calls += 1
-            if self._result_calls == 2:
-                response.read()
+            if self._result_calls == 1:
+                body = response.read()
+                result = json.loads(body)
+                event_seq = result.get("event_seq") if isinstance(result, dict) else None
+                if not isinstance(event_seq, int) or event_seq <= 0:
+                    raise AssertionError("committed result lacks a positive event_seq")
+                self.event_seq = event_seq
                 response.close()
                 raise httpx.ReadError(
-                    "simulated duplicate acknowledgement loss", request=request
+                    "simulated result acknowledgement loss after commit", request=request
                 )
         return response
 
@@ -52,11 +59,14 @@ def main() -> None:
     parser.add_argument("--worker-id", required=True)
     parser.add_argument("--journal", required=True)
     parser.add_argument("--marker", required=True)
+    parser.add_argument("--work-record", required=True)
     parser.add_argument("--graph-namespace")
     parser.add_argument("--graph-entity-id")
     parser.add_argument("--auth-token")
     parser.add_argument("--snapshot-effect", action="store_true")
-    parser.add_argument("--mode", choices=("prepare", "replay"), required=True)
+    parser.add_argument(
+        "--mode", choices=("prepare", "replay", "recover"), required=True
+    )
     args = parser.parse_args()
 
     graph_values = (args.graph_namespace, args.graph_entity_id)
@@ -240,21 +250,22 @@ def main() -> None:
         if args.auth_token
         else {"x-kogwistar-roles": "reader"}
     )
-    client = (
-        httpx.Client(
+    commit_ack_transport = None
+    if args.mode == "prepare":
+        client = httpx.Client(
             transport=_LoseResultBeforeDelivery(),
             base_url=args.base_url,
             headers=worker_headers,
         )
-        if args.mode == "prepare"
-        else httpx.Client(
-            transport=_LoseDuplicateAckAfterCommit(),
+    elif args.mode == "replay":
+        commit_ack_transport = _LoseResultAcknowledgementAfterCommit()
+        client = httpx.Client(
+            transport=commit_ack_transport,
             base_url=args.base_url,
             headers=worker_headers,
         )
-        if args.mode == "replay"
-        else None
-    )
+    else:
+        client = None
     with RustRuntimeWorker.from_step_resolver(
         base_url=args.base_url,
         worker_id=args.worker_id,
@@ -264,31 +275,49 @@ def main() -> None:
         headers=worker_headers,
         client=client,
     ) as worker:
-        work = worker.claim(run_id="mixed-live-run", lease_seconds=1)
-        if len(work) != 1 or work[0]["step_id"] != "python-before":
-            raise AssertionError(f"unexpected reclaimed work: {work!r}")
+        if args.mode == "recover":
+            record = json.loads(Path(args.work_record).read_text(encoding="utf-8"))
+            if not isinstance(record, dict) or not isinstance(record.get("work"), dict):
+                raise AssertionError("restart record must contain a work object")
+            work_item = record["work"]
+            expected_event_seq = record.get("event_seq")
+            if not isinstance(expected_event_seq, int) or expected_event_seq <= 0:
+                raise AssertionError("restart record must contain a positive event_seq")
+            recovered = worker.process(work_item)
+            if recovered.get("event_seq") != expected_event_seq:
+                raise AssertionError("process restart changed the committed event")
+        else:
+            work = worker.claim(run_id="mixed-live-run", lease_seconds=1)
+            if len(work) != 1 or work[0]["step_id"] != "python-before":
+                raise AssertionError(f"unexpected reclaimed work: {work!r}")
+            work_item = work[0]
         if args.mode == "prepare":
             try:
-                worker.process(work[0])
+                worker.process(work_item)
             except RustWorkerError as exc:
                 if "simulated result delivery loss" not in str(exc):
                     raise
             else:
                 raise AssertionError("expected the first result delivery to fail")
-        else:
-            result = worker.process(work[0])
-            if result.get("event_seq", 0) <= 0:
-                raise AssertionError(f"replayed result was not admitted: {result!r}")
+        elif args.mode == "replay":
+            Path(args.work_record).write_text(
+                json.dumps({"work": work_item}), encoding="utf-8"
+            )
             try:
-                worker.process(work[0])
+                worker.process(work_item)
             except RustWorkerError as exc:
-                if "simulated duplicate acknowledgement loss" not in str(exc):
+                if "simulated result acknowledgement loss after commit" not in str(exc):
                     raise
+                if commit_ack_transport is None or commit_ack_transport.event_seq is None:
+                    raise AssertionError("result commit was not observed by the transport")
+                Path(args.work_record).write_text(
+                    json.dumps(
+                        {"work": work_item, "event_seq": commit_ack_transport.event_seq}
+                    ),
+                    encoding="utf-8",
+                )
             else:
-                raise AssertionError("expected duplicate acknowledgement loss")
-            duplicate_result = worker.process(work[0])
-            if duplicate_result.get("event_seq") != result["event_seq"]:
-                raise AssertionError("duplicate result changed the committed event")
+                raise AssertionError("expected committed result acknowledgement loss")
 
 
 if __name__ == "__main__":

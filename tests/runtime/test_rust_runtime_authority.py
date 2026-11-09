@@ -1532,6 +1532,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
         journal_path = tmp_path / "python-worker.sqlite"
         callback_marker = tmp_path / "python-worker-callbacks.txt"
+        work_record = tmp_path / "python-worker-work.json"
         worker_probe = [
             sys.executable,
             "-m",
@@ -1542,6 +1543,8 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             str(journal_path),
             "--marker",
             str(callback_marker),
+            "--work-record",
+            str(work_record),
         ]
         worker_env = os.environ.copy()
         if graph_enabled:
@@ -1576,6 +1579,18 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             timeout=20,
         )
         assert replay.returncode == 0, replay.stderr
+        # Worker B exits after the server commits but its duplicate-result ACK
+        # is lost. Worker C reopens the same journal and resubmits the saved
+        # claim/result, proving process-restart recovery in the commit/ACK gap.
+        recovered = subprocess.run(
+            [*worker_probe, "--worker-id", "python-worker-b", "--mode", "recover"],
+            cwd=ROOT,
+            env=worker_env,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert recovered.returncode == 0, recovered.stderr
         assert callback_marker.read_text(encoding="utf-8").splitlines() == ["callback"]
         if graph_enabled:
             assert graph_namespace is not None and graph_entity_id is not None
