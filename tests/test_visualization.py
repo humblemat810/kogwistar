@@ -258,6 +258,44 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     **conversation_edge_acl,
                 )
 
+        workflow_edge_id = "workflow-private-edge"
+        workflow_edge = Edge(
+            id=workflow_edge_id,
+            label="Workflow private edge",
+            type="relationship",
+            summary="Private edge with no endpoint projection",
+            relation="references",
+            source_ids=[],
+            target_ids=[],
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[_g()],
+            doc_id=None,
+            properties={},
+            metadata={"entity_type": "fixture"},
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        workflow_engine = graph_engines["workflow"]
+        workflow_engine.raw_write.add_edge(workflow_edge)
+        workflow_edge_acl = {
+            "truth_graph": "workflow",
+            "entity_id": workflow_edge_id,
+            "version": 1,
+            "mode": "private",
+            "owner_id": "workflow-owner",
+        }
+        workflow_engine.acl_graph.add_record(grain="edge", **workflow_edge_acl)
+        grounding_ids, span_ids = workflow_engine.acl.usage_ids_for_item(workflow_edge)
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                workflow_engine.acl_graph.add_record(
+                    grain=grain,
+                    target_item_id=target_id,
+                    **workflow_edge_acl,
+                )
+
         owner_engine = graph_engines[acl_fixture["truth_graph"]]
         no_acl_node = Node(
             id=no_acl_node_policy["id"],
@@ -467,6 +505,25 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         assert conversation_edge_id in [
             node["id"] for node in conversation_owner_payload["nodes"]
         ]
+
+        for principal_id, expected_visible in (
+            ("workflow-reader", False),
+            ("workflow-owner", True),
+        ):
+            token = claims_ctx.set(
+                {"agent_id": principal_id, "ns": "workflow"}
+            )
+            try:
+                workflow_response = cast(
+                    JSONResponse,
+                    server.api_viz_d3(mode="reify", graph_type="workflow"),
+                )
+                workflow_payload = json.loads(bytes(workflow_response.body))
+            finally:
+                claims_ctx.reset(token)
+            assert (workflow_edge_id in [
+                node["id"] for node in workflow_payload["nodes"]
+            ]) is expected_visible
 
         for edge_policy_item in (
             edge_policy,

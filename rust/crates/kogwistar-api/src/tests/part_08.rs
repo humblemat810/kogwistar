@@ -3883,7 +3883,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         value["scope"] = conversation_scope.clone();
         value
     };
-    let conversation_edge_mutation =
+    let scoped_edge_mutation =
         |id: &str, metadata: Value, document: Option<&str>| {
             let mut value = mutation(id, "gke_edges", "edge", metadata, document);
             value["event_id"] = json!(format!("conversation-edge-event-{id}"));
@@ -3932,20 +3932,25 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 }),
                 None,
             ),
-            conversation_edge_mutation(
+            scoped_edge_mutation(
                 shared_entity_id,
                 json!({"source_ids":[],"target_ids":[],"relation":"same ID edge"}),
                 Some(r#"{"source_ids":[],"target_ids":[],"relation":"same ID edge"}"#),
             ),
-            conversation_edge_mutation(
+            scoped_edge_mutation(
                 "conversation-private-edge",
                 json!({"source_ids":[],"target_ids":[],"relation":"private conversation edge"}),
                 Some(r#"{"source_ids":[],"target_ids":[],"relation":"private conversation edge"}"#),
             ),
-            conversation_edge_mutation(
+            scoped_edge_mutation(
                 "conversation-parent-edge",
                 conversation_parent_edge.clone(),
                 Some(&conversation_parent_edge.to_string()),
+            ),
+            scoped_edge_mutation(
+                "workflow-private-edge",
+                json!({"source_ids":[],"target_ids":[],"relation":"private workflow edge"}),
+                Some(r#"{"source_ids":[],"target_ids":[],"relation":"private workflow edge"}"#),
             ),
             conversation_mutation(
                 "conversation-acl-cross-kind-edge",
@@ -3982,6 +3987,19 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "acl_version":1,
                     "acl_mode":conversation_policy["mode"],
                     "owner_id":conversation_policy["owner_id"]
+                }),
+                None,
+            ),
+            conversation_mutation(
+                "workflow-acl-private-edge",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"workflow",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":"workflow-private-edge",
+                    "acl_version":1,
+                    "acl_mode":"private",
+                    "owner_id":"workflow-owner"
                 }),
                 None,
             ),
@@ -4272,7 +4290,28 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "selected graph={truth_graph} leaked records from another graph: {payload}"
             );
         }
+        if truth_graph == "workflow" {
+            assert!(
+                !rendered_nodes.contains("workflow-private-edge"),
+                "workflow visualization exposed a private edge to a non-owner: {payload}"
+            );
+        }
     }
+
+    let workflow_owner_response = application
+        .graph_read_effect(&visualization_request("workflow", "facts", None, "workflow-owner", &[]))
+        .await;
+    assert_eq!(workflow_owner_response.status, StatusCode::OK.as_u16());
+    let workflow_owner_payload: Value =
+        serde_json::from_slice(&workflow_owner_response.body).unwrap();
+    assert!(
+        workflow_owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == "workflow-private-edge"),
+        "workflow ACL owner must see its private graph edge: {workflow_owner_payload}"
+    );
 
     let owner_response = app
         .clone()
