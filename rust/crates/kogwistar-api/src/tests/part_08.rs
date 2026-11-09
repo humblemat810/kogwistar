@@ -1331,6 +1331,322 @@ async fn in_memory_native_receive_claims_visible_event_and_routes_it() {
 }
 
 #[tokio::test]
+async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() {
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-event-ack-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "memory-ack-owner".to_owned(),
+        email: "memory-ack-owner@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "memory-ack-owner".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "conversation".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = InMemoryGraphApplicationService::default()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let run_id = "memory-provider-ack-run";
+    let workflow_id = "memory-provider-ack-workflow";
+    let conversation_id = "memory-provider-ack-conversation";
+    let principal = json!({
+        "user_id": "memory-ack-owner", "sub": "memory-ack-owner", "role": "rw",
+        "ns": ["workflow", "conversation"], "storage_ns": "conversation",
+        "workspace": "workspace-a", "graph_space": "conversation",
+        "capabilities": ["workflow.run.write", "read_graph", "write_graph"]
+    });
+    let binding = runtime_owner_binding_v1(&principal, &service.capabilities).unwrap();
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            user_id: Some("memory-ack-owner".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "running".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    let admission = kogwistar_store::ServerRunWriteStore::append_server_run_event(
+        &service.store,
+        run_id,
+        "run.created",
+        json!({"runtime_owner_binding": binding}).to_string(),
+    )
+    .await
+    .unwrap();
+    let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_value(json!({
+        "event_id": "memory-provider-ack-event",
+        "trace": {
+            "run_id": run_id, "turn_id": "turn-1", "workflow_node_id": "provider",
+            "step_id": "provider-response", "producer_step_seq": 0,
+            "provider_id": "fixture"
+        },
+        "event": {
+            "kind": "response_started", "provider_event_id": "event-1",
+            "provider_sequence": 1, "response_id": "response-1"
+        }
+    }))
+    .unwrap();
+    let claim = json!({
+        "message_id": "msg:memory-provider-ack-event",
+        "claimed_by": "memory-event-consumer#1",
+        "event_id": event.event_id
+    });
+    let started = service.store.apply_recorded_runtime_transition(
+        serde_json::from_value(json!({
+            "contract_version": 1,
+            "transition_id": "memory-provider-ack-start",
+            "expected_event_seq": admission.seq,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 0,
+            "node_id": "start-step",
+            "token_id": run_id,
+            "initial_state": {
+                "_rt_graph_scope": {"storage_namespace": "conversation"},
+                "_rt_run_owner_id": "memory-ack-owner",
+                "agent_event_current": event,
+                "agent_event_claim": claim,
+                "agent_event_route": "final",
+                "agent_event_handling_step_seq": 0
+            },
+            "frontier": {
+                "pending": [["handler-step", 0, run_id, null]],
+                "suspended": [], "join_node_ids": [],
+                "join_outstanding": [], "join_waiters": {}
+            }
+        })).unwrap(),
+        false,
+    )
+    .unwrap();
+    service
+        .store
+        .apply_recorded_runtime_transition(
+            serde_json::from_value(json!({
+                "contract_version": 1,
+                "transition_id": "memory-provider-ack-handler",
+                "expected_event_seq": started.event_seq,
+                "kind": "recorded_step_success",
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "step_seq": 0,
+                "node_id": "handler-step",
+                "token_id": run_id,
+                "state_update": [],
+                "frontier": {
+                    "pending": [["ack-step", 0, run_id, null]],
+                    "suspended": [], "join_node_ids": [],
+                    "join_outstanding": [], "join_waiters": {}
+                },
+                "result": {"handled": true}
+            }))
+            .unwrap(),
+            false,
+        )
+        .unwrap();
+    kogwistar_store::LaneMessageWriteStore::project_lane_message(
+        &service.store,
+        NewProjectedLaneMessage {
+            message_id: "msg:memory-provider-ack-event".to_owned(),
+            namespace: "conversation".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("provider-response".to_owned()),
+            correlation_id: Some(event.event_id.clone()),
+            payload_json: Some(serde_json::to_string(&event).unwrap()),
+            error_json: None,
+        },
+    )
+    .await
+    .unwrap();
+    kogwistar_store::LaneMessageWriteStore::claim_projected_lane_messages_filtered(
+        &service.store,
+        LaneMessageClaimFilter {
+            namespace: "conversation".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            claimed_by: "memory-event-consumer#1".to_owned(),
+            message_ids: Some(vec!["msg:memory-provider-ack-event".to_owned()]),
+            run_id: Some(run_id.to_owned()),
+            msg_type: Some("agent.provider_event".to_owned()),
+            recipient_id: Some("agent-event-consumer".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        },
+    )
+    .await
+    .unwrap();
+    kogwistar_store::LaneMessageWriteStore::project_lane_message(
+        &service.store,
+        NewProjectedLaneMessage {
+            message_id: "memory-ack-worker-lane".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            recipient_id: "rust-native-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some(run_id.to_owned()),
+            step_id: Some("ack-step".to_owned()),
+            correlation_id: Some(run_id.to_owned()),
+            payload_json: Some(json!({
+                "workflow_id": workflow_id, "conversation_id": conversation_id,
+                "token_id": run_id, "parent_token_id": null
+            }).to_string()),
+            error_json: None,
+        },
+    )
+    .await
+    .unwrap();
+    let worker_lane = kogwistar_store::LaneMessageWriteStore::claim_projected_lane_messages_filtered(
+        &service.store,
+        LaneMessageClaimFilter {
+            namespace: "workflow".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            claimed_by: "memory-worker#1".to_owned(),
+            message_ids: Some(vec!["memory-ack-worker-lane".to_owned()]),
+            run_id: Some(run_id.to_owned()),
+            msg_type: Some("workflow.step.execute".to_owned()),
+            recipient_id: Some("rust-native-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        },
+    )
+    .await
+    .unwrap()
+    .pop()
+    .unwrap();
+    let handoff = RecordedWorkerHandoff {
+        message_id: worker_lane.message_id,
+        claimed_by: worker_lane.claimed_by.unwrap(),
+        run_id: run_id.to_owned(),
+        step_id: "ack-step".to_owned(),
+        correlation_id: run_id.to_owned(),
+    };
+    let effect = kogwistar_runtime::execute_native_step(
+        &kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: "rust-native".to_owned(),
+            operation: "agent.event.ack".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: run_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            node_id: "ack-step".to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            turn_node_id: Some("turn-1".to_owned()),
+            token_id: run_id.to_owned(),
+            parent_token_id: None,
+            step_seq: 1,
+            state: serde_json::from_value(json!({
+                "agent_event_current": event,
+                "agent_event_claim": claim,
+                "agent_event_route": "final",
+                "agent_event_handling_step_seq": 0
+            })).unwrap(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Default::default(),
+        },
+    ).unwrap();
+    let batch = service
+        .in_memory_provider_event_ack_graph_batch(&handoff, &effect)
+        .await
+        .unwrap();
+    service.store
+        .apply_claimed_recorded_worker_effect_with_graph(handoff, effect, batch)
+        .unwrap();
+
+    let graph_scope = GraphScope {
+        namespace: "conversation".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let graph = kogwistar_store::GraphMutationStore::graph_projection_records(
+        &service.store,
+        GraphProjectionRead {
+            scope: graph_scope.clone(),
+            table: "gke_edges".to_owned(),
+            ids: None,
+            metadata: Default::default(),
+            limit: 100,
+        },
+    ).await.unwrap();
+    assert!(graph.iter().any(|edge| {
+        edge.metadata["relation"] == "acknowledged_by_step"
+            && edge.metadata["in_conversation_chain"] == false
+    }));
+    assert!(graph.iter().any(|edge| {
+        edge.metadata["relation"] == "handled_by_step"
+            && edge.metadata["in_conversation_chain"] == false
+    }));
+    let nodes = kogwistar_store::GraphMutationStore::graph_projection_records(
+        &service.store,
+        GraphProjectionRead {
+            scope: graph_scope,
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: Default::default(),
+            limit: 100,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(nodes.iter().any(|node| {
+        node.id == format!("wf_step|{run_id}|1")
+            && node.metadata["entity_type"] == "workflow_step_exec"
+            && node.metadata["in_conversation_chain"] == false
+    }));
+    assert!(nodes.iter().any(|node| {
+        node.metadata["entity_type"] == "acl_record"
+            && node.metadata["acl_target_entity_id"] == format!("wf_step|{run_id}|1")
+    }));
+    assert!(kogwistar_store::IndexJobReadStore::index_jobs(
+        &service.store,
+        Some("conversation"),
+        Some("PENDING"),
+        None,
+        None,
+        None,
+        100,
+    )
+    .await
+    .unwrap()
+    .iter()
+    .any(|job| job.entity_kind == "node"));
+    assert!(kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store, run_id, 0, 100
+    ).await.unwrap().iter().any(|event| event.event_type == "workflow.provider_event.handled.v1"));
+    drop(service);
+    remove_test_sqlite(&auth_path);
+}
+
+#[tokio::test]
 async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
     let service = InMemoryGraphApplicationService::default();
     let now = std::time::SystemTime::now()

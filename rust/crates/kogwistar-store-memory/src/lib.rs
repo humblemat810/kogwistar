@@ -30,7 +30,7 @@ pub use recorded_runtime::ProviderEventPublicationCommit;
 pub struct InMemoryStore {
     state: Arc<RwLock<State>>,
 }
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct State {
     namespaces: BTreeMap<String, NamespaceState>,
     vector_collections: BTreeMap<(String, String), Vec<GraphRecord>>,
@@ -87,6 +87,82 @@ fn enqueue_index_job_into_state(state: &mut State, job: NewIndexJob) -> String {
         },
     );
     job_id
+}
+
+pub(crate) fn apply_graph_mutation_batch_to_state(
+    state: &mut State,
+    batch: GraphMutationBatch,
+) -> StoreResult<Vec<AppliedGraphMutation>> {
+    validate_graph_mutation_batch(&batch)?;
+    let namespace_name = batch.mutations[0].scope.namespace.clone();
+    let mut next_seq = state
+        .namespaces
+        .get(&namespace_name)
+        .map_or(0, |scope| scope.next_event_seq);
+    let mut seen = BTreeMap::<String, EntityEvent>::new();
+    let mut pending = Vec::<(GraphMutation, EntityEvent)>::new();
+    let mut results = Vec::with_capacity(batch.mutations.len());
+
+    for mutation in batch.mutations {
+        let existing = state
+            .namespaces
+            .get(&namespace_name)
+            .and_then(|scope| {
+                scope
+                    .event_seq_by_id
+                    .get(&mutation.event_id)
+                    .and_then(|seq| scope.events.iter().find(|event| event.seq == *seq))
+            })
+            .or_else(|| seen.get(&mutation.event_id));
+        if let Some(event) = existing {
+            validate_graph_mutation_replay(&mutation, event)?;
+            results.push(AppliedGraphMutation {
+                event: event.clone(),
+                inserted: false,
+                mutated: false,
+            });
+            continue;
+        }
+
+        next_seq += 1;
+        let event = EntityEvent {
+            namespace: namespace_name.clone(),
+            seq: next_seq,
+            event_id: mutation.event_id.clone(),
+            entity_kind: mutation.entity_kind.clone(),
+            entity_id: mutation.record.id.clone(),
+            op: mutation.op.clone(),
+            payload: mutation.payload.clone(),
+        };
+        seen.insert(event.event_id.clone(), event.clone());
+        pending.push((mutation, event.clone()));
+        results.push(AppliedGraphMutation {
+            event,
+            inserted: true,
+            mutated: true,
+        });
+    }
+
+    for (mutation, event) in pending {
+        let namespace_state = InMemoryStore::scope_mut(state, &namespace_name);
+        namespace_state.next_event_seq = event.seq;
+        namespace_state
+            .event_seq_by_id
+            .insert(event.event_id.clone(), event.seq);
+        namespace_state.events.push(event);
+
+        let projection = state.graph_projections.entry(mutation.scope).or_default();
+        let record_key = (mutation.table, mutation.record.id.clone());
+        if !projection.records.contains_key(&record_key) {
+            projection.record_order.push(record_key.clone());
+        }
+        projection.records.insert(record_key, mutation.record);
+    }
+
+    for job in batch.index_jobs {
+        enqueue_index_job_into_state(state, job);
+    }
+    Ok(results)
 }
 
 impl IndexJobReadStore for InMemoryStore {
@@ -813,7 +889,7 @@ impl IndexJobWriteStore for InMemoryStore {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct NamespaceState {
     records: BTreeMap<(String, String), GraphRecord>,
     record_order: Vec<(String, String)>,
@@ -827,7 +903,7 @@ struct NamespaceState {
 /// Materialized graph rows are separately keyed by all graph scope fields.
 /// Events deliberately remain in `NamespaceState`, matching the authoritative
 /// namespace-local event log and idempotency contract.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct GraphProjectionState {
     records: BTreeMap<(String, String), GraphRecord>,
     record_order: Vec<(String, String)>,
@@ -924,78 +1000,8 @@ impl InMemoryStore {
         &self,
         batch: GraphMutationBatch,
     ) -> StoreResult<Vec<AppliedGraphMutation>> {
-        validate_graph_mutation_batch(&batch)?;
-        let namespace_name = batch.mutations[0].scope.namespace.clone();
         let mut state = self.state.write().expect("in-memory store lock poisoned");
-        let mut next_seq = state
-            .namespaces
-            .get(&namespace_name)
-            .map_or(0, |scope| scope.next_event_seq);
-        let mut seen = BTreeMap::<String, EntityEvent>::new();
-        let mut pending = Vec::<(GraphMutation, EntityEvent)>::new();
-        let mut results = Vec::with_capacity(batch.mutations.len());
-
-        for mutation in batch.mutations {
-            let existing = state
-                .namespaces
-                .get(&namespace_name)
-                .and_then(|scope| {
-                    scope
-                        .event_seq_by_id
-                        .get(&mutation.event_id)
-                        .and_then(|seq| scope.events.iter().find(|event| event.seq == *seq))
-                })
-                .or_else(|| seen.get(&mutation.event_id));
-            if let Some(event) = existing {
-                validate_graph_mutation_replay(&mutation, event)?;
-                results.push(AppliedGraphMutation {
-                    event: event.clone(),
-                    inserted: false,
-                    mutated: false,
-                });
-                continue;
-            }
-
-            next_seq += 1;
-            let record = mutation.record.clone();
-            let event = EntityEvent {
-                namespace: namespace_name.clone(),
-                seq: next_seq,
-                event_id: mutation.event_id.clone(),
-                entity_kind: mutation.entity_kind.clone(),
-                entity_id: record.id.clone(),
-                op: mutation.op.clone(),
-                payload: mutation.payload.clone(),
-            };
-            seen.insert(event.event_id.clone(), event.clone());
-            pending.push((mutation, event.clone()));
-            results.push(AppliedGraphMutation {
-                event,
-                inserted: true,
-                mutated: true,
-            });
-        }
-
-        for (mutation, event) in pending {
-            let namespace_state = Self::scope_mut(&mut state, &namespace_name);
-            namespace_state.next_event_seq = event.seq;
-            namespace_state
-                .event_seq_by_id
-                .insert(event.event_id.clone(), event.seq);
-            namespace_state.events.push(event);
-
-            let projection = state.graph_projections.entry(mutation.scope).or_default();
-            let record_key = (mutation.table, mutation.record.id.clone());
-            if !projection.records.contains_key(&record_key) {
-                projection.record_order.push(record_key.clone());
-            }
-            projection.records.insert(record_key, mutation.record);
-        }
-
-        for job in batch.index_jobs {
-            enqueue_index_job_into_state(&mut state, job);
-        }
-        Ok(results)
+        apply_graph_mutation_batch_to_state(&mut state, batch)
     }
 
     /// Restore an isolated event snapshot without exposing restore semantics on

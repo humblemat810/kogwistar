@@ -802,6 +802,46 @@ impl InMemoryStore {
         lane.lease_until = None;
         Ok(result)
     }
+
+    /// Commit ACK-derived graph projections and the worker ACK as one
+    /// process-local transaction. The staged copy is published only after
+    /// both operations validate, so failures cannot consume the event or lane.
+    pub fn apply_claimed_recorded_worker_effect_with_graph(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+        graph_batch: GraphMutationBatch,
+    ) -> StoreResult<RecordedTransitionResult> {
+        if effect.provider_event_acknowledgements.len() != 1
+            || effect.status != RuntimeWorkerEffectStatus::Success
+        {
+            return Err(runtime_conflict(
+                "causal graph commit requires exactly one successful provider-event acknowledgement",
+            ));
+        }
+        validate_graph_mutation_batch(&graph_batch)?;
+        let mut committed = self.state.write().expect("in-memory store lock poisoned");
+        let staged_store = InMemoryStore {
+            state: std::sync::Arc::new(std::sync::RwLock::new(committed.clone())),
+        };
+        let result = staged_store.apply_claimed_recorded_worker_effect(handoff, effect)?;
+        if result.idempotent {
+            return Ok(result);
+        }
+        {
+            let mut staged = staged_store
+                .state
+                .write()
+                .expect("in-memory staged store lock poisoned");
+            super::apply_graph_mutation_batch_to_state(&mut staged, graph_batch)?;
+        }
+        *committed = staged_store
+            .state
+            .read()
+            .expect("in-memory staged store lock poisoned")
+            .clone();
+        Ok(result)
+    }
 }
 
 fn validate_runtime_admission(
@@ -1841,6 +1881,8 @@ mod tests {
 
     #[test]
     fn provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent() {
+        use kogwistar_store::{GraphMutationStore, GraphProjectionRead, IndexJobReadStore};
+
         let raw_event = json!({
             "event_id": "provider-event-ack",
             "trace": {
@@ -2083,8 +2125,98 @@ mod tests {
             "claimed"
         );
 
+        let graph_scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: Some("workspace-1".to_owned()),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let mutation = |event_id: &str, record_id: &str| {
+            let metadata = json!({
+                "entity_type": "workflow_step_exec",
+                "run_id": "memory-run",
+                "conversation_id": "memory-conversation",
+                "namespace": "docs",
+                "workspace_id": "workspace-1",
+                "graph_space": "conversation",
+                "in_conversation_chain": false
+            });
+            let payload = json!({
+                "id": record_id,
+                "label": "ack step",
+                "type": "entity",
+                "summary": "ack step",
+                "doc_id": record_id,
+                "metadata": metadata,
+                "properties": {},
+                "embedding": null
+            });
+            GraphMutation {
+                scope: graph_scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: event_id.to_owned(),
+                op: "ADD".to_owned(),
+                record: kogwistar_store::GraphRecord {
+                    id: record_id.to_owned(),
+                    document: Some("ack step".to_owned()),
+                    metadata: payload["metadata"].as_object().unwrap().clone(),
+                    embedding: None,
+                },
+                payload,
+                embedding_dim: 0,
+            }
+        };
+        block_on(store.apply_graph_mutation(mutation("ack-graph-conflict-v1", "existing-step")))
+            .unwrap();
+        let conflicting_graph = GraphMutationBatch {
+            mutations: vec![mutation("ack-graph-conflict-v1", "different-step")],
+            index_jobs: Vec::new(),
+        };
+        assert!(
+            store
+                .apply_claimed_recorded_worker_effect_with_graph(
+                    worker_handoff.clone(),
+                    effect.clone(),
+                    conflicting_graph,
+                )
+                .is_err()
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("msg:provider-event-ack"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed",
+            "failed graph projection must not acknowledge provider lane"
+        );
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 20))
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "workflow.provider_event.handled.v1")
+                .count(),
+            0,
+            "failed graph projection must not append handled trace"
+        );
+        let graph_batch = GraphMutationBatch {
+            mutations: vec![mutation("ack-graph-event-v1", "ack-step")],
+            index_jobs: vec![NewIndexJob {
+                job_id: "ack-index-job-v1".to_owned(),
+                namespace: "docs".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "ack-step".to_owned(),
+                index_kind: "test-index".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
         let applied = store
-            .apply_claimed_recorded_worker_effect(worker_handoff.clone(), effect.clone())
+            .apply_claimed_recorded_worker_effect_with_graph(
+                worker_handoff.clone(),
+                effect.clone(),
+                graph_batch.clone(),
+            )
             .unwrap();
         let lane = block_on(store.projected_lane_message("msg:provider-event-ack"))
             .unwrap()
@@ -2108,8 +2240,28 @@ mod tests {
             "provider-event-ack"
         );
 
+        assert_eq!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: graph_scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["ack-step".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.index_jobs(None, None, None, None, None, 10))
+                .unwrap()
+                .iter()
+                .filter(|job| job.job_id == "ack-index-job-v1")
+                .count(),
+            1
+        );
         let replay = store
-            .apply_claimed_recorded_worker_effect(worker_handoff, effect)
+            .apply_claimed_recorded_worker_effect_with_graph(worker_handoff, effect, graph_batch)
             .unwrap();
         assert!(replay.idempotent);
         assert_eq!(replay.event_seq, applied.event_seq);

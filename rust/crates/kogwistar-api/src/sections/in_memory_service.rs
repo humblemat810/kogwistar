@@ -355,17 +355,30 @@ impl InMemoryGraphApplicationService {
             .await?;
             return Err("native noop did not produce a worker effect".to_owned());
         };
-        if !effect.provider_event_acknowledgements.is_empty() {
-            self.resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+        let commit = if effect.provider_event_acknowledgements.is_empty() {
+            self.store.apply_claimed_recorded_worker_effect(handoff, effect)
+        } else {
+            match self
+                .in_memory_provider_event_ack_graph_batch(&handoff, &effect)
                 .await
-                .map_err(|_| {
-                    "provider-event acknowledgement owner authorization failed closed".to_owned()
-                })?;
-        }
-        if let Err(error) = self
-            .store
-            .apply_claimed_recorded_worker_effect(handoff, effect)
-        {
+            {
+                Ok(batch) => self.store.apply_claimed_recorded_worker_effect_with_graph(
+                    handoff,
+                    effect,
+                    batch,
+                ),
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "provider event acknowledgement graph preparation failed",
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            }
+        };
+        if let Err(error) = commit {
             self.dead_letter_native_lane(
                 &message_id,
                 &claimed_by,
@@ -375,6 +388,223 @@ impl InMemoryGraphApplicationService {
             return Err(error.to_string());
         }
         Ok(true)
+    }
+
+    async fn in_memory_provider_event_ack_graph_batch(
+        &self,
+        handoff: &RecordedWorkerHandoff,
+        effect: &RecordedWorkerSuccessEffect,
+    ) -> Result<GraphMutationBatch, String> {
+        let acknowledgement = effect
+            .provider_event_acknowledgements
+            .first()
+            .filter(|_| effect.provider_event_acknowledgements.len() == 1)
+            .ok_or_else(|| "provider event acknowledgement count is invalid".to_owned())?;
+        let principal = self
+            .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+            .await
+            .map_err(|_| "provider-event acknowledgement owner authorization failed closed".to_owned())?;
+        let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, &handoff.run_id)
+            .await
+            .map_err(|_| "provider-event run lookup failed".to_owned())?
+            .ok_or_else(|| "provider-event run is missing".to_owned())?;
+        let owner_id = authenticated_run_owner_id(&principal)
+            .filter(|owner| Some(*owner) == run.user_id.as_deref())
+            .ok_or_else(|| "provider-event run owner changed before acknowledgement".to_owned())?
+            .to_ascii_lowercase();
+
+        let mut events = Vec::new();
+        let mut after_seq = 0;
+        loop {
+            let page = kogwistar_store::ServerRunReadStore::server_run_events(
+                &self.store,
+                &handoff.run_id,
+                after_seq,
+                1000,
+            )
+            .await
+            .map_err(|_| "provider-event run history lookup failed".to_owned())?;
+            let full_page = page.len() == 1000;
+            if let Some(last) = page.last() {
+                after_seq = last.seq;
+            }
+            events.extend(page);
+            if !full_page {
+                break;
+            }
+        }
+        let transitions = events
+            .iter()
+            .filter(|event| event.event_type == "workflow.recorded_transition.v1")
+            .cloned()
+            .collect::<Vec<_>>();
+        let latest_state = transitions
+            .iter()
+            .rev()
+            .find_map(|event| {
+                serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()?
+                    .get("reduced")?
+                    .get("state")
+                    .cloned()
+            })
+            .ok_or_else(|| "provider-event run has no durable runtime state".to_owned())?;
+        let workflow_id = latest_state["workflow_id"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "provider-event workflow identity is missing".to_owned())?;
+        let conversation_id = latest_state["conversation_id"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "provider-event conversation identity is missing".to_owned())?;
+        if latest_state["run_id"].as_str() != Some(handoff.run_id.as_str()) {
+            return Err("provider-event runtime state belongs to another run".to_owned());
+        }
+        let handler_step_seq = latest_state["state"]["agent_event_handling_step_seq"]
+            .as_i64()
+            .filter(|seq| *seq >= 0)
+            .ok_or_else(|| "provider-event handler step sequence is invalid".to_owned())?;
+        let step_seq = latest_state["last_step_seq"]
+            .as_i64()
+            .filter(|seq| *seq >= 0)
+            .ok_or_else(|| "provider-event acknowledgement step sequence is invalid".to_owned())?
+            .saturating_add(1);
+        let event_lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+            &self.store,
+            &acknowledgement.message_id,
+        )
+        .await
+        .map_err(|_| "provider-event lane lookup failed".to_owned())?
+        .ok_or_else(|| "provider-event lane is missing".to_owned())?;
+        let event: kogwistar_contracts::DurableProviderEventV1 = event_lane
+            .payload_json
+            .as_deref()
+            .and_then(|payload| serde_json::from_str(payload).ok())
+            .ok_or_else(|| "provider-event payload is invalid".to_owned())?;
+        if event.event_id != acknowledgement.event_id
+            || event.trace.run_id != handoff.run_id
+            || event_lane.conversation_id != conversation_id
+        {
+            return Err("provider-event identity or conversation changed".to_owned());
+        }
+        let mut referenced_step_seqs = vec![handler_step_seq];
+        if let Some(producer_step_seq) = event.trace.producer_step_seq {
+            if producer_step_seq < 0 {
+                return Err("provider-event producer step sequence is invalid".to_owned());
+            }
+            referenced_step_seqs.push(producer_step_seq);
+        }
+        referenced_step_seqs.sort_unstable();
+        referenced_step_seqs.dedup();
+        let snapshots = provider_event_step_snapshots(
+            transitions,
+            &handoff.run_id,
+            conversation_id,
+            workflow_id,
+            &referenced_step_seqs,
+        )?;
+        if handler_step_seq >= step_seq
+            || event
+                .trace
+                .producer_step_seq
+                .is_some_and(|producer_step_seq| producer_step_seq >= step_seq)
+        {
+            return Err("provider-event causal steps must precede acknowledgement".to_owned());
+        }
+        let security_scope = security_scope_value(&principal);
+        let storage_namespace = latest_state["state"]["_rt_graph_scope"]["storage_namespace"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "provider-event graph namespace is missing".to_owned())?;
+        let scope = GraphScope {
+            namespace: storage_namespace.to_owned(),
+            workspace_id: security_scope["workspace"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            graph_space: Some("conversation".to_owned()),
+        };
+        if !graph_mutation_scope_allowed(&scope, &security_scope) {
+            return Err("provider-event graph scope changed before acknowledgement".to_owned());
+        }
+        let workflow_node_id = handoff.step_id.as_str();
+        let mut mutations = provider_event_ack_graph_mutations(
+            &acknowledgement.event_id,
+            &handoff.run_id,
+            conversation_id,
+            workflow_id,
+            workflow_node_id,
+            step_seq,
+            &effect.effect_id,
+            &scope,
+        );
+        mutations.extend(provider_event_step_link_mutations(
+            &acknowledgement.event_id,
+            &handoff.run_id,
+            conversation_id,
+            event.trace.producer_step_seq,
+            handler_step_seq,
+            &snapshots,
+            &scope,
+        ));
+        let mut linked_step_nodes = BTreeSet::new();
+        mutations.retain(|mutation| {
+            mutation.entity_kind != "node" || linked_step_nodes.insert(mutation.record.id.clone())
+        });
+        let (targets, _) = acl_targets_for_graph_mutations(&mutations);
+        let mut existing_acl = Vec::new();
+        for target_id in acl_target_entity_ids(&targets) {
+            let mut acl_filter = MetadataFilter::default();
+            acl_filter
+                .equals
+                .insert("entity_type".to_owned(), json!("acl_record"));
+            acl_filter
+                .equals
+                .insert("acl_truth_graph".to_owned(), json!("conversation"));
+            acl_filter
+                .equals
+                .insert("acl_target_entity_id".to_owned(), json!(target_id));
+            existing_acl.extend(
+                self.store
+                    .graph_projection_records(GraphProjectionRead {
+                        scope: scope.clone(),
+                        table: "gke_nodes".to_owned(),
+                        ids: None,
+                        metadata: acl_filter,
+                        limit: 10000,
+                    })
+                    .await
+                    .map_err(|_| "provider-event ACL projection lookup failed".to_owned())?,
+            );
+        }
+        let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            &mutations,
+            targets,
+            existing_acl,
+            "conversation",
+            &owner_id,
+            security_scope["security_scope"].as_str(),
+            &acknowledgement.event_id,
+        )?;
+        mutations.extend(acl_mutations);
+
+        let current_principal = self
+            .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+            .await
+            .map_err(|_| "provider-event owner authorization changed before commit".to_owned())?;
+        if authenticated_run_owner_id(&current_principal) != Some(owner_id.as_str())
+            || security_scope_value(&current_principal) != security_scope
+            || !principal_strings(&current_principal, "capabilities")
+                .iter()
+                .any(|capability| capability == "write_graph")
+        {
+            return Err("provider-event owner capability or scope changed before commit".to_owned());
+        }
+        Ok(GraphMutationBatch {
+            mutations,
+            index_jobs: acl_jobs,
+        })
     }
 
     async fn execute_in_memory_native_provider_event_request(
