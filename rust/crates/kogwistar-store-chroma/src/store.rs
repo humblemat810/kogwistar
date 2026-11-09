@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#normalize_chroma_distance; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_graph_metric_order_and_scores_match_shared_python_rust_contract; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#normalize_chroma_distance; python=kogwistar/engine_core/vector_search.py#similarity_from_distance; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_graph_metric_order_and_scores_match_shared_python_rust_contract; python_test=tests/core/test_search_nodes_as_of.py#test_postgres_vector_metric_contract_is_shared_with_rust
     fn chroma_graph_metric_order_and_scores_match_shared_python_rust_contract() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1160,7 +1160,7 @@ mod tests {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract; note=Rust fake-HTTP query ordering and scores lack a paired Python test consuming this same contract fixture.
     #[tokio::test]
     async fn chroma_http_graph_queries_match_shared_metric_order_and_scores() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

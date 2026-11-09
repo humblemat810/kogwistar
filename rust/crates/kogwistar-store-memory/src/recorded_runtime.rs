@@ -20,7 +20,7 @@ use serde_json::Value;
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#persist_provider_event_publication; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently; python_test=tests/agent/test_provider_event_cross_language_contract.py; note=Rust memory backend atomically publishes graph projection, inbox record, and trace under one process-local lock; Python components remain independently callable.
+// PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#persist_provider_event_publication; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently; python_test=tests/agent/test_provider_event_cross_language_contract.py; note=Rust memory backend atomically publishes graph projection, inbox record, and trace under one process-local lock; Python components remain independently callable.
 /// One provider event and every graph/runtime projection derived from it.
 /// The in-memory backend commits this bundle under one process-local lock.
 #[derive(Clone, Debug, PartialEq)]
@@ -373,7 +373,7 @@ impl InMemoryStore {
         apply_transition(&mut state, transition, None, abort_after_writes)
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_claimed_recorded_worker_effect; python=kogwistar/agent/event_journal.py#acknowledge,kogwistar/messaging/service.py#ack; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=claim identity, successful state transition, run handled event, and lane completion commit under one in-memory writer lock.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_claimed_recorded_worker_effect; python=kogwistar/agent/event_journal.py#acknowledge,kogwistar/messaging/service.py#ack; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=claim identity, successful state transition, run handled event, and lane completion commit under one in-memory writer lock.
     /// Applies one claimed worker effect and acknowledges its lane in the same
     /// write-lock transaction. Retries require the original handoff and digest.
     pub fn apply_claimed_recorded_worker_effect(
