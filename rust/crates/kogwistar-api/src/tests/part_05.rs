@@ -1277,6 +1277,11 @@
         use std::time::{SystemTime, UNIX_EPOCH};
         use tower::ServiceExt;
 
+        let events_poll_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-events-poll-v1.json"
+        ))
+        .unwrap();
+
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -2989,10 +2994,29 @@
             .unwrap();
         assert_eq!(events.status(), StatusCode::OK);
         let event_body = to_bytes(events.into_body(), 8192).await.unwrap();
+        let event_value = serde_json::from_slice::<Value>(&event_body).unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(&event_body).unwrap()["events"][0]["event_type"],
-            "run.started"
+            events_poll_contract["success_status"],
+            StatusCode::OK.as_u16()
         );
+        for field in events_poll_contract["required_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(event_value.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(event_value["run_id"], "run-1");
+        assert!(!event_value["events"].as_array().unwrap().is_empty());
+        assert!(event_value["events"].as_array().unwrap().len() <= 10);
+        for field in events_poll_contract["required_event_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(event_value["events"][0].get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(event_value["events"][0]["event_type"], "run.started");
 
         let cancel = app
             .clone()

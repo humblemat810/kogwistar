@@ -1190,12 +1190,20 @@ def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
             f"/api/runs/{run_id}/events/poll?after_seq=0&limit=10",
             headers=ro_headers,
         )
-        polled.raise_for_status()
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-events-poll-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert polled.status_code == contract["success_status"]
         payload = polled.json()
+        assert set(contract["required_fields"]).issubset(payload)
         assert payload["run_id"] == run_id
         assert payload["events"]
         assert len(payload["events"]) <= 10
         assert payload["events"][0]["event_type"] == "run.created"
+        assert set(contract["required_event_fields"]).issubset(payload["events"][0])
 
 
 def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(monkeypatch, engine_triplet):
