@@ -1,5 +1,6 @@
 {
   "message": "transaction aborted: injected failure",
+  "scope": "Error mapping only: Python raises a synthetic exception before persistence; Rust calls the typed error mapper directly. No database transaction is opened or rolled back.",
   "python": {
     "status": 500,
     "detail": "transaction aborted: injected failure"
