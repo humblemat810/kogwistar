@@ -94,6 +94,12 @@ impl InMemoryStore {
                         "worker handoff retried with different effect",
                     ));
                 }
+                if let Some((completed, completed_seq)) =
+                    recorded_transition_by_id(&state, &format!("complete-{}", effect.effect_id))?
+                    && completed.reduced.state.run_id == handoff.run_id
+                {
+                    return Ok(completed.result(completed_seq, true));
+                }
                 return Ok(persisted.result(event_seq, true));
             }
             return Err(runtime_conflict(
@@ -215,7 +221,7 @@ impl InMemoryStore {
             update: effect.update,
             state_schema: effect.state_schema,
             frontier: Some(frontier),
-            result: effect.result,
+            result: effect.result.clone(),
             wait_reason: effect.wait_reason,
             resume_payload: effect.resume_payload,
             errors: effect.errors,
@@ -248,12 +254,62 @@ impl InMemoryStore {
                 .map_err(json_error)?,
             ));
         }
-        let result = apply_transition(
+        let applied = apply_transition(
             &mut state,
             transition,
             Some((handoff.clone(), effect_digest)),
             false,
         )?;
+        let current_frontier = &applied.reduced.state.frontier;
+        let unfinished = !current_frontier.pending.is_empty()
+            || !current_frontier.suspended.is_empty()
+            || current_frontier
+                .join_outstanding
+                .iter()
+                .any(|value| *value != 0)
+            || current_frontier
+                .join_waiters
+                .values()
+                .any(|waiters| !waiters.is_empty());
+        let result = if unfinished || applied.reduced.state.status.is_terminal() {
+            applied
+        } else {
+            let completed_state = &applied.reduced.state;
+            let expected_event_seq = state
+                .server_run_events
+                .get(&handoff.run_id)
+                .and_then(|events| events.last())
+                .map_or(0, |event| event.seq);
+            apply_transition(
+                &mut state,
+                RecordedRuntimeTransition {
+                    contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                    transition_id: format!("complete-{}", effect.effect_id),
+                    expected_event_seq,
+                    kind: RecordedTransitionKind::Complete,
+                    run_id: handoff.run_id.clone(),
+                    workflow_id: completed_state.workflow_id.clone(),
+                    conversation_id: completed_state.conversation_id.clone(),
+                    user_id: None,
+                    user_turn_node_id: None,
+                    step_seq: completed_state.last_step_seq,
+                    node_id: completed_state.last_node_id.clone(),
+                    token_id: completed_state.last_token_id.clone(),
+                    parent_token_id: completed_state.last_parent_token_id.clone(),
+                    initial_state: None,
+                    state_update: Vec::new(),
+                    update: None,
+                    state_schema: Default::default(),
+                    frontier: Some(kogwistar_runtime::RuntimeFrontier::default()),
+                    result: effect.result.clone(),
+                    wait_reason: None,
+                    resume_payload: None,
+                    errors: Vec::new(),
+                },
+                None,
+                false,
+            )?
+        };
         let mut next_seq = result.event_seq;
         for (event_type, payload_json) in telemetry_events {
             next_seq += 1;
@@ -828,6 +884,7 @@ mod tests {
             )
             .unwrap();
         assert!(!applied.idempotent);
+        assert_eq!(applied.reduced.state.status, RecordedRunStatus::Completed);
         assert_eq!(applied.reduced.state.state["seed"], 1);
         let lane = block_on(store.projected_lane_message("lane-noop-1"))
             .unwrap()
@@ -841,8 +898,15 @@ mod tests {
         assert!(replay.idempotent);
         assert_eq!(replay.event_seq, applied.event_seq);
         let events = block_on(store.server_run_events("memory-run", 0, 10)).unwrap();
-        assert_eq!(events.len(), 3, "start, durable transition, and trace");
-        assert_eq!(events[2].event_type, "workflow.trace.v1");
+        assert_eq!(events.len(), 4, "start, worker step, completion, and trace");
+        assert_eq!(events[3].event_type, "workflow.trace.v1");
+        assert_eq!(
+            block_on(store.server_run("memory-run"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "succeeded"
+        );
 
         let mut changed = noop_effect();
         changed.result = Some(json!({"different": true}));
@@ -858,7 +922,7 @@ mod tests {
             block_on(store.server_run_events("memory-run", 0, 10))
                 .unwrap()
                 .len(),
-            3
+            4
         );
     }
 }

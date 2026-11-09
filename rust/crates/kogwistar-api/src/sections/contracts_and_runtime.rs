@@ -333,7 +333,7 @@ fn validate_inline_native_runtime(
     if enabled && backend == ServerBackend::InMemory {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "KOGWISTAR_RUNTIME_NATIVE_INLINE requires the SQLite or PostgreSQL runtime service; in_memory supports graph operations only",
+            "KOGWISTAR_RUNTIME_NATIVE_INLINE requires SQLite or PostgreSQL runtime admission/result routes; in_memory does not expose workflow-run admission",
         ));
     }
     Ok(())
@@ -396,7 +396,11 @@ mod server_backend_tests {
         let error = validate_inline_native_runtime(ServerBackend::InMemory, true)
             .expect_err("unsupported inline runtime must fail before server startup");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("SQLite or PostgreSQL runtime service"));
+        assert!(
+            error
+                .to_string()
+                .contains("SQLite or PostgreSQL runtime admission/result routes")
+        );
     }
 }
 

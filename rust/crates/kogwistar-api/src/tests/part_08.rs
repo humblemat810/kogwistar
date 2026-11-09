@@ -43,6 +43,195 @@ fn failed_inline_graph_effect_clears_provider_event_side_effects() {
 }
 
 #[tokio::test]
+async fn in_memory_inline_native_noop_completes_claimed_run_atomically() {
+    let service = InMemoryGraphApplicationService::default();
+    let noop_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/runtime-native-noop-v1.json"
+    )))
+    .unwrap();
+    let start: RecordedRuntimeTransition = serde_json::from_value(json!({
+        "contract_version": 1,
+        "transition_id": "memory-noop-start",
+        "expected_event_seq": 0,
+        "kind": "start",
+        "run_id": "memory-noop-run",
+        "workflow_id": "memory-noop-workflow",
+        "conversation_id": "memory-noop-conversation",
+        "user_id": "operator",
+        "user_turn_node_id": "turn-1",
+        "step_seq": 0,
+        "initial_state": {"seed": 1},
+        "frontier": {
+            "pending": [["noop", 0, "token-1", null]],
+            "suspended": [],
+            "join_node_ids": [],
+            "join_outstanding": [],
+            "join_waiters": {}
+        }
+    }))
+    .unwrap();
+    service
+        .store
+        .apply_recorded_runtime_transition(start, false)
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    kogwistar_store::LaneMessageWriteStore::project_lane_message(
+        &service.store,
+        NewProjectedLaneMessage {
+            message_id: "memory-noop-lane".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "memory-noop-conversation".to_owned(),
+            recipient_id: "rust-native-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now,
+            available_at: now,
+            run_id: Some("memory-noop-run".to_owned()),
+            step_id: Some("noop".to_owned()),
+            correlation_id: Some("memory-noop-run".to_owned()),
+            payload_json: Some(
+                json!({
+                    "contract_version": 1,
+                    "kind": "workflow.step.execute",
+                    "run_id": "memory-noop-run",
+                    "workflow_id": "memory-noop-workflow",
+                    "conversation_id": "memory-noop-conversation",
+                    "node_id": "noop",
+                    "op": "noop",
+                    "executor_target": "rust-native",
+                    "join_mask": 0,
+                    "token_id": "token-1",
+                    "step_seq": 0,
+                    "expected_event_seq": 1,
+                    "state": {"seed": 1}
+                })
+                .to_string(),
+            ),
+            error_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let run = kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-noop-run")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, "succeeded");
+    assert_eq!(
+        serde_json::from_str::<Value>(run.result_json.as_deref().unwrap()).unwrap(),
+        noop_fixture["result"]
+    );
+    let projection = kogwistar_store::ProjectionReadStore::named_projection(
+        &service.store,
+        kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE,
+        "memory-noop-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(projection.payload["status"], "completed");
+    assert_eq!(projection.payload["state"]["seed"], 1);
+    let lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        "memory-noop-lane",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(lane.status, "completed");
+    let events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-noop-run",
+        0,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "workflow.recorded_transition.v1",
+            "workflow.recorded_transition.v1",
+            "workflow.recorded_transition.v1",
+            "workflow.trace.v1"
+        ]
+    );
+    let step_effect: Value = serde_json::from_str(&events[1].payload_json).unwrap();
+    assert_eq!(step_effect["reduced"]["state"]["state"]["seed"], 1);
+    let trace: Value = serde_json::from_str(&events[3].payload_json).unwrap();
+    assert_eq!(trace["trace"]["event"], "runtime.native.step.completed");
+    assert!(!service.execute_inline_native_work_once().await.unwrap());
+}
+
+#[tokio::test]
+async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
+    let service = InMemoryGraphApplicationService::default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    kogwistar_store::LaneMessageWriteStore::project_lane_message(
+        &service.store,
+        NewProjectedLaneMessage {
+            message_id: "memory-unsupported-lane".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "memory-unsupported-conversation".to_owned(),
+            recipient_id: "rust-native-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now,
+            available_at: now,
+            run_id: Some("memory-unsupported-run".to_owned()),
+            step_id: Some("increment".to_owned()),
+            correlation_id: Some("memory-unsupported-run".to_owned()),
+            payload_json: Some(
+                json!({
+                    "contract_version": 1,
+                    "kind": "workflow.step.execute",
+                    "run_id": "memory-unsupported-run",
+                    "workflow_id": "memory-unsupported-workflow",
+                    "conversation_id": "memory-unsupported-conversation",
+                    "node_id": "increment",
+                    "op": "increment-counter",
+                    "executor_target": "rust-native",
+                    "token_id": "token-1"
+                })
+                .to_string(),
+            ),
+            error_json: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        "memory-unsupported-lane",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(lane.status, "dead-letter");
+    assert!(!service.execute_inline_native_work_once().await.unwrap());
+}
+
+#[tokio::test]
 async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -386,13 +575,11 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let response: Value = serde_json::from_slice(
-        &to_bytes(response.into_body(), 65_536).await.unwrap(),
-    )
-    .unwrap();
+    let response: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
     assert!(response["result"]["seeds"].is_array(), "{response}");
-    let seed: Value = serde_json::from_str(response["result"]["seeds"][0].as_str().unwrap())
-        .unwrap();
+    let seed: Value =
+        serde_json::from_str(response["result"]["seeds"][0].as_str().unwrap()).unwrap();
     assert_eq!(seed["id"], seed_id);
     let first_layer_edge_ids = response["result"]["layers"][0]["edges"]
         .as_array()
@@ -507,25 +694,30 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
     for (actual, expected) in fused.iter().zip(expected_fused) {
         assert_eq!(actual.index_key, expected["index_key"]);
         assert_eq!(actual.node_id, expected["node_id"]);
-        assert_eq!(actual.hybrid_score, expected["hybrid_score"].as_f64().unwrap());
+        assert_eq!(
+            actual.hybrid_score,
+            expected["hybrid_score"].as_f64().unwrap()
+        );
     }
 
     let unconfigured = InMemoryGraphApplicationService::default();
     assert!(!unconfigured.supports_http_operation("POST", "/api/add_index_entries"));
     let unavailable = unconfigured
         .execute(ApiEffectRequest {
-        contract_version: 1,
-        method: "POST".to_owned(),
-        path_and_query: "/api/add_index_entries".to_owned(),
-        body: serde_json::to_vec(&request).unwrap(),
-        principal: json!({"sub":"index-writer","role":"rw","capabilities":["write_graph"]}),
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/add_index_entries".to_owned(),
+            body: serde_json::to_vec(&request).unwrap(),
+            principal: json!({"sub":"index-writer","role":"rw","capabilities":["write_graph"]}),
         })
         .await;
     assert_eq!(unavailable.status, StatusCode::NOT_IMPLEMENTED.as_u16());
-    assert!(EventReadStore::replay_events(&unconfigured.store, "docs", 0, 10)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        EventReadStore::replay_events(&unconfigured.store, "docs", 0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(!unconfigured.supports_http_operation("GET", "/api/search_index_hybrid"));
     let unavailable_query = unconfigured
         .execute(ApiEffectRequest {
@@ -576,7 +768,11 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
     let mut mutations = Vec::new();
     for (id, mode, owner) in [
         ("in-memory-index-node", "public", None),
-        ("in-memory-private-index-node", "private", Some("other-user")),
+        (
+            "in-memory-private-index-node",
+            "private",
+            Some("other-user"),
+        ),
     ] {
         mutations.push(node_mutation(
             id,
@@ -650,7 +846,10 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
                 Request::builder()
                     .method("POST")
                     .uri("/api/add_index_entries")
-                    .header("authorization", format!("Bearer {}", token(role, capabilities)))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(role, capabilities)),
+                    )
                     .header("content-type", "application/json")
                     .body(Body::from(body.clone()))
                     .unwrap(),
@@ -700,22 +899,26 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
     );
     let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
     let lexical_hits = crate::search_index_fts::search_fts(&fts, "permit", 10).unwrap();
-    assert_eq!(lexical_hits.len(), 2, "both entries should enter the FTS projection");
+    assert_eq!(
+        lexical_hits.len(),
+        2,
+        "both entries should enter the FTS projection"
+    );
     drop(fts);
     let key = kogwistar_contracts::make_search_index_key(
         &request.index[0].node_id,
         &request.index[0].canonical_title,
         &request.index[0].provision,
     );
-    let vector = NodeIndexStore::get_node_index(
-        &service.store,
-        "nodes_index",
-        &[format!("idx:{key}")],
-    )
-    .await
-    .unwrap();
+    let vector =
+        NodeIndexStore::get_node_index(&service.store, "nodes_index", &[format!("idx:{key}")])
+            .await
+            .unwrap();
     assert_eq!(vector.len(), 1);
-    assert_eq!(vector[0].metadata["target_node_id"], request.index[0].node_id);
+    assert_eq!(
+        vector[0].metadata["target_node_id"],
+        request.index[0].node_id
+    );
 
     let search = app
         .clone()
@@ -733,10 +936,8 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
         .await
         .unwrap();
     assert_eq!(search.status(), StatusCode::OK);
-    let search_payload: Value = serde_json::from_slice(
-        &to_bytes(search.into_body(), 65_536).await.unwrap(),
-    )
-    .unwrap();
+    let search_payload: Value =
+        serde_json::from_slice(&to_bytes(search.into_body(), 65_536).await.unwrap()).unwrap();
     let results = search_payload["results"].as_array().unwrap();
     assert_eq!(
         results.len(),
@@ -744,7 +945,10 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
         "private indexed nodes must be ACL-filtered: {search_payload}"
     );
     assert_eq!(results[0]["node_id"], "in-memory-index-node");
-    assert_eq!(results[0]["documents"], "Canonical source for in-memory-index-node");
+    assert_eq!(
+        results[0]["documents"],
+        "Canonical source for in-memory-index-node"
+    );
 
     drop(service);
     let _ = std::fs::remove_file(index_path);
@@ -1149,21 +1353,27 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "gke_nodes",
             "node",
             json!({"label":"one","doc_ids":["doc-a"]}),
-            Some(r#"{"label":"one","doc_ids":["doc-a"],"mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#),
+            Some(
+                r#"{"label":"one","doc_ids":["doc-a"],"mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#,
+            ),
         ),
         mutation(
             "n2",
             "gke_nodes",
             "node",
             json!({"label":"two","doc_ids":["doc-a"]}),
-            Some(r#"{"label":"two","doc_ids":["doc-a"],"mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#),
+            Some(
+                r#"{"label":"two","doc_ids":["doc-a"],"mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#,
+            ),
         ),
         mutation(
             "e1",
             "gke_edges",
             "edge",
             json!({"source_ids":["n1"],"target_ids":["n2"],"relation":"links"}),
-            Some(r#"{"source_ids":["n1"],"target_ids":["n2"],"relation":"links","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#),
+            Some(
+                r#"{"source_ids":["n1"],"target_ids":["n2"],"relation":"links","mentions":[{"spans":[{"doc_id":"doc-a","insertion_method":"parser"}]}]}"#,
+            ),
         ),
         mutation(
             "n3",
@@ -1384,7 +1594,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let loaded: Value =
         serde_json::from_slice(&to_bytes(loaded.into_body(), 65_536).await.unwrap()).unwrap();
-    assert_eq!(loaded["result"]["node_ids"], json!(["n1", "n2"]), "{loaded}");
+    assert_eq!(
+        loaded["result"]["node_ids"],
+        json!(["n1", "n2"]),
+        "{loaded}"
+    );
     assert_eq!(loaded["result"]["edge_ids"], json!(["e1"]));
     let loaded_by_method = app
         .clone()
@@ -1395,7 +1609,9 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .await
         .unwrap();
     let loaded_by_method: Value = serde_json::from_slice(
-        &to_bytes(loaded_by_method.into_body(), 65_536).await.unwrap(),
+        &to_bytes(loaded_by_method.into_body(), 65_536)
+            .await
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(loaded_by_method["result"]["node_ids"], json!(["n1", "n2"]));
@@ -1470,10 +1686,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 .method("POST")
                 .uri("/mcp")
                 .header("content-type", "application/json")
-                .header(
-                    "authorization",
-                    format!("Bearer {}", token("docs", &[])),
-                )
+                .header("authorization", format!("Bearer {}", token("docs", &[])))
                 .body(Body::from(
                     json!({
                         "jsonrpc":"2.0","id":"denied-proposal","method":"tools/call",
@@ -1485,10 +1698,9 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         )
         .await
         .unwrap();
-    let denied_proposal: Value = serde_json::from_slice(
-        &to_bytes(denied_proposal.into_body(), 65_536).await.unwrap(),
-    )
-    .unwrap();
+    let denied_proposal: Value =
+        serde_json::from_slice(&to_bytes(denied_proposal.into_body(), 65_536).await.unwrap())
+            .unwrap();
     assert!(denied_proposal.get("error").is_some());
     assert!(denied_proposal.get("result").is_none());
 
@@ -1964,7 +2176,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     assert_eq!(standard.status(), StatusCode::OK);
     assert_eq!(
-        standard.headers().get("content-type").and_then(|value| value.to_str().ok()),
+        standard
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
         Some("text/event-stream; charset=utf-8")
     );
     let body = to_bytes(standard.into_body(), 65_536).await.unwrap();
@@ -1974,8 +2189,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .find_map(|line| line.strip_prefix("data: "))
         .expect("standard MCP response has an SSE data frame");
     let standard: Value = serde_json::from_str(event).unwrap();
-    assert_eq!(standard["result"]["structuredContent"]["nodes"], json!(["n2"]));
-    assert_eq!(standard["result"]["structuredContent"]["edges"], json!(["e1"]));
+    assert_eq!(
+        standard["result"]["structuredContent"]["nodes"],
+        json!(["n2"])
+    );
+    assert_eq!(
+        standard["result"]["structuredContent"]["edges"],
+        json!(["e1"])
+    );
     assert_eq!(
         serde_json::from_str::<Value>(standard["result"]["content"][0]["text"].as_str().unwrap())
             .unwrap(),
@@ -3224,14 +3445,20 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
         service
             .store
             .apply_graph_mutation(public_acl(
-                &format!("acl-{grounding_id}"), "grounding", id, Some(&grounding_id),
+                &format!("acl-{grounding_id}"),
+                "grounding",
+                id,
+                Some(&grounding_id),
             ))
             .await
             .unwrap();
         service
             .store
             .apply_graph_mutation(public_acl(
-                &format!("acl-{span_id}"), "span", id, Some(&span_id),
+                &format!("acl-{span_id}"),
+                "span",
+                id,
+                Some(&span_id),
             ))
             .await
             .unwrap();
@@ -3260,11 +3487,11 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
     .unwrap();
     let fingerprint_payload =
         kogwistar_engine::canonical_revision::canonical_revision_job_payload(&canonical);
-    let fingerprint = serde_json::from_str::<Value>(&fingerprint_payload).unwrap()
-        ["source_fingerprint"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let fingerprint =
+        serde_json::from_str::<Value>(&fingerprint_payload).unwrap()["source_fingerprint"]
+            .as_str()
+            .unwrap()
+            .to_owned();
     let staged_document = mention_document("node-a").to_string();
     let staged_metadata = json!({
         "doc_id":"doc-a",
@@ -3273,14 +3500,13 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
         "namespace":"docs"
     });
     let staged_metadata_json = staged_metadata.to_string();
-    let (stage_setup, stage_connection) =
-        tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let (stage_setup, stage_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
     let stage_task = tokio::spawn(stage_connection);
     stage_setup
         .execute(
-            &format!(
-                "DELETE FROM \"{schema}\".gke_node_docs WHERE metadata->>'node_id'=$1"
-            ),
+            &format!("DELETE FROM \"{schema}\".gke_node_docs WHERE metadata->>'node_id'=$1"),
             &[&"node-a"],
         )
         .await
@@ -3403,10 +3629,13 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
             .uri("/mcp")
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {bearer}"))
-            .body(Body::from(json!({
-                "jsonrpc":"2.0","id":id,"method":"tools/call",
-                "params":{"name":"kg_load_persisted","arguments":{"inp":inp}}
-            }).to_string()))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0","id":id,"method":"tools/call",
+                    "params":{"name":"kg_load_persisted","arguments":{"inp":inp}}
+                })
+                .to_string(),
+            ))
             .unwrap()
     };
     let short_response = app
@@ -3419,7 +3648,10 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
         .await
         .unwrap();
     let short_json: Value = serde_json::from_slice(&short_body).unwrap();
-    assert!(short_json.get("result").is_some(), "MCP response: {short_json}");
+    assert!(
+        short_json.get("result").is_some(),
+        "MCP response: {short_json}"
+    );
     let map_key = crate::short_id_store::short_id_map_key_for_bearer(Some(&bearer));
     let decode_ids = |values: &[Value]| {
         values
@@ -3434,8 +3666,14 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
             })
             .collect::<Vec<_>>()
     };
-    assert_eq!(decode_ids(short_json["result"]["node_ids"].as_array().unwrap()), ["node-a", "node-b"]);
-    assert_eq!(decode_ids(short_json["result"]["edge_ids"].as_array().unwrap()), ["edge-a"]);
+    assert_eq!(
+        decode_ids(short_json["result"]["node_ids"].as_array().unwrap()),
+        ["node-a", "node-b"]
+    );
+    assert_eq!(
+        decode_ids(short_json["result"]["edge_ids"].as_array().unwrap()),
+        ["edge-a"]
+    );
 
     let canonical_response = app
         .clone()
@@ -3449,7 +3687,10 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
         .await
         .unwrap();
     let canonical_json: Value = serde_json::from_slice(&canonical_body).unwrap();
-    assert_eq!(canonical_json["result"]["node_ids"], json!(["node-a", "node-b"]));
+    assert_eq!(
+        canonical_json["result"]["node_ids"],
+        json!(["node-a", "node-b"])
+    );
     assert_eq!(canonical_json["result"]["edge_ids"], json!(["edge-a"]));
 
     let proposal_call = |id: &str, input: Value| {
@@ -3502,7 +3743,10 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
         .await
         .unwrap();
     let mixed_json: Value = serde_json::from_slice(&mixed_body).unwrap();
-    assert!(mixed_json.get("result").is_some(), "MCP response: {mixed_json}");
+    assert!(
+        mixed_json.get("result").is_some(),
+        "MCP response: {mixed_json}"
+    );
     assert_eq!(mixed_json["result"]["pairs"].as_array().unwrap().len(), 3);
     let empty_response = app
         .clone()
@@ -3518,8 +3762,9 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
     let empty_json: Value = serde_json::from_slice(&empty_body).unwrap();
     assert_eq!(empty_json["result"]["pairs"], json!([]));
 
-    let (stale_setup, stale_connection) =
-        tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+    let (stale_setup, stale_connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
     let stale_task = tokio::spawn(stale_connection);
     stale_setup
         .execute(
@@ -4485,10 +4730,12 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
     )
     .await
     .unwrap();
-    assert!(crate::search_index_fts::search_fts(&fts.lock().unwrap(), "review", 5)
-        .unwrap()
-        .iter()
-        .any(|hit| hit.node_id == node_id));
+    assert!(
+        crate::search_index_fts::search_fts(&fts.lock().unwrap(), "review", 5)
+            .unwrap()
+            .iter()
+            .any(|hit| hit.node_id == node_id)
+    );
     let direct_hits = crate::search_index_fts::hybrid_search(
         &fts,
         &service.store,
@@ -4499,7 +4746,10 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
     )
     .await
     .unwrap();
-    assert!(direct_hits.iter().any(|hit| hit.node_id == node_id), "{direct_hits:?}");
+    assert!(
+        direct_hits.iter().any(|hit| hit.node_id == node_id),
+        "{direct_hits:?}"
+    );
     drop(fts);
 
     let secret = "hybrid-search-http-test-secret";
@@ -4588,7 +4838,10 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
                     .uri(format!(
                         "/api/search_index_hybrid?q={query}&limit=5&resolve_node={resolve_node}"
                     ))
-                    .header("authorization", format!("Bearer {}", token(&namespace, &["read_graph"])))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&namespace, &["read_graph"])),
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4618,7 +4871,10 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
             Request::builder()
                 .method("GET")
                 .uri("/api/search_index_hybrid?q=review")
-                .header("authorization", format!("Bearer {}", token(&namespace, &[])))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token(&namespace, &[])),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -4631,16 +4887,18 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
             Request::builder()
                 .method("GET")
                 .uri("/api/search_index_hybrid?q=review")
-                .header("authorization", format!("Bearer {}", token("other-namespace", &["read_graph"])))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("other-namespace", &["read_graph"])),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(outside_scope.status(), StatusCode::OK);
-    let outside_scope: Value = serde_json::from_slice(
-        &to_bytes(outside_scope.into_body(), 65_536).await.unwrap(),
-    )
-    .unwrap();
+    let outside_scope: Value =
+        serde_json::from_slice(&to_bytes(outside_scope.into_body(), 65_536).await.unwrap())
+            .unwrap();
     assert_eq!(outside_scope["results"], json!([]));
 }

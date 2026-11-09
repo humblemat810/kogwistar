@@ -19,6 +19,150 @@ impl Default for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#execute_native_noop_once; python=kogwistar/runtime/rust_worker.py#RustRuntimeWorker; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_inline_native_noop_completes_claimed_run_atomically; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_sync_python_worker_rejects_native_operation_without_target; note=native no-op stays Rust-owned and is never sent to Python worker.
+    async fn dead_letter_native_lane(
+        &self,
+        message_id: &str,
+        claimed_by: &str,
+        reason: &str,
+    ) -> Result<(), String> {
+        kogwistar_store::LaneMessageWriteStore::dead_letter_projected_lane_message(
+            &self.store,
+            message_id,
+            claimed_by,
+            Some(json!({"error": reason}).to_string()),
+        )
+        .await
+        .map_err(|error| error.to_string())
+    }
+
+    async fn execute_native_noop_once(&self) -> Result<bool, String> {
+        let claimed_by = format!("rust-native-worker#{}", uuid::Uuid::new_v4());
+        let mut claimed =
+            kogwistar_store::LaneMessageWriteStore::claim_projected_lane_messages_filtered(
+                &self.store,
+                LaneMessageClaimFilter {
+                    namespace: "workflow".to_owned(),
+                    inbox_id: "workflow-runtime".to_owned(),
+                    claimed_by: claimed_by.clone(),
+                    message_ids: None,
+                    run_id: None,
+                    msg_type: Some("workflow.step.execute".to_owned()),
+                    recipient_id: Some("rust-native-worker".to_owned()),
+                    limit: 1,
+                    lease_seconds: 60,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let Some(lane) = claimed.pop() else {
+            return Ok(false);
+        };
+        let message_id = lane.message_id.clone();
+        let run_id = lane.run_id.clone().unwrap_or_default();
+        let cancel_requested =
+            kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_some_and(|run| run.cancel_requested);
+        if cancel_requested {
+            kogwistar_store::LaneMessageWriteStore::update_projected_lane_message_status(
+                &self.store,
+                &message_id,
+                "cancelled",
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            return Ok(true);
+        }
+        let payload: Value = match lane
+            .payload_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+        {
+            Ok(Some(payload)) => payload,
+            Ok(None) => json!({}),
+            Err(error) => {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "invalid native step payload",
+                )
+                .await?;
+                return Err(format!("invalid native step payload: {error}"));
+            }
+        };
+        let operation = payload["op"].as_str().and_then(|operation| {
+            kogwistar_runtime::native_operation_for_target(
+                operation,
+                payload["executor_target"].as_str(),
+            )
+        });
+        if operation != Some("noop") {
+            self.dead_letter_native_lane(
+                &message_id,
+                &claimed_by,
+                "in-memory inline runtime supports native noop only",
+            )
+            .await?;
+            return Ok(true);
+        }
+        let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
+        let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
+        let (handoff, native_request) = match native_request_for_claimed_work(&work) {
+            Ok(value) => value,
+            Err(error) => {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "native step request validation failed",
+                )
+                .await?;
+                return Err(error);
+            }
+        };
+        let result = match native_result_from_request(
+            handoff.clone(),
+            native_request,
+            &kogwistar_runtime::NativeOperationRegistry::default(),
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "native noop execution failed",
+                )
+                .await?;
+                return Err(error);
+            }
+        };
+        let Some(effect) = result.effect else {
+            self.dead_letter_native_lane(
+                &message_id,
+                &claimed_by,
+                "native noop did not produce a worker effect",
+            )
+            .await?;
+            return Err("native noop did not produce a worker effect".to_owned());
+        };
+        if let Err(error) = self
+            .store
+            .apply_claimed_recorded_worker_effect(handoff, effect)
+        {
+            self.dead_letter_native_lane(
+                &message_id,
+                &claimed_by,
+                "in-memory worker effect could not be committed",
+            )
+            .await?;
+            return Err(error.to_string());
+        }
+        Ok(true)
+    }
+
     fn supports_graph_tool(name: &str) -> bool {
         matches!(
             name,
@@ -336,12 +480,8 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
-            &all_nodes,
-            &all_edges,
-            "knowledge",
-            &principal,
-        );
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
         let visible_node_ids = visible_nodes
             .iter()
             .map(|record| record.id.as_str())
@@ -411,10 +551,7 @@ impl InMemoryGraphApplicationService {
     }
 
     // PYTHON_PARITY: kogwistar/server/mcp_tools.py::_load_persisted_graph
-    async fn graph_load_persisted_effect(
-        &self,
-        request: &ApiEffectRequest,
-    ) -> ApiEffectResponse {
+    async fn graph_load_persisted_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
             Err(response) => return response,
@@ -455,12 +592,8 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (nodes, edges) = graph_records_visible_by_acl(
-            &all_nodes,
-            &all_edges,
-            "knowledge",
-            &principal,
-        );
+        let (nodes, edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
         let (node_ids, edge_ids) = graph_load_persisted_ids_from_records(&nodes, &edges, &input);
         json_effect(
             StatusCode::OK,
@@ -493,9 +626,7 @@ impl InMemoryGraphApplicationService {
                 .anchor_doc_id
                 .as_ref()
                 .is_some_and(|doc| doc.trim().is_empty())
-            || input
-                .limit_per_bucket
-                .is_some_and(|limit| limit > 5000)
+            || input.limit_per_bucket.is_some_and(|limit| limit > 5000)
             || input
                 .where_filter
                 .as_ref()
@@ -528,12 +659,8 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (nodes, edges) = graph_records_visible_by_acl(
-            &all_nodes,
-            &all_edges,
-            "knowledge",
-            &principal,
-        );
+        let (nodes, edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
         let (node_ids_by_doc, edge_ids_by_doc) =
             brute_force_document_indexes_from_records(&nodes, &edges);
         let mut docs = match input.allowed_docs.as_ref().filter(|docs| !docs.is_empty()) {
@@ -590,10 +717,7 @@ impl InMemoryGraphApplicationService {
     // Mirrors Python's propose_vector contract for the in-memory backend only;
     // PostgreSQL and SQLite+Chroma remain unadvertised until their snapshots
     // can provide the same pre-top-K filtering and ACL guarantees.
-    async fn graph_vector_proposal_effect(
-        &self,
-        request: &ApiEffectRequest,
-    ) -> ApiEffectResponse {
+    async fn graph_vector_proposal_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
             Err(response) => return response,
@@ -607,9 +731,9 @@ impl InMemoryGraphApplicationService {
             .as_ref()
             .filter(|value| value.is_object());
         let validation = json!({"metadata": {}, "where": where_filter});
-        if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
-            &validation.to_string(),
-        ) {
+        if let Err(error) =
+            kogwistar_contracts::metadata_filter_matches_from_str(&validation.to_string())
+        {
             return invalid_graph_request(error.to_string());
         }
         let (all_nodes, all_edges) = match self.graph_snapshot(scope.clone()).await {
@@ -627,12 +751,8 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
-            &all_nodes,
-            &all_edges,
-            "knowledge",
-            &principal,
-        );
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
         let visible_node_ids = visible_nodes
             .iter()
             .map(|record| record.id.as_str())
@@ -673,7 +793,10 @@ impl InMemoryGraphApplicationService {
                 }
                 let mut ranked = Vec::new();
                 for candidate in candidates {
-                    if candidate.metadata.get("entity_type").and_then(Value::as_str)
+                    if candidate
+                        .metadata
+                        .get("entity_type")
+                        .and_then(Value::as_str)
                         == Some("acl_record")
                     {
                         continue;
@@ -703,10 +826,7 @@ impl InMemoryGraphApplicationService {
                     }) {
                         continue;
                     }
-                    if input.cross_doc_only
-                        && seed_doc.is_some()
-                        && seed_doc == candidate_doc
-                    {
+                    if input.cross_doc_only && seed_doc.is_some() && seed_doc == candidate_doc {
                         continue;
                     }
                     if input.anchor_doc_id.as_ref().is_some_and(|anchor| {
@@ -716,7 +836,9 @@ impl InMemoryGraphApplicationService {
                     }) {
                         continue;
                     }
-                    let Some(distance) = proposal_cosine_distance(query, candidate.embedding.as_deref()) else {
+                    let Some(distance) =
+                        proposal_cosine_distance(query, candidate.embedding.as_deref())
+                    else {
                         continue;
                     };
                     let in_threshold = if input.score_mode == "distance" {
@@ -738,12 +860,11 @@ impl InMemoryGraphApplicationService {
                     if !candidate_visible {
                         continue;
                     }
-                    let (left, right, left_kind, right_kind) =
-                        if seed.id <= candidate.id {
-                            (&seed.id, &candidate.id, seed_kind, candidate_kind)
-                        } else {
-                            (&candidate.id, &seed.id, candidate_kind, seed_kind)
-                        };
+                    let (left, right, left_kind, right_kind) = if seed.id <= candidate.id {
+                        (&seed.id, &candidate.id, seed_kind, candidate_kind)
+                    } else {
+                        (&candidate.id, &seed.id, candidate_kind, seed_kind)
+                    };
                     let key = (left.clone(), right.clone());
                     if seen.insert(key) {
                         pairs.push(json!({
@@ -833,14 +954,18 @@ impl InMemoryGraphApplicationService {
             let matches = matches
                 .into_iter()
                 .filter(|matched| {
-                    matched.record.metadata.get("entity_type").and_then(Value::as_str)
-                        != Some("acl_record")
-                        && !matched
+                    matched
                         .record
                         .metadata
-                        .get("lifecycle_status")
+                        .get("entity_type")
                         .and_then(Value::as_str)
-                        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                        != Some("acl_record")
+                        && !matched
+                            .record
+                            .metadata
+                            .get("lifecycle_status")
+                            .and_then(Value::as_str)
+                            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
                 })
                 .take(input.n_results)
                 .filter(|matched| visible_ids.contains(matched.record.id.as_str()))
@@ -1046,7 +1171,10 @@ fn proposal_where_matches(
 fn proposal_cosine_distance(query: &[f32], candidate: Option<&[f32]>) -> Option<f64> {
     let candidate = candidate?;
     if query.len() != candidate.len()
-        || query.iter().chain(candidate).any(|value| !value.is_finite())
+        || query
+            .iter()
+            .chain(candidate)
+            .any(|value| !value.is_finite())
     {
         return None;
     }
@@ -1070,6 +1198,12 @@ fn proposal_cosine_distance(query: &[f32], candidate: Option<&[f32]>) -> Option<
 }
 
 impl ApplicationService for InMemoryGraphApplicationService {
+    fn execute_inline_native_work_once(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(self.execute_native_noop_once())
+    }
+
     fn graph_authority_capability(&self) -> GraphAuthorityCapability {
         self.store.graph_authority_capability()
     }
