@@ -3527,7 +3527,7 @@
                 implementation: ImplementationSnapshot::default(),
                 auth: AuthConfig::default(),
             },
-            Arc::new(service),
+            Arc::new(service.clone()),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -3935,6 +3935,42 @@
         let events_before_invalid_handoff = store
             .list_server_run_events("mixed-language-run", 0, 100)
             .unwrap();
+        for (body, expected_status) in [
+            (b"{".to_vec(), StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                vec![b' '; MAX_RUNTIME_WORKER_RESULT_BYTES + 1],
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ] {
+            let rejected = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/internal/runtime/results".to_owned(),
+                    body,
+                    principal: json!({"roles": ["reader"]}),
+                })
+                .await;
+            assert_eq!(rejected.status, expected_status.as_u16());
+            assert_eq!(
+                store
+                    .list_server_run_events("mixed-language-run", 0, 100)
+                    .unwrap(),
+                events_before_invalid_handoff,
+                "malformed or oversized result must not append durable events"
+            );
+            assert_eq!(
+                store
+                    .get_projected_lane_message(
+                        python_before_work["message_id"].as_str().unwrap()
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "claimed",
+                "malformed or oversized result must preserve the active claim"
+            );
+        }
         for field in ["message_id", "claimed_by", "run_id", "step_id", "correlation_id"] {
             let mut invalid_handoff = json!({
                 "handoff": {
@@ -4241,6 +4277,7 @@
 
         server.abort();
         let _ = server.await;
+        drop(service);
         drop(store);
 
         let reopened_store = SqliteStore::open(&path).unwrap();

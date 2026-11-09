@@ -6,6 +6,7 @@ const GO_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/go.html"));
 
 const INTERNAL_RUNTIME_CLAIM_ROUTE: &str = "/internal/runtime/claim";
 const INTERNAL_RUNTIME_RESULTS_ROUTE: &str = "/internal/runtime/results";
+const MAX_RUNTIME_WORKER_RESULT_BYTES: usize = 2 * 1024 * 1024;
 const INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE: &str = "/internal/runtime/native/execute";
 const INTERNAL_GRAPH_MUTATIONS_ROUTE: &str = "/internal/graph/mutations";
 const INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE: &str = "/internal/graph/load-persisted";
@@ -2301,6 +2302,25 @@ struct RuntimeWorkerResultRequest {
     transition: Option<RecordedRuntimeTransition>,
     #[serde(default)]
     effect: Option<RecordedWorkerSuccessEffect>,
+}
+
+fn runtime_worker_result_from_body(
+    body: &[u8],
+) -> Result<RuntimeWorkerResultRequest, ApiEffectResponse> {
+    if body.len() > MAX_RUNTIME_WORKER_RESULT_BYTES {
+        return Err(effect_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "KOGWISTAR_REQUEST_TOO_LARGE",
+            "Runtime worker result exceeds the 2 MiB request limit",
+        ));
+    }
+    serde_json::from_slice(body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })
 }
 
 fn validate_runtime_lane_executor(

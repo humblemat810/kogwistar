@@ -570,6 +570,51 @@
             .list_server_run_events("owned-run", 0, usize::MAX)
             .await
             .unwrap();
+        for (body, expected_status) in [
+            (b"{".to_vec(), StatusCode::UNPROCESSABLE_ENTITY),
+            (
+                vec![b' '; MAX_RUNTIME_WORKER_RESULT_BYTES + 1],
+                StatusCode::PAYLOAD_TOO_LARGE,
+            ),
+        ] {
+            let rejected = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/internal/runtime/results".to_owned(),
+                    body,
+                    principal: json!({}),
+                })
+                .await;
+            assert_eq!(rejected.status, expected_status.as_u16());
+            assert_eq!(
+                service
+                    .store
+                    .list_server_run_events("owned-run", 0, usize::MAX)
+                    .await
+                    .unwrap(),
+                run_events_before_invalid_handoff,
+                "malformed or oversized result must not append runtime events"
+            );
+            assert!(service
+                .store
+                .replay_raw_events("alpha", 0, 100)
+                .await
+                .unwrap()
+                .iter()
+                .all(|event| event.event_id != "owner-check-event"));
+            assert_eq!(
+                service
+                    .store
+                    .get_projected_lane_message("lane-1")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "claimed",
+                "malformed or oversized result must preserve the active claim"
+            );
+        }
         for field in ["message_id", "claimed_by", "run_id", "step_id", "correlation_id"] {
             let mut invalid_handoff = worker_result.clone();
             invalid_handoff["handoff"][field] = if field == "run_id" {

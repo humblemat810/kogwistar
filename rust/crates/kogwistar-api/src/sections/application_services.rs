@@ -1625,6 +1625,13 @@ impl ApplicationService for SqliteRunApplicationService {
             }
             if request.method == "POST" && request.path_and_query == INTERNAL_RUNTIME_RESULTS_ROUTE
             {
+                if request.body.len() > MAX_RUNTIME_WORKER_RESULT_BYTES {
+                    return effect_error(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        "KOGWISTAR_REQUEST_TOO_LARGE",
+                        "Runtime worker result exceeds the 2 MiB request limit",
+                    );
+                }
                 if let Ok(input) =
                     serde_json::from_slice::<RuntimeWorkerResultRequest>(&request.body)
                     && input

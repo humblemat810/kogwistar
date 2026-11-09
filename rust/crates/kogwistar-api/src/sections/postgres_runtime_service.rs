@@ -4112,15 +4112,9 @@ impl PostgresRunApplicationService {
     }
 
     async fn apply_runtime_result(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        let input: RuntimeWorkerResultRequest = match serde_json::from_slice(&request.body) {
+        let input = match runtime_worker_result_from_body(&request.body) {
             Ok(value) => value,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_INVALID_REQUEST",
-                    error.to_string(),
-                );
-            }
+            Err(response) => return response,
         };
         self.apply_runtime_result_input(input, Some(request), None, "python-worker")
             .await
