@@ -1793,7 +1793,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                         (graph_namespace,),
                     ).fetchall()
             if backend == "pg":
-                assert len(graph_events) >= 2
+                assert len(graph_events) == 4
                 graph_event = next(
                     event
                     for event in graph_events
@@ -1815,6 +1815,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     .get("entity_type")
                     == "acl_record"
                 ]
+                assert len(acl_payloads) == 3
                 assert {
                     payload["metadata"]["acl_target_grain"]
                     for payload in acl_payloads
