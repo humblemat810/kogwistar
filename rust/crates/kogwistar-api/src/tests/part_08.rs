@@ -3682,6 +3682,27 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             Some(r#"{"source_ids":["redirect-current"],"target_ids":["redirect-neighbor"]}"#),
         ),
         mutation(
+            "redirect-edge-old",
+            "gke_edges",
+            "edge",
+            json!({"source_ids":[],"target_ids":[],"lifecycle_status":"tombstoned","redirect_to_id":"redirect-edge"}),
+            Some(r#"{"source_ids":[],"target_ids":[]}"#),
+        ),
+        mutation(
+            "redirect-edge-source",
+            "gke_edges",
+            "edge",
+            json!({"source_ids":[],"target_ids":[],"lifecycle_status":"tombstoned","redirect_to_id":"redirect-edge"}),
+            Some(r#"{"source_ids":[],"target_ids":[]}"#),
+        ),
+        mutation(
+            "redirect-edge-old",
+            "gke_nodes",
+            "node",
+            json!({"label":"same-string tombstoned node"}),
+            Some("same-string tombstoned node"),
+        ),
+        mutation(
             "redirect-old-private",
             "gke_nodes",
             "node",
@@ -3699,8 +3720,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "redirect-private-edge",
             "gke_edges",
             "edge",
-            json!({"source_ids":["redirect-private"],"target_ids":["redirect-neighbor"]}),
-            Some(r#"{"source_ids":["redirect-private"],"target_ids":["redirect-neighbor"]}"#),
+            json!({"source_ids":["redirect-current"],"target_ids":["redirect-neighbor"]}),
+            Some(r#"{"source_ids":["redirect-current"],"target_ids":["redirect-neighbor"]}"#),
+        ),
+        mutation(
+            "redirect-private-edge-old",
+            "gke_edges",
+            "edge",
+            json!({"source_ids":[],"target_ids":[],"lifecycle_status":"tombstoned","redirect_to_id":"redirect-private-edge"}),
+            Some(r#"{"source_ids":[],"target_ids":[]}"#),
         ),
         mutation(
             "acl-redirect-current",
@@ -3734,7 +3762,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "acl-redirect-private-edge",
             "gke_nodes",
             "node",
-            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"redirect-private-edge","acl_version":1,"acl_mode":"public"}),
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":"redirect-private-edge","acl_version":1,"acl_mode":"private","acl_owner_id":"other-user"}),
             None,
         ),
     ]
@@ -3792,6 +3820,44 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         serde_json::from_slice(&to_bytes(redirected.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(redirected["nodes"], json!(["redirect-neighbor"]));
     assert_eq!(redirected["edges"], json!(["redirect-edge"]));
+
+    let redirected_edge = read_redirect("redirect-edge-old", "redirect").await.unwrap();
+    assert_eq!(redirected_edge.status(), StatusCode::OK);
+    let redirected_edge: Value = serde_json::from_slice(
+        &to_bytes(redirected_edge.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(redirected_edge["nodes"], json!([]));
+    assert_eq!(redirected_edge["edges"], json!([]));
+
+    let redirected_edge_source = read_redirect("redirect-edge-source", "redirect")
+        .await
+        .unwrap();
+    assert_eq!(redirected_edge_source.status(), StatusCode::OK);
+    let redirected_edge_source: Value = serde_json::from_slice(
+        &to_bytes(redirected_edge_source.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        redirected_edge_source["nodes"],
+        json!(["redirect-current", "redirect-neighbor"])
+    );
+    assert_eq!(redirected_edge_source["edges"], json!([]));
+
+    let private_edge_redirect = read_redirect("redirect-private-edge-old", "redirect")
+        .await
+        .unwrap();
+    assert_eq!(private_edge_redirect.status(), StatusCode::OK);
+    let private_edge_redirect: Value = serde_json::from_slice(
+        &to_bytes(private_edge_redirect.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(private_edge_redirect["nodes"], json!([]));
+    assert_eq!(private_edge_redirect["edges"], json!([]));
 
     let private_redirect = read_redirect("redirect-old-private", "redirect")
         .await

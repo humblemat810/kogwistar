@@ -958,6 +958,16 @@ pub fn graph_neighbors_from_records(
 /// themselves, tombstones without a target and broken/cyclic chains resolve to
 /// no node. Callers must still apply ACL filtering to the returned target.
 pub fn resolve_graph_node_redirect_id(rid: &str, nodes: &[GraphRecord]) -> Option<String> {
+    resolve_graph_entity_redirect_id(rid, nodes)
+}
+
+/// Resolve an edge ID to its active redirect target from an edge snapshot.
+/// The supplied records must be edges; callers remain responsible for ACL checks.
+pub fn resolve_graph_edge_redirect_id(rid: &str, edges: &[GraphRecord]) -> Option<String> {
+    resolve_graph_entity_redirect_id(rid, edges)
+}
+
+fn resolve_graph_entity_redirect_id(rid: &str, records: &[GraphRecord]) -> Option<String> {
     let mut current = rid.trim().to_owned();
     if current.is_empty() {
         return None;
@@ -968,8 +978,8 @@ pub fn resolve_graph_node_redirect_id(rid: &str, nodes: &[GraphRecord]) -> Optio
         if !visited.insert(current.clone()) {
             return None;
         }
-        let node = nodes.iter().find(|node| node.id == current)?;
-        if let Some(target) = node
+        let record = records.iter().find(|record| record.id == current)?;
+        if let Some(target) = record
             .metadata
             .get("redirect_to_id")
             .and_then(Value::as_str)
@@ -979,7 +989,7 @@ pub fn resolve_graph_node_redirect_id(rid: &str, nodes: &[GraphRecord]) -> Optio
             current = target.to_owned();
             continue;
         }
-        if is_tombstoned(&node.metadata) {
+        if is_tombstoned(&record.metadata) {
             return None;
         }
         return Some(current);
@@ -4224,6 +4234,66 @@ mod tests {
             .insert("redirect_to_id".to_owned(), json!("cycle-a"));
         assert_eq!(
             resolve_graph_node_redirect_id("cycle-a", &[cycle_a, cycle_b]),
+            None
+        );
+    }
+
+    #[test]
+    fn edge_redirect_resolution_matches_python_lifecycle_modes() {
+        let mut redirected = edge_record("old-edge", json!({"source_ids": [], "target_ids": []}));
+        redirected
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        redirected
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("middle-edge"));
+        let mut middle = edge_record("middle-edge", json!({"source_ids": [], "target_ids": []}));
+        middle
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        middle
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("current-edge"));
+        let edges = vec![
+            redirected.clone(),
+            middle,
+            edge_record("current-edge", json!({})),
+        ];
+
+        assert_eq!(
+            resolve_graph_edge_redirect_id("old-edge", &edges),
+            Some("current-edge".into())
+        );
+        assert_eq!(
+            resolve_graph_edge_redirect_id("current-edge", &edges),
+            Some("current-edge".into())
+        );
+        assert_eq!(resolve_graph_edge_redirect_id("missing", &edges), None);
+
+        let mut tombstone = edge_record("gone-edge", json!({}));
+        tombstone
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        let mut broken = redirected;
+        broken
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("missing-edge"));
+        assert_eq!(
+            resolve_graph_edge_redirect_id("gone-edge", &[tombstone]),
+            None
+        );
+        assert_eq!(resolve_graph_edge_redirect_id("old-edge", &[broken]), None);
+
+        let mut cycle_a = edge_record("cycle-edge-a", json!({}));
+        cycle_a
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("cycle-edge-b"));
+        let mut cycle_b = edge_record("cycle-edge-b", json!({}));
+        cycle_b
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("cycle-edge-a"));
+        assert_eq!(
+            resolve_graph_edge_redirect_id("cycle-edge-a", &[cycle_a, cycle_b]),
             None
         );
     }

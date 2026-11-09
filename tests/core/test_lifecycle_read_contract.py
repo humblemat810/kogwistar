@@ -172,6 +172,40 @@ def test_each_node_edge_family_preserves_shared_mixin_contract(
     assert edge_mixins > (node_mixins - node_only_mixins)
 
 
+def test_python_edge_reads_follow_redirect_chain(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path), backend_factory=build_fake_backend
+    )
+    try:
+        old_edge = build_relationship_edge(
+            edge_id="redirect-edge-old",
+            src="redirect-source",
+            tgt="redirect-target",
+            doc_id="doc:redirect-edge",
+        )
+        current_edge = build_relationship_edge(
+            edge_id="redirect-edge-current",
+            src="redirect-source",
+            tgt="redirect-target",
+            doc_id="doc:redirect-edge",
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="redirect-source", doc_id="doc:redirect-edge")
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="redirect-target", doc_id="doc:redirect-edge")
+        )
+        engine.write.add_edge(old_edge)
+        engine.write.add_edge(current_edge)
+
+        assert engine.lifecycle.redirect_edge(old_edge.id, current_edge.id)
+        resolved = engine.read.get_edges(ids=[old_edge.id], resolve_mode="redirect")
+
+        assert [edge.id for edge in resolved] == [current_edge.id]
+    finally:
+        engine.close()
+
+
 def test_semantic_queries_filter_tombstones_from_stale_projections(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

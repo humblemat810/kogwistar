@@ -1932,7 +1932,13 @@ impl PostgresRunApplicationService {
         };
         let resolved_rid = match input.resolve_mode {
             GraphNeighborsResolveModeV1::ActiveOnly => Some(rid.to_owned()),
-            GraphNeighborsResolveModeV1::Redirect => resolve_graph_node_redirect_id(rid, &nodes),
+            GraphNeighborsResolveModeV1::Redirect => {
+                if nodes.iter().any(|node| node.id == rid) {
+                    resolve_graph_node_redirect_id(rid, &nodes)
+                } else {
+                    resolve_graph_edge_redirect_id(rid, &edges)
+                }
+            }
         };
         let principal = graph_acl_principal_from_claims(
             &request.principal,

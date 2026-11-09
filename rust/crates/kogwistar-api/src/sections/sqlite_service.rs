@@ -5205,14 +5205,27 @@ impl SqliteRunApplicationService {
         let rid = match input.resolve_mode {
             GraphNeighborsResolveModeV1::ActiveOnly => Some(input.rid.trim().to_owned()),
             GraphNeighborsResolveModeV1::Redirect => match self
-                .resolve_chroma_node_redirect_target(
+                .resolve_chroma_redirect_target(
                     request,
                     input.rid.trim(),
+                    GraphEntityKind::Node,
                     &graph_snapshot,
                 )
                 .await
             {
-                Ok(target) => target,
+                Ok((true, target)) => target,
+                Ok((false, _)) => match self
+                    .resolve_chroma_redirect_target(
+                        request,
+                        input.rid.trim(),
+                        GraphEntityKind::Edge,
+                        &graph_snapshot,
+                    )
+                    .await
+                {
+                    Ok((_, target)) => target,
+                    Err(response) => return response,
+                },
                 Err(response) => return response,
             },
         };
@@ -5231,12 +5244,13 @@ impl SqliteRunApplicationService {
         )
     }
 
-    async fn resolve_chroma_node_redirect_target(
+    async fn resolve_chroma_redirect_target(
         &self,
         request: &ApiEffectRequest,
-        node_id: &str,
+        entity_id: &str,
+        entity_kind: GraphEntityKind,
         visible_graph: &GraphAclProjection,
-    ) -> Result<Option<String>, ApiEffectResponse> {
+    ) -> Result<(bool, Option<String>), ApiEffectResponse> {
         const MAX_REDIRECT_HOPS: usize = 10_000;
         let scope = security_scope_value(&request.principal);
         let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
@@ -5249,22 +5263,22 @@ impl SqliteRunApplicationService {
         })?;
         let mut chain = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
-        let mut current = node_id.to_owned();
+        let mut current = entity_id.to_owned();
 
         for _ in 0..MAX_REDIRECT_HOPS {
             if !visited.insert(current.clone()) {
-                return Ok(None);
+                return Ok((!chain.is_empty(), None));
             }
             let record = match kogwistar_store::GraphReadStore::graph_record_of_kind(
                 graph,
                 namespace,
-                GraphEntityKind::Node,
+                entity_kind,
                 &current,
             )
             .await
             {
                 Ok(Some(record)) => record,
-                Ok(None) => return Ok(None),
+                Ok(None) => return Ok((!chain.is_empty(), None)),
                 Err(error) => {
                     return Err(effect_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -5274,7 +5288,7 @@ impl SqliteRunApplicationService {
                 }
             };
             if !chroma_record_matches_principal_scope(&record, &request.principal) {
-                return Ok(None);
+                return Ok((true, None));
             }
             let redirect_to = record
                 .metadata
@@ -5285,14 +5299,21 @@ impl SqliteRunApplicationService {
                 .map(str::to_owned);
             chain.push(record);
             let Some(target) = redirect_to else {
-                let resolved = resolve_graph_node_redirect_id(node_id, &chain);
-                return Ok(resolved.filter(|target| {
-                    visible_graph.nodes().iter().any(|node| &node.id == target)
-                }));
+                let resolved = match entity_kind {
+                    GraphEntityKind::Node => resolve_graph_node_redirect_id(entity_id, &chain),
+                    GraphEntityKind::Edge => resolve_graph_edge_redirect_id(entity_id, &chain),
+                };
+                let visible = match entity_kind {
+                    GraphEntityKind::Node => visible_graph.nodes(),
+                    GraphEntityKind::Edge => visible_graph.edges(),
+                };
+                return Ok((true, resolved.filter(|target| {
+                    visible.iter().any(|record| &record.id == target)
+                })));
             };
             current = target;
         }
-        Ok(None)
+        Ok((!chain.is_empty(), None))
     }
 
     async fn chroma_graph_find_edges_effect(

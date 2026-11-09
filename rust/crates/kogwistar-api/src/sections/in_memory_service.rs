@@ -1186,7 +1186,11 @@ impl InMemoryGraphApplicationService {
                 Ok(input) => match input.resolve_mode {
                     GraphNeighborsResolveModeV1::ActiveOnly => Some(input.rid.trim().to_owned()),
                     GraphNeighborsResolveModeV1::Redirect => {
-                        resolve_graph_node_redirect_id(input.rid.trim(), &nodes)
+                        if nodes.iter().any(|node| node.id == input.rid.trim()) {
+                            resolve_graph_node_redirect_id(input.rid.trim(), &nodes)
+                        } else {
+                            resolve_graph_edge_redirect_id(input.rid.trim(), &edges)
+                        }
                     }
                 },
                 Err(_) => None,

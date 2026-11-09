@@ -5732,6 +5732,10 @@
                         "distances":[[0.02,0.1,0.01,0.04]]
                     })
                 } else if line.contains("collection-nodes/get")
+                    && input["ids"] == json!(["redirect-edge-old"])
+                {
+                    json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
+                } else if line.contains("collection-nodes/get")
                     && input["ids"].as_array().is_some_and(|ids| ids == &[json!("redirect-old")])
                 {
                     json!({
@@ -5747,6 +5751,24 @@
                         "ids":["n2"],
                         "documents":[r#"{"id":"n2","label":"Lung Cancer"}"#],
                         "metadatas":[{"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_ids\":[\"doc-a\"],\"_kogwistar_stage2_ready\":true,\"_kogwistar_source_revision\":2}"}],
+                        "embeddings":[null]
+                    })
+                } else if line.contains("collection-edges/get")
+                    && input["ids"] == json!(["redirect-edge-old"])
+                {
+                    json!({
+                        "ids":["redirect-edge-old"],
+                        "documents":[r#"{"id":"redirect-edge-old","source_ids":[],"target_ids":[],"metadata":{"lifecycle_status":"tombstoned","redirect_to_id":"e1"}}"#],
+                        "metadatas":[{"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"lifecycle_status\":\"tombstoned\",\"redirect_to_id\":\"e1\"}"}],
+                        "embeddings":[null]
+                    })
+                } else if line.contains("collection-edges/get")
+                    && input["ids"] == json!(["e1"])
+                {
+                    json!({
+                        "ids":["e1"],
+                        "documents":[r#"{"id":"e1","source_ids":["n1"],"target_ids":["n2"],"doc_id":"doc-a"}"#],
+                        "metadatas":[{"_kogwistar_namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts","_kogwistar_original_metadata":"{\"workspace_id\":\"workspace-a\",\"graph_space\":\"facts\",\"doc_id\":\"doc-a\"}"}],
                         "embeddings":[null]
                     })
                 } else if line.contains("collection-nodes/get") {
@@ -6332,6 +6354,34 @@
         .unwrap();
         assert_eq!(redirected_read["nodes"], json!(["n1"]));
         assert_eq!(redirected_read["edges"], json!(["e1"]));
+
+        let redirected_edge_read = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/graph/neighbors")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        r#"{"rid":"redirect-edge-old","resolve_mode":"redirect"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(redirected_edge_read.status(), StatusCode::OK);
+        let redirected_edge_read: Value = serde_json::from_slice(
+            &to_bytes(redirected_edge_read.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(redirected_edge_read["nodes"], json!(["n1", "n2"]));
+        assert_eq!(redirected_edge_read["edges"], json!([]));
 
         let semantic_read = app
             .clone()
