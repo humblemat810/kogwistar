@@ -2731,19 +2731,35 @@
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/workflow/runs/{cancelled_run_id}/cancel"))
+                    .uri(format!("/api/runs/{cancelled_run_id}/cancel"))
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(cancel_before_claim.status(), StatusCode::ACCEPTED);
+        let cancel_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-cancel-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            cancel_before_claim.status().as_u16(),
+            cancel_contract["accepted_status"].as_u64().unwrap() as u16
+        );
         let cancel_body = to_bytes(cancel_before_claim.into_body(), 8192)
             .await
             .unwrap();
         let cancelled_run = serde_json::from_slice::<Value>(&cancel_body).unwrap();
         assert_eq!(cancelled_run["status"], "cancelled");
+        for field in cancel_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(cancelled_run.get(field).is_some(), "missing {field}");
+        }
+        assert!(cancel_contract["accepted_run_statuses"]
+            .as_array()
+            .unwrap()
+            .contains(&cancelled_run["status"]));
+        assert_eq!(cancelled_run["cancel_requested"], true);
         assert_eq!(cancelled_run["terminal"], true);
         let cancelled_claim = app
             .clone()

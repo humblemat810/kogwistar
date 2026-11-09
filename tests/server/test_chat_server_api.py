@@ -1317,6 +1317,14 @@ def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engi
 
 def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    cancel_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "run-cancel-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner
     )
@@ -1338,7 +1346,15 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
         run_id = submit.json()["run_id"]
 
         cancel = client.post(f"/api/runs/{run_id}/cancel", headers=rw_headers)
-        assert cancel.status_code == 202
+        assert cancel.status_code == cancel_contract["accepted_status"]
+        cancel_payload = cancel.json()
+        assert set(cancel_contract["required_fields"]).issubset(cancel_payload)
+        assert cancel_payload["run_id"] == run_id
+        assert cancel_payload["cancel_requested"] is True
+        assert cancel_payload["status"] in cancel_contract["accepted_run_statuses"]
+        assert cancel_payload["terminal"] is (
+            cancel_payload["status"] in cancel_contract["terminal_statuses"]
+        )
         cancel_nodes = conversation_engine.get_nodes(
             where={
                 "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
