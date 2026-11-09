@@ -680,6 +680,8 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
         metadata = {"visibility": spec["mode"]}
         if "security_scope" in spec:
             metadata["security_scope"] = spec["security_scope"]
+        if "owner_id" in spec:
+            metadata["owner_agent_id"] = spec["owner_id"]
         if "lifecycle_status" in spec:
             metadata["lifecycle_status"] = spec["lifecycle_status"]
         edge = build_relationship_edge(
@@ -737,14 +739,17 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
                 for embedding in fixture["query_embeddings"]
             ]
         for query_index, hits in enumerate(scored_node_results):
-            assert [hit.node.id for hit in hits] == principal["expected"]["nodes"][
-                query_index
-            ]
+            expected = principal["expected"]
+            expected_nodes = expected.get("scored_nodes", expected["nodes"])
+            expected_distances = expected.get(
+                "scored_distances", expected["distances"]
+            )["nodes"]
+            assert [hit.node.id for hit in hits] == expected_nodes[query_index]
             assert [hit.raw_distance for hit in hits] == pytest.approx(
-                principal["expected"]["distances"]["nodes"][query_index]
+                expected_distances[query_index]
             )
             assert [hit.similarity for hit in hits] == pytest.approx(
-                [1.0 - distance for distance in principal["expected"]["distances"]["nodes"][query_index]]
+                [1.0 - distance for distance in expected_distances[query_index]]
             )
 
     with _claims("ro", fixture["truth_graph"], sub="owner-b"):

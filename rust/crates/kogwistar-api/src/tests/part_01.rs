@@ -2499,7 +2499,7 @@
                 "sub": subject,
                 "ns": scope.namespace,
                 "storage_ns": scope.namespace,
-                "workspace": scope.workspace_id,
+                "workspace_id": scope.workspace_id,
                 "capabilities": ["read_graph"]
             });
             if let Some(scope_parts) = principal.get("scope_parts") {
@@ -2514,6 +2514,7 @@
                     "entity_kind": entity_kind,
                     "query_embeddings": fixture["query_embeddings"],
                     "metric": fixture["metric"],
+                    "truth_graph": fixture["truth_graph"],
                     "n_results": fixture["n_results"],
                     "include": ["distances"]
                 });

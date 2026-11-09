@@ -4408,7 +4408,6 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             "role": "rw",
             "ns": ["docs"],
             "storage_ns": fixture["scope"]["namespace"],
-            "workspace": fixture["scope"]["workspace_id"],
             "workspace_id": fixture["scope"]["workspace_id"],
             "capabilities": capabilities,
             "exp": now + 300
