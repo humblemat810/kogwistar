@@ -959,6 +959,34 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         latest_state = checkpoint.json()["checkpoints"][-1]["state"]
         assert "_deps" not in latest_state
         token_id = latest_state["_rt_join"]["suspended"][0][2]
+        if backend == "sqlite":
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+            process = subprocess.Popen(
+                [str(RUST_SERVER)],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(100):
+                if process.poll() is not None:
+                    stderr = process.stderr.read() if process.stderr is not None else ""
+                    raise AssertionError(
+                        f"Rust server failed to restart for resume: {stderr}"
+                    )
+                try:
+                    if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    time.sleep(0.05)
+            else:
+                raise AssertionError("Rust SQLite server did not recover for resume")
         resumed = runtime.resume_run(
             run_id="run-sync-resume-live",
             suspended_node_id="gate",
