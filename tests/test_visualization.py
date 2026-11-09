@@ -146,6 +146,12 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         if target.get("grain") == "node"
         and target.get("mode") in {"shared", "group"}
     ]
+    edge_share_policies = [
+        target
+        for target in acl_fixture["targets"]
+        if target.get("grain") == "edge"
+        and target.get("mode") in {"shared", "group"}
+    ]
     edge_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "edge-public"
     )
@@ -364,7 +370,12 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert [
                 item["data"]["id"] for item in cytoscape_payload["elements"]
             ] == expected_ids
-        for edge_policy_item in (edge_policy, private_edge_policy, scope_edge_policy):
+        for edge_policy_item in (
+            edge_policy,
+            private_edge_policy,
+            scope_edge_policy,
+            *edge_share_policies,
+        ):
             edge = Edge(
                 id=edge_policy_item["id"],
                 label=f"{edge_policy_item['mode']} fixture edge",
@@ -394,6 +405,10 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 edge_acl["owner_id"] = owner_id
             if security_scope := edge_policy_item.get("security_scope"):
                 edge_acl["security_scope"] = security_scope
+            if shared_with_principals := edge_policy_item.get("shared_with_principals"):
+                edge_acl["shared_with_principals"] = shared_with_principals
+            if shared_with_groups := edge_policy_item.get("shared_with_groups"):
+                edge_acl["shared_with_groups"] = shared_with_groups
             owner_engine.acl_graph.add_record(grain="edge", **edge_acl)
             grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(edge)
             for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
@@ -433,6 +448,10 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         assert scope_edge_policy["id"] not in [
             node["id"] for node in public_edge_d3_payload["nodes"]
         ]
+        for share_policy in edge_share_policies:
+            assert share_policy["id"] not in [
+                node["id"] for node in public_edge_d3_payload["nodes"]
+            ]
 
         for principal_id, expected_visible in (
             (owner_policy["owner_id"], False),
@@ -553,6 +572,34 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             for policy in share_policies
             if policy["mode"] == "group"
         )
+        assert edge_share_policies[0]["id"] in [
+            node["id"] for node in directly_shared_payload["nodes"]
+        ]
+        assert edge_share_policies[1]["id"] not in [
+            node["id"] for node in directly_shared_payload["nodes"]
+        ]
+
+        token = claims_ctx.set(
+            {
+                "agent_id": owner_policy["owner_id"],
+                "ns": acl_fixture["truth_graph"],
+                "security_scope": acl_fixture["principal"]["security_scope"],
+                "groups": acl_fixture["principal"]["groups"],
+            }
+        )
+        try:
+            group_shared = cast(
+                JSONResponse,
+                server.api_viz_d3(
+                    mode="reify", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            group_shared_payload = json.loads(bytes(group_shared.body))
+        finally:
+            claims_ctx.reset(token)
+        assert edge_share_policies[1]["id"] in [
+            node["id"] for node in group_shared_payload["nodes"]
+        ]
 
         token = claims_ctx.set(
             {

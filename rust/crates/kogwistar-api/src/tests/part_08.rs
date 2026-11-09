@@ -2797,6 +2797,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 && matches!(target["mode"].as_str(), Some("shared" | "group"))
         })
         .collect();
+    let edge_share_policies: Vec<&Value> = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|target| {
+            target["grain"] == "edge"
+                && matches!(target["mode"].as_str(), Some("shared" | "group"))
+        })
+        .collect();
     let fixture_principal_id = acl_fixture["principal"]["id"].as_str().unwrap();
     let fixture_groups: Vec<String> = acl_fixture["principal"]["groups"]
         .as_array()
@@ -3199,6 +3208,44 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         }),
         None,
     ));
+    for (index, policy) in edge_share_policies.iter().enumerate() {
+        let entity_id = policy["id"].as_str().unwrap();
+        let edge_data = json!({
+            "source_ids":[shared_entity_id],
+            "target_ids":[shared_entity_id],
+            "source_edge_ids":[],
+            "target_edge_ids":[],
+            "relation":"shared references"
+        });
+        let edge_document = edge_data.to_string();
+        mutations.push(mutation(
+            entity_id,
+            "gke_edges",
+            "edge",
+            edge_data,
+            Some(&edge_document),
+        ));
+        let mut acl_record = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":acl_fixture["truth_graph"],
+            "acl_target_grain":policy["grain"],
+            "acl_target_entity_id":entity_id,
+            "acl_version":1,
+            "acl_mode":policy["mode"]
+        });
+        for field in ["shared_with_principals", "shared_with_groups"] {
+            if let Some(value) = policy.get(field) {
+                acl_record[field] = value.clone();
+            }
+        }
+        mutations.push(mutation(
+            &format!("acl-edge-shared-{index}"),
+            "gke_nodes",
+            "node",
+            acl_record,
+            None,
+        ));
+    }
     for (index, embedding) in [
         (0, json!([1.0, 0.0])),
         (1, json!([0.8, 0.2])),
@@ -3768,6 +3815,12 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 !rendered_nodes.contains(scope_edge_id),
                 "a principal without the matching scope must not see the scoped edge: {payload}"
             );
+            for share_policy in &edge_share_policies {
+                assert!(
+                    !rendered_nodes.contains(share_policy["id"].as_str().unwrap()),
+                    "an unshared principal must not see a shared/group edge: {payload}"
+                );
+            }
             assert!(
                 !rendered_nodes.contains(owner_entity_id),
                 "a non-owner must not see the private fixture node: {payload}"
@@ -3927,6 +3980,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 visible_nodes.contains(share_policy["id"].as_str().unwrap()),
                 should_be_visible,
                 "principal groups {groups:?} had incorrect share visibility: {shared_payload}"
+            );
+        }
+        for share_policy in &edge_share_policies {
+            let should_be_visible = share_policy["mode"] == "shared" || expected_group_nodes;
+            assert_eq!(
+                visible_nodes.contains(share_policy["id"].as_str().unwrap()),
+                should_be_visible,
+                "principal groups {groups:?} had incorrect edge-share visibility: {shared_payload}"
             );
         }
     }

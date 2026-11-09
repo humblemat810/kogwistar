@@ -18,12 +18,13 @@
     {"id": "node-no-acl", "grain": "node"},
     {"id": "edge-public", "grain": "edge", "mode": "public"},
     {"id": "edge-shared", "grain": "edge", "mode": "shared", "shared_with_principals": ["alice"]},
+    {"id": "edge-group", "grain": "edge", "mode": "group", "shared_with_groups": ["reviewers"]},
     {"id": "edge-private", "grain": "edge", "mode": "private", "owner_id": "bob"},
     {"id": "edge-scope", "grain": "edge", "mode": "scope", "security_scope": "team-a"}
   ],
   "expected_visible": {
     "nodes": ["node-public", "node-owner", "node-shared", "node-group", "node-unicode-group", "node-scope"],
-    "edges": ["edge-public", "edge-shared", "edge-scope"]
+    "edges": ["edge-public", "edge-shared", "edge-group", "edge-scope"]
   },
   "graph_type_isolation": {
     "entity_id": "same-id-in-distinct-graphs",
