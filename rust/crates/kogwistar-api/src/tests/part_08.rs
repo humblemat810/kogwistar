@@ -316,6 +316,109 @@ async fn in_memory_native_admission_uses_authoritative_design_and_rejects_confli
 }
 
 #[tokio::test]
+async fn in_memory_run_owner_revalidation_rejects_revoked_inactive_and_changed_scope() {
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-owner-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "alice".to_owned(),
+        email: "alice@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "alice".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "alpha".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = InMemoryGraphApplicationService::default()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let principal = json!({
+        "user_id":"alice",
+        "sub":"alice",
+        "role":"rw",
+        "ns":["workflow", "alpha"],
+        "storage_ns":"alpha",
+        "capabilities":["workflow.run.write", "write_graph"]
+    });
+    let admitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"memory-owner-revalidation",
+                "workflow_id":"memory-owner-workflow",
+                "conversation_id":"memory-owner-conversation",
+                "node_ops":{"start":"noop"},
+                "node_executor_targets":{"start":"rust-native"}
+            }))
+            .unwrap(),
+            principal,
+        })
+        .await;
+    assert_eq!(admitted.status, StatusCode::ACCEPTED.as_u16());
+    assert!(
+        service
+            .resolve_inline_native_owner_principal("memory-owner-revalidation", "write_graph")
+            .await
+            .is_ok()
+    );
+
+    let auth_connection = rusqlite::Connection::open(&auth_path).unwrap();
+    auth_connection
+        .execute(
+            "UPDATE users SET global_role = 'ro' WHERE user_id = 'alice'",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        service
+            .resolve_inline_native_owner_principal("memory-owner-revalidation", "write_graph")
+            .await,
+        Err(InlineOwnerPrincipalError::Denied(_))
+    ));
+
+    auth_connection
+        .execute(
+            "UPDATE users SET global_role = 'rw', global_ns = 'beta' WHERE user_id = 'alice'",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        service
+            .resolve_inline_native_owner_principal("memory-owner-revalidation", "write_graph")
+            .await,
+        Err(InlineOwnerPrincipalError::Denied(_))
+    ));
+
+    auth_connection
+        .execute(
+            "UPDATE users SET global_ns = 'alpha', is_active = 0 WHERE user_id = 'alice'",
+            [],
+        )
+        .unwrap();
+    assert!(matches!(
+        service
+            .resolve_inline_native_owner_principal("memory-owner-revalidation", "write_graph")
+            .await,
+        Err(InlineOwnerPrincipalError::Denied(_))
+    ));
+    drop(auth_connection);
+    drop(service);
+    let _ = std::fs::remove_file(auth_path);
+}
+
+#[tokio::test]
 async fn in_memory_native_run_admission_is_reachable_through_authenticated_http() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;

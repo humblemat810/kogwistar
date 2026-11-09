@@ -748,6 +748,10 @@ pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Err
         service = service
             .with_search_index_path(search_index_path)
             .map_err(std::io::Error::other)?;
+        service = service
+            .with_owner_auth_config(&state.auth)
+            .await
+            .map_err(std::io::Error::other)?;
         let embedding_provider = embedding_provider_from_settings(
             std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
                 .ok()

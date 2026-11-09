@@ -5,6 +5,7 @@ struct InMemoryGraphApplicationService {
     capabilities: SharedCapabilityState,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
+    owner_auth_store: Option<AuthStore>,
 }
 
 impl Default for InMemoryGraphApplicationService {
@@ -14,11 +15,89 @@ impl Default for InMemoryGraphApplicationService {
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
             embedding_provider: None,
             search_index_fts: None,
+            owner_auth_store: None,
         }
     }
 }
 
 impl InMemoryGraphApplicationService {
+    #[allow(dead_code)] // Wired by the in-memory provider-request worker slice.
+    async fn resolve_inline_native_owner_principal(
+        &self,
+        run_id: &str,
+        required_capability: &str,
+    ) -> Result<Value, InlineOwnerPrincipalError> {
+        let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, run_id)
+            .await
+            .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied("native worker run is missing".to_owned())
+            })?;
+        let owner_id = run
+            .user_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run has no authenticated owner".to_owned(),
+                )
+            })?;
+        let created =
+            kogwistar_store::ServerRunReadStore::server_run_events(&self.store, run_id, 0, 1)
+                .await
+                .map_err(|error| InlineOwnerPrincipalError::Unavailable(error.to_string()))?
+                .into_iter()
+                .find(|event| event.event_type == "run.created")
+                .ok_or_else(|| {
+                    InlineOwnerPrincipalError::Denied(
+                        "native worker run has no admission event".to_owned(),
+                    )
+                })?;
+        let created_payload: Value = serde_json::from_str(&created.payload_json).map_err(|_| {
+            InlineOwnerPrincipalError::Denied("native worker admission event is invalid".to_owned())
+        })?;
+        let binding: RuntimeOwnerBindingV1 = serde_json::from_value(
+            created_payload
+                .get("runtime_owner_binding")
+                .cloned()
+                .ok_or_else(|| {
+                    InlineOwnerPrincipalError::Denied(
+                        "native worker run has no trusted owner binding".to_owned(),
+                    )
+                })?,
+        )
+        .map_err(|_| {
+            InlineOwnerPrincipalError::Denied("native worker owner binding is invalid".to_owned())
+        })?;
+        if binding.user_id != owner_id {
+            return Err(InlineOwnerPrincipalError::Denied(
+                "native worker owner binding does not match the durable run owner".to_owned(),
+            ));
+        }
+        let auth_store = self.owner_auth_store.as_ref().ok_or_else(|| {
+            InlineOwnerPrincipalError::Unavailable(
+                "native worker owner revalidation is not configured".to_owned(),
+            )
+        })?;
+        let user = auth_store
+            .auth_user(owner_id)
+            .await
+            .map_err(InlineOwnerPrincipalError::Unavailable)?
+            .filter(|user| user.is_active)
+            .ok_or_else(|| {
+                InlineOwnerPrincipalError::Denied(
+                    "native worker run owner is missing or inactive".to_owned(),
+                )
+            })?;
+        revalidated_runtime_owner_principal(
+            &binding,
+            &user,
+            &self.capabilities,
+            required_capability,
+        )
+        .map_err(InlineOwnerPrincipalError::Denied)
+    }
+
     // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#execute_native_step_once; python=kogwistar/runtime/rust_worker.py#RustRuntimeWorker; fixture=contracts/golden/runtime-native-noop-v1.json,contracts/golden/runtime-native-increment-counter-v1.json,contracts/golden/runtime-native-emit-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_inline_native_result_is_persisted_and_completes_run; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_python_worker_increment_counter_matches_shared_native_effect_golden; note=Rust-native operations stay on Rust path; Python worker explicitly rejects native-target operations.
     async fn dead_letter_native_lane(
         &self,
@@ -185,6 +264,11 @@ impl InMemoryGraphApplicationService {
     fn with_embedding_provider(mut self, provider: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedding_provider = Some(provider);
         self
+    }
+
+    async fn with_owner_auth_config(mut self, config: &AuthConfig) -> Result<Self, String> {
+        self.owner_auth_store = Some(AuthStore::from_config(config).await?);
+        Ok(self)
     }
 
     fn with_search_index_path(mut self, path: impl AsRef<std::path::Path>) -> Result<Self, String> {
