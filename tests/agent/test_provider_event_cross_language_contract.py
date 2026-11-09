@@ -46,9 +46,19 @@ def test_python_provider_requests_match_shared_rust_golden_fixture() -> None:
     for expected in fixture["requests"]:
         request = ProviderRequest.model_validate(expected)
         assert request.model_dump(mode="json") == expected
-    for invalid in fixture["invalid_requests"]:
-        with pytest.raises(ValidationError):
+    expected_error_types = (
+        "literal_error",
+        "extra_forbidden",
+        "missing",
+        "int_from_float",
+    )
+    assert len(fixture["invalid_requests"]) == len(expected_error_types)
+    for invalid, expected_error_type in zip(
+        fixture["invalid_requests"], expected_error_types, strict=True
+    ):
+        with pytest.raises(ValidationError) as error:
             ProviderRequest.model_validate(invalid)
+        assert error.value.errors()[0]["type"] == expected_error_type
 
 
 def test_python_durable_provider_event_matches_shared_rust_golden_fixture() -> None:

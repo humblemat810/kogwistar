@@ -97,8 +97,31 @@ mod tests {
             let request = provider_request_from_str(&expected.to_string()).unwrap();
             assert_eq!(serde_json::to_value(request).unwrap(), expected);
         }
-        for invalid in fixture.invalid_requests {
-            assert!(provider_request_from_str(&invalid.to_string()).is_err());
+        let expected_errors = [
+            "invalid_version",
+            "invalid_payload",
+            "invalid_payload",
+            "invalid_integer",
+        ];
+        assert_eq!(fixture.invalid_requests.len(), expected_errors.len());
+        for (invalid, expected) in fixture.invalid_requests.into_iter().zip(expected_errors) {
+            let error = provider_request_from_str(&invalid.to_string()).unwrap_err();
+            match expected {
+                "invalid_version" => {
+                    assert_eq!(error, ProviderRequestContractError::InvalidVersion)
+                }
+                "invalid_payload" => assert!(matches!(
+                    error,
+                    ProviderRequestContractError::InvalidPayload { .. }
+                )),
+                "invalid_integer" => assert_eq!(
+                    error,
+                    ProviderRequestContractError::InvalidInteger {
+                        field: "max_output_tokens"
+                    }
+                ),
+                other => panic!("unknown provider-request fixture error {other}"),
+            }
         }
     }
 }
