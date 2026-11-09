@@ -6242,6 +6242,32 @@
                 },
             ).unwrap();
         }
+        let conversation_acl_id = "acl-n3-conversation";
+        let conversation_acl_metadata = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_entity_id":"n3",
+            "acl_target_grain":"node",
+            "acl_version":1,
+            "acl_mode":"public",
+            "workspace_id":"workspace-a",
+            "graph_space":"facts"
+        });
+        service.store.append_raw_entity_event(
+            "scope-a",
+            SqliteNewRawEntityEvent {
+                event_id: "canonical-acl-n3-conversation".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: conversation_acl_id.to_owned(),
+                op: "ADD".to_owned(),
+                payload_json: json!({
+                    "id":conversation_acl_id,
+                    "document":null,
+                    "metadata":conversation_acl_metadata
+                })
+                .to_string(),
+            },
+        ).unwrap();
         let graph_read_tools = [
             "kg_neighbors",
             "kg_load_persisted",
@@ -7118,6 +7144,79 @@
             r#"{"source_ids":["n1"],"target_ids":["n2"]}"#
         ]]));
         assert_eq!(edge_vector_query["distances"], json!([[0.1]]));
+
+        let revoke_edge_acl = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/mutations".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "contract_version":1,
+                    "atomic":true,
+                    "index_jobs":[],
+                    "mutations":[{
+                        "scope":{"namespace":"scope-a","workspace_id":"workspace-a","graph_space":"facts"},
+                        "table":"gke_nodes",
+                        "entity_kind":"node",
+                        "event_id":"revoke-chroma-acl-e4-v2",
+                        "op":"REPLACE",
+                        "payload":{
+                            "id":"acl-e4",
+                            "document":null,
+                            "metadata":{
+                                "entity_type":"acl_record",
+                                "acl_truth_graph":"knowledge",
+                                "acl_target_entity_id":"e4",
+                                "acl_target_grain":"edge",
+                                "acl_version":2,
+                                "acl_mode":"private",
+                                "owner_id":"different-owner",
+                                "workspace_id":"workspace-a",
+                                "graph_space":"facts"
+                            }
+                        },
+                        "record":{
+                            "id":"acl-e4",
+                            "document":null,
+                            "metadata":{
+                                "entity_type":"acl_record",
+                                "acl_truth_graph":"knowledge",
+                                "acl_target_entity_id":"e4",
+                                "acl_target_grain":"edge",
+                                "acl_version":2,
+                                "acl_mode":"private",
+                                "owner_id":"different-owner",
+                                "workspace_id":"workspace-a",
+                                "graph_space":"facts"
+                            },
+                            "embedding":null
+                        },
+                        "embedding_dim":0
+                    }]
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"acl-owner",
+                    "role":"rw",
+                    "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "capabilities":["write_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(revoke_edge_acl.status, StatusCode::OK.as_u16());
+        let post_revoke_snapshot = service
+            .chroma_graph_snapshot(
+                &request(INTERNAL_GRAPH_VIZ_D3_ROUTE, json!({}), json!(["read_graph"])),
+                "knowledge",
+            )
+            .await
+            .unwrap();
+        assert!(
+            post_revoke_snapshot.edges().iter().all(|edge| edge.id != "e4"),
+            "stale public Chroma ACL must not preserve a revoked edge"
+        );
 
         let observed = fake.await.unwrap();
         assert!(observed.len() >= 20);

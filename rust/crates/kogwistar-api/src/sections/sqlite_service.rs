@@ -3088,14 +3088,56 @@ impl SqliteRunApplicationService {
         }
         nodes.retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
         edges.retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
+        let entity_ids = nodes
+            .iter()
+            .chain(edges.iter())
+            .map(|record| record.id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if entity_ids.len() > MAX_GRAPH_SNAPSHOT_RECORDS {
+            return Err(effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_GRAPH_QUERY_ERROR",
+                "graph snapshot ACL set exceeds the 10000-record limit",
+            ));
+        }
+        let acl_scope = kogwistar_store::GraphScope {
+            namespace: namespace.to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let acl_records = self
+            .store
+            .immediate_transaction(|uow| {
+                uow.graph_acl_records_for_entities(&acl_scope, truth_graph, &entity_ids)
+            })
+            .map_err(|error| {
+                effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                )
+            })?;
+        let mut acl_index = GraphAclIndex::default();
+        acl_index.extend_from_records(&acl_records, truth_graph);
         let principal = graph_acl_principal_from_claims(
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        Ok(GraphAclProjection::from_complete_snapshot(
+        Ok(GraphAclProjection::from_indexed_records(
             &nodes,
             &edges,
-            truth_graph,
+            acl_index,
             &principal,
         ))
     }
