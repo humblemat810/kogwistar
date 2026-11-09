@@ -1687,6 +1687,10 @@
             "../../../../../contracts/golden/run-checkpoints-v1.json"
         ))
         .unwrap();
+        let checkpoint_detail_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-checkpoint-detail-v1.json"
+        ))
+        .unwrap();
         for prefix in ["/api/runs", "/api/workflow/runs"] {
             let steps = app
                 .clone()
@@ -1763,10 +1767,23 @@
                     .unwrap();
                 assert_eq!(response.status(), StatusCode::OK);
                 let body = to_bytes(response.into_body(), 16_384).await.unwrap();
-                assert_eq!(
-                    serde_json::from_slice::<Value>(&body).unwrap()["state"]["answer"],
-                    "worker"
-                );
+                let value = serde_json::from_slice::<Value>(&body).unwrap();
+                if suffix == "checkpoints/0" {
+                    for field in checkpoint_detail_contract["required_fields"]
+                        .as_array()
+                        .unwrap()
+                    {
+                        let field = field.as_str().unwrap();
+                        assert!(value.get(field).is_some(), "missing {field}");
+                    }
+                    assert_eq!(
+                        checkpoint_detail_contract["success_status"],
+                        StatusCode::OK.as_u16()
+                    );
+                    assert_eq!(value["run_id"], submitted_run_id);
+                    assert_eq!(value["step_seq"], 0);
+                }
+                assert_eq!(value["state"]["answer"], "worker");
             }
         }
         for (tool_name, arguments, expected_key) in [

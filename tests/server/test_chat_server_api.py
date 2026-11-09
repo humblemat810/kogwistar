@@ -1515,8 +1515,18 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         checkpoint = client.get(
             f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers
         )
-        checkpoint.raise_for_status()
-        assert checkpoint.json()["state"]["counter"] == 1
+        checkpoint_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoint-detail-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert checkpoint.status_code == checkpoint_contract["success_status"]
+        checkpoint_payload = checkpoint.json()
+        assert set(checkpoint_contract["required_fields"]).issubset(checkpoint_payload)
+        assert checkpoint_payload["run_id"] == run_id
+        assert checkpoint_payload["step_seq"] == 0
+        assert checkpoint_payload["state"]["counter"] == 1
 
         replay = client.get(
             f"/api/runs/{run_id}/replay?target_step_seq=1", headers=workflow_headers
