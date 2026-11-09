@@ -5815,14 +5815,24 @@
         let mut fts = crate::search_index_fts::open_index(&search_index_path).unwrap();
         crate::search_index_fts::upsert_entries(
             &mut fts,
-            &[kogwistar_contracts::SearchIndexEntryV1 {
-                node_id: "n2".to_owned(),
-                canonical_title: "Lung Cancer".to_owned(),
-                keywords: vec!["review".to_owned()],
-                aliases: Vec::new(),
-                provision: "review permit".to_owned(),
-                doc_id: Some("doc-a".to_owned()),
-            }],
+            &[
+                kogwistar_contracts::SearchIndexEntryV1 {
+                    node_id: "n2".to_owned(),
+                    canonical_title: "Lung Cancer".to_owned(),
+                    keywords: vec!["review".to_owned()],
+                    aliases: Vec::new(),
+                    provision: "review permit".to_owned(),
+                    doc_id: Some("doc-a".to_owned()),
+                },
+                kogwistar_contracts::SearchIndexEntryV1 {
+                    node_id: "n6".to_owned(),
+                    canonical_title: "Project scoped node".to_owned(),
+                    keywords: vec!["review".to_owned()],
+                    aliases: Vec::new(),
+                    provision: "review permit".to_owned(),
+                    doc_id: Some("doc-a".to_owned()),
+                },
+            ],
         )
         .unwrap();
         drop(fts);
@@ -6033,6 +6043,40 @@
         assert_eq!(result["canonical_title"], "Lung Cancer");
         assert!(result["documents"].is_string());
         assert_eq!(result["metadatas"]["workspace_id"], "workspace-a");
+
+        for (project, should_see_n6) in [("project-a", true), ("project-b", false)] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri("/api/search_index_hybrid?q=review&limit=5&resolve_node=true")
+                        .header(
+                            "authorization",
+                            format!("Bearer {}", token_for_project(project)),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let result: Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap())
+                    .unwrap();
+            let ids = result["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|hit| hit["node_id"].as_str())
+                .collect::<Vec<_>>();
+            assert!(ids.contains(&"n2"), "public hybrid hit was lost: {result}");
+            assert_eq!(
+                ids.contains(&"n6"),
+                should_see_n6,
+                "project scope leaked or hid a hybrid hit for {project}: {result}"
+            );
+        }
 
         let hybrid_denied = app
             .clone()
