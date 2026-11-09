@@ -40,6 +40,24 @@
       "max_output_tokens": 18446744073709551616
     }
   ],
+  "legacy_requests": [
+    {
+      "input": {
+        "model": "local-chat-model",
+        "input": "Legacy v1 request omits defaultable fields."
+      },
+      "normalized": {
+        "contract_version": "v1",
+        "model": "local-chat-model",
+        "instructions": "",
+        "input": "Legacy v1 request omits defaultable fields.",
+        "response_schema": null,
+        "tools": [],
+        "previous_response_id": null,
+        "max_output_tokens": null
+      }
+    }
+  ],
   "invalid_requests": [
     {"contract_version": "v2", "model": "m", "input": "x"},
     {"contract_version": "v1", "model": "m", "input": "x", "unknown": true},

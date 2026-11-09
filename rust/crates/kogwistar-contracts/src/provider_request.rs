@@ -83,7 +83,14 @@ mod tests {
     #[derive(Deserialize)]
     struct GoldenRequests {
         requests: Vec<Value>,
+        legacy_requests: Vec<LegacyRequest>,
         invalid_requests: Vec<Value>,
+    }
+
+    #[derive(Deserialize)]
+    struct LegacyRequest {
+        input: Value,
+        normalized: Value,
     }
 
     #[test]
@@ -96,6 +103,11 @@ mod tests {
         for expected in fixture.requests {
             let request = provider_request_from_str(&expected.to_string()).unwrap();
             assert_eq!(serde_json::to_value(request).unwrap(), expected);
+        }
+        assert_eq!(fixture.legacy_requests.len(), 1);
+        for case in fixture.legacy_requests {
+            let request = provider_request_from_str(&case.input.to_string()).unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), case.normalized);
         }
         let expected_errors = [
             "invalid_version",

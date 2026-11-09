@@ -55,6 +55,10 @@ def test_python_provider_requests_match_shared_rust_golden_fixture() -> None:
     for expected in fixture["requests"]:
         request = ProviderRequest.model_validate(expected)
         assert request.model_dump(mode="json") == expected
+    assert len(fixture["legacy_requests"]) == 1
+    for case in fixture["legacy_requests"]:
+        request = ProviderRequest.model_validate(case["input"])
+        assert request.model_dump(mode="json") == case["normalized"]
     expected_error_types = (
         "literal_error",
         "extra_forbidden",
