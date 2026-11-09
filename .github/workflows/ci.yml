@@ -325,6 +325,118 @@ jobs:
         working-directory: .
         run: python -m pip install -e ".[test,server,chroma,pgvector]"
 
+      - name: Verify CPython 3.13 mixed-worker backend matrix
+        working-directory: .
+        shell: bash
+        env:
+          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+          KOGWISTAR_IMPL_MODE: python
+          ANONYMIZED_TELEMETRY: "FALSE"
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/cpython313-worker-interop.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
+          if tests != 3 or skipped or failures or errors:
+              raise SystemExit(
+                  f"CPython 3.13 mixed-worker backend matrix incomplete: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
+              )
+          PY
+
+      - name: Set up CPython 3.12 for mixed-worker interoperability
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install CPython 3.12 interoperability dependencies
+        working-directory: .
+        run: python -m pip install -e ".[test,server,chroma,pgvector]"
+
+      - name: Verify CPython 3.12 mixed-worker backend matrix
+        working-directory: .
+        shell: bash
+        env:
+          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+          KOGWISTAR_IMPL_MODE: python
+          ANONYMIZED_TELEMETRY: "FALSE"
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/cpython312-worker-interop.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
+          if tests != 3 or skipped or failures or errors:
+              raise SystemExit(
+                  f"CPython 3.12 mixed-worker backend matrix incomplete: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
+              )
+          PY
+
+      - name: Set up CPython 3.14 for mixed-worker interoperability
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install CPython 3.14 interoperability dependencies
+        working-directory: .
+        run: python -m pip install -e ".[test,server,chroma,pgvector]"
+
+      - name: Verify CPython 3.14 mixed-worker backend matrix
+        working-directory: .
+        shell: bash
+        env:
+          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+          KOGWISTAR_IMPL_MODE: python
+          ANONYMIZED_TELEMETRY: "FALSE"
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/cpython314-worker-interop.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
+          if tests != 3 or skipped or failures or errors:
+              raise SystemExit(
+                  f"CPython 3.14 mixed-worker backend matrix incomplete: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
+              )
+          PY
+
       - name: Verify PostgreSQL facade and transaction ownership contracts
         working-directory: .
         env:
