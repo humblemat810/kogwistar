@@ -163,6 +163,15 @@ def _collect_sse_events(
 def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     monkeypatch, engine_triplet
 ):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-upsert-tree-success-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    request = fixture["request"]
+    expected = fixture["expected"]
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
@@ -195,31 +204,18 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
         headers = token_header(client, role="rw", ns="docs,conversation,workflow")
         resp = client.post(
             "/api/document.upsert_tree",
-            json={
-                "doc_id": "doc::upsert_tree_dispatch",
-                "insertion_method": "pytest",
-                "nodes": [],
-                "edges": [],
-            },
+            json=request,
             headers=headers,
         )
 
-    resp.raise_for_status()
-    payload = resp.json()
-    assert payload["status"] == "ok"
-    assert payload["engine_result"] == {
-        "document_id": "doc::upsert_tree_dispatch",
-        "node_ids": [],
-        "edge_ids": [],
-        "nodes_added": 0,
-        "edges_added": 0,
-    }
+    assert resp.status_code == expected["status_code"]
+    assert resp.json() == expected["body"]
     assert captured == {
-        "doc_id": "doc::upsert_tree_dispatch",
+        "doc_id": request["doc_id"],
         "parsed_type": "GraphExtractionWithIDs",
         "mode": "append",
-        "node_count": 0,
-        "edge_count": 0,
+        "node_count": len(request["nodes"]),
+        "edge_count": len(request["edges"]),
     }
 
 

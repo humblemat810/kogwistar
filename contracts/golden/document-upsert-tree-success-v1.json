@@ -1,0 +1,24 @@
+{
+  "contract_version": 1,
+  "request": {
+    "doc_id": "doc::upsert_tree_success_v1",
+    "insertion_method": "parity-fixture-v1",
+    "nodes": [],
+    "edges": []
+  },
+  "expected": {
+    "status_code": 200,
+    "body": {
+      "status": "ok",
+      "inserted_nodes": 0,
+      "inserted_edges": 0,
+      "engine_result": {
+        "document_id": "doc::upsert_tree_success_v1",
+        "node_ids": [],
+        "edge_ids": [],
+        "nodes_added": 0,
+        "edges_added": 0
+      }
+    }
+  }
+}

@@ -5879,6 +5879,7 @@ impl PostgresRunApplicationService {
         }
     }
 
+    // PYTHON_PARITY_V1: rust=public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/document-upsert-tree-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_uses_document_graph_extraction_entrypoint
     async fn public_document_tree_upsert_effect(
         &self,
         request: &ApiEffectRequest,

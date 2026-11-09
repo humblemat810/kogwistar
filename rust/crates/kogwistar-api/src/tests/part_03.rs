@@ -2178,6 +2178,32 @@
                 }
             }
         }
+        let tree_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+        )))
+        .unwrap();
+        let tree_request = &tree_fixture["request"];
+        let tree_response = &tree_fixture["expected"];
+        let tree_upsert = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/document.upsert_tree")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {graph_upsert_token}"))
+                    .body(Body::from(serde_json::to_vec(tree_request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tree_upsert.status().as_u16(), tree_response["status_code"]);
+        let tree_body: Value = serde_json::from_slice(
+            &to_bytes(tree_upsert.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tree_body, tree_response["body"]);
+
         let mut tree_payload = extraction.clone();
         let tree_payload_object = tree_payload.as_object_mut().unwrap();
         tree_payload_object.remove("contract_version");
