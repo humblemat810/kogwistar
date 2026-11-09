@@ -7222,6 +7222,25 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         "cross-owner endpoint denial must not append graph or ACL events"
     );
 
+    let document_before_invalid = service
+        .store
+        .source_document_projection(
+            &GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: Some(String::new()),
+                graph_space: Some(String::new()),
+            },
+            "doc-1",
+        )
+        .unwrap()
+        .and_then(|record| record.document);
+    let jobs_before_invalid = service
+        .store
+        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|job| (job.entity_id, job.status))
+        .collect::<Vec<_>>();
     let mut invalid: Value = serde_json::from_slice(&body).unwrap();
     invalid["nodes"][0]["references"][0]["excerpt"] = json!("forged");
     let rejected = service
@@ -7242,6 +7261,27 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
             .len(),
         committed_events
     );
+    let document_after_invalid = service
+        .store
+        .source_document_projection(
+            &GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: Some(String::new()),
+                graph_space: Some(String::new()),
+            },
+            "doc-1",
+        )
+        .unwrap()
+        .and_then(|record| record.document);
+    assert_eq!(document_after_invalid, document_before_invalid);
+    let jobs_after_invalid = service
+        .store
+        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 100)
+        .unwrap()
+        .into_iter()
+        .map(|job| (job.entity_id, job.status))
+        .collect::<Vec<_>>();
+    assert_eq!(jobs_after_invalid, jobs_before_invalid);
 
     drop(service);
     drop(standalone);
