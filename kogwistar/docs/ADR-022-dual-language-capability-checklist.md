@@ -1,14 +1,14 @@
 # ADR-022 Dual-Language Capability Checklist
 
-**Updated:** 2026-11-03
+**Updated:** 2026-11-10
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 A `PASS` requires implementation evidence. Each row records the current gate, status, and concise evidence; chronological change history belongs in Git commits.
 
 ## Scope Accounting
 
-Current inventory: **177 items** (**156 PASS, 21 IN PROGRESS; 88.1% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
+Current inventory: **177 items** (**157 PASS, 20 IN PROGRESS; 88.7% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
-Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 23 open IDs above and do not change this inventory or denominator.
+Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 20 open IDs above and do not change this inventory or denominator.
 
 
 DL-08C latest verified slice: the shared Python/Rust vector-query fixture covers tenant-derived ACL scope for nodes and edges, owner override, active/tombstoned ranking, and returned distances. Rust PostgreSQL filters tombstoned/deleted records before vector `LIMIT`; Rust in-memory applies the same candidate ordering: exclude inactive lifecycle records, take the requested candidate count, then ACL-filter without backfilling denied candidates. The shared fixture plus a focused `n_results=1` case verifies Python and Rust both return an empty result when the sole nearest active candidate is ACL-denied. A route-level source-provenance regression verifies that a public entity with a private cited span is excluded from vector retrieval in Python and Rust's in-memory, PostgreSQL, and SQLite+Chroma service paths. SQLite+Chroma now excludes internal `acl_record` entities in Chroma's query filter before top-k selection; the route regression asserts this pushed-down filter. The source-span PostgreSQL case passed live against local pgvector (**1 passed**); the SQLite+Chroma case passed against a protocol-faithful fake HTTP Chroma endpoint (**1 passed**, not a live Chroma deployment); paired Python and in-memory tests passed (**1 each**). Workspace cargo check, focused Chroma filter test, Rust formatting, and `git diff --check` passed. The broader shared vector fixture and full Rust API suite evidence remains as recorded below and was not rerun in this slice. DL-08C remains IN PROGRESS; broader tenant/project/source-evidence and mutation/backend parity remain open.
