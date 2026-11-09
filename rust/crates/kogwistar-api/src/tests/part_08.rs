@@ -5951,6 +5951,303 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
     assert_eq!(result["ids"], json!([[]]));
 }
 
+#[tokio::test]
+async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-acl-vector-query-v1.json"
+    )))
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let fixture_for_server = fixture.clone();
+    let (stop_server, mut stop_server_rx) = tokio::sync::oneshot::channel();
+    let chroma_server = tokio::spawn(async move {
+        loop {
+            let (mut stream, _) = tokio::select! {
+                _ = &mut stop_server_rx => break,
+                connection = listener.accept() => connection.unwrap(),
+            };
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "Chroma connection closed before request body");
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            )
+            .unwrap_or_else(|_| json!({}));
+            let request_line = String::from_utf8_lossy(&bytes[..header_end])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let payload = if request_line.contains("/collections HTTP") {
+                let name = request["name"].as_str().unwrap();
+                json!({"id":format!("collection-{name}"),"metadata":{"hnsw:space":"cosine"}})
+            } else {
+                let kind = if request_line.contains("shared-acl-edges") {
+                    "edges"
+                } else {
+                    "nodes"
+                };
+                if request_line.contains("/query HTTP") {
+                    let candidates = fixture_for_server[kind].as_array().unwrap();
+                    let query = request["query_embeddings"][0].as_array().unwrap();
+                    let query = [query[0].as_f64().unwrap(), query[1].as_f64().unwrap()];
+                    let mut ranked = candidates
+                        .iter()
+                        .filter(|candidate| candidate["lifecycle_status"] != "tombstoned")
+                        .map(|candidate| {
+                            let embedding = candidate["embedding"].as_array().unwrap();
+                            let vector = [
+                                embedding[0].as_f64().unwrap(),
+                                embedding[1].as_f64().unwrap(),
+                            ];
+                            let dot = query[0] * vector[0] + query[1] * vector[1];
+                            let q_norm = query[0].hypot(query[1]);
+                            let v_norm = vector[0].hypot(vector[1]);
+                            (candidate, 1.0 - dot / (q_norm * v_norm))
+                        })
+                        .collect::<Vec<_>>();
+                    ranked.sort_by(|left, right| left.1.total_cmp(&right.1));
+                    ranked.truncate(request["n_results"].as_u64().unwrap() as usize);
+                    let ids = ranked
+                        .iter()
+                        .map(|(candidate, _)| candidate["id"].clone())
+                        .collect::<Vec<_>>();
+                    let documents = ids.clone();
+                    let embeddings = ranked
+                        .iter()
+                        .map(|(candidate, _)| candidate["embedding"].clone())
+                        .collect::<Vec<_>>();
+                    let distances = ranked.iter().map(|(_, distance)| json!(distance)).collect::<Vec<_>>();
+                    let metadatas = ranked
+                        .iter()
+                        .map(|(candidate, _)| {
+                            let mut original = json!({
+                                "entity_type":if kind == "nodes" {"node"} else {"edge"},
+                                "workspace_id":fixture_for_server["scope"]["workspace_id"]
+                            });
+                            if kind == "nodes" {
+                                original["label"] = candidate["id"].clone();
+                                original["mentions"] = json!([]);
+                            } else {
+                                for key in ["source_ids", "target_ids"] {
+                                    original[key] = candidate[key].clone();
+                                }
+                                original["source_edge_ids"] = json!([]);
+                                original["target_edge_ids"] = json!([]);
+                                original["mentions"] = json!([]);
+                            }
+                            json!({
+                                "_kogwistar_namespace":fixture_for_server["scope"]["namespace"],
+                                "_kogwistar_original_metadata":original.to_string()
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    json!({
+                        "ids":[ids], "documents":[documents], "metadatas":[metadatas],
+                        "embeddings":[embeddings], "distances":[distances]
+                    })
+                } else if request_line.contains("/get HTTP") {
+                    let requested = request["ids"].as_array().cloned().unwrap_or_default();
+                    let matching = fixture_for_server["nodes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|node| requested.iter().any(|id| id == &node["id"]))
+                        .collect::<Vec<_>>();
+                    json!({
+                        "ids":matching.iter().map(|node| node["id"].clone()).collect::<Vec<_>>(),
+                        "documents":matching.iter().map(|node| node["id"].clone()).collect::<Vec<_>>(),
+                        "metadatas":matching.iter().map(|node| json!({
+                            "_kogwistar_namespace":fixture_for_server["scope"]["namespace"],
+                            "_kogwistar_original_metadata":json!({
+                                "entity_type":"node", "label":node["id"], "mentions":[],
+                                "workspace_id":fixture_for_server["scope"]["workspace_id"]
+                            }).to_string()
+                        })).collect::<Vec<_>>(),
+                        "embeddings":vec![Value::Null;matching.len()]
+                    })
+                } else {
+                    json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
+                }
+            };
+            let response = payload.to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(), response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("shared-acl-nodes"),
+        chroma_config("shared-acl-edges"),
+    )
+    .await
+    .unwrap();
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-vector-contract-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph);
+    let scope = json!({
+        "namespace":fixture["scope"]["namespace"],
+        "workspace_id":fixture["scope"]["workspace_id"],
+        "graph_space":null
+    });
+    let mut acl_mutations = Vec::new();
+    for (kind, records) in [("node", &fixture["nodes"]), ("edge", &fixture["edges"])] {
+        for candidate in records.as_array().unwrap() {
+            if candidate["lifecycle_status"] == "tombstoned" {
+                continue;
+            }
+            let id = candidate["id"].as_str().unwrap();
+            let mut metadata = json!({
+                "entity_type":"acl_record", "acl_truth_graph":fixture["truth_graph"],
+                "acl_target_entity_id":id, "acl_target_grain":kind,
+                "acl_version":1, "acl_mode":candidate["mode"],
+                "workspace_id":fixture["scope"]["workspace_id"]
+            });
+            for key in ["owner_id", "security_scope"] {
+                if !candidate[key].is_null() {
+                    metadata[key] = candidate[key].clone();
+                }
+            }
+            let acl_id = format!("acl-{kind}-{id}");
+            acl_mutations.push(json!({
+                "scope":scope, "table":"gke_nodes", "entity_kind":"node",
+                "event_id":format!("event-{acl_id}"), "op":"ADD",
+                "payload":{"id":acl_id,"metadata":metadata},
+                "record":{"id":acl_id,"document":null,"metadata":metadata,"embedding":null},
+                "embedding_dim":0
+            }));
+        }
+    }
+    let seed = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/internal/graph/mutations".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "contract_version":1,"atomic":true,"mutations":acl_mutations,"index_jobs":[]
+        }))
+        .unwrap(),
+        principal: json!({
+            "sub":"fixture-owner", "role":"rw", "storage_ns":fixture["scope"]["namespace"],
+            "workspace_id":fixture["scope"]["workspace_id"], "capabilities":["write_graph"]
+        }),
+    })
+    .await;
+    assert_eq!(seed.status, StatusCode::OK.as_u16());
+    let visible_public_acl = service
+        .store
+        .immediate_transaction(|uow| {
+            uow.graph_acl_records_for_entities(
+                &kogwistar_store::GraphScope {
+                    namespace: fixture["scope"]["namespace"].as_str().unwrap().to_owned(),
+                    workspace_id: Some(
+                        fixture["scope"]["workspace_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                    ),
+                    graph_space: None,
+                },
+                fixture["truth_graph"].as_str().unwrap(),
+                &["visible-public".to_owned()],
+            )
+        })
+        .unwrap();
+    assert_eq!(visible_public_acl.len(), 1);
+
+    for principal_fixture in fixture["principals"].as_array().unwrap() {
+        let subject = principal_fixture["id"].as_str().unwrap();
+        let mut principal = json!({
+            "sub":subject, "role":"ro", "storage_ns":fixture["scope"]["namespace"],
+            "workspace_id":fixture["scope"]["workspace_id"], "capabilities":["read_graph"]
+        });
+        if let Some(scope_parts) = principal_fixture.get("scope_parts") {
+            for key in ["tenant", "workspace", "project"] {
+                if !scope_parts[key].is_null() {
+                    principal[key] = scope_parts[key].clone();
+                }
+            }
+        }
+        for (kind, expected_key) in [("node", "nodes"), ("edge", "edges")] {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/internal/graph/vector-query".to_owned(),
+                    body: serde_json::to_vec(&json!({
+                        "entity_kind":kind,
+                        "query_embeddings":fixture["query_embeddings"],
+                        "metric":fixture["metric"],
+                        "truth_graph":fixture["truth_graph"],
+                        "n_results":fixture["n_results"],
+                        "include":["distances"]
+                    }))
+                    .unwrap(),
+                    principal: principal.clone(),
+                })
+                .await;
+            assert_eq!(response.status, StatusCode::OK.as_u16(), "{subject}/{kind}");
+            let result: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(
+                result["ids"], principal_fixture["expected"][expected_key],
+                "unexpected {kind} candidates for {subject}: {result}"
+            );
+            for (actual_query, expected_query) in result["distances"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .zip(principal_fixture["expected"]["distances"][expected_key].as_array().unwrap())
+            {
+                for (actual, expected) in actual_query.as_array().unwrap().iter().zip(expected_query.as_array().unwrap()) {
+                    assert!(
+                        (actual.as_f64().unwrap() - expected.as_f64().unwrap()).abs() < 1e-5,
+                        "unexpected {kind} vector distance for {subject}"
+                    );
+                }
+            }
+        }
+    }
+
+    drop(service);
+    let _ = stop_server.send(());
+    chroma_server.await.unwrap();
+    let _ = std::fs::remove_file(sqlite_path);
+}
+
 #[test]
 fn postgres_graph_type_stores_follow_python_schema_partitioning() {
     let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
