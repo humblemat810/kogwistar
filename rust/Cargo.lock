@@ -945,6 +945,7 @@ name = "kogwistar-store-memory"
 version = "0.2.0"
 dependencies = [
  "kogwistar-contracts",
+ "kogwistar-runtime",
  "kogwistar-store",
  "serde_json",
 ]

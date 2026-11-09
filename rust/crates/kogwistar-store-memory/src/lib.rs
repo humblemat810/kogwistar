@@ -20,6 +20,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+mod recorded_runtime;
+
 /// Cloned handles share one process-local writer lock and volatile state. A new
 /// store starts empty; state is not persisted across process or store lifetimes.
 /// This backend provides no cross-process coordination or durable transactions.
