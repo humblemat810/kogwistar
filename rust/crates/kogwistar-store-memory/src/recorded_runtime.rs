@@ -11,7 +11,8 @@ use kogwistar_runtime::{
     worker_effect_digest,
 };
 use kogwistar_store::{
-    RUNTIME_CURRENT_STATE_NAMESPACE, StoreError, StoreResult, runtime_checkpoint_namespace,
+    NewProjectedLaneMessage, ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE,
+    ServerRunCreate, StoreError, StoreResult, runtime_checkpoint_namespace,
     runtime_projection_write, runtime_status_namespace, timestamp_i64,
 };
 use serde_json::Value;
@@ -19,7 +20,137 @@ use serde_json::Value;
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
 
 // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_recorded_runtime_transition; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event+update_server_run; rust_test=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#recorded_transition_is_atomic_replayable_and_projected_in_memory; python_test=tests/core/test_recorded_transition_identity.py#test_metadata_stores_reject_duplicate_recorded_transition_ids; note=Rust adds an atomic reducer transaction; Python remains primitive append/update and rejects duplicate IDs.
+// PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#admit_server_run_with_start; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; rust_test=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#runtime_admission_atomically_records_start_and_first_lane; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract,tests/core/test_lane_message_meta_store_contract.py#test_lane_message_projection_contract; note=Rust admission is one process-local atomic write; Python's in-memory primitives remain separately callable.
 impl InMemoryStore {
+    /// Atomically admits a run, records its admission event and
+    /// start transition, and queues its first worker step under one writer lock.
+    pub fn admit_server_run_with_start(
+        &self,
+        run: ServerRunCreate,
+        admission_payload: Value,
+        transition: RecordedRuntimeTransition,
+        lane: NewProjectedLaneMessage,
+    ) -> StoreResult<RecordedTransitionResult> {
+        validate_runtime_admission(&run, &transition, &lane)?;
+        validate_runtime_admission_payload(&run, &admission_payload)?;
+        let admission_payload_json =
+            serde_json::to_string(&admission_payload).map_err(json_error)?;
+        let transition_digest = transition_digest(&transition).map_err(runtime_error)?;
+        let now = now_ms();
+
+        let make_run = |created_at_ms| ServerRun {
+            run_id: run.run_id.clone(),
+            conversation_id: run.conversation_id.clone(),
+            workflow_id: run.workflow_id.clone(),
+            user_id: run.user_id.clone(),
+            user_turn_node_id: Some(run.user_turn_node_id.clone()),
+            assistant_turn_node_id: None,
+            status: "queued".to_owned(),
+            cancel_requested: false,
+            result_json: None,
+            error_json: None,
+            created_at_ms,
+            updated_at_ms: created_at_ms,
+            started_at_ms: None,
+            finished_at_ms: None,
+        };
+
+        // Preflight reducer and serialization before touching shared state.
+        let mut preflight = State::default();
+        preflight
+            .server_runs
+            .insert(run.run_id.clone(), make_run(now));
+        preflight.server_run_events.insert(
+            run.run_id.clone(),
+            vec![ServerRunEvent {
+                seq: 1,
+                run_id: run.run_id.clone(),
+                event_type: "run.created".to_owned(),
+                payload_json: admission_payload_json.clone(),
+                created_at_ms: now,
+            }],
+        );
+        apply_transition(&mut preflight, transition.clone(), None, false)?;
+
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        if let Some(existing) = state.server_runs.get(&run.run_id) {
+            let replay = recorded_transition_by_id(&state, &transition.transition_id)?;
+            let admission_event_matches = state
+                .server_run_events
+                .get(&run.run_id)
+                .and_then(|events| events.first())
+                .is_some_and(|event| {
+                    event.event_type == "run.created"
+                        && event.payload_json == admission_payload_json
+                });
+            let lane_matches = state
+                .lane_messages
+                .get(&lane.message_id)
+                .is_some_and(|stored| {
+                    stored.namespace == lane.namespace
+                        && stored.purpose
+                            == if lane.purpose.is_empty() {
+                                "user_visible"
+                            } else {
+                                lane.purpose.as_str()
+                            }
+                        && stored.inbox_id == lane.inbox_id
+                        && stored.conversation_id == lane.conversation_id
+                        && stored.recipient_id == lane.recipient_id
+                        && stored.sender_id == lane.sender_id
+                        && stored.msg_type == lane.msg_type
+                        && stored.run_id.as_deref() == Some(run.run_id.as_str())
+                        && stored.payload_json == lane.payload_json
+                        && stored.step_id == lane.step_id
+                        && stored.correlation_id == lane.correlation_id
+                        && stored.created_at == lane.created_at
+                        && stored.available_at == lane.available_at
+                });
+            if existing.conversation_id != run.conversation_id
+                || existing.workflow_id != run.workflow_id
+                || existing.user_id != run.user_id
+                || existing.user_turn_node_id.as_deref() != Some(&run.user_turn_node_id)
+                || !admission_event_matches
+                || !lane_matches
+                || replay
+                    .as_ref()
+                    .is_none_or(|(stored, _)| stored.request_digest != transition_digest)
+            {
+                return Err(runtime_conflict(
+                    "runtime admission replay conflicts with existing run, transition, or lane",
+                ));
+            }
+            return apply_transition(&mut state, transition, None, false);
+        }
+        if state.lane_messages.contains_key(&lane.message_id) {
+            return Err(runtime_conflict(
+                "runtime admission lane message ID already exists",
+            ));
+        }
+        if state.server_run_events.contains_key(&run.run_id)
+            || recorded_transition_by_id(&state, &transition.transition_id)?.is_some()
+        {
+            return Err(runtime_conflict(
+                "runtime admission found orphaned run events or a reused transition ID",
+            ));
+        }
+
+        state.server_runs.insert(run.run_id.clone(), make_run(now));
+        state.server_run_events.insert(
+            run.run_id.clone(),
+            vec![ServerRunEvent {
+                seq: 1,
+                run_id: run.run_id.clone(),
+                event_type: "run.created".to_owned(),
+                payload_json: admission_payload_json,
+                created_at_ms: now,
+            }],
+        );
+        let started = apply_transition(&mut state, transition, None, false)?;
+        insert_initial_lane(&mut state, lane);
+        Ok(started)
+    }
+
     /// Atomically records a Rust/Python-compatible runtime transition in the
     /// process-local store. One write lock is the transaction boundary; no
     /// resolver, provider, or graph callback runs while that lock is held.
@@ -334,6 +465,128 @@ impl InMemoryStore {
         lane.lease_until = None;
         Ok(result)
     }
+}
+
+fn validate_runtime_admission(
+    run: &ServerRunCreate,
+    transition: &RecordedRuntimeTransition,
+    lane: &NewProjectedLaneMessage,
+) -> StoreResult<()> {
+    if run.run_id.trim().is_empty()
+        || run.workflow_id.trim().is_empty()
+        || run.conversation_id.trim().is_empty()
+        || run.user_turn_node_id.trim().is_empty()
+        || run.status != "queued"
+        || transition.kind != RecordedTransitionKind::Start
+        || transition.run_id != run.run_id
+        || transition.workflow_id != run.workflow_id
+        || transition.conversation_id != run.conversation_id
+        || transition.user_id != run.user_id
+        || transition.user_turn_node_id.as_deref() != Some(&run.user_turn_node_id)
+        || transition.expected_event_seq != 1
+        || lane.message_id.trim().is_empty()
+        || lane.run_id.as_deref() != Some(run.run_id.as_str())
+        || lane.conversation_id != run.conversation_id
+        || lane.msg_type != "workflow.step.execute"
+        || lane.status != "pending"
+        || lane.correlation_id.as_deref() != Some(run.run_id.as_str())
+        || lane.step_id.as_deref() != transition.node_id.as_deref()
+    {
+        return Err(runtime_conflict(
+            "runtime admission identity, start transition, or initial lane is invalid",
+        ));
+    }
+    super::namespace(&lane.namespace)?;
+    let lane_payload: Value =
+        serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}")).map_err(json_error)?;
+    if lane_payload["workflow_id"].as_str() != Some(run.workflow_id.as_str())
+        || lane_payload["conversation_id"].as_str() != Some(run.conversation_id.as_str())
+        || lane_payload["expected_event_seq"].as_i64() != Some(2)
+    {
+        return Err(runtime_conflict(
+            "runtime admission lane payload does not match the started run sequence",
+        ));
+    }
+    if lane.namespace.trim().is_empty()
+        || lane.inbox_id.trim().is_empty()
+        || lane.step_id.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(runtime_conflict(
+            "runtime admission initial lane is missing its namespace, inbox, or step",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_runtime_admission_payload(run: &ServerRunCreate, payload: &Value) -> StoreResult<()> {
+    if payload["run_id"].as_str() != Some(run.run_id.as_str())
+        || payload["run_kind"].as_str() != Some("workflow_runtime")
+        || payload["conversation_id"].as_str() != Some(run.conversation_id.as_str())
+        || payload["workflow_id"].as_str() != Some(run.workflow_id.as_str())
+        || payload["status"].as_str() != Some("queued")
+        || payload["turn_node_id"].as_str() != Some(run.user_turn_node_id.as_str())
+    {
+        return Err(runtime_conflict(
+            "runtime admission event does not match the admitted run identity",
+        ));
+    }
+    Ok(())
+}
+
+fn insert_initial_lane(state: &mut State, row: NewProjectedLaneMessage) {
+    let inbox_tail = state
+        .lane_messages
+        .values()
+        .filter(|stored| stored.namespace == row.namespace && stored.inbox_id == row.inbox_id)
+        .max_by_key(|stored| (stored.seq, stored.created_at))
+        .cloned();
+    let conversation_tail = state
+        .lane_messages
+        .values()
+        .filter(|stored| {
+            stored.namespace == row.namespace && stored.conversation_id == row.conversation_id
+        })
+        .max_by_key(|stored| (stored.conversation_seq, stored.created_at))
+        .cloned();
+    let seq = inbox_tail.as_ref().map_or(1, |stored| stored.seq + 1);
+    let conversation_seq = conversation_tail
+        .as_ref()
+        .map_or(1, |stored| stored.conversation_seq + 1);
+    let message_id = row.message_id.clone();
+    state.lane_messages.insert(
+        message_id.clone(),
+        ProjectedLaneMessage {
+            message_id: message_id.clone(),
+            namespace: row.namespace,
+            purpose: if row.purpose.is_empty() {
+                "user_visible".to_owned()
+            } else {
+                row.purpose
+            },
+            inbox_id: row.inbox_id,
+            conversation_id: row.conversation_id,
+            recipient_id: row.recipient_id,
+            sender_id: row.sender_id,
+            msg_type: row.msg_type,
+            status: row.status,
+            seq,
+            conversation_seq,
+            claimed_by: None,
+            lease_until: None,
+            retry_count: 0,
+            created_at: row.created_at,
+            available_at: row.available_at,
+            run_id: row.run_id,
+            step_id: row.step_id,
+            correlation_id: row.correlation_id,
+            payload_json: row.payload_json,
+            error_json: row.error_json,
+            prev_message_id: inbox_tail.map(|stored| stored.message_id),
+            next_message_id: None,
+            inbox_tail_message_id: Some(message_id.clone()),
+            conversation_tail_message_id: Some(message_id),
+        },
+    );
 }
 
 fn apply_transition(
@@ -761,12 +1014,24 @@ mod tests {
                 json!({
                     "workflow_id": "memory-workflow",
                     "conversation_id": "memory-conversation",
-                    "token_id": "token-1"
+                "token_id": "token-1",
+                "expected_event_seq": 2
                 })
                 .to_string(),
             ),
             error_json: None,
         }
+    }
+
+    fn runtime_admission_payload() -> Value {
+        json!({
+            "run_id": "memory-run",
+            "run_kind": "workflow_runtime",
+            "conversation_id": "memory-conversation",
+            "workflow_id": "memory-workflow",
+            "status": "queued",
+            "turn_node_id": "turn-1"
+        })
     }
 
     fn handoff(claimed_by: &str) -> RecordedWorkerHandoff {
@@ -836,6 +1101,118 @@ mod tests {
                 .expect("accepted transition materializes current state");
         assert_eq!(current.payload["state"]["seed"], 1);
         assert_eq!(current.last_authoritative_seq, 1);
+    }
+
+    #[test]
+    fn runtime_admission_atomically_records_start_and_first_lane() {
+        let store = InMemoryStore::new();
+        let run = ServerRunCreate {
+            run_id: "memory-run".to_owned(),
+            conversation_id: "memory-conversation".to_owned(),
+            workflow_id: "memory-workflow".to_owned(),
+            user_id: Some("user-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "queued".to_owned(),
+        };
+        let mut transition = pending_start();
+        transition.expected_event_seq = 1;
+        transition.node_id = Some("noop".to_owned());
+        let lane = worker_lane();
+
+        let mut invalid_transition = transition.clone();
+        invalid_transition.expected_event_seq = 0;
+        let failure = store
+            .admit_server_run_with_start(
+                run.clone(),
+                runtime_admission_payload(),
+                invalid_transition,
+                lane.clone(),
+            )
+            .expect_err("invalid start must fail before any admission write");
+        assert!(failure.to_string().contains("runtime admission"));
+        assert!(block_on(store.server_run("memory-run")).unwrap().is_none());
+        assert!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .is_none()
+        );
+
+        let mut invalid_payload = runtime_admission_payload();
+        invalid_payload["conversation_id"] = json!("other-conversation");
+        assert!(
+            store
+                .admit_server_run_with_start(
+                    run.clone(),
+                    invalid_payload,
+                    transition.clone(),
+                    lane.clone(),
+                )
+                .is_err()
+        );
+        assert!(block_on(store.server_run("memory-run")).unwrap().is_none());
+
+        let admitted = store
+            .admit_server_run_with_start(
+                run.clone(),
+                runtime_admission_payload(),
+                transition.clone(),
+                lane.clone(),
+            )
+            .unwrap();
+        assert_eq!(admitted.event_seq, 2);
+        assert!(!admitted.idempotent);
+        assert_eq!(
+            block_on(store.server_run("memory-run"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "running"
+        );
+        let events = block_on(store.server_run_events("memory-run", 0, 10)).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "run.created");
+        assert_eq!(events[1].event_type, RECORDED_RUNTIME_EVENT_TYPE);
+        let queued = block_on(store.projected_lane_message("lane-noop-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(queued.status, "pending");
+        assert_eq!(queued.run_id.as_deref(), Some("memory-run"));
+
+        let mut conflicting_lane = lane.clone();
+        conflicting_lane.recipient_id = "other-worker".to_owned();
+        assert!(
+            store
+                .admit_server_run_with_start(
+                    run.clone(),
+                    runtime_admission_payload(),
+                    transition.clone(),
+                    conflicting_lane,
+                )
+                .is_err()
+        );
+        let mut changed_payload = runtime_admission_payload();
+        changed_payload["changed"] = json!(true);
+        assert!(
+            store
+                .admit_server_run_with_start(
+                    run.clone(),
+                    changed_payload,
+                    transition.clone(),
+                    lane.clone(),
+                )
+                .is_err()
+        );
+
+        let replay = store
+            .admit_server_run_with_start(run, runtime_admission_payload(), transition, lane)
+            .unwrap();
+        assert!(replay.idempotent);
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
