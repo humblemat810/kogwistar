@@ -1485,6 +1485,11 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 "ns": "workflow",
                 "storage_ns": graph_namespace,
                 "capabilities": ["write_graph"],
+                **(
+                    {"workspace": "worker-workspace", "graph_space": "knowledge"}
+                    if backend == "pg"
+                    else {}
+                ),
                 "exp": int(time.time()) + 3600,
             },
         )
@@ -1871,9 +1876,13 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     engine=graph_sqlalchemy_engine,
                     embedding_dim=3,
                     schema=f"{pg_schema}_knowledge",
-                ).node_get(ids=[graph_entity_id], include=["documents"])
+                ).node_get(
+                    ids=[graph_entity_id], include=["documents", "metadatas"]
+                )
                 assert projected["ids"] == [graph_entity_id]
                 assert projected["documents"] == ["worker effect"]
+                assert projected["metadatas"][0]["workspace_id"] == "worker-workspace"
+                assert projected["metadatas"][0]["graph_space"] == "knowledge"
             else:
                 assert chroma_requests
                 assert all("/collections" in path for path in chroma_requests)

@@ -224,8 +224,14 @@ def main() -> None:
             assert ctx.idempotency_key
             source_doc_id = f"source-doc-{args.graph_entity_id}"
             provenance = {"source_revision_id": "revision-1"}
+            mutation_scope = {"namespace": args.graph_namespace}
+            if args.graph_default_acl_truth_graph:
+                mutation_scope.update(
+                    workspace_id="worker-workspace",
+                    graph_space=args.graph_default_acl_truth_graph,
+                )
             mutation = {
-                "scope": {"namespace": args.graph_namespace},
+                "scope": mutation_scope,
                 "table": "gke_nodes",
                 "entity_kind": "node",
                 "event_id": f"graph-effect-{ctx.idempotency_key}",
