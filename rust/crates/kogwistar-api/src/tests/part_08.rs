@@ -3883,6 +3883,20 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         value["scope"] = conversation_scope.clone();
         value
     };
+    let conversation_edge_mutation =
+        |id: &str, metadata: Value, document: Option<&str>| {
+            let mut value = mutation(id, "gke_edges", "edge", metadata, document);
+            value["event_id"] = json!(format!("conversation-edge-event-{id}"));
+            value["scope"] = conversation_scope.clone();
+            value
+        };
+    let conversation_parent_edge = json!({
+        "source_ids": [shared_entity_id],
+        "target_ids": [],
+        "source_edge_ids": [shared_entity_id],
+        "target_edge_ids": [],
+        "relation": "conversation cross-kind reference"
+    });
     let conversation_body = json!({
         "contract_version": 1,
         "atomic": true,
@@ -3917,7 +3931,42 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "owner_id":conversation_policy["owner_id"]
                 }),
                 None,
-            )
+            ),
+            conversation_edge_mutation(
+                shared_entity_id,
+                json!({"source_ids":[],"target_ids":[],"relation":"same ID edge"}),
+                Some(r#"{"source_ids":[],"target_ids":[],"relation":"same ID edge"}"#),
+            ),
+            conversation_edge_mutation(
+                "conversation-parent-edge",
+                conversation_parent_edge.clone(),
+                Some(&conversation_parent_edge.to_string()),
+            ),
+            conversation_mutation(
+                "conversation-acl-cross-kind-edge",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"conversation",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":shared_entity_id,
+                    "acl_version":1,
+                    "acl_mode":conversation_policy["mode"],
+                    "owner_id":conversation_policy["owner_id"]
+                }),
+                None,
+            ),
+            conversation_mutation(
+                "conversation-acl-parent-edge",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"conversation",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":"conversation-parent-edge",
+                    "acl_version":1,
+                    "acl_mode":"public"
+                }),
+                None,
+            ),
         ]
     });
     let conversation_written = app
@@ -4074,6 +4123,46 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .any(|node| node["id"] == shared_entity_id),
         "conversation ACL owner must see its private graph node: {conversation_owner_payload}"
     );
+
+    let conversation_cross_kind_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/neighbors")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject(
+                            conversation_policy["owner_id"].as_str().unwrap(),
+                            "docs",
+                            &["read_graph"],
+                            "facts"
+                        )
+                    ),
+                )
+                .body(Body::from(
+                    json!({
+                        "rid":"conversation-parent-edge",
+                        "truth_graph":"conversation"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conversation_cross_kind_response.status(), StatusCode::OK);
+    let conversation_cross_kind: Value = serde_json::from_slice(
+        &to_bytes(conversation_cross_kind_response.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(conversation_cross_kind["nodes"], json!([shared_entity_id]));
+    assert_eq!(conversation_cross_kind["edges"], json!([shared_entity_id]));
 
     for case in isolation_cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
