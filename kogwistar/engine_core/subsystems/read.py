@@ -1647,7 +1647,19 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 ):
                     continue
                 payload = _json_object(row.get("payload"))
-                if _json_object(payload.get("metadata")).get("doc_id") == doc_id:
+                metadata = _json_object(payload.get("metadata"))
+                document = payload.get("document")
+                document_payload: JsonObject = {}
+                if isinstance(document, str):
+                    try:
+                        document_payload = _json_object(json.loads(document))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                indexed_doc_id = payload.get(
+                    "doc_id",
+                    metadata.get("doc_id", document_payload.get("doc_id")),
+                )
+                if indexed_doc_id == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 

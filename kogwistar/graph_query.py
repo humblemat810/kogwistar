@@ -769,16 +769,12 @@ class GraphQuery:
         tgt_label_contains: str | None = None,
         doc_id: str | None = None,
     ) -> list[str]:
-        where = {}
-        if relation:
-            where["relation"] = relation
         if doc_id:
-            where["doc_id"] = doc_id
-        if not (where):
-            where = None
-        elif len(where) > 1:
-            where = {"$and": [{k: v} for k, v in where.items()]}
-        edges = self._read_edges(where=where)
+            edges = self.edges_in_doc(doc_id)
+            if relation:
+                edges = [edge for edge in edges if edge.relation == relation]
+        else:
+            edges = self._read_edges(where={"relation": relation} if relation else None)
         out: list[str] = []
         for e in edges:
             eid = _entity_id(e)

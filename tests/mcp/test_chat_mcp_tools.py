@@ -1026,6 +1026,42 @@ async def test_kg_neighbors_mcp_matches_shared_contract(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_kg_find_edges_mcp_matches_shared_contract(monkeypatch, tmp_path):
+    from kogwistar.server import mcp_tools
+    from tests.core.test_two_stage_chroma import _engine
+
+    engine, adapter = _engine(tmp_path)
+    nodes = [
+        build_entity_node(node_id=f"n{index}", doc_id=doc_id)
+        for index, doc_id in ((1, "doc-a"), (2, "doc-a"), (3, "doc-b"))
+    ]
+    for node in nodes:
+        adapter.add_node(node)
+    adapter.add_edge(
+        build_relationship_edge(edge_id="e1", src="n1", tgt="n2", doc_id="doc-a")
+    )
+    adapter.add_edge(
+        build_relationship_edge(edge_id="e2", src="n1", tgt="n3", doc_id="doc-b")
+    )
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "kg-find-edges-mcp-v1.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert contract["operation"] == "kg_find_edges"
+
+    with _claims("rw", "docs"):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+
+    assert result.structured_content == contract["expected_structured_content"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service = _configure_server(

@@ -6527,6 +6527,31 @@
         assert_eq!(mcp_read["result"]["nodes"], neighbors_contract["expected_structured_content"]["nodes"]);
         assert_eq!(mcp_read["result"]["edges"], neighbors_contract["expected_structured_content"]["edges"]);
 
+        let find_edges_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-find-edges-mcp-v1.json"
+        ))).unwrap();
+        let find_edges_response = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(json!({
+                    "jsonrpc":"2.0","id":"find-edges","method":"tools/call",
+                    "params":{"name":find_edges_contract["operation"],"arguments":find_edges_contract["arguments"]}
+                }).to_string()))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(find_edges_response.status(), StatusCode::OK);
+        let find_edges_response: Value = serde_json::from_slice(
+            &to_bytes(find_edges_response.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(
+            find_edges_response["result"]["edges"],
+            find_edges_contract["expected_structured_content"]["edges"]
+        );
+
         let redirected_read = app
             .clone()
             .oneshot(
