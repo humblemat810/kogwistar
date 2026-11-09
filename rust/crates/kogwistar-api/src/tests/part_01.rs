@@ -2493,6 +2493,57 @@
             }
         }
 
+        let foreign_scope = GraphScope {
+            workspace_id: Some("workspace-b".to_owned()),
+            ..scope.clone()
+        };
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: foreign_scope,
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "foreign-workspace-nearest".to_owned(),
+                    document: Some(
+                        json!({"id":"foreign-workspace-nearest"}).to_string(),
+                    ),
+                    metadata: Map::from_iter([
+                        ("entity_type".to_owned(), json!("node")),
+                        ("workspace_id".to_owned(), json!("workspace-b")),
+                        ("label".to_owned(), json!("foreign-workspace-nearest")),
+                    ]),
+                    embedding: Some(vec![1.0, 0.0]),
+                },
+                embedding_dim: 2,
+            })
+            .await
+            .unwrap();
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "acl-foreign-workspace-nearest".to_owned(),
+                    document: None,
+                    metadata: Map::from_iter([
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("acl_truth_graph".to_owned(), fixture["truth_graph"].clone()),
+                        (
+                            "acl_target_entity_id".to_owned(),
+                            json!("foreign-workspace-nearest"),
+                        ),
+                        ("acl_target_grain".to_owned(), json!("node")),
+                        ("acl_version".to_owned(), json!(1)),
+                        ("acl_mode".to_owned(), json!("public")),
+                    ]),
+                    embedding: None,
+                },
+                embedding_dim: 2,
+            })
+            .await
+            .unwrap();
+
         for principal in fixture["principals"].as_array().unwrap() {
             let subject = principal["id"].as_str().unwrap();
             let mut principal_claims = json!({
