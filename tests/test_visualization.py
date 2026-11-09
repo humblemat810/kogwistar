@@ -164,6 +164,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     scope_edge_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "edge-scope"
     )
+    no_acl_edge_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "edge-no-acl"
+    )
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -433,6 +436,25 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                         target_item_id=target_id,
                         **edge_acl,
                     )
+        no_acl_edge = Edge(
+            id=no_acl_edge_policy["id"],
+            label="Edge without an ACL record",
+            type="relationship",
+            summary="Must fail closed when no ACL exists",
+            relation="references",
+            source_ids=[isolation["entity_id"]],
+            target_ids=[isolation["entity_id"]],
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[_g()],
+            doc_id=None,
+            properties={},
+            metadata={"entity_type": "fixture"},
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        owner_engine.raw_write.add_edge(no_acl_edge)
         token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
         try:
             public_edge_d3 = cast(
@@ -468,6 +490,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 node["id"] for node in public_edge_d3_payload["nodes"]
             ]
         assert no_acl_node_policy["id"] not in [
+            node["id"] for node in public_edge_d3_payload["nodes"]
+        ]
+        assert no_acl_edge_policy["id"] not in [
             node["id"] for node in public_edge_d3_payload["nodes"]
         ]
         assert owner_engine.acl_graph.latest_record(

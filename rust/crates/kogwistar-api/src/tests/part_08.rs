@@ -2765,6 +2765,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap()["id"]
         .as_str()
         .unwrap();
+    let no_acl_edge_id = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "edge-no-acl")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
     let edge_policy = acl_fixture["targets"]
         .as_array()
         .unwrap()
@@ -3269,6 +3277,21 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         "node",
         json!({"label":"Node without an ACL record"}),
         Some("Node without an ACL record"),
+    ));
+    let no_acl_edge = json!({
+        "source_ids":[shared_entity_id],
+        "target_ids":[shared_entity_id],
+        "source_edge_ids":[],
+        "target_edge_ids":[],
+        "relation":"Edge without an ACL record"
+    });
+    let no_acl_edge_document = no_acl_edge.to_string();
+    mutations.push(mutation(
+        no_acl_edge_id,
+        "gke_edges",
+        "edge",
+        no_acl_edge,
+        Some(&no_acl_edge_document),
     ));
     let body = json!({"contract_version":1,"atomic":true,"mutations":mutations,"index_jobs":[]});
 
@@ -3851,6 +3874,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             assert!(
                 !rendered_nodes.contains(no_acl_node_id),
                 "a node without an ACL record must be denied by default: {payload}"
+            );
+            assert!(
+                !rendered_nodes.contains(no_acl_edge_id),
+                "an edge without an ACL record must be denied by default: {payload}"
             );
             for share_policy in &share_policies {
                 assert!(

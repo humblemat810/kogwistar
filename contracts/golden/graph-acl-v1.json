@@ -20,7 +20,8 @@
     {"id": "edge-shared", "grain": "edge", "mode": "shared", "shared_with_principals": ["alice"]},
     {"id": "edge-group", "grain": "edge", "mode": "group", "shared_with_groups": ["reviewers"]},
     {"id": "edge-private", "grain": "edge", "mode": "private", "owner_id": "bob"},
-    {"id": "edge-scope", "grain": "edge", "mode": "scope", "security_scope": "team-a"}
+    {"id": "edge-scope", "grain": "edge", "mode": "scope", "security_scope": "team-a"},
+    {"id": "edge-no-acl", "grain": "edge"}
   ],
   "expected_visible": {
     "nodes": ["node-public", "node-owner", "node-shared", "node-group", "node-unicode-group", "node-scope"],
