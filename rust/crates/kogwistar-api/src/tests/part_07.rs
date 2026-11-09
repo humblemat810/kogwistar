@@ -7125,9 +7125,27 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         String::from_utf8_lossy(&response_body)
     );
     let payload: Value = serde_json::from_slice(&response_body).unwrap();
-    assert_eq!(payload["document_id"], "doc-1");
-    assert_eq!(payload["nodes_added"], 2);
-    assert_eq!(payload["edges_added"], 1);
+    let response_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-upsert-success-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(
+        response_status.as_u16(),
+        response_contract["http_status"].as_u64().unwrap() as u16
+    );
+    let expected_body = &response_contract["body"];
+    assert_eq!(payload["document_id"], expected_body["document_id"]);
+    assert_eq!(
+        payload["node_ids"].as_array().unwrap().len(),
+        expected_body["node_ids_count"].as_u64().unwrap() as usize
+    );
+    assert_eq!(
+        payload["edge_ids"].as_array().unwrap().len(),
+        expected_body["edge_ids_count"].as_u64().unwrap() as usize
+    );
+    assert_eq!(payload["nodes_added"], expected_body["nodes_added"]);
+    assert_eq!(payload["edges_added"], expected_body["edges_added"]);
 
     let events = service.store.replay_raw_events("docs", 0, 100).unwrap();
     assert!(events.iter().any(|event| {

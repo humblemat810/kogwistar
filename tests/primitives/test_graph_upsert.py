@@ -192,6 +192,28 @@ def test_graph_upsert_llm_batch_with_references(monkeypatch, tmp_path):
 
     client.delete(f"/admin/doc/{DOC_ID}", headers=headers)
 
+    contract_dir = Path(__file__).resolve().parents[2] / "contracts" / "golden"
+    extraction = json.loads((contract_dir / "graph-extraction-v1.json").read_text())
+    extraction["nodes"][0]["metadata"] = {"engine_type": "attacker-selected"}
+    response_contract = json.loads(
+        (contract_dir / "graph-upsert-success-v1.json").read_text()
+    )
+    contract_response = client.post(
+        "/api/graph/upsert", json=extraction, headers=headers
+    )
+    assert contract_response.status_code == response_contract["http_status"], (
+        contract_response.text
+    )
+    contract_body = contract_response.json()
+    expected_body = response_contract["body"]
+    assert {
+        "document_id": contract_body["document_id"],
+        "node_ids_count": len(contract_body["node_ids"]),
+        "edge_ids_count": len(contract_body["edge_ids"]),
+        "nodes_added": contract_body["nodes_added"],
+        "edges_added": contract_body["edges_added"],
+    } == expected_body
+
     payload = {
         "doc_id": DOC_ID,
         "content": "A short contract: Alice contracts with Bob. Includes a penalty clause.",

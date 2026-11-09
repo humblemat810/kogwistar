@@ -13,6 +13,8 @@
       "summary": "The first concept.",
       "references": [
         {
+          "collection_page_url": "document_collection/doc-1",
+          "document_page_url": "document/doc-1",
           "doc_id": "doc-1",
           "start_char": 0,
           "end_char": 5,
@@ -29,6 +31,8 @@
         {
           "spans": [
             {
+            "collection_page_url": "document_collection/doc-1",
+            "document_page_url": "document/doc-1",
               "doc_id": "doc-1",
               "start_char": 18,
               "end_char": 22,
@@ -52,6 +56,8 @@
       "target_edge_ids": null,
       "references": [
         {
+          "collection_page_url": "document_collection/doc-1",
+          "document_page_url": "document/doc-1",
           "doc_id": "doc-1",
           "start_char": 0,
           "end_char": 23,

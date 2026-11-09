@@ -1,0 +1,12 @@
+{
+  "contract_version": 1,
+  "request_fixture": "graph-extraction-v1.json",
+  "http_status": 200,
+  "body": {
+    "document_id": "doc-1",
+    "node_ids_count": 2,
+    "edge_ids_count": 1,
+    "nodes_added": 2,
+    "edges_added": 1
+  }
+}
