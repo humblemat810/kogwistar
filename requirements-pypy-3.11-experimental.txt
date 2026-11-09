@@ -1,7 +1,7 @@
 # PyPy 3.11 Python-authority probe dependencies.
-# Keep the native extension, NumPy, Chroma, pgvector, Torch, and GPU extras
-# outside this lane; native compatibility is tested by the separate PyPy 3.12
-# ABI job.
+# Keep the native extension, NumPy, Chroma server, Torch, and GPU extras
+# outside this lane; pgvector's Python client supports the live PostgreSQL
+# worker interop check. Native compatibility is tested by the separate ABI job.
 pydantic>=2.12.5
 pydantic-extension>=0.0.8
 anyio>=4.0
@@ -22,5 +22,6 @@ requests>=2.32
 typing-extensions>=4.8
 sqlalchemy>=2.0
 psycopg>=3.1
+pgvector>=0.3.6
 pytest>=8
 pytest-asyncio>=1.1

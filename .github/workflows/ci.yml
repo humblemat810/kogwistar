@@ -496,12 +496,13 @@ jobs:
           ANONYMIZED_TELEMETRY: "FALSE"
           KOGWISTAR_LOG_LEVEL: WARNING
           LOG_LEVEL: WARNING
+          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
         run: |
           set -euo pipefail
           report="$RUNNER_TEMP/pypy-rust-worker-interop.xml"
           python -m pytest tests/runtime/test_rust_runtime_authority.py \
             -q -p no:cacheprovider --junitxml="$report" \
-            -k "python_worker_and_rust_native_step_interoperate_over_real_server and sqlite"
+            -k "python_worker_and_rust_native_step_interoperate_over_real_server"
           python - "$report" <<'PY'
           import sys
           import xml.etree.ElementTree as ET
@@ -509,9 +510,9 @@ jobs:
           suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
           tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
           skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          if tests != 2 or skipped:
+          if tests != 3 or skipped:
               raise SystemExit(
-                  f"both PyPy mixed-worker backends must run without skips: "
+                  f"all PyPy mixed-worker backends must run without skips: "
                   f"tests={tests}, skipped={skipped}"
               )
           PY
