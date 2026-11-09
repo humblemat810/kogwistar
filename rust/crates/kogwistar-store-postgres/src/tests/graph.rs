@@ -1,7 +1,8 @@
 // Domain-focused tests; shared fixtures live in the parent test module.
 use super::*;
 use kogwistar_store::{
-    DistanceMetric, GraphRecord, MetadataFilter, NodeIndexStore, VectorCollectionStore, VectorQuery,
+    DistanceMetric, GraphMutation, GraphProjectionVectorQuery, GraphRecord, GraphScope,
+    MetadataFilter, NodeIndexStore, VectorCollectionStore, VectorQuery, similarity_from_distance,
 };
 
 #[test]
@@ -75,6 +76,124 @@ fn graph_reference_rows_match_python_reference_projection_contract() {
         ]
     );
     assert!(graph_reference_rows("document", "d-1", &document).is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract; python=kogwistar/engine_core/vector_search.py#similarity_from_distance; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract; python_test=tests/core/test_search_nodes_as_of.py#test_postgres_vector_metric_contract_is_shared_with_rust
+async fn postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+    )))?;
+    let schema = test_schema("graph_vector_metric_semantics");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(2, GraphTableNames::default())
+        .await?;
+    let scope = GraphScope {
+        namespace: format!("metric-semantics-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    for vector in fixture["vectors"].as_array().unwrap() {
+        let id = vector["id"].as_str().unwrap();
+        let embedding = vector["embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap() as f32)
+            .collect::<Vec<_>>();
+        let metadata = Map::from_iter([(
+            "lifecycle_status".to_owned(),
+            Value::String("active".to_owned()),
+        )]);
+        store
+            .apply_graph_mutation(GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("metric-{id}-{}", std::process::id()),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id": id, "metadata": metadata}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(id.to_owned()),
+                    metadata,
+                    embedding: Some(embedding),
+                },
+                embedding_dim: 2,
+            })
+            .await?;
+    }
+
+    for case in fixture["cases"].as_array().unwrap() {
+        let metric = match case["metric"].as_str().unwrap() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" => DistanceMetric::InnerProduct,
+            other => panic!("unknown fixture metric {other}"),
+        };
+        let query = GraphProjectionVectorQuery {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            query: VectorQuery {
+                embedding: fixture["query_embedding"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as f32)
+                    .collect(),
+                limit: 10,
+                metadata: MetadataFilter::default(),
+                metric,
+            },
+            embedding_dim: 2,
+        };
+        let hits = store.graph_projection_vector_query(query).await?;
+        let expected_ids = case["expected_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        let actual_ids = hits
+            .iter()
+            .map(|hit| hit.record.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids, "metric {}", case["metric"]);
+        for ((hit, distance), similarity) in hits
+            .iter()
+            .zip(case["expected_distances"].as_array().unwrap())
+            .zip(case["expected_similarities"].as_array().unwrap())
+        {
+            let expected_distance = distance.as_f64().unwrap();
+            let expected_similarity = similarity.as_f64().unwrap();
+            assert!(
+                (hit.distance - expected_distance).abs() < 1e-5,
+                "{} raw distance: expected {expected_distance}, got {}",
+                case["metric"],
+                hit.distance
+            );
+            let actual_similarity = similarity_from_distance(Some(hit.distance), metric).unwrap();
+            assert!(
+                (actual_similarity - expected_similarity).abs() < 1e-5,
+                "{} normalized score: expected {expected_similarity}, got {actual_similarity}",
+                case["metric"]
+            );
+        }
+    }
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .await
+        .map_err(backend)?;
+    Ok(())
 }
 
 #[test]

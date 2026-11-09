@@ -22,6 +22,26 @@ def test_vector_similarity_normalization_is_metric_explicit():
     assert similarity_from_distance(0.2, metric="ip", distance_kind="distance") == 0.8
 
 
+def test_postgres_vector_metric_contract_is_shared_with_rust():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-metric-semantics-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["schema_version"] == 1
+    for case in fixture["cases"]:
+        scores = [
+            similarity_from_distance(
+                distance,
+                metric=case["metric"],
+                distance_kind=case["python_distance_kind"],
+            )
+            for distance in case["expected_distances"]
+        ]
+        assert scores == pytest.approx(case["expected_similarities"])
+
+
 def test_chroma_vector_distance_semantics_match_shared_rust_contract():
     fixture = json.loads(
         (
