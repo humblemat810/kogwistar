@@ -4470,7 +4470,11 @@ mod tests {
     fn graph_neighbors_excludes_stale_and_other_document_edges() {
         let mut stale = edge_record(
             "stale",
-            serde_json::json!({"source_ids": ["n1"], "target_ids": ["n2"]}),
+            serde_json::json!({
+                "doc_id": "doc-requested",
+                "source_ids": ["n1"],
+                "target_ids": ["n2"]
+            }),
         );
         stale.metadata.insert(
             "lifecycle_status".to_owned(),
