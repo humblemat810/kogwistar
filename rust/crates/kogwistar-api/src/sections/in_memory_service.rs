@@ -270,6 +270,7 @@ impl InMemoryGraphApplicationService {
                     | "emit-result"
                     | "agent.event.request"
                     | "agent.event.receive"
+                    | "agent.event.ack"
             )
         ) {
             self.dead_letter_native_lane(
@@ -354,6 +355,13 @@ impl InMemoryGraphApplicationService {
             .await?;
             return Err("native noop did not produce a worker effect".to_owned());
         };
+        if !effect.provider_event_acknowledgements.is_empty() {
+            self.resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+                .await
+                .map_err(|_| {
+                    "provider-event acknowledgement owner authorization failed closed".to_owned()
+                })?;
+        }
         if let Err(error) = self
             .store
             .apply_claimed_recorded_worker_effect(handoff, effect)
@@ -2122,6 +2130,7 @@ impl InMemoryGraphApplicationService {
                             | "emit-result"
                             | "agent.event.request"
                             | "agent.event.receive"
+                            | "agent.event.ack"
                     )
                 })
                 || version != Some("v1")
@@ -2208,6 +2217,7 @@ impl InMemoryGraphApplicationService {
                         | "emit-result"
                         | "agent.event.request"
                         | "agent.event.receive"
+                        | "agent.event.ack"
                 )
             )
             || input

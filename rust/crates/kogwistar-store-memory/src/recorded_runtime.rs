@@ -373,6 +373,7 @@ impl InMemoryStore {
         apply_transition(&mut state, transition, None, abort_after_writes)
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_claimed_recorded_worker_effect; python=kogwistar/agent/event_journal.py#acknowledge,kogwistar/messaging/service.py#ack; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=claim identity, successful state transition, run handled event, and lane completion commit under one in-memory writer lock.
     /// Applies one claimed worker effect and acknowledges its lane in the same
     /// write-lock transaction. Retries require the original handoff and digest.
     pub fn apply_claimed_recorded_worker_effect(
@@ -391,10 +392,12 @@ impl InMemoryStore {
         if effect.graph_mutation_batch.is_some()
             || effect.graph_mutation_batch_v2.is_some()
             || !effect.provider_event_publications.is_empty()
-            || !effect.provider_event_acknowledgements.is_empty()
+            || effect.provider_event_acknowledgements.len() > 1
+            || (!effect.provider_event_acknowledgements.is_empty()
+                && effect.status != RuntimeWorkerEffectStatus::Success)
         {
             return Err(runtime_conflict(
-                "in-memory worker result does not support graph or provider-event effects",
+                "in-memory worker result supports at most one successful provider-event acknowledgement and no graph/publication effects",
             ));
         }
         let effect_digest = worker_effect_digest(&effect).map_err(runtime_error)?;
@@ -484,6 +487,95 @@ impl InMemoryStore {
             ));
         }
         let step_seq = current.last_step_seq.saturating_add(1);
+        let acknowledgement =
+            if let Some(acknowledgement) = effect.provider_event_acknowledgements.first() {
+                let lane = state
+                    .lane_messages
+                    .get(&acknowledgement.message_id)
+                    .ok_or_else(|| {
+                        runtime_conflict("provider event acknowledgement lane is missing")
+                    })?;
+                let event: kogwistar_contracts::DurableProviderEventV1 = lane
+                    .payload_json
+                    .as_deref()
+                    .and_then(|payload| serde_json::from_str(payload).ok())
+                    .ok_or_else(|| runtime_conflict("provider event payload is invalid"))?;
+                let run = state
+                    .server_runs
+                    .get(&handoff.run_id)
+                    .ok_or_else(|| runtime_conflict("provider event run is missing"))?;
+                let claimed_state = current.state.get("agent_event_claim");
+                let current_event = current.state.get("agent_event_current");
+                let handler_step_seq = current
+                    .state
+                    .get("agent_event_handling_step_seq")
+                    .and_then(Value::as_i64)
+                    .filter(|seq| *seq >= 0)
+                    .ok_or_else(|| {
+                        runtime_conflict("provider event handler step sequence is invalid")
+                    })?;
+                let storage_namespace = current
+                    .state
+                    .get("_rt_graph_scope")
+                    .and_then(|scope| scope.get("storage_namespace"))
+                    .and_then(Value::as_str);
+                if acknowledgement.message_id != format!("msg:{}", acknowledgement.event_id)
+                    || lane.namespace != storage_namespace.unwrap_or_default()
+                    || lane.purpose != "agent_event"
+                    || lane.inbox_id != "agent-provider-events"
+                    || lane.recipient_id != "agent-event-consumer"
+                    || lane.sender_id != "agent-runtime"
+                    || lane.msg_type != "agent.provider_event"
+                    || lane.status != "claimed"
+                    || lane.claimed_by.as_deref() != Some(acknowledgement.claimed_by.as_str())
+                    || lane.run_id.as_deref() != Some(handoff.run_id.as_str())
+                    || lane.conversation_id != current.conversation_id
+                    || lane.step_id.as_deref() != Some(event.trace.step_id.as_str())
+                    || lane.correlation_id.as_deref() != Some(acknowledgement.event_id.as_str())
+                    || event.event_id != acknowledgement.event_id
+                    || event.trace.run_id != handoff.run_id
+                    || run.user_id.as_deref()
+                        != current
+                            .state
+                            .get("_rt_run_owner_id")
+                            .and_then(Value::as_str)
+                    || event
+                        .trace
+                        .producer_step_seq
+                        .is_some_and(|seq| seq < 0 || seq >= step_seq)
+                    || handler_step_seq >= step_seq
+                    || current_event != Some(&serde_json::to_value(&event).map_err(json_error)?)
+                    || claimed_state
+                        .and_then(|claim| claim.get("message_id"))
+                        .and_then(Value::as_str)
+                        != Some(acknowledgement.message_id.as_str())
+                    || claimed_state
+                        .and_then(|claim| claim.get("claimed_by"))
+                        .and_then(Value::as_str)
+                        != Some(acknowledgement.claimed_by.as_str())
+                    || claimed_state
+                        .and_then(|claim| claim.get("event_id"))
+                        .and_then(Value::as_str)
+                        != Some(acknowledgement.event_id.as_str())
+                {
+                    return Err(runtime_conflict(
+                        "provider event acknowledgement is not bound to the active run claim",
+                    ));
+                }
+                Some((
+                    acknowledgement.message_id.clone(),
+                    serde_json::to_string(&serde_json::json!({
+                        "event_id": acknowledgement.event_id,
+                        "message_id": acknowledgement.message_id,
+                        "workflow_node_id": handoff.step_id,
+                        "step_seq": step_seq,
+                        "effect_id": effect.effect_id,
+                    }))
+                    .map_err(json_error)?,
+                ))
+            } else {
+                None
+            };
         let successors = match effect.status {
             RuntimeWorkerEffectStatus::Success => authoritative_runtime_successors_for_result(
                 &current.static_routes,
@@ -567,6 +659,20 @@ impl InMemoryStore {
             resume_payload: effect.resume_payload,
             errors: effect.errors,
         };
+        if acknowledgement.is_some() {
+            let reduced =
+                reduce_recorded_transition(Some(&current), &transition).map_err(runtime_error)?;
+            if reduced
+                .state
+                .state
+                .get("agent_event_claim")
+                .is_none_or(|claim| !claim.is_null())
+            {
+                return Err(runtime_conflict(
+                    "provider event acknowledgement must clear the persisted claim",
+                ));
+            }
+        }
         let mut telemetry_events = Vec::new();
         if let Some(usage) = usage {
             telemetry_events.push((
@@ -652,6 +758,27 @@ impl InMemoryStore {
             )?
         };
         let mut next_seq = result.event_seq;
+        if let Some((message_id, payload_json)) = acknowledgement {
+            next_seq += 1;
+            state
+                .server_run_events
+                .entry(handoff.run_id.clone())
+                .or_default()
+                .push(ServerRunEvent {
+                    seq: next_seq,
+                    run_id: handoff.run_id.clone(),
+                    event_type: "workflow.provider_event.handled.v1".to_owned(),
+                    payload_json,
+                    created_at_ms: now_ms(),
+                });
+            let lane = state
+                .lane_messages
+                .get_mut(&message_id)
+                .expect("validated provider event lane remains present under write lock");
+            lane.status = "completed".to_owned();
+            lane.claimed_by = None;
+            lane.lease_until = None;
+        }
         for (event_type, payload_json) in telemetry_events {
             next_seq += 1;
             state
@@ -1709,6 +1836,290 @@ mod tests {
                 .unwrap()
                 .len(),
             4
+        );
+    }
+
+    #[test]
+    fn provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent() {
+        let raw_event = json!({
+            "event_id": "provider-event-ack",
+            "trace": {
+                "run_id": "memory-run",
+                "turn_id": "turn-1",
+                "workflow_node_id": "request",
+                "step_id": "provider-response:response-1",
+                "producer_step_seq": 0,
+                "provider_id": "test-provider"
+            },
+            "event": {
+                "kind": "response_started",
+                "provider_event_id": "provider-event-ack",
+                "provider_sequence": 1,
+                "response_id": "response-1"
+            }
+        });
+        let typed_event: kogwistar_contracts::DurableProviderEventV1 =
+            serde_json::from_value(raw_event).unwrap();
+        let event = serde_json::to_value(&typed_event).unwrap();
+        let claim = json!({
+            "message_id": "msg:provider-event-ack",
+            "claimed_by": "rust-native-agent-event:claim-1",
+            "event_id": "provider-event-ack"
+        });
+        let mut transition = pending_start();
+        transition.frontier = Some(
+            serde_json::from_value(json!({
+                "pending": [["receive", 0, "token-1", null]],
+                "suspended": [],
+                "join_node_ids": [],
+                "join_outstanding": [],
+                "join_waiters": {}
+            }))
+            .unwrap(),
+        );
+        transition.initial_state = Some(
+            serde_json::from_value(json!({
+                "_rt_graph_scope": {"storage_namespace": "docs"},
+                "_rt_run_owner_id": "user-1",
+                "agent_event_current": event,
+                "agent_event_claim": claim,
+                "agent_event_route": "final",
+                "agent_event_handling_step_seq": 0
+            }))
+            .unwrap(),
+        );
+        let store = InMemoryStore::new();
+        store
+            .apply_recorded_runtime_transition(transition, false)
+            .unwrap();
+        store
+            .apply_recorded_runtime_transition(
+                serde_json::from_value(json!({
+                    "contract_version": 1,
+                    "transition_id": "provider-event-received",
+                    "expected_event_seq": 1,
+                    "kind": "recorded_step_success",
+                    "run_id": "memory-run",
+                    "workflow_id": "memory-workflow",
+                    "conversation_id": "memory-conversation",
+                    "step_seq": 0,
+                    "node_id": "receive",
+                    "token_id": "token-1",
+                    "state_update": [],
+                    "frontier": {
+                        "pending": [["ack", 0, "token-1", null]],
+                        "suspended": [],
+                        "join_node_ids": [],
+                        "join_outstanding": [],
+                        "join_waiters": {}
+                    }
+                }))
+                .unwrap(),
+                false,
+            )
+            .unwrap();
+
+        block_on(store.project_lane_message(NewProjectedLaneMessage {
+            message_id: "msg:provider-event-ack".to_owned(),
+            namespace: "docs".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: "memory-conversation".to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now_seconds(),
+            available_at: now_seconds(),
+            run_id: Some("memory-run".to_owned()),
+            step_id: Some("provider-response:response-1".to_owned()),
+            correlation_id: Some("provider-event-ack".to_owned()),
+            payload_json: Some(serde_json::to_string(&typed_event).unwrap()),
+            error_json: None,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(
+                store.claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                    namespace: "docs".to_owned(),
+                    inbox_id: "agent-provider-events".to_owned(),
+                    claimed_by: "rust-native-agent-event:claim-1".to_owned(),
+                    message_ids: Some(vec!["msg:provider-event-ack".to_owned()]),
+                    run_id: Some("memory-run".to_owned()),
+                    msg_type: Some("agent.provider_event".to_owned()),
+                    recipient_id: Some("agent-event-consumer".to_owned()),
+                    limit: 1,
+                    lease_seconds: 60,
+                })
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let mut ack_worker_lane = worker_lane();
+        ack_worker_lane.step_id = Some("ack".to_owned());
+        block_on(store.project_lane_message(ack_worker_lane)).unwrap();
+        assert_eq!(
+            block_on(
+                store.claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                    namespace: "workflow".to_owned(),
+                    inbox_id: "workflow-runtime".to_owned(),
+                    claimed_by: "rust-native-worker#claim-1".to_owned(),
+                    message_ids: Some(vec!["lane-noop-1".to_owned()]),
+                    run_id: Some("memory-run".to_owned()),
+                    msg_type: Some("workflow.step.execute".to_owned()),
+                    recipient_id: Some("rust-native-worker".to_owned()),
+                    limit: 1,
+                    lease_seconds: 60,
+                })
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+            "contract_version": 1,
+            "effect_id": "native-provider-event-ack-effect",
+            "status": "success",
+            "state_update": [["u", {
+                "agent_event_route": "done",
+                "agent_event_claim": null
+            }]],
+            "successors": [],
+            "route_next": [],
+            "result": {"workflow_status": "succeeded"},
+            "provider_event_acknowledgements": [{
+                "message_id": "msg:provider-event-ack",
+                "claimed_by": "rust-native-agent-event:claim-1",
+                "event_id": "provider-event-ack"
+            }]
+        }))
+        .unwrap();
+        let current =
+            block_on(store.named_projection(RUNTIME_CURRENT_STATE_NAMESPACE, "memory-run"))
+                .unwrap()
+                .unwrap();
+        let lane = block_on(store.projected_lane_message("msg:provider-event-ack"))
+            .unwrap()
+            .unwrap();
+        let event: kogwistar_contracts::DurableProviderEventV1 =
+            serde_json::from_str(lane.payload_json.as_deref().unwrap()).unwrap();
+        let run = block_on(store.server_run("memory-run")).unwrap().unwrap();
+        let live_state = store.state.read().unwrap();
+        let runtime_state = recorded_state_for(
+            &live_state,
+            "memory-run",
+            "memory-workflow",
+            "memory-conversation",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            current.payload["state"]["_rt_graph_scope"]["storage_namespace"],
+            "docs"
+        );
+        assert_eq!(current.payload["state"]["_rt_run_owner_id"], "user-1");
+        assert_eq!(lane.namespace, "docs");
+        assert_eq!(lane.status, "claimed");
+        assert_eq!(
+            lane.claimed_by.as_deref(),
+            Some("rust-native-agent-event:claim-1")
+        );
+        assert_eq!(lane.purpose, "agent_event");
+        assert_eq!(lane.inbox_id, "agent-provider-events");
+        assert_eq!(lane.recipient_id, "agent-event-consumer");
+        assert_eq!(lane.sender_id, "agent-runtime");
+        assert_eq!(lane.msg_type, "agent.provider_event");
+        assert_eq!(lane.run_id.as_deref(), Some("memory-run"));
+        assert_eq!(lane.conversation_id, "memory-conversation");
+        assert_eq!(lane.step_id.as_deref(), Some(event.trace.step_id.as_str()));
+        assert_eq!(lane.correlation_id.as_deref(), Some("provider-event-ack"));
+        assert_eq!(event.event_id, "provider-event-ack");
+        assert_eq!(event.trace.run_id, "memory-run");
+        assert_eq!(event.trace.producer_step_seq, Some(0));
+        assert_eq!(runtime_state.state["agent_event_handling_step_seq"], 0);
+        assert_eq!(runtime_state.last_step_seq, 0);
+        drop(live_state);
+        assert_eq!(run.user_id.as_deref(), Some("user-1"));
+        assert_eq!(
+            current.payload["state"]["agent_event_current"],
+            serde_json::to_value(&event).unwrap()
+        );
+        assert_eq!(
+            current.payload["state"]["agent_event_claim"],
+            json!({
+                "message_id": "msg:provider-event-ack",
+                "claimed_by": "rust-native-agent-event:claim-1",
+                "event_id": "provider-event-ack"
+            })
+        );
+        let mut worker_handoff = handoff("rust-native-worker#claim-1");
+        worker_handoff.step_id = "ack".to_owned();
+        let mut unbound = effect.clone();
+        unbound.provider_event_acknowledgements[0].claimed_by = "other-claim".to_owned();
+        assert!(
+            store
+                .apply_claimed_recorded_worker_effect(worker_handoff.clone(), unbound)
+                .is_err()
+        );
+        let mut uncleared = effect.clone();
+        uncleared.effect_id = "native-provider-event-ack-uncleared".to_owned();
+        uncleared.state_update.clear();
+        let uncleared_error = store
+            .apply_claimed_recorded_worker_effect(worker_handoff.clone(), uncleared)
+            .unwrap_err();
+        assert!(
+            uncleared_error
+                .to_string()
+                .contains("must clear the persisted claim"),
+            "unexpected rejection: {uncleared_error}"
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("msg:provider-event-ack"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed"
+        );
+
+        let applied = store
+            .apply_claimed_recorded_worker_effect(worker_handoff.clone(), effect.clone())
+            .unwrap();
+        let lane = block_on(store.projected_lane_message("msg:provider-event-ack"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(lane.status, "completed");
+        assert!(lane.claimed_by.is_none());
+        let current =
+            block_on(store.named_projection(RUNTIME_CURRENT_STATE_NAMESPACE, "memory-run"))
+                .unwrap()
+                .unwrap();
+        assert!(current.payload["state"]["agent_event_claim"].is_null());
+        assert_eq!(current.payload["state"]["agent_event_route"], "done");
+        let handled = block_on(store.server_run_events("memory-run", 0, 20))
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "workflow.provider_event.handled.v1")
+            .collect::<Vec<_>>();
+        assert_eq!(handled.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(&handled[0].payload_json).unwrap()["event_id"],
+            "provider-event-ack"
+        );
+
+        let replay = store
+            .apply_claimed_recorded_worker_effect(worker_handoff, effect)
+            .unwrap();
+        assert!(replay.idempotent);
+        assert_eq!(replay.event_seq, applied.event_seq);
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 20))
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "workflow.provider_event.handled.v1")
+                .count(),
+            1
         );
     }
 }
