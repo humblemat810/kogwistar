@@ -1,0 +1,14 @@
+{
+  "message": "transaction aborted: injected failure",
+  "python": {
+    "status": 500,
+    "detail": "transaction aborted: injected failure"
+  },
+  "rust": {
+    "status": 409,
+    "code": "KOGWISTAR_GRAPH_UPSERT_CONFLICT",
+    "message": "transaction aborted: injected failure"
+  },
+  "parity": false,
+  "difference": "The legacy Python route maps raised exceptions to HTTP 500; the Rust graph-upsert contract classifies TransactionAborted as HTTP 409."
+}

@@ -258,6 +258,42 @@ def test_document_upsert_tree_storage_error_matches_shared_fixture(
     assert response.json()["detail"] == fixture["python"]["detail"]
 
 
+def test_document_upsert_tree_transaction_abort_matches_comparison_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "transaction-abort-error-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    monkeypatch.setenv("AUTH_MODE", "production")
+
+    def _abort_transaction(**_kwargs):
+        raise RuntimeError(fixture["message"])
+
+    monkeypatch.setattr(
+        engine, "persist_document_graph_extraction", _abort_transaction, raising=True
+    )
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post(
+            "/api/document.upsert_tree",
+            json={"doc_id": "doc::transaction_abort", "nodes": [], "edges": []},
+            headers=headers,
+        )
+
+    assert fixture["parity"] is False
+    assert response.status_code == fixture["python"]["status"]
+    assert response.json()["detail"] == fixture["python"]["detail"]
+
+
 def test_document_graph_upsert_result_serializes_persisted_result_shape():
     result = server.DocumentGraphUpsertResult(
         status="ok",

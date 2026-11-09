@@ -1197,6 +1197,24 @@ mod graph_upsert_tests {
     }
 
     #[test]
+    fn graph_upsert_transaction_abort_matches_comparison_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/transaction-abort-error-v1.json"
+        )))
+        .expect("shared transaction-abort comparison fixture");
+        let message = fixture["message"].as_str().expect("fixture message");
+        let response = graph_upsert_commit_error(SqliteStoreError::TransactionAborted(
+            message.to_owned(),
+        ));
+        assert_eq!(response.status, fixture["rust"]["status"].as_u64().unwrap() as u16);
+        let body: Value = serde_json::from_slice(&response.body).expect("error response JSON");
+        assert_eq!(body["code"], fixture["rust"]["code"]);
+        assert_eq!(body["message"], fixture["rust"]["message"]);
+        assert_eq!(fixture["parity"], false);
+    }
+
+    #[test]
     fn graph_role_configuration_matches_python_aliases_and_fails_closed_when_blank() {
         for (input, expected) in [
             ("knowledge", "knowledge"),
