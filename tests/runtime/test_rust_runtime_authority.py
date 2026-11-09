@@ -1610,6 +1610,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 worker_probe.append("--snapshot-effect")
             else:
                 worker_probe.extend(["--graph-entity-id", graph_entity_id])
+                if backend == "pg":
+                    worker_probe.extend(
+                        ["--graph-default-acl-truth-graph", "knowledge"]
+                    )
             worker_probe.extend(["--auth-token", worker_token])
             worker_env["JWT_SECRET"] = env["JWT_SECRET"]
             worker_env["JWT_ALG"] = "HS256"
@@ -1718,7 +1722,15 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         # exercises durable lease recovery, not an in-memory active claim.
         time.sleep(1.1)
         replay = subprocess.run(
-            [*worker_probe, "--worker-id", "python-worker-b", "--mode", "replay"],
+            [
+                *worker_probe,
+                "--worker-id",
+                "python-worker-b",
+                "--mode",
+                "replay",
+                "--lease-seconds",
+                "30",
+            ],
             cwd=ROOT,
             env=worker_env,
             capture_output=True,
@@ -1775,10 +1787,45 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                         """,
                         (graph_namespace,),
                     ).fetchall()
-            assert len(graph_events) == 1
+            if backend == "pg":
+                assert len(graph_events) >= 2
+                graph_event = next(
+                    event
+                    for event in graph_events
+                    if event[1] == "node" and event[2] == graph_entity_id
+                )
+                graph_payload = json.loads(graph_event[4])
+                assert graph_payload["doc_id"] == f"source-doc-{graph_entity_id}"
+                assert graph_payload["mentions"][0]["spans"][0] == {
+                    "doc_id": f"source-doc-{graph_entity_id}",
+                    "start_char": 0,
+                    "end_char": len("worker effect"),
+                }
+                assert graph_payload["metadata"]["source_revision_id"] == "revision-1"
+                acl_payloads = [
+                    json.loads(event[4])
+                    for event in graph_events
+                    if json.loads(event[4])
+                    .get("metadata", {})
+                    .get("entity_type")
+                    == "acl_record"
+                ]
+                assert {
+                    payload["metadata"]["acl_target_grain"]
+                    for payload in acl_payloads
+                } == {"node", "grounding", "span"}
+                assert all(
+                    payload["metadata"]["owner_id"] == "worker-replay-test"
+                    and payload["metadata"]["acl_mode"] == "private"
+                    and payload["metadata"]["acl_target_entity_id"]
+                    == graph_entity_id
+                    for payload in acl_payloads
+                )
+            else:
+                assert len(graph_events) == 1
             snapshot_effect = backend == "sqlite-chroma"
             if backend == "pg":
-                assert graph_events[0][1:4] == ("node", graph_entity_id, "ADD")
+                assert graph_event[1:4] == ("node", graph_entity_id, "ADD")
             else:
                 assert graph_events[0][0:4] == (
                     graph_namespace,
@@ -1803,8 +1850,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     snapshot_payload = json.loads(graph_events[0][4])
                     assert snapshot_payload["metadata"]["entity_type"] == "context_snapshot"
             if backend == "pg":
-                assert len(graph_jobs) == 1
-                assert graph_jobs[0].entity_id == graph_entity_id
+                assert any(job.entity_id == graph_entity_id for job in graph_jobs)
             else:
                 if snapshot_effect:
                     assert {job[2] for job in graph_jobs} >= {"node_docs", "node_refs"}

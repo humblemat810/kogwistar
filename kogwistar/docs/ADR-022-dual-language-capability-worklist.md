@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **157/177 PASS (88.7%)**.
-- **Fine worklist:** **215/775 PASS (27.7%)**; **0 IN PROGRESS**, **560 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **216/775 PASS (27.9%)**; **0 IN PROGRESS**, **559 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -500,7 +500,7 @@
 | FW-14-01A | DL-14 | NOT STARTED | Run one paired mixed-mode operation test and verify scope fields at the Python/Rust seam. |
 | FW-14-01B | DL-14 | NOT STARTED | Add drift protection that rejects an advertised mixed combination without an executable evidence reference. |
 | FW-14-03 | DL-14 | NOT STARTED | Verify namespace, workspace, and graph-role preservation for one mixed graph mutation seam. |
-| FW-14-03A | DL-14 | NOT STARTED | Verify ACL and source-provenance preservation for one mixed graph read/mutation seam. |
+| FW-14-03A | DL-14 | PASS | Python RustRuntimeWorker journals V2 only when the server advertises `graph_mutation_batch_v2`; live Rust HTTP/PostgreSQL worker replay atomically persists source revision/span metadata and owner-derived private ACL records for node, grounding, and span, then recovers a lost result ACK without duplicate graph events. Evidence: `tests/runtime/test_rust_runtime_python_worker.py::test_python_worker_journals_acl_graph_batch_v2_only_when_server_advertises_it`, `::test_python_worker_journals_declarative_graph_batch_only_when_server_advertises_it` (2 passed), and `tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]` (1 passed against local pgvector). |
 | FW-14-03B | DL-14 | NOT STARTED | Verify runtime/storage handoff preserves the same scope contract at one declared seam. |
 | FW-14-04 | DL-14 | NOT STARTED | Verify mixed-mode crash/reopen recovery produces the expected canonical digest for one operation family. |
 | FW-14-04A | DL-14 | NOT STARTED | Verify mixed-mode retry does not duplicate durable effects for one idempotent operation family. |

@@ -215,6 +215,76 @@ def test_python_worker_journals_declarative_graph_batch_only_when_server_adverti
         RustRuntimeWorker._result_envelope(unsupported_work, effect)
 
 
+def test_python_worker_journals_acl_graph_batch_v2_only_when_server_advertises_it() -> None:
+    resolver = MappingStepResolver()
+    batch = {
+        "contract_version": 2,
+        "atomic": True,
+        "mutations": [
+            {
+                "scope": {"namespace": "ns"},
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": "effect-v2",
+                "op": "ADD",
+                "payload": {
+                    "id": "node-v2",
+                    "doc_id": "source-doc",
+                    "mentions": [
+                        {
+                            "spans": [
+                                {
+                                    "doc_id": "source-doc",
+                                    "start_char": 0,
+                                    "end_char": 8,
+                                }
+                            ]
+                        }
+                    ],
+                },
+                "record": {
+                    "id": "node-v2",
+                    "document": "evidence",
+                    "metadata": {"source_revision_id": "revision-1"},
+                },
+                "embedding_dim": 0,
+            }
+        ],
+        "index_jobs": [],
+        "default_acl": {"truth_graph": "conversation"},
+    }
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[],
+            graph_mutation_batch_v2=batch,
+        )
+
+    work = _adapter_work()
+    work["worker_effect_capabilities"] = ["graph_mutation_batch_v2"]
+    effect = RustStepResolverAdapter(resolver)(work)
+    projected_batch = effect["graph_mutation_batch_v2"]
+    assert projected_batch["contract_version"] == 2
+    assert projected_batch["default_acl"] == {"truth_graph": "conversation"}
+    assert projected_batch["mutations"][0]["payload"]["doc_id"] == "source-doc"
+    assert (
+        projected_batch["mutations"][0]["record"]["metadata"][
+            "source_revision_id"
+        ]
+        == "revision-1"
+    )
+    envelope = RustRuntimeWorker._result_envelope(work, effect)
+    assert envelope["effect"]["graph_mutation_batch_v2"] == projected_batch
+
+    unsupported_work = _adapter_work()
+    with pytest.raises(
+        RustWorkerError, match="does not advertise graph_mutation_batch_v2"
+    ):
+        RustRuntimeWorker._result_envelope(unsupported_work, effect)
+
+
 def test_rust_worker_marks_local_dependencies_for_effect_only_execution() -> None:
     adapter = RustStepResolverAdapter(
         MappingStepResolver(),

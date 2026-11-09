@@ -7,7 +7,10 @@ from types import SimpleNamespace
 
 import httpx
 
-from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
+from kogwistar.engine_core.graph_mutation_contract import (
+    GraphMutationBatchPayload,
+    GraphMutationBatchV2Payload,
+)
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
@@ -38,6 +41,11 @@ class _LoseResultAcknowledgementAfterCommit(httpx.BaseTransport):
             self._result_calls += 1
             if self._result_calls == 1:
                 body = response.read()
+                if response.status_code >= 400:
+                    raise AssertionError(
+                        "worker result was rejected before ACK-loss simulation: "
+                        f"HTTP {response.status_code}: {body.decode('utf-8', errors='replace')}"
+                    )
                 result = json.loads(body)
                 event_seq = result.get("event_seq") if isinstance(result, dict) else None
                 if not isinstance(event_seq, int) or event_seq <= 0:
@@ -62,9 +70,11 @@ def main() -> None:
     parser.add_argument("--work-record", required=True)
     parser.add_argument("--graph-namespace")
     parser.add_argument("--graph-entity-id")
+    parser.add_argument("--graph-default-acl-truth-graph")
     parser.add_argument("--auth-token")
     parser.add_argument("--run-id", default="mixed-live-run")
     parser.add_argument("--step-id", default="python-before")
+    parser.add_argument("--lease-seconds", type=int, default=1)
     parser.add_argument("--failure-result", action="store_true")
     parser.add_argument("--snapshot-effect", action="store_true")
     parser.add_argument(
@@ -83,6 +93,8 @@ def main() -> None:
         raise SystemExit("graph replay probe requires both namespace and entity ID")
     if (args.graph_namespace is not None or args.snapshot_effect) and not args.auth_token:
         raise SystemExit("graph replay probe requires its auth token")
+    if args.graph_default_acl_truth_graph and not args.graph_namespace:
+        raise SystemExit("ACL-aware graph effects require a graph namespace")
     if args.snapshot_effect and args.graph_entity_id is not None:
         raise SystemExit("snapshot effect mode derives its own graph entity ID")
 
@@ -210,44 +222,69 @@ def main() -> None:
             assert args.graph_entity_id is not None
             assert args.auth_token is not None
             assert ctx.idempotency_key
-            batch = GraphMutationBatchPayload.model_validate(
-                {
-                    "contract_version": 1,
-                    "atomic": True,
-                    "mutations": [
+            source_doc_id = f"source-doc-{args.graph_entity_id}"
+            provenance = {"source_revision_id": "revision-1"}
+            mutation = {
+                "scope": {"namespace": args.graph_namespace},
+                "table": "gke_nodes",
+                "entity_kind": "node",
+                "event_id": f"graph-effect-{ctx.idempotency_key}",
+                "op": "ADD",
+                "payload": {
+                    "id": args.graph_entity_id,
+                    "text": "worker effect",
+                    "doc_id": source_doc_id,
+                    "mentions": [
                         {
-                            "scope": {"namespace": args.graph_namespace},
-                            "table": "gke_nodes",
-                            "entity_kind": "node",
-                            "event_id": f"graph-effect-{ctx.idempotency_key}",
-                            "op": "ADD",
-                            "payload": {
-                                "id": args.graph_entity_id,
-                                "text": "worker effect",
-                            },
-                            "record": {
-                                "id": args.graph_entity_id,
-                                "document": "worker effect",
-                            },
-                            "embedding_dim": 3,
+                            "spans": [
+                                {
+                                    "doc_id": source_doc_id,
+                                    "start_char": 0,
+                                    "end_char": len("worker effect"),
+                                }
+                            ]
                         }
                     ],
-                    "index_jobs": [
-                        {
-                            "job_id": f"graph-index-{ctx.idempotency_key}",
-                            "namespace": args.graph_namespace,
-                            "entity_kind": "node",
-                            "entity_id": args.graph_entity_id,
-                            "index_kind": "node_docs",
-                            "op": "UPSERT",
-                        }
-                    ],
+                    "metadata": provenance,
+                },
+                "record": {
+                    "id": args.graph_entity_id,
+                    "document": "worker effect",
+                    "metadata": provenance,
+                },
+                "embedding_dim": 3,
+            }
+            batch_payload = {
+                "contract_version": 1,
+                "atomic": True,
+                "mutations": [mutation],
+                "index_jobs": [
+                    {
+                        "job_id": f"graph-index-{ctx.idempotency_key}",
+                        "namespace": args.graph_namespace,
+                        "entity_kind": "node",
+                        "entity_id": args.graph_entity_id,
+                        "index_kind": "node_docs",
+                        "op": "UPSERT",
+                    }
+                ],
+            }
+            if args.graph_default_acl_truth_graph:
+                batch_payload["contract_version"] = 2
+                batch_payload["default_acl"] = {
+                    "truth_graph": args.graph_default_acl_truth_graph
                 }
-            )
+                batch_v2 = GraphMutationBatchV2Payload.model_validate(batch_payload)
+                graph_extra = {
+                    "graph_mutation_batch_v2": batch_v2.model_dump(mode="json")
+                }
+            else:
+                batch_v1 = GraphMutationBatchPayload.model_validate(batch_payload)
+                graph_extra = {"graph_mutation_batch": batch_v1.model_dump(mode="json")}
             return RunSuccess(
                 conversation_node_id=None,
                 state_update=[("u", {"python_before_seen": True})],
-                graph_mutation_batch=batch.model_dump(mode="json"),
+                **graph_extra,
             )
         return RunSuccess(
             conversation_node_id=None,
@@ -296,7 +333,9 @@ def main() -> None:
             if recovered.get("event_seq") != expected_event_seq:
                 raise AssertionError("process restart changed the committed event")
         else:
-            work = worker.claim(run_id=args.run_id, lease_seconds=1)
+            work = worker.claim(
+                run_id=args.run_id, lease_seconds=args.lease_seconds
+            )
             if len(work) != 1 or work[0]["step_id"] != args.step_id:
                 raise AssertionError(f"unexpected reclaimed work: {work!r}")
             work_item = work[0]

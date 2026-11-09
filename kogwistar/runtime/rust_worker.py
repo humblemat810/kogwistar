@@ -26,7 +26,10 @@ import httpx
 from pydantic import ValidationError
 
 from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
+from kogwistar.engine_core.graph_mutation_contract import (
+    GraphMutationBatchPayload,
+    GraphMutationBatchV2Payload,
+)
 from kogwistar.implementation_selection import (
     ImplementationSelectionSnapshot,
     callback_execution_scope,
@@ -780,17 +783,32 @@ class RustStepResolverAdapter:
             if value is not None:
                 effect[field] = _json_copy(value, field=f"result.{field}")
         extra = getattr(result, "model_extra", None)
-        if isinstance(extra, Mapping) and "graph_mutation_batch" in extra:
-            if result.status != "success":
+        if isinstance(extra, Mapping):
+            has_v1 = "graph_mutation_batch" in extra
+            has_v2 = "graph_mutation_batch_v2" in extra
+            if has_v1 and has_v2:
                 raise RustWorkerError(
-                    "graph_mutation_batch is only valid on successful worker results"
+                    "worker result cannot include both graph mutation batch versions"
                 )
-            batch = GraphMutationBatchPayload.model_validate(
-                extra["graph_mutation_batch"]
-            )
-            effect["graph_mutation_batch"] = cast(
-                JsonValue, batch.model_dump(mode="json")
-            )
+            if has_v1 or has_v2:
+                if result.status != "success":
+                    raise RustWorkerError(
+                        "graph mutation batches are only valid on successful worker results"
+                    )
+                if has_v1:
+                    batch = GraphMutationBatchPayload.model_validate(
+                        extra["graph_mutation_batch"]
+                    )
+                    effect["graph_mutation_batch"] = cast(
+                        JsonValue, batch.model_dump(mode="json")
+                    )
+                else:
+                    batch_v2 = GraphMutationBatchV2Payload.model_validate(
+                        extra["graph_mutation_batch_v2"]
+                    )
+                    effect["graph_mutation_batch_v2"] = cast(
+                        JsonValue, batch_v2.model_dump(mode="json")
+                    )
         return effect
 
 
@@ -1217,6 +1235,7 @@ class RustRuntimeWorker:
             "usage",
             "trace_events",
             "graph_mutation_batch",
+            "graph_mutation_batch_v2",
         }
         unknown = set(restricted).difference(allowed)
         if unknown:
@@ -1229,6 +1248,18 @@ class RustRuntimeWorker:
                 raise RustWorkerError(
                     "claimed server does not advertise graph_mutation_batch_v1"
                 )
+        if "graph_mutation_batch_v2" in restricted:
+            capabilities = work.get("worker_effect_capabilities", [])
+            if not isinstance(capabilities, list) or (
+                "graph_mutation_batch_v2" not in capabilities
+            ):
+                raise RustWorkerError(
+                    "claimed server does not advertise graph_mutation_batch_v2"
+                )
+        if "graph_mutation_batch" in restricted and "graph_mutation_batch_v2" in restricted:
+            raise RustWorkerError(
+                "worker effect cannot include both graph mutation batch versions"
+            )
         fixed = {
             "contract_version": 1,
             "effect_id": str(

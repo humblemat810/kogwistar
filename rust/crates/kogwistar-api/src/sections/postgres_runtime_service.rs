@@ -4101,6 +4101,8 @@ impl PostgresRunApplicationService {
                         if supports_graph_mutation_batch {
                             work.worker_effect_capabilities
                                 .push("graph_mutation_batch_v1".to_owned());
+                            work.worker_effect_capabilities
+                                .push("graph_mutation_batch_v2".to_owned());
                         }
                         values.push(work);
                     }
