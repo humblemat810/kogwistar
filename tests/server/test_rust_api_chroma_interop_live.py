@@ -89,7 +89,10 @@ def _rust_graph_tool(
     }
     response = httpx.post(
         f"{base}/mcp",
-        headers={"Authorization": f"Bearer {_token(secret, claims)}"},
+        headers={
+            "Authorization": f"Bearer {_token(secret, claims)}",
+            "Accept": "application/json, text/event-stream",
+        },
         json={
             "jsonrpc": "2.0",
             "id": f"interop-{tool_name}-{uuid.uuid4().hex}",
@@ -99,9 +102,18 @@ def _rust_graph_tool(
         timeout=10,
     )
     assert response.status_code == 200, response.text
-    payload = response.json()
+    assert response.headers.get("content-type", "").startswith("text/event-stream")
+    response_data = next(
+        (line.removeprefix("data: ") for line in response.text.splitlines() if line.startswith("data: ")),
+        None,
+    )
+    assert response_data is not None, response.text
+    payload = json.loads(response_data)
     result = payload.get("result")
     assert isinstance(result, dict), payload
+    structured_content = result.get("structuredContent")
+    assert isinstance(structured_content, dict), result
+    result = structured_content
     assert result.get("implementation_authority") == "rust", result
     assert result.get("seam_crossings") == [], result
     return result

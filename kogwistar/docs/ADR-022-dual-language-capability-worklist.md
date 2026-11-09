@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **169/751 PASS (22.5%)**; **0 IN PROGRESS**, **582 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **170/751 PASS (22.6%)**; **0 IN PROGRESS**, **581 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -697,7 +697,7 @@
 | FW-16AC-03B-SHARED | DL-16AC | NOT STARTED | Verify shared/group ACL decisions remain scoped to the selected graph role. |
 | FW-16AC-03B-LATEST | DL-16AC | NOT STARTED | Verify latest-version ACL decisions remain scoped to the selected graph role. |
 | FW-16AC-04 | DL-16AC | NOT STARTED | Verify source-evidence authorization on graph reads. Lifecycle filtering and redirect behavior are tracked by FW-16AC-01C. |
-| FW-16AC-04A | DL-16AC | NOT STARTED | Verify edge endpoint dependency filtering for authorized and denied endpoint cases. |
+| FW-16AC-04A | DL-16AC | PASS | Live Python-Chroma to Rust MCP parity verifies an edge with authorized endpoints is visible and an edge depending on a denied endpoint is hidden from `kg_neighbors`; the same assertions match Python results. Evidence: `python -m pytest tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server -q -p no:cacheprovider` (1 passed). |
 | FW-16AC-04B | DL-16AC | NOT STARTED | Verify stale Chroma projection is reconciled after backend restart and graph mutation. |
 | FW-16AC-02 | DL-16AC | NOT STARTED | Verify mutation and graph-read ACL parity for same-string node/edge identifiers. |
 | FW-16AC-02A | DL-16AC | NOT STARTED | Verify stale Chroma projection recovery after service restart using a fake endpoint. |
