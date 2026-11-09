@@ -984,7 +984,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         latest_state = checkpoint.json()["checkpoints"][-1]["state"]
         assert "_deps" not in latest_state
         token_id = latest_state["_rt_join"]["suspended"][0][2]
-        if backend == "sqlite":
+        if backend in {"sqlite", "pg"}:
             process.terminate()
             try:
                 process.wait(timeout=10)
@@ -1715,7 +1715,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 except httpx.HTTPError:
                     time.sleep(0.05)
             else:
-                raise AssertionError("Rust SQLite server did not recover after restart")
+                raise AssertionError(f"Rust {backend} server did not recover after restart")
             resumed = httpx.get(
                 f"{base_url}/api/workflow/runs/mixed-live-run",
                 headers=headers,
@@ -1959,6 +1959,16 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         assert final_state["counter"] == 5
         assert final_state["python_before_seen"] is True
         assert final_state["python_after_seen"] is True
+        digest_state = {
+            key: final_state[key]
+            for key in ("counter", "python_after_seen", "python_before_seen")
+        }
+        final_state_digest = hashlib.sha256(
+            json.dumps(digest_state, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert final_state_digest == (
+            "f39046db1b17d0df597ecbd2a6d9bed05b70563740a20dc37862eda40e789279"
+        )
 
         if backend in {"sqlite", "sqlite-chroma", "pg"}:
             failure_run_id = "mixed-failure-run"
