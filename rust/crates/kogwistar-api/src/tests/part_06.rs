@@ -5538,17 +5538,29 @@
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let mut unregistered = identity.clone();
-        unregistered["environment_id"] = json!("other-python-cpu-v1");
-        let (status, _) = call(
-            reopen(),
-            "POST",
-            claim_uri.clone(),
-            claim_body.clone(),
-            token(Some(unregistered)),
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        for (field, value) in [
+            ("environment_id", json!("other-python-cpu-v1")),
+            (
+                "artifact_sha256",
+                json!("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"),
+            ),
+            (
+                "dependency_lock_sha256",
+                json!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+            ),
+        ] {
+            let mut unregistered = identity.clone();
+            unregistered[field] = value;
+            let (status, _) = call(
+                reopen(),
+                "POST",
+                claim_uri.clone(),
+                claim_body.clone(),
+                token(Some(unregistered)),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "tampered {field} was admitted");
+        }
         let (status, claim) = call(
             reopen(),
             "POST",
