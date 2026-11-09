@@ -2606,6 +2606,65 @@
             }
         }
 
+        let revoked_node_id = "visible-public";
+        let revoked_acl_metadata = Map::from_iter([
+            ("entity_type".to_owned(), json!("acl_record")),
+            (
+                "acl_truth_graph".to_owned(),
+                fixture["truth_graph"].clone(),
+            ),
+            (
+                "acl_target_entity_id".to_owned(),
+                json!(revoked_node_id),
+            ),
+            ("acl_target_grain".to_owned(), json!("node")),
+            ("acl_version".to_owned(), json!(2)),
+            ("acl_mode".to_owned(), json!("private")),
+            ("owner_id".to_owned(), json!("owner-b")),
+        ]);
+        service
+            .store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: format!("acl-{revoked_node_id}"),
+                    document: None,
+                    metadata: revoked_acl_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })
+            .await
+            .unwrap();
+        let revoked_response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "entity_kind": "node",
+                    "query_embeddings": [fixture["query_embeddings"][0]],
+                    "metric": fixture["metric"],
+                    "truth_graph": fixture["truth_graph"],
+                    "where": {"label": revoked_node_id},
+                    "n_results": 1,
+                    "include": ["distances"]
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "reader-a",
+                    "ns": scope.namespace,
+                    "storage_ns": scope.namespace,
+                    "workspace_id": scope.workspace_id,
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(revoked_response.status, StatusCode::OK.as_u16());
+        let revoked_result: Value = serde_json::from_slice(&revoked_response.body).unwrap();
+        assert_eq!(revoked_result["ids"], json!([[]]));
+
         let item_node_id = "node-source-span-private";
         let item_grounding_id = format!("{item_node_id}::mention::0");
         let item_span_id = format!("{item_grounding_id}::span::0");
