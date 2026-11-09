@@ -6506,19 +6506,26 @@
         assert_eq!(loaded_by_method["result"]["node_ids"], json!(["n1", "n2"]));
         assert_eq!(loaded_by_method["result"]["edge_ids"], json!(["e1"]));
 
+        let neighbors_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-neighbors-mcp-v1.json"
+        ))).unwrap();
         let mcp_read = app.clone().oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/mcp")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token(&["read_graph"])))
-                .body(Body::from(r#"{"jsonrpc":"2.0","id":"neighbors","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"n1"}}}"#))
+                .body(Body::from(json!({
+                    "jsonrpc":"2.0","id":"neighbors","method":"tools/call",
+                    "params":{"name":neighbors_contract["operation"],"arguments":neighbors_contract["arguments"]}
+                }).to_string()))
                 .unwrap(),
         ).await.unwrap();
         assert_eq!(mcp_read.status(), StatusCode::OK);
         let mcp_read: Value = serde_json::from_slice(&to_bytes(mcp_read.into_body(), 65_536).await.unwrap()).unwrap();
-        assert_eq!(mcp_read["result"]["nodes"], json!(["n2"]));
-        assert_eq!(mcp_read["result"]["edges"], json!(["e1"]));
+        assert_eq!(mcp_read["result"]["nodes"], neighbors_contract["expected_structured_content"]["nodes"]);
+        assert_eq!(mcp_read["result"]["edges"], neighbors_contract["expected_structured_content"]["edges"]);
 
         let redirected_read = app
             .clone()
