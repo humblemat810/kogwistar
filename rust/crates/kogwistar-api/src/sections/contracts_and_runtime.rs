@@ -326,19 +326,6 @@ impl ServerBackend {
     }
 }
 
-fn validate_inline_native_runtime(
-    backend: ServerBackend,
-    enabled: bool,
-) -> Result<(), std::io::Error> {
-    if enabled && backend == ServerBackend::InMemory {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "KOGWISTAR_RUNTIME_NATIVE_INLINE requires SQLite or PostgreSQL runtime admission/result routes; in_memory does not expose workflow-run admission",
-        ));
-    }
-    Ok(())
-}
-
 fn required_backend_setting(
     name: &'static str,
     value: Option<String>,
@@ -355,7 +342,7 @@ fn required_backend_setting(
 
 #[cfg(test)]
 mod server_backend_tests {
-    use super::{ServerBackend, required_backend_setting, validate_inline_native_runtime};
+    use super::{ServerBackend, required_backend_setting};
 
     #[test]
     fn server_backend_config_accepts_only_implemented_compositions() {
@@ -383,23 +370,6 @@ mod server_backend_tests {
             required_backend_setting("KOGWISTAR_META_SQLITE_PATH", Some("db.sqlite".to_owned()))
                 .unwrap(),
             "db.sqlite"
-        );
-    }
-
-    #[test]
-    fn inline_native_runtime_rejects_backends_without_a_runtime_executor() {
-        for backend in [ServerBackend::Sqlite, ServerBackend::Postgres] {
-            assert!(validate_inline_native_runtime(backend, true).is_ok());
-        }
-        assert!(validate_inline_native_runtime(ServerBackend::InMemory, false).is_ok());
-
-        let error = validate_inline_native_runtime(ServerBackend::InMemory, true)
-            .expect_err("unsupported inline runtime must fail before server startup");
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(
-            error
-                .to_string()
-                .contains("SQLite or PostgreSQL runtime admission/result routes")
         );
     }
 }
@@ -584,7 +554,6 @@ fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std:
 pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let backend = ServerBackend::from_config(&environment("KOGWISTAR_BACKEND", "sqlite"))?;
     let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
-    validate_inline_native_runtime(backend, inline_native_runtime)?;
     let backend_setting = match backend {
         ServerBackend::Postgres => Some(required_backend_setting(
             "KOGWISTAR_PG_DSN",

@@ -1240,6 +1240,15 @@ impl ApplicationService for InMemoryGraphApplicationService {
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
         let route = path.split('?').next();
+        if method == "POST" && route == Some("/api/workflow/runs") {
+            return true;
+        }
+        if method == "GET"
+            && runtime_run_route(path)
+                .is_some_and(|(_, tail)| tail.is_empty() || tail.as_slice() == ["events"])
+        {
+            return true;
+        }
         if method == "GET" && route == Some("/api/search_index_hybrid") {
             return self.embedding_provider.is_some() && self.search_index_fts.is_some();
         }
@@ -1273,6 +1282,14 @@ impl ApplicationService for InMemoryGraphApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST"
+                && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
+            {
+                return self.submit_run_effect(&request).await;
+            }
+            if request.method == "GET" && runtime_run_route(&request.path_and_query).is_some() {
+                return self.read_runtime_run_effect(&request).await;
+            }
             if request.method == "GET"
                 && request.path_and_query.split('?').next() == Some("/api/search_index_hybrid")
                 && self.supports_http_operation("GET", "/api/search_index_hybrid")
@@ -1332,6 +1349,356 @@ impl ApplicationService for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_run_admission_is_authenticated_and_atomic; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission is Rust-native-only and uses one atomic store operation; unsupported Python worker plans fail closed.
+    async fn submit_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if !principal_strings(&request.principal, "ns")
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Workflow run admission requires workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "workflow.run.write",
+            &["workflow.run.write"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Workflow run admission requires workflow.run.write capability",
+            );
+        }
+        let input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        let (Some(owner_id), workflow_id, conversation_id) = (
+            authenticated_run_owner_id(&request.principal),
+            input.workflow_id.trim(),
+            input.conversation_id.trim(),
+        ) else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "Run admission requires an authenticated owner",
+            );
+        };
+        if workflow_id.is_empty() || conversation_id.is_empty() {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                "workflow_id and conversation_id are required",
+            );
+        }
+        if input
+            .user_id
+            .as_deref()
+            .is_some_and(|requested| requested.trim() != owner_id)
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "run user_id must match the authenticated principal",
+            );
+        }
+        if !input.join_node_ids.is_empty()
+            || input.start_join_mask != 0
+            || !input.runtime_routes.is_empty()
+            || input.node_ops.len() > 1
+            || input
+                .node_ops
+                .keys()
+                .any(|node_id| node_id != input.start_node_id.as_deref().unwrap_or("start"))
+            || !input.node_environment_ids.is_empty()
+            || !input.node_worker_identities.is_empty()
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
+                "in-memory native admission currently accepts one unjoined native start step only",
+            );
+        }
+        let run_id = input
+            .run_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let turn_node_id = input
+            .turn_node_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("wf_turn|{run_id}"));
+        let start_node_id = input
+            .start_node_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("start");
+        let operation = input
+            .node_ops
+            .get(start_node_id)
+            .map(String::as_str)
+            .unwrap_or("noop");
+        let executor_target = input
+            .node_executor_targets
+            .get(start_node_id)
+            .map(String::as_str)
+            .unwrap_or(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+        let native_operation =
+            kogwistar_runtime::native_operation_for_target(operation, Some(executor_target));
+        if executor_target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+            || !matches!(
+                native_operation,
+                Some("noop" | "increment-counter" | "emit-result")
+            )
+            || input
+                .node_executor_targets
+                .keys()
+                .any(|node_id| node_id != start_node_id)
+            || input
+                .node_versions
+                .get(start_node_id)
+                .is_some_and(|version| version != "v1")
+            || input
+                .node_versions
+                .keys()
+                .any(|node_id| node_id != start_node_id)
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
+                "in-memory admission requires a supported v1 Rust-native operation",
+            );
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+        let mut initial_state = input.initial_state;
+        for reserved in [
+            "_rt_graph_scope",
+            "_rt_run_owner_id",
+            "_rt_node_ops",
+            "_rt_node_versions",
+            "_rt_node_environment_ids",
+            "_rt_node_worker_identities",
+            "_rt_node_executor_targets",
+            "_rt_routes",
+            "_rt_worker_protocol",
+        ] {
+            initial_state.remove(reserved);
+        }
+        initial_state.insert(
+            "_rt_graph_scope".to_owned(),
+            security_scope_value(&request.principal),
+        );
+        initial_state.insert("_rt_run_owner_id".to_owned(), json!(owner_id));
+        install_authoritative_node_executor_targets(
+            &mut initial_state,
+            &BTreeMap::from([(start_node_id.to_owned(), executor_target.to_owned())]),
+        );
+        inject_authoritative_capability_state(
+            &mut initial_state,
+            &request.principal,
+            &self.capabilities,
+        );
+        let runtime_kind = if input.runtime_kind.trim().is_empty() {
+            default_runtime_kind()
+        } else {
+            input.runtime_kind
+        };
+        let mut worker_payload = json!({
+            "contract_version": 1,
+            "kind": "workflow.step.execute",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "turn_node_id": turn_node_id,
+            "worker_protocol": worker_protocol_for_runtime_kind(&runtime_kind),
+            "node_id": start_node_id,
+            "op": operation,
+            "op_version": "v1",
+            "executor_target": executor_target,
+            "join_mask": 0,
+            "token_id": run_id,
+            "step_seq": 0,
+            "expected_event_seq": 2,
+            "state": initial_state,
+        });
+        add_executor_target(&mut worker_payload, operation, Some(executor_target));
+        let mut transition_payload = worker_payload.clone();
+        transition_payload["initial_state"] = worker_payload["state"].clone();
+        transition_payload["start_node_id"] = json!(start_node_id);
+        transition_payload["join_node_ids"] = json!([]);
+        transition_payload["start_join_mask"] = json!(0);
+        let mut transition = runtime_start_transition(&transition_payload, &run_id);
+        transition.expected_event_seq = 1;
+        transition.user_id = Some(owner_id.to_owned());
+        let mut admission_payload = json!({
+            "run_id": run_id,
+            "run_kind": "workflow_runtime",
+            "conversation_id": conversation_id,
+            "workflow_id": workflow_id,
+            "status": "queued",
+            "turn_node_id": turn_node_id,
+            "implementation_attestation": runtime_implementation_attestation(
+                &runtime_kind
+            ),
+        });
+        if let Some(binding) = runtime_owner_binding_v1(&request.principal, &self.capabilities) {
+            admission_payload["runtime_owner_binding"] = json!(binding);
+        }
+        let run = ServerRunCreate {
+            run_id: run_id.clone(),
+            conversation_id: conversation_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            user_id: Some(owner_id.to_owned()),
+            user_turn_node_id: turn_node_id.clone(),
+            status: "queued".to_owned(),
+        };
+        let message_id = format!("lane|runtime-start|{run_id}");
+        let lane = NewProjectedLaneMessage {
+            message_id,
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            recipient_id: "rust-native-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now,
+            available_at: now,
+            run_id: Some(run_id.clone()),
+            step_id: Some(start_node_id.to_owned()),
+            correlation_id: Some(run_id.clone()),
+            payload_json: Some(worker_payload.to_string()),
+            error_json: None,
+        };
+        match self
+            .store
+            .admit_server_run_with_start(run, admission_payload, transition, lane)
+        {
+            Ok(_) => json_effect(
+                StatusCode::ACCEPTED,
+                json!({
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "workflow_id": workflow_id,
+                    "status": "queued",
+                    "user_turn_node_id": turn_node_id,
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_RUNTIME_ADMISSION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
+            return unavailable_effect(request.clone());
+        };
+        if !principal_strings(&request.principal, "ns")
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Workflow run reads require workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "workflow.run.read",
+            &["workflow.run.read"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Reading workflow runs requires workflow.run.read capability",
+            );
+        }
+        let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "Run inspection requires an authenticated owner",
+            );
+        };
+        let run = match kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id).await
+        {
+            Ok(Some(run)) if run.user_id.as_deref() == Some(owner_id) => run,
+            Ok(Some(_)) => {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "Run inspection is restricted to its owner",
+                );
+            }
+            Ok(None) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_RUN_NOT_FOUND",
+                    "Unknown run_id",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        if tail.is_empty() {
+            return json_effect(StatusCode::OK, server_run_value(run));
+        }
+        let after_seq = query_integer(&request.path_and_query, "after_seq", 0);
+        let limit = query_integer(&request.path_and_query, "limit", 500).clamp(1, 10_000);
+        match kogwistar_store::ServerRunReadStore::server_run_events(
+            &self.store,
+            &run_id,
+            after_seq,
+            limit as usize,
+        )
+        .await
+        {
+            Ok(events) if tail.as_slice() == ["events"] => {
+                let events = events
+                    .into_iter()
+                    .map(server_run_event_value)
+                    .collect::<Vec<_>>();
+                json_effect(StatusCode::OK, json!({"run_id": run_id, "events": events}))
+            }
+            Ok(_) => unavailable_effect(request.clone()),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#search_index_hybrid_effect; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
     async fn search_index_hybrid_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
