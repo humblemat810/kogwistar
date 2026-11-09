@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 
 from kogwistar.engine_core.graph_mutation_contract import GraphMutationBatchPayload
-from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.rust_worker import RustRuntimeWorker, RustWorkerError
 
@@ -63,9 +63,12 @@ def main() -> None:
     parser.add_argument("--graph-namespace")
     parser.add_argument("--graph-entity-id")
     parser.add_argument("--auth-token")
+    parser.add_argument("--run-id", default="mixed-live-run")
+    parser.add_argument("--step-id", default="python-before")
+    parser.add_argument("--failure-result", action="store_true")
     parser.add_argument("--snapshot-effect", action="store_true")
     parser.add_argument(
-        "--mode", choices=("prepare", "replay", "recover"), required=True
+        "--mode", choices=("prepare", "replay", "recover", "failure"), required=True
     )
     args = parser.parse_args()
 
@@ -167,6 +170,12 @@ def main() -> None:
     def before(ctx):
         with Path(args.marker).open("a", encoding="utf-8") as marker:
             marker.write("callback\n")
+        if args.failure_result:
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[("u", {"failure_probe_seen": True})],
+                errors=["expected worker failure"],
+            )
         if args.snapshot_effect:
             with ctx.state_write as state:
                 state["_rt"] = {
@@ -257,7 +266,7 @@ def main() -> None:
             base_url=args.base_url,
             headers=worker_headers,
         )
-    elif args.mode == "replay":
+    elif args.mode in {"replay", "failure"}:
         commit_ack_transport = _LoseResultAcknowledgementAfterCommit()
         client = httpx.Client(
             transport=commit_ack_transport,
@@ -287,8 +296,8 @@ def main() -> None:
             if recovered.get("event_seq") != expected_event_seq:
                 raise AssertionError("process restart changed the committed event")
         else:
-            work = worker.claim(run_id="mixed-live-run", lease_seconds=1)
-            if len(work) != 1 or work[0]["step_id"] != "python-before":
+            work = worker.claim(run_id=args.run_id, lease_seconds=1)
+            if len(work) != 1 or work[0]["step_id"] != args.step_id:
                 raise AssertionError(f"unexpected reclaimed work: {work!r}")
             work_item = work[0]
         if args.mode == "prepare":
@@ -302,6 +311,25 @@ def main() -> None:
                     raise
             else:
                 raise AssertionError("expected the first result delivery to fail")
+        elif args.mode == "failure":
+            Path(args.work_record).write_text(
+                json.dumps({"work": work_item}), encoding="utf-8"
+            )
+            try:
+                worker.process(work_item)
+            except RustWorkerError as exc:
+                if "simulated result acknowledgement loss after commit" not in str(exc):
+                    raise
+                if commit_ack_transport is None or commit_ack_transport.event_seq is None:
+                    raise AssertionError("failed result commit was not observed")
+                Path(args.work_record).write_text(
+                    json.dumps(
+                        {"work": work_item, "event_seq": commit_ack_transport.event_seq}
+                    ),
+                    encoding="utf-8",
+                )
+            else:
+                raise AssertionError("expected failed-result acknowledgement loss")
         elif args.mode == "replay":
             stale_record = json.loads(Path(args.work_record).read_text(encoding="utf-8"))
             if not isinstance(stale_record, dict) or not isinstance(

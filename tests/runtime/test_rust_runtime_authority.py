@@ -1879,6 +1879,95 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         assert final_state["python_before_seen"] is True
         assert final_state["python_after_seen"] is True
 
+        if backend == "sqlite":
+            failure_run_id = "mixed-failure-run"
+            failure_submitted = httpx.post(
+                f"{base_url}/api/workflow/runs",
+                headers=headers,
+                json={
+                    "run_id": failure_run_id,
+                    "workflow_id": "mixed-failure-workflow",
+                    "conversation_id": "mixed-failure-conversation",
+                    "initial_state": {},
+                    "runtime_kind": "sync",
+                    "start_node_id": "python-failure",
+                    "node_ops": {"python-failure": "application.before"},
+                    "runtime_routes": [],
+                },
+                timeout=10,
+            )
+            assert failure_submitted.status_code == 202, failure_submitted.text
+            failure_journal = tmp_path / "python-worker-failure.sqlite"
+            failure_marker = tmp_path / "python-worker-failure-callbacks.txt"
+            failure_record = tmp_path / "python-worker-failure-work.json"
+            failure_probe = [
+                sys.executable,
+                "-m",
+                "tests.runtime.worker_restart_probe",
+                "--base-url",
+                base_url,
+                "--worker-id",
+                "python-failure-worker",
+                "--journal",
+                str(failure_journal),
+                "--marker",
+                str(failure_marker),
+                "--work-record",
+                str(failure_record),
+                "--run-id",
+                failure_run_id,
+                "--step-id",
+                "python-failure",
+                "--failure-result",
+            ]
+            failed = subprocess.run(
+                [*failure_probe, "--mode", "failure"],
+                cwd=ROOT,
+                env=worker_env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert failed.returncode == 0, failed.stderr
+            replayed_failure = subprocess.run(
+                [*failure_probe, "--mode", "recover"],
+                cwd=ROOT,
+                env=worker_env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            assert replayed_failure.returncode == 0, replayed_failure.stderr
+            assert failure_marker.read_text(encoding="utf-8").splitlines() == [
+                "callback"
+            ]
+            failure_status = httpx.get(
+                f"{base_url}/api/workflow/runs/{failure_run_id}",
+                headers=headers,
+                timeout=10,
+            )
+            assert failure_status.status_code == 200, failure_status.text
+            assert failure_status.json()["status"] == "failed"
+            failure_events = httpx.get(
+                f"{base_url}/api/workflow/runs/{failure_run_id}/events?after_seq=0",
+                headers=headers,
+                timeout=10,
+            )
+            assert failure_events.status_code == 200, failure_events.text
+            terminal_failures = []
+            for frame in failure_events.text.split("\n\n"):
+                data_line = next(
+                    (line[6:] for line in frame.splitlines() if line.startswith("data: ")),
+                    None,
+                )
+                if data_line is None:
+                    continue
+                event_payload = json.loads(data_line)
+                run_status = event_payload.get("reduced", {}).get("run_status", {})
+                if run_status.get("terminal_node_id") == f"wf_failed|{failure_run_id}":
+                    terminal_failures.append(event_payload)
+            assert len(terminal_failures) == 1
+
         from kogwistar.runtime.resolvers import AsyncMappingStepResolver
 
         async_callbacks: list[str] = []
