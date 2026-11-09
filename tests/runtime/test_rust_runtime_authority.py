@@ -1904,7 +1904,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         assert final_state["python_before_seen"] is True
         assert final_state["python_after_seen"] is True
 
-        if backend == "sqlite":
+        if backend in {"sqlite", "sqlite-chroma", "pg"}:
             failure_run_id = "mixed-failure-run"
             failure_submitted = httpx.post(
                 f"{base_url}/api/workflow/runs",
@@ -1945,6 +1945,8 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 "python-failure",
                 "--failure-result",
             ]
+            if worker_token is not None:
+                failure_probe.extend(["--auth-token", worker_token])
             failed = subprocess.run(
                 [*failure_probe, "--mode", "failure"],
                 cwd=ROOT,
