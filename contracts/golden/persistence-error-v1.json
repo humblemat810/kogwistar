@@ -1,0 +1,16 @@
+{
+  "message": "persistence unavailable",
+  "python": {
+    "status": 500,
+    "detail": "persistence unavailable"
+  },
+  "rust": {
+    "status": 500,
+    "code": "KOGWISTAR_STORE_ERROR",
+    "message": "persistence unavailable"
+  },
+  "transaction_conflict": {
+    "status": 409,
+    "code": "KOGWISTAR_GRAPH_UPSERT_CONFLICT"
+  }
+}

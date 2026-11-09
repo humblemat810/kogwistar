@@ -89,6 +89,26 @@ fn is_public_graph_upsert_route(method: &str, path_and_query: &str) -> bool {
     method == "POST" && path_and_query.split('?').next() == Some(PUBLIC_GRAPH_UPSERT_ROUTE)
 }
 
+fn graph_upsert_commit_error(error: SqliteStoreError) -> ApiEffectResponse {
+    match error {
+        SqliteStoreError::TransactionAborted(message) => effect_error(
+            StatusCode::CONFLICT,
+            "KOGWISTAR_GRAPH_UPSERT_CONFLICT",
+            message,
+        ),
+        SqliteStoreError::Io(error) => effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_STORE_ERROR",
+            error.to_string(),
+        ),
+        error => effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_STORE_ERROR",
+            error.to_string(),
+        ),
+    }
+}
+
 fn is_public_document_tree_upsert_route(method: &str, path_and_query: &str) -> bool {
     method == "POST" && path_and_query.split('?').next() == Some(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
 }
@@ -1121,11 +1141,7 @@ impl SqliteRunApplicationService {
                     "edges_added": edge_ids.len(),
                 }),
             ),
-            Err(error) => effect_error(
-                StatusCode::CONFLICT,
-                "KOGWISTAR_GRAPH_UPSERT_CONFLICT",
-                error.to_string(),
-            ),
+            Err(error) => graph_upsert_commit_error(error),
         }
     }
 }
@@ -1149,6 +1165,35 @@ mod graph_upsert_tests {
             "workspace": "workspace-a",
             "graph_space": "facts",
         })
+    }
+
+    #[test]
+    fn graph_upsert_storage_error_matches_shared_python_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/persistence-error-v1.json"
+        )))
+        .expect("shared persistence error fixture");
+        let message = fixture["message"].as_str().expect("fixture message");
+        let response = graph_upsert_commit_error(SqliteStoreError::Io(
+            std::io::Error::other(message.to_owned()),
+        ));
+        assert_eq!(response.status, fixture["rust"]["status"].as_u64().unwrap() as u16);
+        let body: Value = serde_json::from_slice(&response.body).expect("error response JSON");
+        assert_eq!(body["code"], fixture["rust"]["code"]);
+        assert_eq!(body["message"], fixture["rust"]["message"]);
+
+        let conflict = graph_upsert_commit_error(SqliteStoreError::TransactionAborted(
+            "duplicate graph mutation".to_owned(),
+        ));
+        assert_eq!(
+            conflict.status,
+            fixture["transaction_conflict"]["status"]
+                .as_u64()
+                .unwrap() as u16
+        );
+        let body: Value = serde_json::from_slice(&conflict.body).expect("conflict response JSON");
+        assert_eq!(body["code"], fixture["transaction_conflict"]["code"]);
     }
 
     #[test]

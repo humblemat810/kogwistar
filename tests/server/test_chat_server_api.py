@@ -223,6 +223,41 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     }
 
 
+def test_document_upsert_tree_storage_error_matches_shared_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "persistence-error-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    monkeypatch.setenv("AUTH_MODE", "production")
+
+    def _fail_persistence(**_kwargs):
+        raise OSError(fixture["message"])
+
+    monkeypatch.setattr(
+        engine, "persist_document_graph_extraction", _fail_persistence, raising=True
+    )
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post(
+            "/api/document.upsert_tree",
+            json={"doc_id": "doc::storage_error", "nodes": [], "edges": []},
+            headers=headers,
+        )
+
+    assert response.status_code == fixture["python"]["status"]
+    assert response.json()["detail"] == fixture["python"]["detail"]
+
+
 def test_document_graph_upsert_result_serializes_persisted_result_shape():
     result = server.DocumentGraphUpsertResult(
         status="ok",
