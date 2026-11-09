@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **157/177 PASS (88.7%)**.
-- **Fine worklist:** **245/775 PASS (31.6%)**; **0 IN PROGRESS**, **530 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **247/775 PASS (31.9%)**; **0 IN PROGRESS**, **528 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -37,7 +37,7 @@
 | FW-02-02B | DL-02 | PASS | Authenticated Rust `POST /api/add_index_entries` was exercised against PostgreSQL/pgvector through the public HTTP router: an authorized request and exact retry both return `200`, with stable event admission. Evidence: `tests::postgres_hybrid_search_is_available_over_authenticated_http` (**1 passed**, live PostgreSQL); durable event replay after service reopen remains covered by `tests::postgres_search_index_events_project_to_pgvector_and_survive_reopen`. In-memory route authorization/idempotency is also covered by `tests::in_memory_search_index_hybrid_is_scoped_and_acl_filtered`. |
 | FW-02-02C | DL-02 | PASS | In-memory hybrid GET uses shared fusion and canonical ACL filtering; missing dependencies expose neither index route nor durable event. Evidence: `in_memory_search_index_hybrid_is_scoped_and_acl_filtered` (**1 passed**), Rust API suite (**284 passed, 33 ignored**), Python search-index/ACL/auth/replay suite (**10 passed**), parity and checklist verification (**5 passed**). |
 | FW-03-01 | DL-03 | PARENT | Parent scope; children: FW-03-01-DET,FW-03-01-SQLITE,FW-03-01-PG,FW-03-01-PROJ,FW-03-01-QUEUE,FW-03-01-GRAPH,FW-03-01-CHROMA,FW-03-01-WF,FW-03-01-SERVER |
-| FW-03-01-DET | DL-03 | NOT STARTED | Link the deterministic-contracts capability claim to one Python behavior test. |
+| FW-03-01-DET | DL-03 | PASS | Python's `stable_json_dumps` matches `contracts/golden/deterministic-primitives.json` in both pure-Python and Rust implementation modes. Evidence: `tests/core/test_rust_contract_differential.py::test_canonical_json_matches_python_golden` (**2 passed**). This verifies canonical serialization only, not the full deterministic-contracts profile. |
 | FW-03-01-SQLITE | DL-03 | NOT STARTED | Link the sqlite-meta capability claim to one Python behavior test. |
 | FW-03-01-PG | DL-03 | NOT STARTED | Link the postgres-sequence-event-log capability claim to one Python behavior test. |
 | FW-03-01-PROJ | DL-03 | NOT STARTED | Link the projections-snapshots-run-registry capability claim to one Python behavior test. |
@@ -47,7 +47,7 @@
 | FW-03-01-WF | DL-03 | NOT STARTED | Link the workflow-runtime capability claim to one Python behavior test. |
 | FW-03-01-SERVER | DL-03 | NOT STARTED | Link the server-rest-sse-mcp-cli capability claim to one Python behavior test. |
 | FW-03-01A | DL-03 | PARENT | Parent scope; children: FW-03-01A-DET,FW-03-01A-SQLITE,FW-03-01A-PG,FW-03-01A-PROJ,FW-03-01A-QUEUE,FW-03-01A-GRAPH,FW-03-01A-CHROMA,FW-03-01A-WF,FW-03-01A-SERVER |
-| FW-03-01A-DET | DL-03 | NOT STARTED | Link the deterministic-contracts capability claim to one Rust evidence test or explicit unsupported status. |
+| FW-03-01A-DET | DL-03 | PASS | Rust `kogwistar-contracts::canonical_json` matches the same `contracts/golden/deterministic-primitives.json` fixture used by Python. Evidence: `cargo test -p kogwistar-contracts canonical_json_matches_python_golden --lib` (**1 passed**). This verifies canonical serialization only, not the full deterministic-contracts profile. |
 | FW-03-01A-SQLITE | DL-03 | NOT STARTED | Link the sqlite-meta capability claim to one Rust evidence test or explicit unsupported status. |
 | FW-03-01A-PG | DL-03 | NOT STARTED | Link the postgres-sequence-event-log capability claim to one Rust evidence test or explicit unsupported status. |
 | FW-03-01A-PROJ | DL-03 | NOT STARTED | Link the projections-snapshots-run-registry capability claim to one Rust evidence test or explicit unsupported status. |
