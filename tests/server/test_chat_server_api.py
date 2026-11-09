@@ -219,6 +219,28 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     }
 
 
+def test_document_validate_graph_matches_shared_success_contract(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-validate-graph-success-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+
+    with TestClient(server.app) as client:
+        response = client.post("/api/document.validate_graph", json=fixture["request"])
+
+    assert response.status_code == fixture["status"]
+    assert response.json() == fixture["response"]
+
+
 def test_document_upsert_tree_storage_error_matches_shared_fixture(
     monkeypatch, engine_triplet
 ):

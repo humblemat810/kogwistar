@@ -827,6 +827,48 @@
         assert!(invalid["edge_errors"]["edge-bad"].is_string());
     }
 
+    #[tokio::test]
+    async fn document_validate_graph_http_route_matches_shared_success_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-success-v1.json"
+        ))
+        .expect("valid document validation fixture");
+        let service = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "document_validate_graph_route_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            service,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/document.validate_graph")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&fixture["request"]).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status().as_u16(), fixture["status"]);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            fixture["response"]
+        );
+    }
+
     #[test]
     fn document_graph_validation_missing_nodes_matches_python_error_detail() {
         let fixture: Value = serde_json::from_str(include_str!(
