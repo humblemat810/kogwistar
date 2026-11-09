@@ -157,6 +157,105 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
     );
 }
 
+#[tokio::test]
+async fn in_memory_native_run_admission_is_reachable_through_authenticated_http() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let secret = "in-memory-runtime-http-test-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "runtime-http-owner",
+            "role": "rw",
+            "ns": ["workflow"],
+            "capabilities": ["workflow.run.write", "workflow.run.read"],
+            "exp": now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(InMemoryGraphApplicationService::default()),
+    );
+    let body = serde_json::to_vec(&json!({
+        "run_id": "memory-router-run",
+        "workflow_id": "memory-router-workflow",
+        "conversation_id": "memory-router-conversation",
+        "node_ops": {"start": "noop"},
+        "node_executor_targets": {"start": "rust-native"}
+    }))
+    .unwrap();
+
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workflow/runs")
+                .header("content-type", "application/json")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        unauthenticated.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ));
+
+    let admitted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workflow/runs")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), StatusCode::ACCEPTED);
+    let admitted_body = to_bytes(admitted.into_body(), 4096).await.unwrap();
+    let admitted_json: Value = serde_json::from_slice(&admitted_body).unwrap();
+    assert_eq!(admitted_json["run_id"], "memory-router-run");
+
+    let events = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/memory-router-run/events?after_seq=0")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(events.status(), StatusCode::OK);
+    let event_body = to_bytes(events.into_body(), 8192).await.unwrap();
+    let event_json: Value = serde_json::from_slice(&event_body).unwrap();
+    assert!(event_json["events"].as_array().unwrap().len() >= 2);
+}
+
 #[test]
 fn failed_inline_graph_effect_clears_provider_event_side_effects() {
     let mut effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
