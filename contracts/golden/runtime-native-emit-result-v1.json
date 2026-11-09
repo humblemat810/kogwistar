@@ -1,0 +1,14 @@
+{
+  "contract_version": 1,
+  "status": "success",
+  "state_update": [],
+  "update": null,
+  "state_schema": {},
+  "successors": [],
+  "route_next": [],
+  "result": {
+    "executor": "rust-native",
+    "operation": "emit-result",
+    "schema_version": 1
+  }
+}

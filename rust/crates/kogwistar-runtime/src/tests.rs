@@ -354,14 +354,22 @@
             ..request.clone()
         };
         let effect = execute_native_step(&emit_result).unwrap();
-        assert_eq!(
-            effect.result,
-            Some(json!({
-                "executor": RUST_NATIVE_EXECUTOR_TARGET,
-                "operation": "emit-result",
-                "schema_version": RUST_NATIVE_OPERATION_SCHEMA_VERSION,
-            }))
-        );
+        let emit_result_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-native-emit-result-v1.json"
+        )))
+        .unwrap();
+        let emit_result_durable = json!({
+            "contract_version": effect.contract_version,
+            "status": "success",
+            "state_update": effect.state_update,
+            "update": effect.update,
+            "state_schema": effect.state_schema,
+            "successors": effect.successors,
+            "route_next": effect.route_next,
+            "result": effect.result,
+        });
+        assert_eq!(emit_result_durable, emit_result_fixture);
         let increment = RuntimeNativeStepRequest {
             executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
             operation: "increment-counter".to_owned(),

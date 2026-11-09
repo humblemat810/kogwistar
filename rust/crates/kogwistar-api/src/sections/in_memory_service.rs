@@ -19,7 +19,7 @@ impl Default for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#execute_native_step_once; python=kogwistar/runtime/rust_worker.py#RustRuntimeWorker; fixture=contracts/golden/runtime-native-noop-v1.json,contracts/golden/runtime-native-increment-counter-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_inline_native_counter_matches_shared_effect_atomically; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_python_worker_increment_counter_matches_shared_native_effect_golden; note=native operations stay Rust-owned and never fall back to Python.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#execute_native_step_once; python=kogwistar/runtime/rust_worker.py#RustRuntimeWorker; fixture=contracts/golden/runtime-native-noop-v1.json,contracts/golden/runtime-native-increment-counter-v1.json,contracts/golden/runtime-native-emit-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_inline_native_result_is_persisted_and_completes_run; python_test=tests/runtime/test_rust_runtime_python_worker.py#test_python_worker_increment_counter_matches_shared_native_effect_golden; note=Rust-native operations stay on Rust path; Python worker explicitly rejects native-target operations.
     async fn dead_letter_native_lane(
         &self,
         message_id: &str,
@@ -100,7 +100,10 @@ impl InMemoryGraphApplicationService {
                 payload["executor_target"].as_str(),
             )
         });
-        if !matches!(operation, Some("noop" | "increment-counter")) {
+        if !matches!(
+            operation,
+            Some("noop" | "increment-counter" | "emit-result")
+        ) {
             self.dead_letter_native_lane(
                 &message_id,
                 &claimed_by,
