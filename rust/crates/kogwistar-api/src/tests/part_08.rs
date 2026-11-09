@@ -5713,6 +5713,125 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(result["ids"], expected_ids);
     }
+
+    let revoked_node_id = "visible-public";
+    let revoked_acl_id = format!("acl-node-{revoked_node_id}");
+    let public_read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/vector-query")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("reader-a", &["read_graph"], None)),
+                )
+                .body(Body::from(
+                    json!({
+                        "entity_kind": "node",
+                        "query_embeddings": [fixture["query_embeddings"][0]],
+                        "metric": fixture["metric"],
+                        "truth_graph": fixture["truth_graph"],
+                        "where": {"label": revoked_node_id},
+                        "n_results": 1,
+                        "include": ["distances"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(public_read.status(), StatusCode::OK);
+    let public_result: Value = serde_json::from_slice(
+        &to_bytes(public_read.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(public_result["ids"], json!([[revoked_node_id]]));
+
+    let revoke = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/mutations")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("owner-b", &["write_graph"], None)),
+                )
+                .body(Body::from(
+                    json!({
+                        "contract_version": 1,
+                        "atomic": true,
+                        "index_jobs": [],
+                        "mutations": [{
+                            "scope": scope,
+                            "table": "gke_nodes",
+                            "entity_kind": "node",
+                            "event_id": "event-acl-node-visible-public-revoked",
+                            "op": "REPLACE",
+                            "payload": {"id": revoked_acl_id},
+                            "record": {
+                                "id": revoked_acl_id,
+                                "document": null,
+                                "metadata": {
+                                    "entity_type": "acl_record",
+                                    "acl_truth_graph": fixture["truth_graph"],
+                                    "acl_target_entity_id": revoked_node_id,
+                                    "acl_target_grain": "node",
+                                    "acl_version": 2,
+                                    "acl_mode": "private",
+                                    "owner_id": "owner-b"
+                                },
+                                "embedding": null
+                            },
+                            "embedding_dim": 0
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoke.status(), StatusCode::OK);
+
+    let revoked_read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/graph/vector-query")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("reader-a", &["read_graph"], None)),
+                )
+                .body(Body::from(
+                    json!({
+                        "entity_kind": "node",
+                        "query_embeddings": [fixture["query_embeddings"][0]],
+                        "metric": fixture["metric"],
+                        "truth_graph": fixture["truth_graph"],
+                        "where": {"label": revoked_node_id},
+                        "n_results": 1,
+                        "include": ["distances"]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revoked_read.status(), StatusCode::OK);
+    let revoked_result: Value = serde_json::from_slice(
+        &to_bytes(revoked_read.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(revoked_result["ids"], json!([[]]));
+
     let item_node_id = "node-source-span-private";
     let item_grounding_id = format!("{item_node_id}::mention::0");
     let item_span_id = format!("{item_grounding_id}::span::0");

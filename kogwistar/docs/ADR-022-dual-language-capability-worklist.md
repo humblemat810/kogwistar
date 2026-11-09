@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **159/177 PASS (89.8%)**.
-- **Fine worklist:** **268/776 PASS (34.5%)**; **0 IN PROGRESS**, **508 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **269/776 PASS (34.7%)**; **0 IN PROGRESS**, **507 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -390,7 +390,7 @@
 | FW-08-02 | DL-08 | PARENT | Parent scope; children: FW-08-02-PG,FW-08-02-SQLITE-CHROMA,FW-08-02-MEMORY |
 | FW-08-02-PG | DL-08 | NOT STARTED | After ACL revocation, verify PostgreSQL public reads omit the revoked record. |
 | FW-08-02-SQLITE-CHROMA | DL-08 | NOT STARTED | After ACL revocation, verify SQLite+Chroma public reads omit the revoked record. |
-| FW-08-02-MEMORY | DL-08 | NOT STARTED | After ACL revocation, verify in-memory public reads omit the revoked record. |
+| FW-08-02-MEMORY | DL-08 | PASS | In-memory vector ACL revocation removes the public node from reader results after an authorized ACL replacement. Evidence: `in_memory_vector_query_matches_shared_python_acl_contract` (Rust, 1 passed) and the shared Python ACL/vector fixture test (1 passed). |
 | FW-08-02A | DL-08 | NOT STARTED | Verify public read effects with stale/missing canonical records and compare the supported backend result shapes. |
 | FW-08-02B | DL-08 | NOT STARTED | Verify public read effects do not leak denied nodes through adjacency, snapshots, or vector-derived results. |
 | FW-08C-01 | DL-08C | PARENT | Parent scope; children: FW-08C-01-TOMBSTONE,FW-08C-01-REDIRECT |
