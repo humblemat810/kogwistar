@@ -3940,14 +3940,25 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                     query_filter.contains("\"lifecycle_status\":{\"$ne\":\"deleted\"}"),
                     "legacy deleted records must be excluded before vector top-k: {query_filter}"
                 );
-                let original = json!({
-                    "entity_type":"node",
-                    "label":"node-source-span-private",
-                    "mentions":[{"spans":[{}]}]
-                });
+                let revoked_query = request["where"].to_string().contains("node-revoked");
+                let (node_id, original) = if revoked_query {
+                    (
+                        "node-revoked",
+                        json!({"entity_type":"node","label":"node-revoked","mentions":[]}),
+                    )
+                } else {
+                    (
+                        "node-source-span-private",
+                        json!({
+                            "entity_type":"node",
+                            "label":"node-source-span-private",
+                            "mentions":[{"spans":[{}]}]
+                        }),
+                    )
+                };
                 json!({
-                    "ids":[["node-source-span-private"]],
-                    "documents":[["node-source-span-private"]],
+                    "ids":[[node_id]],
+                    "documents":[[node_id]],
                     "metadatas":[[{
                         "_kogwistar_namespace":"docs",
                         "_kogwistar_original_metadata":original.to_string()
@@ -4048,6 +4059,17 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
                         }),
                     ),
                     (
+                        "acl-node-revoked",
+                        json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"node-revoked",
+                            "acl_target_grain":"node",
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        }),
+                    ),
+                    (
                         "acl-edge-public",
                         json!({
                             "entity_type":"acl_record",
@@ -4123,6 +4145,111 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
         .with_chroma_graph(graph);
+    let mut canonical_acl_mutations = Vec::new();
+    for (id, entity_id, grain, item_id, mode, owner_id) in [
+        (
+            "acl-source-node",
+            "node-source-span-private",
+            "node",
+            None,
+            "public",
+            None,
+        ),
+        (
+            "acl-source-grounding",
+            "node-source-span-private",
+            "grounding",
+            Some("node-source-span-private::mention::0"),
+            "public",
+            None,
+        ),
+        (
+            "acl-source-span",
+            "node-source-span-private",
+            "span",
+            Some("node-source-span-private::mention::0::span::0"),
+            "private",
+            Some("bob"),
+        ),
+        (
+            "acl-edge-public",
+            "edge-with-private-endpoint",
+            "edge",
+            None,
+            "public",
+            None,
+        ),
+        (
+            "acl-private-endpoint",
+            "private-endpoint",
+            "node",
+            None,
+            "private",
+            Some("bob"),
+        ),
+        (
+            "acl-public-endpoint",
+            "public-endpoint",
+            "node",
+            None,
+            "public",
+            None,
+        ),
+        (
+            "acl-node-revoked",
+            "node-revoked",
+            "node",
+            None,
+            "public",
+            None,
+        ),
+    ] {
+        let mut metadata = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"knowledge",
+            "acl_target_entity_id":entity_id,
+            "acl_target_grain":grain,
+            "acl_version":1,
+            "acl_mode":mode
+        });
+        if let Some(item_id) = item_id {
+            metadata["acl_target_item_id"] = json!(item_id);
+        }
+        if let Some(owner_id) = owner_id {
+            metadata["owner_id"] = json!(owner_id);
+        }
+        canonical_acl_mutations.push(json!({
+            "scope":{"namespace":"docs","workspace_id":null,"graph_space":null},
+            "table":"gke_nodes",
+            "entity_kind":"node",
+            "event_id":format!("seed-{id}"),
+            "op":"ADD",
+            "payload":{"id":id,"document":null,"metadata":metadata.clone()},
+            "record":{"id":id,"document":null,"metadata":metadata,"embedding":null},
+            "embedding_dim":0
+        }));
+    }
+    let seed_acl = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/graph/mutations".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "contract_version":1,
+                "atomic":true,
+                "mutations":canonical_acl_mutations,
+                "index_jobs":[]
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"owner",
+                "role":"rw",
+                "storage_ns":"docs",
+                "capabilities":["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(seed_acl.status, StatusCode::OK.as_u16());
     let response = service
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -4177,6 +4304,95 @@ async fn sqlite_chroma_vector_query_enforces_source_span_acl() {
     let edge_result: Value = serde_json::from_slice(&edge_response.body).unwrap();
     assert_eq!(edge_result["ids"], json!([[]]));
     assert_eq!(vector_query_count.load(Ordering::SeqCst), 2);
+
+    let revoked_query = || ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/internal/graph/vector-query".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "entity_kind":"node",
+            "query_embeddings":[[1.0,0.0]],
+            "metric":"cosine",
+            "truth_graph":"knowledge",
+            "where":{"label":"node-revoked"},
+            "n_results":1,
+            "include":["distances"]
+        }))
+        .unwrap(),
+        principal: json!({
+            "sub":"alice",
+            "role":"ro",
+            "storage_ns":"docs",
+            "capabilities":["read_graph"]
+        }),
+    };
+    let public_before_revoke = service.execute(revoked_query()).await;
+    assert_eq!(public_before_revoke.status, StatusCode::OK.as_u16());
+    let public_before_revoke: Value = serde_json::from_slice(&public_before_revoke.body).unwrap();
+    assert_eq!(public_before_revoke["ids"], json!([["node-revoked"]]));
+    assert_eq!(vector_query_count.load(Ordering::SeqCst), 3);
+
+    let revoke = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/graph/mutations".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "contract_version":1,
+                "atomic":true,
+                "index_jobs":[],
+                "mutations":[{
+                    "scope":{"namespace":"docs","workspace_id":null,"graph_space":null},
+                    "table":"gke_nodes",
+                    "entity_kind":"node",
+                    "event_id":"revoke-acl-node-revoked-v2",
+                    "op":"REPLACE",
+                    "payload":{
+                        "id":"acl-node-revoked",
+                        "document":null,
+                        "metadata":{
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"node-revoked",
+                            "acl_target_grain":"node",
+                            "acl_version":2,
+                            "acl_mode":"private",
+                            "owner_id":"bob"
+                        }
+                    },
+                    "record":{
+                        "id":"acl-node-revoked",
+                        "document":null,
+                        "metadata":{
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"node-revoked",
+                            "acl_target_grain":"node",
+                            "acl_version":2,
+                            "acl_mode":"private",
+                            "owner_id":"bob"
+                        },
+                        "embedding":null
+                    },
+                    "embedding_dim":0
+                }]
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"owner",
+                "role":"rw",
+                "storage_ns":"docs",
+                "capabilities":["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(revoke.status, StatusCode::OK.as_u16());
+
+    let hidden_after_revoke = service.execute(revoked_query()).await;
+    assert_eq!(hidden_after_revoke.status, StatusCode::OK.as_u16());
+    let hidden_after_revoke: Value = serde_json::from_slice(&hidden_after_revoke.body).unwrap();
+    assert_eq!(hidden_after_revoke["ids"], json!([[]]));
+    assert_eq!(vector_query_count.load(Ordering::SeqCst), 4);
 
     drop(service);
     let _ = stop_chroma.send(());

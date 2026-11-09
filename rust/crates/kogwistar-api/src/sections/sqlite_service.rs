@@ -5922,31 +5922,39 @@ impl SqliteRunApplicationService {
                 .retain(|record| chroma_record_matches_principal_scope(record, &request.principal));
             (nodes, edges)
         };
-        let mut acl_filter = MetadataFilter {
-            equals: BTreeMap::from([
-                ("entity_type".to_owned(), json!("acl_record")),
-                ("acl_truth_graph".to_owned(), json!(input.truth_graph)),
-            ]),
+        // SQLite owns canonical ACL events; the eventual Chroma projection is
+        // never authoritative for a visibility decision.
+        let acl_entity_ids = candidate_nodes
+            .iter()
+            .chain(candidate_edges.iter())
+            .map(|record| record.id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if acl_entity_ids.len() > 10_000 {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_VECTOR_QUERY_ERROR",
+                "vector candidate ACL set exceeds the 10000-record limit",
+            );
+        }
+        let acl_scope = kogwistar_store::GraphScope {
+            namespace: namespace.to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         };
-        if let Some(workspace) = request
-            .principal
-            .get("workspace_id")
-            .or_else(|| request.principal.get("workspace"))
-            .and_then(Value::as_str)
-        {
-            acl_filter
-                .equals
-                .insert("workspace_id".to_owned(), json!(workspace));
-        }
-        if let Some(graph_space) = request.principal.get("graph_space").and_then(Value::as_str) {
-            acl_filter
-                .equals
-                .insert("graph_space".to_owned(), json!(graph_space));
-        }
-        let mut acl_records = match graph
-            .graph_records_of_kind_bounded(namespace, GraphEntityKind::Node, &acl_filter, 10_000)
-            .await
-        {
+        let mut acl_records = match self.store.immediate_transaction(|uow| {
+            uow.graph_acl_records_for_entities(&acl_scope, &input.truth_graph, &acl_entity_ids)
+        }) {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(

@@ -6152,6 +6152,96 @@
                 },
             ).unwrap();
         }
+        for (entity_id, grain, mode, owner_id, security_scope) in [
+            ("n1", "node", "public", None, None),
+            ("n2", "node", "public", None, None),
+            ("e1", "edge", "public", None, None),
+            ("e3", "edge", "public", None, None),
+            ("e4", "edge", "public", None, None),
+            (
+                "n6",
+                "node",
+                "scope",
+                Some("other-owner"),
+                Some("project-a"),
+            ),
+            (
+                "e6",
+                "edge",
+                "scope",
+                Some("other-owner"),
+                Some("project-a"),
+            ),
+        ] {
+            let acl_id = format!("acl-{entity_id}");
+            let mut metadata = json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"knowledge",
+                "acl_target_entity_id":entity_id,
+                "acl_target_grain":grain,
+                "acl_version":1,
+                "acl_mode":mode,
+                "workspace_id":"workspace-a",
+                "graph_space":"facts"
+            });
+            if let Some(owner_id) = owner_id {
+                metadata["owner_id"] = json!(owner_id);
+            }
+            if let Some(security_scope) = security_scope {
+                metadata["security_scope"] = json!(security_scope);
+            }
+            service.store.append_raw_entity_event(
+                "scope-a",
+                SqliteNewRawEntityEvent {
+                    event_id: format!("canonical-{acl_id}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id":acl_id,
+                        "document":null,
+                        "metadata":metadata
+                    })
+                    .to_string(),
+                },
+            ).unwrap();
+        }
+        for (entity_id, grain, item_id) in [
+            ("n1", "grounding", "n1::mention::0"),
+            ("n1", "span", "n1::mention::0::span::0"),
+            ("n2", "grounding", "n2::mention::0"),
+            ("n2", "span", "n2::mention::0::span::0"),
+            ("e1", "grounding", "e1::mention::0"),
+            ("e1", "span", "e1::mention::0::span::0"),
+        ] {
+            let acl_id = format!("acl-{entity_id}-{grain}");
+            let metadata = json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"knowledge",
+                "acl_target_entity_id":entity_id,
+                "acl_target_grain":grain,
+                "acl_target_item_id":item_id,
+                "acl_version":1,
+                "acl_mode":"public",
+                "workspace_id":"workspace-a",
+                "graph_space":"facts"
+            });
+            service.store.append_raw_entity_event(
+                "scope-a",
+                SqliteNewRawEntityEvent {
+                    event_id: format!("canonical-{acl_id}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id":acl_id,
+                        "document":null,
+                        "metadata":metadata
+                    })
+                    .to_string(),
+                },
+            ).unwrap();
+        }
         let graph_read_tools = [
             "kg_neighbors",
             "kg_load_persisted",
