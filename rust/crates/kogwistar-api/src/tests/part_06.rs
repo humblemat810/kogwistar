@@ -6464,6 +6464,10 @@
         let denied: Value = serde_json::from_slice(&to_bytes(denied.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(denied["error"]["data"]["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
 
+        let load_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-load-persisted-mcp-v1.json"
+        ))).unwrap();
         let loaded = app.clone().oneshot(
             Request::builder()
                 .method("POST")
@@ -6472,17 +6476,15 @@
                 .header("authorization", format!("Bearer {}", token(&["read_graph"])))
                 .body(Body::from(json!({
                     "jsonrpc":"2.0","id":"load-persisted","method":"tools/call",
-                    "params":{"name":"kg_load_persisted","arguments":{"inp":{
-                        "doc_ids":["doc-a"],"sid":false
-                    }}}
+                    "params":{"name":load_contract["operation"],"arguments":load_contract["arguments"]}
                 }).to_string()))
                 .unwrap(),
         ).await.unwrap();
         let loaded: Value = serde_json::from_slice(
             &to_bytes(loaded.into_body(), 65_536).await.unwrap(),
         ).unwrap();
-        assert_eq!(loaded["result"]["node_ids"], json!(["n1", "n2"]));
-        assert_eq!(loaded["result"]["edge_ids"], json!(["e1"]));
+        assert_eq!(loaded["result"]["node_ids"], load_contract["expected_structured_content"]["node_ids"]);
+        assert_eq!(loaded["result"]["edge_ids"], load_contract["expected_structured_content"]["edge_ids"]);
 
         let loaded_by_method = app.clone().oneshot(
             Request::builder()

@@ -952,6 +952,48 @@ async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
 
 
 @pytest.mark.asyncio
+async def test_kg_load_persisted_mcp_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    from kogwistar.server import mcp_tools
+
+    class PersistedGraph:
+        def __init__(self, metadata):
+            self.metadata = metadata
+
+        def nodes_by_doc(self, doc_id: str, *, where: dict[str, str]) -> list[str]:
+            assert doc_id == "doc-a"
+            assert where == {"insertion_method": "parser"}
+            return ["n2", "n1"]
+
+        def edges_by_doc(self, doc_id: str, *, where: dict[str, str]) -> list[str]:
+            assert doc_id == "doc-a"
+            assert where == {"insertion_method": "parser"}
+            return ["e1"]
+
+    monkeypatch.setattr(
+        mcp_tools, "engine", _FixedResource(PersistedGraph(engine.metadata))
+    )
+    contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "kg-load-persisted-mcp-v1.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert contract["operation"] == "kg_load_persisted"
+
+    with _claims("ro", "docs"):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+
+    assert result.structured_content == contract["expected_structured_content"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service = _configure_server(
