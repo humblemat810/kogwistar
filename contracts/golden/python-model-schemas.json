@@ -363,6 +363,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -400,6 +401,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -1130,6 +1132,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -1167,6 +1170,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -1676,6 +1680,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -1713,6 +1718,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -2238,6 +2244,7 @@
         },
         "end_char": {
           "description": "Character offset within end_page, zero indexed",
+          "maximum": 18446744073709551615,
           "minimum": 1,
           "title": "End Char",
           "type": "integer"
@@ -2275,6 +2282,7 @@
         },
         "start_char": {
           "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "title": "Start Char",
           "type": "integer"
@@ -2563,6 +2571,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -2600,6 +2609,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -3349,6 +3359,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -3386,6 +3397,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -4198,6 +4210,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -4235,6 +4248,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -4980,6 +4994,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -5017,6 +5032,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -5540,6 +5556,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -5577,6 +5594,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -6395,6 +6413,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -6432,6 +6451,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -7638,6 +7658,7 @@
         },
         "end_char": {
           "description": "Character offset within end_page, zero indexed",
+          "maximum": 18446744073709551615,
           "minimum": 1,
           "title": "End Char",
           "type": "integer"
@@ -7675,6 +7696,7 @@
         },
         "start_char": {
           "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "title": "Start Char",
           "type": "integer"
@@ -8309,6 +8331,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -8346,6 +8369,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -9511,6 +9535,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -9548,6 +9573,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -10312,6 +10338,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -10349,6 +10376,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -11041,6 +11069,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -11073,6 +11102,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -11732,6 +11762,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -11764,6 +11795,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -12202,6 +12234,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -12234,6 +12267,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -12686,6 +12720,7 @@
         },
         "end_char": {
           "description": "Character offset within end_page, zero indexed",
+          "maximum": 18446744073709551615,
           "minimum": 1,
           "title": "End Char",
           "type": "integer"
@@ -12718,6 +12753,7 @@
         },
         "start_char": {
           "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "title": "Start Char",
           "type": "integer"
@@ -12935,6 +12971,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -12967,6 +13004,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -13645,6 +13683,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -13677,6 +13716,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -14306,6 +14346,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -14338,6 +14379,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -14997,6 +15039,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -15029,6 +15072,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -15467,6 +15511,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -15499,6 +15544,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -15951,6 +15997,7 @@
         },
         "end_char": {
           "description": "Character offset within end_page, zero indexed",
+          "maximum": 18446744073709551615,
           "minimum": 1,
           "title": "End Char",
           "type": "integer"
@@ -15983,6 +16030,7 @@
         },
         "start_char": {
           "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "title": "Start Char",
           "type": "integer"
@@ -16200,6 +16248,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -16232,6 +16281,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -16910,6 +16960,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -16942,6 +16993,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -17428,6 +17480,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -17460,6 +17513,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -17539,6 +17593,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -17571,6 +17626,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -17658,6 +17714,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -17690,6 +17747,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -17767,6 +17825,7 @@
         },
         "end_char": {
           "description": "Character offset within end_page, zero indexed",
+          "maximum": 18446744073709551615,
           "minimum": 1,
           "title": "End Char",
           "type": "integer"
@@ -17799,6 +17858,7 @@
         },
         "start_char": {
           "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "title": "Start Char",
           "type": "integer"
@@ -17873,6 +17933,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -17905,6 +17966,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -17997,6 +18059,7 @@
             },
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -18029,6 +18092,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -18070,6 +18134,7 @@
           "properties": {
             "end_char": {
               "description": "Character offset within end_page, zero indexed",
+              "maximum": 18446744073709551615,
               "minimum": 1,
               "title": "End Char",
               "type": "integer"
@@ -18089,6 +18154,7 @@
             },
             "start_char": {
               "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+              "maximum": 18446744073709551615,
               "minimum": 0,
               "title": "Start Char",
               "type": "integer"
@@ -18118,6 +18184,7 @@
       "properties": {
         "end_char": {
           "description": "Character offset within end_page, zero indexed",
+          "maximum": 18446744073709551615,
           "minimum": 1,
           "title": "End Char",
           "type": "integer"
@@ -18137,6 +18204,7 @@
         },
         "start_char": {
           "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+          "maximum": 18446744073709551615,
           "minimum": 0,
           "title": "Start Char",
           "type": "integer"

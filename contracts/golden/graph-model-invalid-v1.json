@@ -14,6 +14,7 @@
     "edge_with_edge_endpoints.empty_target_edge_endpoint_id",
     "node.negative_span_start_char",
     "node.span_end_not_after_start",
+    "node.span_offset_exceeds_u64",
     "edge.missing_relation",
     "node.properties_not_mapping",
     "edge.properties_not_mapping",

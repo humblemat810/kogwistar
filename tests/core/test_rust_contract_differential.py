@@ -487,6 +487,8 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
             span = payload["mentions"][0]["spans"][0]
             span["start_char"] = 8
             span["end_char"] = 8
+        elif mutation == "span_offset_exceeds_u64" and kind == "node":
+            payload["mentions"][0]["spans"][0]["end_char"] = 18446744073709551616
         elif mutation == "missing_relation" and kind == "edge":
             payload.pop("relation")
         elif mutation == "properties_not_mapping":
@@ -514,6 +516,26 @@ def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatc
                     ensure_ascii=False,
                 )
             )
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_match_unsigned_64bit_span_offset_boundary(monkeypatch) -> None:
+    """Persistent source offsets accept u64 max and reject values outside the wire type."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    span = payload["mentions"][0]["spans"][0]
+    wire = {"schema_version": 1, "model_class": "node", "payload": payload}
+    span["end_char"] = 18446744073709551615
+    Node.model_validate(copy.deepcopy(payload))
+    _rust.validate_graph_model_family(json.dumps(wire))
+
+    span["end_char"] = 18446744073709551616
+    with pytest.raises(ValueError):
+        Node.model_validate(copy.deepcopy(payload))
+    with pytest.raises(Exception):
+        _rust.validate_graph_model_family(json.dumps(wire))
 
 
 @pytest.mark.requires_rust
