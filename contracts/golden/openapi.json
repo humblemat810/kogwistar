@@ -1375,6 +1375,7 @@
           },
           "end_char": {
             "description": "Character offset within end_page, zero indexed",
+            "maximum": 1.8446744073709552e+19,
             "minimum": 1.0,
             "title": "End Char",
             "type": "integer"
@@ -1411,6 +1412,7 @@
           },
           "start_char": {
             "description": "Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
+            "maximum": 1.8446744073709552e+19,
             "minimum": 0.0,
             "title": "Start Char",
             "type": "integer"
