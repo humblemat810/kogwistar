@@ -201,21 +201,20 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 mode=policy["mode"],
                 owner_id=policy.get("owner_id"),
             )
-            if policy["expected_visible"]:
-                grounding_ids, span_ids = engine.acl.usage_ids_for_item(node)
-                for grain, target_ids in (
-                    ("grounding", grounding_ids),
-                    ("span", span_ids),
-                ):
-                    for target_id in target_ids:
-                        engine.acl_graph.add_record(
-                            grain=grain,
-                            truth_graph=graph_type,
-                            entity_id=node.id,
-                            target_item_id=target_id,
-                            version=1,
-                            mode="public",
-                        )
+            grounding_ids, span_ids = engine.acl.usage_ids_for_item(node)
+            for grain, target_ids in (
+                ("grounding", grounding_ids),
+                ("span", span_ids),
+            ):
+                for target_id in target_ids:
+                    engine.acl_graph.add_record(
+                        grain=grain,
+                        truth_graph=graph_type,
+                        entity_id=node.id,
+                        target_item_id=target_id,
+                        version=1,
+                        mode="public",
+                    )
 
         owner_engine = graph_engines[acl_fixture["truth_graph"]]
         no_acl_node = Node(
@@ -388,6 +387,25 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert [
                 item["data"]["id"] for item in cytoscape_payload["elements"]
             ] == expected_ids
+
+        conversation_owner_id = policies["conversation"]["owner_id"]
+        token = claims_ctx.set(
+            {"agent_id": conversation_owner_id, "ns": "conversation"}
+        )
+        try:
+            conversation_owner_response = cast(
+                JSONResponse,
+                server.api_viz_d3(mode="classic", graph_type="conversation"),
+            )
+            conversation_owner_payload = json.loads(
+                bytes(conversation_owner_response.body)
+            )
+        finally:
+            claims_ctx.reset(token)
+        assert isolation["entity_id"] in [
+            node["id"] for node in conversation_owner_payload["nodes"]
+        ]
+
         for edge_policy_item in (
             edge_policy,
             private_edge_policy,

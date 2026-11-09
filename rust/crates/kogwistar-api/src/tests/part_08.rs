@@ -3914,7 +3914,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "acl_target_entity_id":shared_entity_id,
                     "acl_version":1,
                     "acl_mode":conversation_policy["mode"],
-                    "acl_owner_id":conversation_policy["owner_id"]
+                    "owner_id":conversation_policy["owner_id"]
                 }),
                 None,
             )
@@ -4034,6 +4034,45 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .to_string()
             .contains(shared_entity_id),
         "conversation visualization ignored its graph-scoped private ACL: {conversation_visualization}"
+    );
+
+    let conversation_owner_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/viz/d3.json?graph_type=conversation")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject(
+                            conversation_policy["owner_id"].as_str().unwrap(),
+                            "docs",
+                            &["read_graph"],
+                            "facts"
+                        )
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conversation_owner_response.status(), StatusCode::OK);
+    let conversation_owner_payload: Value = serde_json::from_slice(
+        &to_bytes(conversation_owner_response.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        conversation_owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == shared_entity_id),
+        "conversation ACL owner must see its private graph node: {conversation_owner_payload}"
     );
 
     for case in isolation_cases {
