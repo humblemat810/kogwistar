@@ -957,6 +957,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         )
         checkpoint.raise_for_status()
         latest_state = checkpoint.json()["checkpoints"][-1]["state"]
+        assert "_deps" not in latest_state
         token_id = latest_state["_rt_join"]["suspended"][0][2]
         resumed = runtime.resume_run(
             run_id="run-sync-resume-live",
