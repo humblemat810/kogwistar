@@ -1189,6 +1189,16 @@ mod graph_upsert_tests {
         assert_eq!(body["code"], fixture["rust"]["code"]);
         assert_eq!(body["message"], fixture["rust"]["message"]);
 
+        let generic = graph_upsert_commit_error(SqliteStoreError::UnsupportedSchemaVersion {
+            found: 2,
+            supported: 1,
+        });
+        let generic_contract = &fixture["generic_store_error"]["rust"];
+        assert_eq!(generic.status, generic_contract["status"].as_u64().unwrap() as u16);
+        let body: Value = serde_json::from_slice(&generic.body).expect("generic error JSON");
+        assert_eq!(body["code"], generic_contract["code"]);
+        assert_eq!(body["message"], generic_contract["message"]);
+
         let conflict = graph_upsert_commit_error(SqliteStoreError::TransactionAborted(
             "duplicate graph mutation".to_owned(),
         ));

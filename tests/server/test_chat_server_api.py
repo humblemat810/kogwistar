@@ -276,6 +276,42 @@ def test_document_upsert_tree_storage_error_matches_shared_fixture(
     assert response.json()["detail"] == fixture["python"]["detail"]
 
 
+def test_document_upsert_tree_generic_store_error_matches_shared_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "persistence-error-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    error_contract = fixture["generic_store_error"]
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    monkeypatch.setenv("AUTH_MODE", "production")
+
+    def _fail_persistence(**_kwargs):
+        raise RuntimeError(error_contract["message"])
+
+    monkeypatch.setattr(
+        engine, "persist_document_graph_extraction", _fail_persistence, raising=True
+    )
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post(
+            "/api/document.upsert_tree",
+            json={"doc_id": "doc::generic_storage_error", "nodes": [], "edges": []},
+            headers=headers,
+        )
+
+    assert response.status_code == error_contract["python"]["status"]
+    assert response.json()["detail"] == error_contract["python"]["detail"]
+
+
 def test_document_upsert_tree_transaction_abort_matches_comparison_fixture(
     monkeypatch, engine_triplet
 ):

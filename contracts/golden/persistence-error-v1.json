@@ -9,6 +9,18 @@
     "code": "KOGWISTAR_STORE_ERROR",
     "message": "persistence unavailable"
   },
+  "generic_store_error": {
+    "message": "SQLite schema version 2 is newer than the supported version 1",
+    "python": {
+      "status": 500,
+      "detail": "SQLite schema version 2 is newer than the supported version 1"
+    },
+    "rust": {
+      "status": 500,
+      "code": "KOGWISTAR_STORE_ERROR",
+      "message": "SQLite schema version 2 is newer than the supported version 1"
+    }
+  },
   "transaction_conflict": {
     "status": 409,
     "code": "KOGWISTAR_GRAPH_UPSERT_CONFLICT"
