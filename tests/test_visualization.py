@@ -137,6 +137,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     private_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "node-private"
     )
+    scope_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "node-scope"
+    )
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -250,8 +253,38 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     mode=private_policy["mode"],
                     owner_id=private_policy["owner_id"],
                 )
+        scope_node = Node(
+            id=scope_policy["id"],
+            label="Team-scoped graph node",
+            type="entity",
+            summary="Visible only within its security scope",
+            mentions=[_g()],
+            metadata={"entity_type": "fixture"},
+            embedding=None,
+            doc_id=None,
+            level_from_root=0,
+        )
+        owner_engine.raw_write.add_node(scope_node)
+        scope_acl = {
+            "truth_graph": acl_fixture["truth_graph"],
+            "entity_id": scope_node.id,
+            "version": 1,
+            "mode": scope_policy["mode"],
+            "security_scope": scope_policy["security_scope"],
+        }
+        owner_engine.acl_graph.add_record(**scope_acl)
+        grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(scope_node)
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                owner_engine.acl_graph.add_record(
+                    grain=grain,
+                    target_item_id=target_id,
+                    **scope_acl,
+                )
 
-        token = claims_ctx.set({"agent_id": "reader-b", "ns": "knowledge"})
+        token = claims_ctx.set(
+            {"agent_id": "reader-b", "ns": "knowledge"}
+        )
         try:
             route_results: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
             for graph_type in graph_engines:
@@ -285,7 +318,11 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             ] == expected_ids
 
         token = claims_ctx.set(
-            {"agent_id": owner_policy["owner_id"], "ns": acl_fixture["truth_graph"]}
+            {
+                "agent_id": owner_policy["owner_id"],
+                "ns": acl_fixture["truth_graph"],
+                "security_scope": acl_fixture["principal"]["security_scope"],
+            }
         )
         try:
             owner_d3 = cast(
@@ -313,6 +350,33 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         ]
         assert private_policy["id"] not in [
             item["data"]["id"] for item in owner_cytoscape_payload["elements"]
+        ]
+        assert scope_policy["id"] in [
+            node["id"] for node in owner_d3_payload["nodes"]
+        ]
+        assert scope_policy["id"] in [
+            item["data"]["id"] for item in owner_cytoscape_payload["elements"]
+        ]
+
+        token = claims_ctx.set(
+            {
+                "agent_id": owner_policy["owner_id"],
+                "ns": acl_fixture["truth_graph"],
+                "security_scope": "team-b",
+            }
+        )
+        try:
+            mismatched_scope = cast(
+                JSONResponse,
+                server.api_viz_d3(
+                    mode="classic", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            mismatched_scope_payload = json.loads(bytes(mismatched_scope.body))
+        finally:
+            claims_ctx.reset(token)
+        assert scope_policy["id"] not in [
+            node["id"] for node in mismatched_scope_payload["nodes"]
         ]
     finally:
         for engine in graph_engines.values():

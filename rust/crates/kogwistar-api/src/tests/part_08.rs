@@ -2757,6 +2757,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let private_entity_id = private_policy["id"].as_str().unwrap();
     let private_owner_id = private_policy["owner_id"].as_str().unwrap();
+    let scope_policy = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "node-scope")
+        .unwrap();
+    let scope_entity_id = scope_policy["id"].as_str().unwrap();
+    let scope_value = scope_policy["security_scope"].as_str().unwrap();
     let isolation_cases = isolation["cases"].as_array().unwrap();
     let knowledge_policy = isolation_cases
         .iter()
@@ -3006,6 +3014,28 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "acl_version":1,
                 "acl_mode":private_policy["mode"],
                 "owner_id":private_owner_id
+            }),
+            None,
+        ),
+        mutation(
+            scope_entity_id,
+            "gke_nodes",
+            "node",
+            json!({"label":"team-scoped node"}),
+            Some("team-scoped node"),
+        ),
+        mutation(
+            "acl-node-scope",
+            "gke_nodes",
+            "node",
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":acl_fixture["truth_graph"],
+                "acl_target_grain":scope_policy["grain"],
+                "acl_target_entity_id":scope_entity_id,
+                "acl_version":1,
+                "acl_mode":scope_policy["mode"],
+                "security_scope":scope_value
             }),
             None,
         ),
@@ -3495,19 +3525,27 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         assert_eq!(written.status(), StatusCode::OK, "graph={truth_graph}");
     }
 
-    let visualization_request = |truth_graph: &str, graph_space: &str| ApiEffectRequest {
-        contract_version: 1,
-        method: "POST".to_owned(),
-        path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
-        body: serde_json::to_vec(&json!({"graph_type":truth_graph})).unwrap(),
-        principal: json!({
+    let visualization_request = |truth_graph: &str,
+                                 graph_space: &str,
+                                 security_scope: Option<&str>| {
+        let mut principal = json!({
             "sub":"writer", "role":"rw", "ns":["docs"],
             "storage_ns":"tenant-a", "workspace_id":"workspace-a",
             "graph_space":graph_space, "capabilities":["read_graph"]
-        }),
+        });
+        if let Some(security_scope) = security_scope {
+            principal["security_scope"] = json!(security_scope);
+        }
+        ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: INTERNAL_GRAPH_VIZ_D3_ROUTE.to_owned(),
+            body: serde_json::to_vec(&json!({"graph_type":truth_graph})).unwrap(),
+            principal,
+        }
     };
     let conversation_visualization = application
-        .graph_read_effect(&visualization_request("conversation", "facts"))
+        .graph_read_effect(&visualization_request("conversation", "facts", None))
         .await;
     assert_eq!(conversation_visualization.status, StatusCode::OK.as_u16());
     let conversation_visualization: Value =
@@ -3534,7 +3572,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     for case in isolation_cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
         let response = application
-            .graph_read_effect(&visualization_request(truth_graph, "facts"))
+            .graph_read_effect(&visualization_request(truth_graph, "facts", None))
             .await;
         assert_eq!(
             response.status,
@@ -3557,6 +3595,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             assert!(
                 !rendered_nodes.contains(private_entity_id),
                 "a non-owner must not see another principal's private node: {payload}"
+            );
+            assert!(
+                !rendered_nodes.contains(scope_entity_id),
+                "a principal without the matching security scope must not see the scoped node: {payload}"
             );
         }
         if truth_graph == "workflow" || truth_graph == "wisdom" {
@@ -3605,6 +3647,27 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .any(|node| node["id"] == private_entity_id),
         "the fixture owner must not see another principal's private node: {owner_payload}"
     );
+
+    for (requested_scope, expected_visible) in [(scope_value, true), ("team-b", false)] {
+        let scoped_response = application
+            .graph_read_effect(&visualization_request(
+                acl_fixture["truth_graph"].as_str().unwrap(),
+                "facts",
+                Some(requested_scope),
+            ))
+            .await;
+        assert_eq!(scoped_response.status, StatusCode::OK.as_u16());
+        let scoped_payload: Value = serde_json::from_slice(&scoped_response.body).unwrap();
+        assert_eq!(
+            scoped_payload["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["id"] == scope_entity_id),
+            expected_visible,
+            "security scope {requested_scope} had incorrect visibility: {scoped_payload}"
+        );
+    }
 
     let deferred_visualization = app
         .clone()
