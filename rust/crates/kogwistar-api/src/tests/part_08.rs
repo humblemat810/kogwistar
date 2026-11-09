@@ -2764,6 +2764,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .find(|target| target["id"] == "edge-public")
         .unwrap();
     let public_edge_id = edge_policy["id"].as_str().unwrap();
+    let private_edge_policy = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "edge-private")
+        .unwrap();
+    let private_edge_id = private_edge_policy["id"].as_str().unwrap();
+    let private_edge_owner_id = private_edge_policy["owner_id"].as_str().unwrap();
     let scope_policy = acl_fixture["targets"]
         .as_array()
         .unwrap()
@@ -3120,6 +3128,36 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "acl_target_entity_id":public_edge_id,
             "acl_version":1,
             "acl_mode":edge_policy["mode"]
+        }),
+        None,
+    ));
+    let private_edge_data = json!({
+        "source_ids":[shared_entity_id],
+        "target_ids":[shared_entity_id],
+        "source_edge_ids":[],
+        "target_edge_ids":[],
+        "relation":"private references"
+    });
+    let private_edge_document = private_edge_data.to_string();
+    mutations.push(mutation(
+        private_edge_id,
+        "gke_edges",
+        "edge",
+        private_edge_data,
+        Some(&private_edge_document),
+    ));
+    mutations.push(mutation(
+        "acl-edge-private",
+        "gke_nodes",
+        "node",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":acl_fixture["truth_graph"],
+            "acl_target_grain":private_edge_policy["grain"],
+            "acl_target_entity_id":private_edge_id,
+            "acl_version":1,
+            "acl_mode":private_edge_policy["mode"],
+            "owner_id":private_edge_owner_id
         }),
         None,
     ));
@@ -3685,6 +3723,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "a public edge with visible endpoints must appear in reified graph output: {payload}"
             );
             assert!(
+                !rendered_nodes.contains(private_edge_id),
+                "a non-owner must not see the private edge: {payload}"
+            );
+            assert!(
                 !rendered_nodes.contains(owner_entity_id),
                 "a non-owner must not see the private fixture node: {payload}"
             );
@@ -3748,6 +3790,48 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .iter()
             .any(|node| node["id"] == private_entity_id),
         "the fixture owner must not see another principal's private node: {owner_payload}"
+    );
+    assert!(
+        !owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == private_edge_id),
+        "Alice must not see Bob's private edge: {owner_payload}"
+    );
+
+    let private_edge_owner_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/viz/d3.json?graph_type=knowledge&mode=reify")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject(private_edge_owner_id, "docs", &["read_graph"], "facts")
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(private_edge_owner_response.status(), StatusCode::OK);
+    let private_edge_owner_payload: Value = serde_json::from_slice(
+        &to_bytes(private_edge_owner_response.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        private_edge_owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == private_edge_id),
+        "Bob must see the edge he owns: {private_edge_owner_payload}"
     );
 
     for (requested_scope, expected_visible) in [(scope_value, true), ("team-b", false)] {
