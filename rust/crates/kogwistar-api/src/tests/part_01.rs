@@ -2849,6 +2849,58 @@
                 .unwrap();
         }
 
+        for (table, id, metadata, document) in [
+            (
+                "gke_edges",
+                "edge-to-foreign-node",
+                json!({
+                    "entity_type":"edge",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"facts",
+                    "source_ids":["source-a"],
+                    "target_ids":["foreign-node-b"]
+                }),
+                json!({
+                    "id":"edge-to-foreign-node",
+                    "source_ids":["source-a"],
+                    "target_ids":["foreign-node-b"]
+                }),
+            ),
+            (
+                "gke_nodes",
+                "acl-edge-to-foreign-node",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"knowledge",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":"edge-to-foreign-node",
+                    "acl_mode":"public",
+                    "acl_version":1
+                }),
+                Value::Null,
+            ),
+        ] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: GraphScope {
+                        namespace: namespace.clone(),
+                        workspace_id: Some("workspace-a".to_owned()),
+                        graph_space: Some("facts".to_owned()),
+                    },
+                    table: table.to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: (!document.is_null()).then(|| document.to_string()),
+                        metadata: metadata.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
         let response = service
             .execute_async(ApiEffectRequest {
                 contract_version: 1,
@@ -2900,6 +2952,17 @@
             .collect::<Vec<_>>();
         assert!(node_ids.contains(&"source-a"), "snapshot: {result}");
         assert!(!node_ids.contains(&"foreign-node-b"), "snapshot: {result}");
+        assert!(
+            !node_ids.contains(&"edge-to-foreign-node"),
+            "snapshot reified an edge with an out-of-scope endpoint: {result}"
+        );
+        assert!(
+            result["links"].as_array().unwrap().iter().all(|link| {
+                link["source"] != "edge-to-foreign-node"
+                    && link["target"] != "edge-to-foreign-node"
+            }),
+            "snapshot linked an edge with an out-of-scope endpoint: {result}"
+        );
     }
 
     #[test]
