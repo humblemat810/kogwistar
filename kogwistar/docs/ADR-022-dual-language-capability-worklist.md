@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **156/177 PASS (88.1%)**.
-- **Fine worklist:** **142/751 PASS (18.9%)**; **0 IN PROGRESS**, **609 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **143/751 PASS (19.0%)**; **0 IN PROGRESS**, **608 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -646,7 +646,7 @@
 | FW-16-02B-NODE-INVALID | DL-16 | NOT STARTED | Verify malformed derived Node payloads are rejected before graph mutation. |
 | FW-16-02B-EDGE-INVALID | DL-16 | NOT STARTED | Verify malformed derived Edge payloads are rejected before graph mutation. |
 | FW-16AC-01 | DL-16AC | PARENT | Parent scope; children: FW-16AC-01-PUBLIC,FW-16AC-01-OWNER,FW-16AC-01-PRIVATE,FW-16AC-01-SCOPE,FW-16AC-01-SHARED |
-| FW-16AC-01-PUBLIC | DL-16AC | NOT STARTED | Verify node public-visibility ACL outcome against the Python fixture. |
+| FW-16AC-01-PUBLIC | DL-16AC | PASS | Shared `contracts/golden/graph-acl-v1.json` predicts public-node visibility. Python visualization and Rust authenticated in-memory graph-read route both consume its graph-role case and assert the same visible result. Checks: `python -m pytest tests/test_visualization.py::test_visualization_uses_acl_policy_for_selected_python_graph_type -q -p no:cacheprovider` (**1 passed**) and `cargo test -p kogwistar-api in_memory_backend_routes_authenticated_graph_write_and_mcp_read --lib` (**1 passed**). |
 | FW-16AC-01-OWNER | DL-16AC | NOT STARTED | Verify node owner-visibility ACL outcome against the Python fixture. |
 | FW-16AC-01-PRIVATE | DL-16AC | NOT STARTED | Verify node private-visibility ACL outcome against the Python fixture. |
 | FW-16AC-01-SCOPE | DL-16AC | NOT STARTED | Verify node namespace/scope ACL outcome against the Python fixture. |
