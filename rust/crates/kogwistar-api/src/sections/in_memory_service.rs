@@ -1349,7 +1349,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_run_admission_is_authenticated_and_atomic; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission is Rust-native-only and uses one atomic store operation; unsupported Python worker plans fail closed.
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_run_admission_is_authenticated_and_atomic, rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_admission_uses_authoritative_design_and_rejects_conflicts; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission validates an exact ready workflow-design snapshot when present, accepts only one unjoined Rust-native v1 step, and atomically admits run/event/transition/lane without language fallback.
     async fn submit_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !principal_strings(&request.principal, "ns")
             .iter()
@@ -1373,7 +1373,7 @@ impl InMemoryGraphApplicationService {
                 "Workflow run admission requires workflow.run.write capability",
             );
         }
-        let input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
+        let mut input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {
             Ok(input) => input,
             Err(error) => {
                 return effect_error(
@@ -1411,6 +1411,91 @@ impl InMemoryGraphApplicationService {
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",
                 "run user_id must match the authenticated principal",
             );
+        }
+        let graph_projection = match kogwistar_store::ProjectionReadStore::named_projection(
+            &self.store,
+            "workflow_design",
+            workflow_id,
+        )
+        .await
+        {
+            Ok(projection) => projection,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let graph_snapshot =
+            match kogwistar_store::WorkflowDesignHistoryReadStore::workflow_design_snapshot(
+                &self.store,
+                workflow_id,
+                i64::MAX,
+                1,
+            )
+            .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+        let graph_plan = exact_runtime_graph_plan(graph_projection, graph_snapshot.clone());
+        if graph_plan.is_none()
+            && runtime_snapshot_declares_worker_identity(graph_snapshot.as_ref())
+        {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_INVALID_WORKER_IDENTITY",
+                "workflow worker identity pin is invalid or its authoritative plan is unavailable",
+            );
+        }
+        if let Some(plan) = graph_plan.as_ref() {
+            let node_id = plan.start_node_id.as_str();
+            let operation = plan.node_ops.get(node_id).map(String::as_str);
+            let version = plan.node_versions.get(node_id).map(String::as_str);
+            let executor_target = plan.node_executor_targets.get(node_id).map(String::as_str);
+            if plan.node_ops.len() != 1
+                || plan.node_versions.len() != 1
+                || !plan.join_node_ids.is_empty()
+                || plan.start_join_mask != 0
+                || !plan.routes.is_empty()
+                || !plan.node_environment_ids.is_empty()
+                || !plan.node_worker_identities.is_empty()
+                || operation.is_none_or(|operation| {
+                    !matches!(operation, "noop" | "increment-counter" | "emit-result")
+                })
+                || version != Some("v1")
+                || executor_target != Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+            {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
+                    "in-memory native admission supports one unjoined v1 Rust-native start step only",
+                );
+            }
+            if input.start_node_id.is_none() {
+                input.start_node_id = Some(plan.start_node_id.clone());
+            }
+            if input.node_ops.is_empty() {
+                input.node_ops = plan.node_ops.clone();
+            }
+            if input.node_executor_targets.is_empty() {
+                input.node_executor_targets = plan.node_executor_targets.clone();
+            }
+            if submitted_runtime_graph_conflicts(plan, &input) {
+                return effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_RUNTIME_GRAPH_CONFLICT",
+                    "submitted frozen runtime graph differs from authoritative workflow design",
+                );
+            }
         }
         if !input.join_node_ids.is_empty()
             || input.start_join_mask != 0

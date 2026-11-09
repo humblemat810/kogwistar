@@ -158,6 +158,164 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
 }
 
 #[tokio::test]
+async fn in_memory_native_admission_uses_authoritative_design_and_rejects_conflicts() {
+    use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+
+    let service = InMemoryGraphApplicationService::default();
+    let workflow_id = "memory-authoritative-workflow";
+    kogwistar_store::ProjectionWriteStore::replace_named_projection(
+        &service.store,
+        "workflow_design",
+        workflow_id,
+        NamedProjectionWrite {
+            payload: serde_json::Map::from_iter([
+                ("current_version".to_owned(), json!(1)),
+                ("snapshot_schema_version".to_owned(), json!(1)),
+            ]),
+            last_authoritative_seq: 1,
+            last_materialized_seq: 1,
+            projection_schema_version: 1,
+            materialization_status: "ready".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    kogwistar_store::WorkflowDesignHistoryWriteStore::put_workflow_design_snapshot(
+        &service.store,
+        workflow_id,
+        WorkflowDesignSnapshotWrite {
+            version: 1,
+            seq: 1,
+            schema_version: 1,
+            payload_json: serde_json::to_string(&json!({
+                "nodes": [{
+                    "id": "start",
+                    "metadata": {
+                        "wf_start": true,
+                        "wf_terminal": true,
+                        "wf_op": "increment-counter",
+                        "wf_version": "v1",
+                        "wf_executor_target": "rust-native"
+                    }
+                }],
+                "edges": []
+            }))
+            .unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let principal = json!({
+        "sub":"design-owner",
+        "role":"rw",
+        "ns":["workflow"],
+        "capabilities":["workflow.run.write"]
+    });
+    let submit = |workflow_id: &str, run_id: &str, node_ops: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/workflow/runs".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": "memory-authoritative-conversation",
+            "node_ops": node_ops
+        }))
+        .unwrap(),
+        principal: principal.clone(),
+    };
+
+    let accepted = service
+        .execute(submit(workflow_id, "memory-authoritative-run", json!({})))
+        .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED.as_u16());
+    let lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        "lane|runtime-start|memory-authoritative-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let payload: Value = serde_json::from_str(lane.payload_json.as_deref().unwrap()).unwrap();
+    assert_eq!(payload["op"], "increment-counter");
+    assert_eq!(payload["executor_target"], "rust-native");
+
+    let conflict = service
+        .execute(submit(
+            workflow_id,
+            "memory-authoritative-conflict",
+            json!({"start": "noop"}),
+        ))
+        .await;
+    assert_eq!(conflict.status, StatusCode::CONFLICT.as_u16());
+    assert!(
+        kogwistar_store::ServerRunReadStore::server_run(
+            &service.store,
+            "memory-authoritative-conflict"
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+
+    let unsupported_workflow = "memory-multistep-authoritative-workflow";
+    kogwistar_store::ProjectionWriteStore::replace_named_projection(
+        &service.store,
+        "workflow_design",
+        unsupported_workflow,
+        NamedProjectionWrite {
+            payload: serde_json::Map::from_iter([
+                ("current_version".to_owned(), json!(1)),
+                ("snapshot_schema_version".to_owned(), json!(1)),
+            ]),
+            last_authoritative_seq: 1,
+            last_materialized_seq: 1,
+            projection_schema_version: 1,
+            materialization_status: "ready".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    kogwistar_store::WorkflowDesignHistoryWriteStore::put_workflow_design_snapshot(
+        &service.store,
+        unsupported_workflow,
+        WorkflowDesignSnapshotWrite {
+            version: 1,
+            seq: 1,
+            schema_version: 1,
+            payload_json: serde_json::to_string(&json!({
+                "nodes": [
+                    {"id":"start", "metadata":{"wf_start":true, "wf_op":"noop", "wf_executor_target":"rust-native"}},
+                    {"id":"finish", "metadata":{"wf_terminal":true, "wf_op":"noop", "wf_executor_target":"rust-native"}}
+                ],
+                "edges": [{"id":"route", "source_ids":["start"], "target_ids":["finish"], "metadata":{}}]
+            }))
+            .unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+    let unsupported = service
+        .execute(submit(
+            unsupported_workflow,
+            "memory-multistep-run",
+            json!({}),
+        ))
+        .await;
+    assert_eq!(
+        unsupported.status,
+        StatusCode::UNPROCESSABLE_ENTITY.as_u16()
+    );
+    assert!(
+        kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-multistep-run")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn in_memory_native_run_admission_is_reachable_through_authenticated_http() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;

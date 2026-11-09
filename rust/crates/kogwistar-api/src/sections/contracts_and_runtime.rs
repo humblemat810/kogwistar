@@ -2202,7 +2202,7 @@ fn runtime_claim_identity_registration_matches(
     Ok(())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeSubmitRun {
     #[serde(default)]
