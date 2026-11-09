@@ -5893,11 +5893,11 @@
                         })
                     } else {
                         json!({
-                            "ids":[["n4","n2","n5","n6"]],
-                            "documents":[["doc4","doc2","doc5",r#"{"id":"n6","label":"Project scoped node"}"#]],
-                            "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5"),scoped("doc6")]],
-                            "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
-                            "distances":[[0.03,0.1,0.01,0.02]]
+                            "ids":[["n4","n2","n5","n6","n-missing-canonical"]],
+                            "documents":[["doc4","doc2","doc5",r#"{"id":"n6","label":"Project scoped node"}"#,"orphan Chroma projection"]],
+                            "metadatas":[[scoped("doc4"),scoped("doc2"),scoped("doc5"),scoped("doc6"),scoped("doc-missing-canonical")]],
+                            "embeddings":[[[0.1,0.2],[0.1,0.2],[0.1,0.2],[0.1,0.2],[0.1,0.2]]],
+                            "distances":[[0.03,0.1,0.01,0.02,0.001]]
                         })
                     }
                 } else if line.contains("collection-edges/query") {
@@ -6969,6 +6969,10 @@
             assert!(serialized.contains("e1"), "{path}: {visualization}");
             assert!(!serialized.contains("n3"), "private node leaked: {path}");
             assert!(!serialized.contains("n5"), "cross-workspace node leaked: {path}");
+            assert!(
+                !serialized.contains("n-missing-canonical"),
+                "orphan Chroma projection leaked: {path}"
+            );
             assert!(!rows.is_empty(), "{path} returned no graph records");
         }
 
@@ -7007,6 +7011,7 @@
         assert!(embedded_json.contains("e1"));
         assert!(!embedded_json.contains("n3"));
         assert!(!embedded_json.contains("n5"));
+        assert!(!embedded_json.contains("n-missing-canonical"));
 
         let request = |path: &str, body: Value, capabilities: Value| ApiEffectRequest {
             contract_version: 1,
@@ -7120,7 +7125,11 @@
             .await;
         assert_eq!(vector_query.status, StatusCode::OK.as_u16());
         let vector_query: Value = serde_json::from_slice(&vector_query.body).unwrap();
-        assert_eq!(vector_query["ids"], json!([["n2"]]));
+        assert_eq!(
+            vector_query["ids"],
+            json!([["n2"]]),
+            "the highest-ranked orphan Chroma projection must be removed without a canonical event"
+        );
         assert_eq!(vector_query["documents"], json!([["doc2"]]));
         assert_eq!(vector_query["distances"], json!([[0.1]]));
 
