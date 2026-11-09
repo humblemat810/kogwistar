@@ -52,6 +52,31 @@ RUST_SERVER = (
 )
 
 
+class _LoseAsyncResultAcknowledgementAfterCommit(httpx.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self._inner = httpx.AsyncHTTPTransport()
+        self.event_seq: int | None = None
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await self._inner.handle_async_request(request)
+        if request.url.path == "/internal/runtime/results" and self.event_seq is None:
+            body = await response.aread()
+            result = json.loads(body)
+            event_seq = result.get("event_seq") if isinstance(result, dict) else None
+            if not isinstance(event_seq, int) or event_seq <= 0:
+                raise AssertionError("committed async result lacks a positive event_seq")
+            self.event_seq = event_seq
+            await response.aclose()
+            raise httpx.ReadError(
+                "simulated async result acknowledgement loss after commit",
+                request=request,
+            )
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
 def test_native_operation_inventory_routes_through_shared_python_contract() -> None:
     fixture = json.loads(
         (
@@ -1968,7 +1993,110 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     terminal_failures.append(event_payload)
             assert len(terminal_failures) == 1
 
-        from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+            async_failure_run_id = "mixed-async-failure-run"
+            async_failure_submitted = httpx.post(
+                f"{base_url}/api/workflow/runs",
+                headers=headers,
+                json={
+                    "run_id": async_failure_run_id,
+                    "workflow_id": "mixed-async-failure-workflow",
+                    "conversation_id": "mixed-async-failure-conversation",
+                    "initial_state": {},
+                    "runtime_kind": "async",
+                    "start_node_id": "python-async-failure",
+                    "node_ops": {
+                        "python-async-failure": "application.async_failure"
+                    },
+                    "runtime_routes": [],
+                },
+                timeout=10,
+            )
+            assert async_failure_submitted.status_code == 202, async_failure_submitted.text
+            async_resolver = AsyncMappingStepResolver()
+            async_callbacks: list[str] = []
+
+            @async_resolver.register("application.async_failure")
+            async def fail_async(_ctx):
+                async_callbacks.append("callback")
+                await asyncio.sleep(0)
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[("u", {"async_failure_probe_seen": True})],
+                    errors=["expected async worker failure"],
+                )
+
+            async_journal = tmp_path / "python-async-worker-failure.sqlite"
+            async_transport = _LoseAsyncResultAcknowledgementAfterCommit()
+
+            async def run_async_failure_and_replay() -> None:
+                async_client = httpx.AsyncClient(
+                    transport=async_transport,
+                    base_url=base_url,
+                    headers=headers,
+                )
+                worker = AsyncRustRuntimeWorker.from_step_resolver(
+                    base_url=base_url,
+                    worker_id="python-async-failure-worker",
+                    journal_path=async_journal,
+                    step_resolver=async_resolver,
+                    client=async_client,
+                )
+                try:
+                    claimed = await worker.claim(run_id=async_failure_run_id)
+                    assert len(claimed) == 1
+                    work_item = claimed[0]
+                    assert work_item["step_id"] == "python-async-failure"
+                    with pytest.raises(
+                        RustWorkerError,
+                        match="simulated async result acknowledgement loss after commit",
+                    ):
+                        await worker.process(work_item)
+                finally:
+                    await worker.aclose()
+                    await async_client.aclose()
+
+                assert async_transport.event_seq is not None
+                restarted_worker = AsyncRustRuntimeWorker.from_step_resolver(
+                    base_url=base_url,
+                    worker_id="python-async-failure-worker",
+                    journal_path=async_journal,
+                    step_resolver=async_resolver,
+                    headers=headers,
+                )
+                try:
+                    replayed = await restarted_worker.process(work_item)
+                finally:
+                    await restarted_worker.aclose()
+                assert replayed["event_seq"] == async_transport.event_seq
+
+            asyncio.run(run_async_failure_and_replay())
+            assert async_callbacks == ["callback"]
+            async_failure_status = httpx.get(
+                f"{base_url}/api/workflow/runs/{async_failure_run_id}",
+                headers=headers,
+                timeout=10,
+            )
+            assert async_failure_status.status_code == 200, async_failure_status.text
+            assert async_failure_status.json()["status"] == "failed"
+            async_failure_events = httpx.get(
+                f"{base_url}/api/workflow/runs/{async_failure_run_id}/events?after_seq=0",
+                headers=headers,
+                timeout=10,
+            )
+            assert async_failure_events.status_code == 200, async_failure_events.text
+            async_terminal_failures = []
+            for frame in async_failure_events.text.split("\n\n"):
+                data_line = next(
+                    (line[6:] for line in frame.splitlines() if line.startswith("data: ")),
+                    None,
+                )
+                if data_line is None:
+                    continue
+                event_payload = json.loads(data_line)
+                run_status = event_payload.get("reduced", {}).get("run_status", {})
+                if run_status.get("terminal_node_id") == f"wf_failed|{async_failure_run_id}":
+                    async_terminal_failures.append(event_payload)
+            assert len(async_terminal_failures) == 1
 
         async_callbacks: list[str] = []
         async_resolver = AsyncMappingStepResolver()
