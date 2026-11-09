@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import ValidationError
+from fastapi.testclient import TestClient
 
-from kogwistar.server_mcp_with_admin import DocumentGraphProposal
+from kogwistar.server_mcp_with_admin import app
 
 _FIXTURE = (
     Path(__file__).resolve().parents[2]
@@ -15,18 +15,13 @@ _FIXTURE = (
 )
 
 
-def test_document_graph_validation_required_field_error_matches_shared_fixture() -> None:
+def test_python_document_graph_validation_http_error_matches_shared_fixture() -> None:
     fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    response = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
 
-    try:
-        DocumentGraphProposal.model_validate(fixture["request"])
-    except ValidationError as error:
-        details = error.errors(include_url=False)
-    else:
-        raise AssertionError("fixture request must omit required nodes")
-
-    python_detail = [
-        {**detail, "loc": ["body", *detail["loc"]]}
-        for detail in details
-    ]
-    assert python_detail == fixture["python_detail"]
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["detail"] == fixture["python_detail"]
