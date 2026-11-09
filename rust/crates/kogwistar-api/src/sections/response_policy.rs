@@ -1624,7 +1624,7 @@ fn document_graph_validation_effect(request: &ApiEffectRequest) -> Option<ApiEff
     {
         return None;
     }
-    let mut input: DocumentGraphProposalInput = match serde_json::from_slice(&request.body) {
+    let raw_input: Value = match serde_json::from_slice(&request.body) {
         Ok(value) => value,
         Err(error) => {
             return Some(effect_error(
@@ -1632,6 +1632,32 @@ fn document_graph_validation_effect(request: &ApiEffectRequest) -> Option<ApiEff
                 "KOGWISTAR_INVALID_REQUEST",
                 error.to_string(),
             ));
+        }
+    };
+    let missing_nodes = raw_input
+        .as_object()
+        .is_some_and(|object| object.contains_key("doc_id") && !object.contains_key("nodes"));
+    let mut input: DocumentGraphProposalInput = match serde_json::from_value(raw_input.clone()) {
+        Ok(value) => value,
+        Err(error) => {
+            let mut response = effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
+            if missing_nodes {
+                let mut body: Value = serde_json::from_slice(&response.body)
+                    .expect("effect_error always creates a JSON object");
+                body["detail"] = json!([{
+                    "type": "missing",
+                    "loc": ["body", "nodes"],
+                    "msg": "Field required",
+                    "input": raw_input,
+                }]);
+                response.body = serde_json::to_vec(&body)
+                    .expect("typed validation detail is serializable");
+            }
+            return Some(response);
         }
     };
     let mut node_errors = serde_json::Map::new();

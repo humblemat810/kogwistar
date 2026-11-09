@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **157/177 PASS (88.7%)**.
-- **Fine worklist:** **228/775 PASS (29.4%)**; **0 IN PROGRESS**, **547 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **229/775 PASS (29.5%)**; **0 IN PROGRESS**, **546 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -304,7 +304,7 @@
 | FW-05-04A-PERSISTENCE | DL-05 | NOT STARTED | Compare persistence error code and detail fields for one shared error fixture. |
 | FW-05-04A-TRANSACTION | DL-05 | NOT STARTED | Compare transaction error code and detail fields for one shared error fixture. |
 | FW-05-04B | DL-05 | PARENT | Parent scope; children: FW-05-04B-REST,FW-05-04B-MCP |
-| FW-05-04B-REST | DL-05 | NOT STARTED | Compare REST error envelope fields for one shared invalid-request fixture. |
+| FW-05-04B-REST | DL-05 | PASS | Invariant: Python and Rust expose equivalent field-validation detail for the same invalid REST request | Cell: shared `document-graph-validation-error-v1.json` omitting required `nodes` | Oracle: both return HTTP 422 semantics and the same FastAPI-compatible `detail`; Rust retains legacy `code/message` additively | Check: Python `poetry run python -m pytest -p no:cacheprovider tests/core/test_rest_error_contract.py -q` (1 passed); Rust `cargo test -p kogwistar-api document_graph_validation --lib` (2 passed, including the existing provenance/pointer contract); `cargo fmt --all --check`, Ruff, and `git diff --check` passed. |
 | FW-05-04B-MCP | DL-05 | NOT STARTED | Compare MCP error envelope fields for one shared invalid-request fixture. |
 | FW-05-02 | DL-05 | PARENT | Parent scope; children: FW-05-02-ID,FW-05-02-SPAN |
 | FW-05-02-ID | DL-05 | NOT STARTED | Verify identifier validity boundaries with shared valid/invalid fixtures and matching Python/Rust acceptance. |
