@@ -553,6 +553,60 @@
         let client = reqwest::Client::new();
         let base = format!("http://{address}");
 
+        let run_events_before_invalid_handoff = service
+            .store
+            .list_server_run_events("owned-run", 0, usize::MAX)
+            .await
+            .unwrap();
+        for field in ["message_id", "claimed_by", "run_id", "step_id", "correlation_id"] {
+            let mut invalid_handoff = worker_result.clone();
+            invalid_handoff["handoff"][field] = json!(format!("forged-{field}"));
+            let rejected = client
+                .post(format!("{base}/internal/runtime/results"))
+                .bearer_auth(&owner_token)
+                .json(&invalid_handoff)
+                .send()
+                .await
+                .unwrap();
+            let expected_status = if field == "run_id" {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::CONFLICT
+            };
+            assert_eq!(
+                rejected.status(),
+                expected_status,
+                "mismatched handoff field {field} must not be accepted"
+            );
+            assert_eq!(
+                service
+                    .store
+                    .list_server_run_events("owned-run", 0, usize::MAX)
+                    .await
+                    .unwrap(),
+                run_events_before_invalid_handoff,
+                "mismatched handoff field {field} must not append run events"
+            );
+            assert!(service
+                .store
+                .replay_raw_events("alpha", 0, 100)
+                .await
+                .unwrap()
+                .iter()
+                .all(|event| event.event_id != "owner-check-event"));
+            assert_eq!(
+                service
+                    .store
+                    .get_projected_lane_message("lane-1")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "claimed",
+                "mismatched handoff field {field} must preserve the active claim"
+            );
+        }
+
         let denied = client
             .post(format!("{base}/internal/runtime/results"))
             .bearer_auth(&other_owner_token)

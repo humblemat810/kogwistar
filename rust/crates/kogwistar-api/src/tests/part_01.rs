@@ -3925,6 +3925,59 @@
             events_before_wrong_executor,
             "Python-target work rejected by the native route must remain unconsumed"
         );
+        let python_before_effect = json!({
+            "contract_version": 1,
+            "effect_id": "mixed-python-before",
+            "state_update": [["u", {"python_before_seen": true}]],
+            "successors": [],
+            "result": null
+        });
+        let events_before_invalid_handoff = store
+            .list_server_run_events("mixed-language-run", 0, 100)
+            .unwrap();
+        for field in ["message_id", "claimed_by", "run_id", "step_id", "correlation_id"] {
+            let mut invalid_handoff = json!({
+                "handoff": {
+                    "message_id": python_before_work["message_id"],
+                    "claimed_by": python_before_work["claimed_by"],
+                    "run_id": python_before_work["run_id"],
+                    "step_id": python_before_work["step_id"],
+                    "correlation_id": python_before_work["correlation_id"]
+                },
+                "effect": python_before_effect
+            });
+            invalid_handoff["handoff"][field] = json!(format!("forged-{field}"));
+            let rejected = client
+                .post(format!("{base_url}/internal/runtime/results"))
+                .header("x-kogwistar-roles", "reader")
+                .json(&invalid_handoff)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                rejected.status(),
+                StatusCode::CONFLICT,
+                "mismatched handoff field {field} must not be accepted"
+            );
+            assert_eq!(
+                store
+                    .list_server_run_events("mixed-language-run", 0, 100)
+                    .unwrap(),
+                events_before_invalid_handoff,
+                "mismatched handoff field {field} must not append durable events"
+            );
+            assert_eq!(
+                store
+                    .get_projected_lane_message(
+                        python_before_work["message_id"].as_str().unwrap()
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "claimed",
+                "mismatched handoff field {field} must not acknowledge the active claim"
+            );
+        }
         let python_before_result = client
             .post(format!("{base_url}/internal/runtime/results"))
             .header("x-kogwistar-roles", "reader")
@@ -3936,13 +3989,7 @@
                     "step_id": python_before_work["step_id"],
                     "correlation_id": python_before_work["correlation_id"]
                 },
-                "effect": {
-                    "contract_version": 1,
-                    "effect_id": "mixed-python-before",
-                    "state_update": [["u", {"python_before_seen": true}]],
-                    "successors": [],
-                    "result": null
-                }
+                "effect": python_before_effect
             }))
             .send()
             .await
