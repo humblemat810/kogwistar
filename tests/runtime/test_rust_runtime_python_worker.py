@@ -531,6 +531,28 @@ def test_numpy_worker_result_must_be_explicitly_projected_to_json() -> None:
         ))
 
 
+def test_worker_effect_rejects_callback_closure() -> None:
+    resolver = MappingStepResolver()
+    captured = object()
+    observed: list[object] = []
+
+    def local_callback() -> object:
+        return captured
+
+    @resolver.register("start")
+    def execute(_ctx):
+        observed.append(local_callback())
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"callback": local_callback})],
+        )
+
+    with pytest.raises(RustWorkerError, match="must be JSON-only"):
+        RustStepResolverAdapter(resolver)(_adapter_work())
+
+    assert observed == [captured]
+
+
 def test_python_worker_rejects_operation_version_mismatch_before_execution() -> None:
     fixture = json.loads(
         (
