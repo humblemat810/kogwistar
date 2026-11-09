@@ -140,6 +140,12 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     scope_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "node-scope"
     )
+    share_policies = [
+        target
+        for target in acl_fixture["targets"]
+        if target.get("grain") == "node"
+        and target.get("mode") in {"shared", "group"}
+    ]
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -281,6 +287,40 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     target_item_id=target_id,
                     **scope_acl,
                 )
+        for share_policy in share_policies:
+            shared_node = Node(
+                id=share_policy["id"],
+                label=f"{share_policy['mode']} graph node",
+                type="entity",
+                summary="Visible only to an explicitly shared principal or group",
+                mentions=[_g()],
+                metadata={"entity_type": "fixture"},
+                embedding=None,
+                doc_id=None,
+                level_from_root=0,
+            )
+            owner_engine.raw_write.add_node(shared_node)
+            share_acl: dict[str, Any] = {
+                "truth_graph": acl_fixture["truth_graph"],
+                "entity_id": shared_node.id,
+                "version": 1,
+                "mode": share_policy["mode"],
+            }
+            if share_policy["mode"] == "shared":
+                share_acl["shared_with_principals"] = share_policy[
+                    "shared_with_principals"
+                ]
+            else:
+                share_acl["shared_with_groups"] = share_policy["shared_with_groups"]
+            owner_engine.acl_graph.add_record(**share_acl)
+            grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(shared_node)
+            for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+                for target_id in target_ids:
+                    owner_engine.acl_graph.add_record(
+                        grain=grain,
+                        target_item_id=target_id,
+                        **share_acl,
+                    )
 
         token = claims_ctx.set(
             {"agent_id": "reader-b", "ns": "knowledge"}
@@ -322,6 +362,7 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 "agent_id": owner_policy["owner_id"],
                 "ns": acl_fixture["truth_graph"],
                 "security_scope": acl_fixture["principal"]["security_scope"],
+                "groups": acl_fixture["principal"]["groups"],
             }
         )
         try:
@@ -357,6 +398,38 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         assert scope_policy["id"] in [
             item["data"]["id"] for item in owner_cytoscape_payload["elements"]
         ]
+        for share_policy in share_policies:
+            assert share_policy["id"] in [
+                node["id"] for node in owner_d3_payload["nodes"]
+            ]
+
+        token = claims_ctx.set(
+            {
+                "agent_id": owner_policy["owner_id"],
+                "ns": acl_fixture["truth_graph"],
+                "security_scope": acl_fixture["principal"]["security_scope"],
+            }
+        )
+        try:
+            directly_shared = cast(
+                JSONResponse,
+                server.api_viz_d3(
+                    mode="classic", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            directly_shared_payload = json.loads(bytes(directly_shared.body))
+        finally:
+            claims_ctx.reset(token)
+        assert share_policies[0]["id"] in [
+            node["id"] for node in directly_shared_payload["nodes"]
+        ]
+        assert all(
+            policy["id"] not in [
+                node["id"] for node in directly_shared_payload["nodes"]
+            ]
+            for policy in share_policies
+            if policy["mode"] == "group"
+        )
 
         token = claims_ctx.set(
             {

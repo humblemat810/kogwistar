@@ -2765,6 +2765,22 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let scope_entity_id = scope_policy["id"].as_str().unwrap();
     let scope_value = scope_policy["security_scope"].as_str().unwrap();
+    let share_policies: Vec<&Value> = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|target| {
+            target["grain"] == "node"
+                && matches!(target["mode"].as_str(), Some("shared" | "group"))
+        })
+        .collect();
+    let fixture_principal_id = acl_fixture["principal"]["id"].as_str().unwrap();
+    let fixture_groups: Vec<String> = acl_fixture["principal"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| group.as_str().unwrap().to_owned())
+        .collect();
     let isolation_cases = isolation["cases"].as_array().unwrap();
     let knowledge_policy = isolation_cases
         .iter()
@@ -3040,6 +3056,37 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             None,
         ),
     ];
+    for (index, share_policy) in share_policies.iter().enumerate() {
+        let shared_entity_id = share_policy["id"].as_str().unwrap();
+        mutations.push(mutation(
+            shared_entity_id,
+            "gke_nodes",
+            "node",
+            json!({"label":format!("{} graph node", share_policy["mode"].as_str().unwrap())}),
+            Some("explicitly shared node"),
+        ));
+        let mut acl_metadata = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":acl_fixture["truth_graph"],
+            "acl_target_grain":share_policy["grain"],
+            "acl_target_entity_id":shared_entity_id,
+            "acl_version":1,
+            "acl_mode":share_policy["mode"]
+        });
+        if share_policy["mode"] == "shared" {
+            acl_metadata["shared_with_principals"] =
+                share_policy["shared_with_principals"].clone();
+        } else {
+            acl_metadata["shared_with_groups"] = share_policy["shared_with_groups"].clone();
+        }
+        mutations.push(mutation(
+            &format!("acl-node-share-{index}"),
+            "gke_nodes",
+            "node",
+            acl_metadata,
+            None,
+        ));
+    }
     for (index, embedding) in [
         (0, json!([1.0, 0.0])),
         (1, json!([0.8, 0.2])),
@@ -3527,12 +3574,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
 
     let visualization_request = |truth_graph: &str,
                                  graph_space: &str,
-                                 security_scope: Option<&str>| {
+                                 security_scope: Option<&str>,
+                                 principal_id: &str,
+                                 groups: &[String]| {
         let mut principal = json!({
-            "sub":"writer", "role":"rw", "ns":["docs"],
+            "sub":principal_id, "role":"rw", "ns":["docs"],
             "storage_ns":"tenant-a", "workspace_id":"workspace-a",
             "graph_space":graph_space, "capabilities":["read_graph"]
         });
+        principal["groups"] = json!(groups);
         if let Some(security_scope) = security_scope {
             principal["security_scope"] = json!(security_scope);
         }
@@ -3545,7 +3595,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         }
     };
     let conversation_visualization = application
-        .graph_read_effect(&visualization_request("conversation", "facts", None))
+        .graph_read_effect(&visualization_request("conversation", "facts", None, "writer", &[]))
         .await;
     assert_eq!(conversation_visualization.status, StatusCode::OK.as_u16());
     let conversation_visualization: Value =
@@ -3572,7 +3622,13 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     for case in isolation_cases {
         let truth_graph = case["truth_graph"].as_str().unwrap();
         let response = application
-            .graph_read_effect(&visualization_request(truth_graph, "facts", None))
+            .graph_read_effect(&visualization_request(
+                truth_graph,
+                "facts",
+                None,
+                "writer",
+                &[],
+            ))
             .await;
         assert_eq!(
             response.status,
@@ -3600,6 +3656,12 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 !rendered_nodes.contains(scope_entity_id),
                 "a principal without the matching security scope must not see the scoped node: {payload}"
             );
+            for share_policy in &share_policies {
+                assert!(
+                    !rendered_nodes.contains(share_policy["id"].as_str().unwrap()),
+                    "an unshared principal must not see a shared/group node: {payload}"
+                );
+            }
         }
         if truth_graph == "workflow" || truth_graph == "wisdom" {
             assert!(
@@ -3654,6 +3716,8 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 acl_fixture["truth_graph"].as_str().unwrap(),
                 "facts",
                 Some(requested_scope),
+                "writer",
+                &[],
             ))
             .await;
         assert_eq!(scoped_response.status, StatusCode::OK.as_u16());
@@ -3667,6 +3731,29 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             expected_visible,
             "security scope {requested_scope} had incorrect visibility: {scoped_payload}"
         );
+    }
+
+    for (groups, expected_group_nodes) in [(&[][..], false), (fixture_groups.as_slice(), true)] {
+        let shared_response = application
+            .graph_read_effect(&visualization_request(
+                acl_fixture["truth_graph"].as_str().unwrap(),
+                "facts",
+                Some(scope_value),
+                fixture_principal_id,
+                groups,
+            ))
+            .await;
+        assert_eq!(shared_response.status, StatusCode::OK.as_u16());
+        let shared_payload: Value = serde_json::from_slice(&shared_response.body).unwrap();
+        let visible_nodes = shared_payload["nodes"].to_string();
+        for share_policy in &share_policies {
+            let should_be_visible = share_policy["mode"] == "shared" || expected_group_nodes;
+            assert_eq!(
+                visible_nodes.contains(share_policy["id"].as_str().unwrap()),
+                should_be_visible,
+                "principal groups {groups:?} had incorrect share visibility: {shared_payload}"
+            );
+        }
     }
 
     let deferred_visualization = app
