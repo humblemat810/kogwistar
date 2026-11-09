@@ -1623,7 +1623,45 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         )
         assert prepare.returncode == 0, prepare.stderr
         # Worker A exits with a completed local journal but an unsubmitted
-        # result. Worker B must reclaim after lease expiry and replay the result.
+        # result. Restart the durable server/scheduler before worker B reclaims
+        # the expired claim, proving recovery is not tied to scheduler memory.
+        if backend == "sqlite":
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+            process = subprocess.Popen(
+                [str(RUST_SERVER)],
+                cwd=ROOT,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for _ in range(100):
+                if process.poll() is not None:
+                    stderr = process.stderr.read() if process.stderr is not None else ""
+                    raise AssertionError(
+                        f"Rust server failed to restart: {stderr}"
+                    )
+                try:
+                    if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    time.sleep(0.05)
+            else:
+                raise AssertionError("Rust SQLite server did not recover after restart")
+            resumed = httpx.get(
+                f"{base_url}/api/workflow/runs/mixed-live-run",
+                headers=headers,
+                timeout=10,
+            )
+            assert resumed.status_code == 200, resumed.text
+            assert resumed.json()["status"] != "succeeded"
+        # The claim lease is one second; wait after server readiness so reclaim
+        # exercises durable lease recovery, not an in-memory active claim.
         time.sleep(1.1)
         replay = subprocess.run(
             [*worker_probe, "--worker-id", "python-worker-b", "--mode", "replay"],
