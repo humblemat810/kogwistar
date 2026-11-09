@@ -152,6 +152,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     private_edge_policy = next(
         target for target in acl_fixture["targets"] if target["id"] == "edge-private"
     )
+    scope_edge_policy = next(
+        target for target in acl_fixture["targets"] if target["id"] == "edge-scope"
+    )
     policies = {
         case["truth_graph"]: case
         for case in isolation["cases"]
@@ -361,7 +364,7 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert [
                 item["data"]["id"] for item in cytoscape_payload["elements"]
             ] == expected_ids
-        for edge_policy_item in (edge_policy, private_edge_policy):
+        for edge_policy_item in (edge_policy, private_edge_policy, scope_edge_policy):
             edge = Edge(
                 id=edge_policy_item["id"],
                 label=f"{edge_policy_item['mode']} fixture edge",
@@ -389,6 +392,8 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             }
             if owner_id := edge_policy_item.get("owner_id"):
                 edge_acl["owner_id"] = owner_id
+            if security_scope := edge_policy_item.get("security_scope"):
+                edge_acl["security_scope"] = security_scope
             owner_engine.acl_graph.add_record(grain="edge", **edge_acl)
             grounding_ids, span_ids = owner_engine.acl.usage_ids_for_item(edge)
             for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
@@ -423,6 +428,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             item["data"]["id"] for item in public_edge_cytoscape_payload["elements"]
         ]
         assert private_edge_policy["id"] not in [
+            node["id"] for node in public_edge_d3_payload["nodes"]
+        ]
+        assert scope_edge_policy["id"] not in [
             node["id"] for node in public_edge_d3_payload["nodes"]
         ]
 
@@ -493,6 +501,26 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         assert scope_policy["id"] in [
             item["data"]["id"] for item in owner_cytoscape_payload["elements"]
         ]
+        token = claims_ctx.set(
+            {
+                "agent_id": owner_policy["owner_id"],
+                "ns": acl_fixture["truth_graph"],
+                "security_scope": acl_fixture["principal"]["security_scope"],
+            }
+        )
+        try:
+            scoped_edge_response = cast(
+                JSONResponse,
+                server.api_viz_d3(
+                    mode="reify", graph_type=acl_fixture["truth_graph"]
+                ),
+            )
+            scoped_edge_payload = json.loads(bytes(scoped_edge_response.body))
+        finally:
+            claims_ctx.reset(token)
+        assert scope_edge_policy["id"] in [
+            node["id"] for node in scoped_edge_payload["nodes"]
+        ]
         for share_policy in share_policies:
             assert share_policy["id"] in [
                 node["id"] for node in owner_d3_payload["nodes"]
@@ -509,7 +537,7 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             directly_shared = cast(
                 JSONResponse,
                 server.api_viz_d3(
-                    mode="classic", graph_type=acl_fixture["truth_graph"]
+                    mode="reify", graph_type=acl_fixture["truth_graph"]
                 ),
             )
             directly_shared_payload = json.loads(bytes(directly_shared.body))
@@ -544,6 +572,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         finally:
             claims_ctx.reset(token)
         assert scope_policy["id"] not in [
+            node["id"] for node in mismatched_scope_payload["nodes"]
+        ]
+        assert scope_edge_policy["id"] not in [
             node["id"] for node in mismatched_scope_payload["nodes"]
         ]
     finally:

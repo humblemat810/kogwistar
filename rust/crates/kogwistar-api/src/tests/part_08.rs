@@ -2772,6 +2772,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .unwrap();
     let private_edge_id = private_edge_policy["id"].as_str().unwrap();
     let private_edge_owner_id = private_edge_policy["owner_id"].as_str().unwrap();
+    let scope_edge_policy = acl_fixture["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|target| target["id"] == "edge-scope")
+        .unwrap();
+    let scope_edge_id = scope_edge_policy["id"].as_str().unwrap();
+    let scope_edge_value = scope_edge_policy["security_scope"].as_str().unwrap();
     let scope_policy = acl_fixture["targets"]
         .as_array()
         .unwrap()
@@ -3158,6 +3166,36 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             "acl_version":1,
             "acl_mode":private_edge_policy["mode"],
             "owner_id":private_edge_owner_id
+        }),
+        None,
+    ));
+    let scope_edge_data = json!({
+        "source_ids":[shared_entity_id],
+        "target_ids":[shared_entity_id],
+        "source_edge_ids":[],
+        "target_edge_ids":[],
+        "relation":"scope-limited references"
+    });
+    let scope_edge_document = scope_edge_data.to_string();
+    mutations.push(mutation(
+        scope_edge_id,
+        "gke_edges",
+        "edge",
+        scope_edge_data,
+        Some(&scope_edge_document),
+    ));
+    mutations.push(mutation(
+        "acl-edge-scope",
+        "gke_nodes",
+        "node",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":acl_fixture["truth_graph"],
+            "acl_target_grain":scope_edge_policy["grain"],
+            "acl_target_entity_id":scope_edge_id,
+            "acl_version":1,
+            "acl_mode":scope_edge_policy["mode"],
+            "security_scope":scope_edge_value
         }),
         None,
     ));
@@ -3727,6 +3765,10 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 "a non-owner must not see the private edge: {payload}"
             );
             assert!(
+                !rendered_nodes.contains(scope_edge_id),
+                "a principal without the matching scope must not see the scoped edge: {payload}"
+            );
+            assert!(
                 !rendered_nodes.contains(owner_entity_id),
                 "a non-owner must not see the private fixture node: {payload}"
             );
@@ -3854,6 +3896,15 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 .any(|node| node["id"] == scope_entity_id),
             expected_visible,
             "security scope {requested_scope} had incorrect visibility: {scoped_payload}"
+        );
+        assert_eq!(
+            scoped_payload["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|node| node["id"] == scope_edge_id),
+            expected_visible,
+            "security scope {requested_scope} had incorrect edge visibility: {scoped_payload}"
         );
     }
 
