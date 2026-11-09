@@ -216,6 +216,48 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                         mode="public",
                     )
 
+        conversation_edge_id = "conversation-private-edge"
+        conversation_edge = Edge(
+            id=conversation_edge_id,
+            label="Conversation private edge",
+            type="relationship",
+            summary="Private edge with no endpoint projection",
+            relation="references",
+            source_ids=[],
+            target_ids=[],
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[_g()],
+            doc_id=None,
+            properties={},
+            metadata={"entity_type": "fixture"},
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        conversation_engine = graph_engines["conversation"]
+        conversation_engine.raw_write.add_edge(conversation_edge)
+        conversation_edge_acl = {
+            "truth_graph": "conversation",
+            "entity_id": conversation_edge_id,
+            "version": 1,
+            "mode": policies["conversation"]["mode"],
+            "owner_id": policies["conversation"]["owner_id"],
+        }
+        conversation_engine.acl_graph.add_record(
+            grain="edge", **conversation_edge_acl
+        )
+        grounding_ids, span_ids = conversation_engine.acl.usage_ids_for_item(
+            conversation_edge
+        )
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                conversation_engine.acl_graph.add_record(
+                    grain=grain,
+                    target_item_id=target_id,
+                    **conversation_edge_acl,
+                )
+
         owner_engine = graph_engines[acl_fixture["truth_graph"]]
         no_acl_node = Node(
             id=no_acl_node_policy["id"],
@@ -388,6 +430,23 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 item["data"]["id"] for item in cytoscape_payload["elements"]
             ] == expected_ids
 
+        token = claims_ctx.set(
+            {"agent_id": "reader-b", "ns": "conversation"}
+        )
+        try:
+            conversation_non_owner_response = cast(
+                JSONResponse,
+                server.api_viz_d3(mode="reify", graph_type="conversation"),
+            )
+            conversation_non_owner_payload = json.loads(
+                bytes(conversation_non_owner_response.body)
+            )
+        finally:
+            claims_ctx.reset(token)
+        assert conversation_edge_id not in [
+            node["id"] for node in conversation_non_owner_payload["nodes"]
+        ]
+
         conversation_owner_id = policies["conversation"]["owner_id"]
         token = claims_ctx.set(
             {"agent_id": conversation_owner_id, "ns": "conversation"}
@@ -395,7 +454,7 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         try:
             conversation_owner_response = cast(
                 JSONResponse,
-                server.api_viz_d3(mode="classic", graph_type="conversation"),
+                server.api_viz_d3(mode="reify", graph_type="conversation"),
             )
             conversation_owner_payload = json.loads(
                 bytes(conversation_owner_response.body)
@@ -403,6 +462,9 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         finally:
             claims_ctx.reset(token)
         assert isolation["entity_id"] in [
+            node["id"] for node in conversation_owner_payload["nodes"]
+        ]
+        assert conversation_edge_id in [
             node["id"] for node in conversation_owner_payload["nodes"]
         ]
 

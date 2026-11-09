@@ -3938,6 +3938,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                 Some(r#"{"source_ids":[],"target_ids":[],"relation":"same ID edge"}"#),
             ),
             conversation_edge_mutation(
+                "conversation-private-edge",
+                json!({"source_ids":[],"target_ids":[],"relation":"private conversation edge"}),
+                Some(r#"{"source_ids":[],"target_ids":[],"relation":"private conversation edge"}"#),
+            ),
+            conversation_edge_mutation(
                 "conversation-parent-edge",
                 conversation_parent_edge.clone(),
                 Some(&conversation_parent_edge.to_string()),
@@ -3964,6 +3969,19 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                     "acl_target_entity_id":"conversation-parent-edge",
                     "acl_version":1,
                     "acl_mode":"public"
+                }),
+                None,
+            ),
+            conversation_mutation(
+                "conversation-acl-private-edge",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"conversation",
+                    "acl_target_grain":"edge",
+                    "acl_target_entity_id":"conversation-private-edge",
+                    "acl_version":1,
+                    "acl_mode":conversation_policy["mode"],
+                    "owner_id":conversation_policy["owner_id"]
                 }),
                 None,
             ),
@@ -4084,6 +4102,12 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .contains(shared_entity_id),
         "conversation visualization ignored its graph-scoped private ACL: {conversation_visualization}"
     );
+    assert!(
+        !conversation_visualization["nodes"]
+            .to_string()
+            .contains("conversation-private-edge"),
+        "conversation visualization exposed a private edge to a non-owner: {conversation_visualization}"
+    );
 
     let conversation_owner_response = app
         .clone()
@@ -4122,6 +4146,14 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             .iter()
             .any(|node| node["id"] == shared_entity_id),
         "conversation ACL owner must see its private graph node: {conversation_owner_payload}"
+    );
+    assert!(
+        conversation_owner_payload["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == "conversation-private-edge"),
+        "conversation ACL owner must see its private graph edge: {conversation_owner_payload}"
     );
 
     let conversation_cross_kind_response = app
