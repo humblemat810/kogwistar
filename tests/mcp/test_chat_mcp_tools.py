@@ -896,6 +896,59 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
 
 
 @pytest.mark.asyncio
+async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    from kogwistar.server import mcp_tools
+
+    persist_calls: list[tuple[int, int, str]] = []
+
+    class WisdomStore:
+        def persist_graph(self, *, parsed, session_id: str) -> dict[str, object]:
+            persist_calls.append((len(parsed.nodes), len(parsed.edges), session_id))
+            return {
+                "node_ids": [],
+                "edge_ids": [],
+                "nodes_added": 0,
+                "edges_added": 0,
+            }
+
+    monkeypatch.setattr(mcp_tools, "wisdom_engine", _FixedResource(WisdomStore()))
+    arguments = {"inp": {"nodes": [], "edges": []}}
+
+    for role, namespace in (("ro", "wisdom"), ("rw", "docs")):
+        with _claims(role, namespace):
+            names = {tool.name for tool in await server.mcp.list_tools()}
+            assert "wisdom.kg_upsert_graph" not in names
+            with pytest.raises(PermissionError):
+                await server.mcp._execute(
+                    "wisdom.kg_upsert_graph", arguments, enforce_visibility=True
+                )
+    assert persist_calls == []
+
+    with _claims("rw", "wisdom"):
+        names = {tool.name for tool in await server.mcp.list_tools()}
+        assert "wisdom.kg_upsert_graph" in names
+        result = await server.mcp._execute(
+            "wisdom.kg_upsert_graph", arguments, enforce_visibility=True
+        )
+
+    assert result.structured_content == {
+        "node_ids": [],
+        "edge_ids": [],
+        "nodes_added": 0,
+        "edges_added": 0,
+    }
+    assert len(persist_calls) == 1
+    assert persist_calls[0][:2] == (0, 0)
+    assert persist_calls[0][2].startswith("wisdom:")
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service = _configure_server(
