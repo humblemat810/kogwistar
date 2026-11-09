@@ -5189,6 +5189,51 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         send_response["user_turn_node_id"]
     );
 
+    let run_status_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-status-v1.json"
+    ))
+    .unwrap();
+    let direct_run_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/runs/{run_id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        direct_run_status.status().as_u16(),
+        run_status_contract["success_status"].as_u64().unwrap() as u16
+    );
+    let direct_run_status_body: Value = serde_json::from_slice(
+        &to_bytes(direct_run_status.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    for field in run_status_contract["required_fields"]
+        .as_array()
+        .unwrap()
+    {
+        let field = field.as_str().unwrap();
+        assert!(direct_run_status_body.get(field).is_some(), "missing {field}");
+    }
+    assert_eq!(direct_run_status_body["run_id"], run_id);
+    assert_eq!(direct_run_status_body["status"], "succeeded");
+    let terminal_statuses = run_status_contract["terminal_statuses"]
+        .as_array()
+        .unwrap();
+    assert!(terminal_statuses.contains(&direct_run_status_body["status"]));
+    assert_eq!(direct_run_status_body["terminal"], true);
+    assert_eq!(
+        direct_run_status_body["user_turn_node_id"],
+        send_response["user_turn_node_id"]
+    );
+
     let transcript_snapshot = service
         .chroma_graph_snapshot(&request(), "conversation")
         .await

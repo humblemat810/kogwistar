@@ -1853,6 +1853,46 @@ def test_get_run_keeps_registry_status_even_if_workflow_completed_node_exists(
     assert "step_count" not in run
 
 
+def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "run-status-v1.json"
+    )
+    contract = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    expected_ids = {
+        "run_id": "run-status-contract",
+        "conversation_id": "conversation-status-contract",
+        "workflow_id": "workflow-status-contract",
+        "user_id": "user-status-contract",
+        "user_turn_node_id": "turn-status-contract",
+    }
+    registry.create_run(**expected_ids, status="succeeded")
+
+    with TestClient(server.app) as client:
+        response = client.get(
+            f"/api/runs/{expected_ids['run_id']}",
+            headers=_token_header(client, role="ro", ns="conversation"),
+        )
+
+    assert response.status_code == contract["success_status"]
+    payload = response.json()
+    assert set(contract["required_fields"]).issubset(payload)
+    assert {key: payload[key] for key in expected_ids} == expected_ids
+    assert payload["status"] == "succeeded"
+    assert payload["terminal"] is (payload["status"] in contract["terminal_statuses"])
+    assert payload["cancel_requested"] is False
+    assert payload["result"] is None
+    assert payload["error"] is None
+    assert isinstance(payload["created_at_ms"], int)
+    assert isinstance(payload["updated_at_ms"], int)
+
+
 def test_get_run_keeps_registry_status_even_if_workflow_cancelled_node_exists(
     monkeypatch, engine_triplet
 ):
