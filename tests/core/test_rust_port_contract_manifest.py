@@ -592,13 +592,92 @@ def test_dual_language_surface_inventory_is_current() -> None:
     assert inventory["status"] == "inventory-in-progress"
     assert inventory["counts"]["http_operations"] == len(inventory["http_operations"])
     assert inventory["counts"]["mcp_operations"] == len(inventory["mcp_operations"])
+    http_operations = inventory["http_operations"]
+    http_keys = [
+        (operation["method"], operation["path"]) for operation in http_operations
+    ]
+    openapi = json.loads(
+        (ROOT / "contracts" / "golden" / "openapi.json").read_text(encoding="utf-8")
+    )
+    expected_http = {
+        (method.upper(), path)
+        for path, path_item in openapi["paths"].items()
+        for method in path_item
+        if method.lower()
+        in {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+    }
+    assert len(http_keys) == len(set(http_keys))
+    assert set(http_keys) == expected_http
+    assert all(operation["python"] == "openapi" for operation in http_operations)
+
+    deferrals = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))[
+        "server_operation_deferrals"
+    ]
+    deferred_routes = {
+        (operation["method"], operation["path"])
+        for group in deferrals["route_groups"]
+        for operation in group["operations"]
+    }
+    cutover_source = (
+        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "cutover.rs"
+    ).read_text(encoding="utf-8")
+    transport_block = re.search(
+        r"pub const TRANSPORT_OWNED_HTTP_ROUTES:.*?= &\[(.*?)\];",
+        cutover_source,
+        flags=re.DOTALL,
+    )
+    assert transport_block is not None
+    transport_routes = set(
+        re.findall(r'\("([A-Z]+)",\s*"([^"]+)"\)', transport_block.group(1))
+    )
+    statuses = {operation["rust"] for operation in http_operations}
+    assert statuses == {
+        "application-route-in-cutover-inventory",
+        "transport-owned",
+        "pending",
+    }
+    assert {
+        (operation["method"], operation["path"])
+        for operation in http_operations
+        if operation["rust"] == "pending"
+    } == deferred_routes
+    assert {
+        (operation["method"], operation["path"])
+        for operation in http_operations
+        if operation["rust"] == "transport-owned"
+    } == transport_routes
+    assert {
+        (operation["method"], operation["path"])
+        for operation in http_operations
+        if operation["rust"] == "application-route-in-cutover-inventory"
+    } == expected_http - deferred_routes - transport_routes
+
     assert inventory["counts"]["pending_http_operations"] == sum(
-        operation["rust"] == "pending" for operation in inventory["http_operations"]
+        operation["rust"] == "pending" for operation in http_operations
     )
     assert inventory["counts"]["allowlisted_mcp_operations"] == sum(
         operation["rust"] == "allowlisted-subject-to-runtime-gates"
         for operation in inventory["mcp_operations"]
     )
+    mcp_fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "mcp-tools.json").read_text(encoding="utf-8")
+    )
+    expected_mcp = {
+        (surface, tool["name"])
+        for surface, tools in mcp_fixture["surfaces"].items()
+        for tool in tools
+    }
+    mcp_operations = inventory["mcp_operations"]
+    mcp_keys = [
+        (operation["surface"], operation["name"]) for operation in mcp_operations
+    ]
+    assert len(mcp_keys) == len(set(mcp_keys))
+    assert set(mcp_keys) == expected_mcp
+    assert all(operation["python"] == "frozen-catalog" for operation in mcp_operations)
+    assert {operation["rust"] for operation in mcp_operations} <= {
+        "allowlisted-subject-to-runtime-gates",
+        "not-allowlisted",
+    }
     syscall_catalogs = inventory["syscall_catalogs"]
     python_syscalls = syscall_catalogs["python"]["operations"]
     rust_syscalls = syscall_catalogs["rust"]["operations"]
