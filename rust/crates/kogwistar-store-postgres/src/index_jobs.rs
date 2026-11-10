@@ -178,6 +178,26 @@ where
                     .get("lifecycle_status")
                     .and_then(Value::as_str)
                     == Some("tombstoned");
+            let payload = if index_table == "edge_endpoints" && !tombstoned {
+                let document = record.document.as_deref().ok_or_else(|| {
+                    PostgresStoreError::Backend(
+                        "active edge endpoint intent has no canonical document".to_owned(),
+                    )
+                })?;
+                let payload: Value = serde_json::from_str(document).map_err(|error| {
+                    PostgresStoreError::Backend(format!(
+                        "active edge endpoint document is invalid JSON: {error}"
+                    ))
+                })?;
+                if !payload.is_object() {
+                    return Err(PostgresStoreError::Backend(
+                        "active edge endpoint document must be a JSON object".to_owned(),
+                    ));
+                }
+                payload
+            } else {
+                Value::Null
+            };
             let mutation = GraphMutation {
                 scope,
                 table: table.clone(),
@@ -189,7 +209,7 @@ where
                     "REPLACE"
                 }
                 .to_owned(),
-                payload: Value::Null,
+                payload,
                 record,
                 embedding_dim: 1,
             };

@@ -140,16 +140,8 @@ where
     let table = graph_table(tables, &mutation.table)?;
     let Some(row) = client
         .query_opt(
-            &format!(
-                "SELECT document, metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
-                graph_scope_identity_predicate(2)
-            ),
-            &[
-                &mutation.entity_id,
-                &mutation.scope.namespace,
-                &mutation.scope.workspace_id.as_deref().unwrap_or(""),
-                &mutation.scope.graph_space.as_deref().unwrap_or(""),
-            ],
+            &format!("SELECT document, metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&mutation.entity_id],
         )
         .await
         .map_err(backend)?
@@ -292,16 +284,8 @@ where
     let table = graph_table(tables, &mutation.table)?;
     let Some(row) = client
         .query_opt(
-            &format!(
-                "SELECT metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
-                graph_scope_identity_predicate(2)
-            ),
-            &[
-                &mutation.entity_id,
-                &mutation.scope.namespace,
-                &mutation.scope.workspace_id.as_deref().unwrap_or(""),
-                &mutation.scope.graph_space.as_deref().unwrap_or(""),
-            ],
+            &format!("SELECT metadata::TEXT FROM {table} WHERE id = $1 FOR UPDATE"),
+            &[&mutation.entity_id],
         )
         .await
         .map_err(backend)?

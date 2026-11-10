@@ -36,6 +36,7 @@ pub(crate) fn node_document_ids(document: &Value) -> BTreeSet<String> {
     ids
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/graph/indexing/references.rs#sync_graph_node_docs; python=kogwistar/engine_core/subsystems/write.py#WriteSubsystem.index_node_docs; fixture=contracts/golden/graph-upsert-success-v1.json; rust_test=tests/core/test_rust_postgres_transaction_session.py#test_mixed_python_rust_postgres_writers_serialize_across_processes; python_test=tests/core/test_rust_postgres_transaction_session.py#test_mixed_python_rust_postgres_writers_serialize_across_processes
 pub(crate) async fn sync_graph_node_docs<C>(
     client: &C,
     tables: &Tables,
@@ -89,22 +90,27 @@ where
             "mention_count": 1,
         });
         let row_json = serde_json::to_string(&row)?;
-        let metadata_json = serde_json::to_string(&graph_metadata(
-            &mutation.scope,
-            row.as_object().expect("row is an object"),
-        )?)?;
-        client
+        // Python keeps this derived index scope-free; node IDs are globally
+        // unique in the graph projection, and this table's primary key is id.
+        let metadata_json = serde_json::to_string(&row)?;
+        let affected = client
             .execute(
                 &format!(
-                    "INSERT INTO {} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
-                     ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, \
-                     metadata = EXCLUDED.metadata, updated_at = NOW()",
+                    "INSERT INTO {} AS current (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB) \
+                     ON CONFLICT (id) DO UPDATE SET document = EXCLUDED.document, metadata = EXCLUDED.metadata, updated_at = NOW() \
+                     WHERE current.metadata->>'node_id' = EXCLUDED.metadata->>'node_id' \
+                       AND current.metadata->>'doc_id' = EXCLUDED.metadata->>'doc_id'",
                     tables.node_docs
                 ),
                 &[&row_id, &row_json, &metadata_json],
             )
             .await
             .map_err(backend)?;
+        if affected == 0 {
+            return Err(PostgresStoreError::Backend(
+                "node-document id conflicts with a different node/document pair".to_owned(),
+            ));
+        }
     }
 
     let doc_ids_json = serde_json::to_string(&doc_ids.into_iter().collect::<Vec<_>>())?;
