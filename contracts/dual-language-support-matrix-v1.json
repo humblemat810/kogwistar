@@ -12,6 +12,29 @@
     "python_and_rust_are_maintained": true,
     "deprecation_requires_separate_adr": true
   },
+  "mixed_execution_profiles": [
+    {
+      "id": "rust-server-python-worker-v1",
+      "status": "opt-in",
+      "capabilities": ["queues-leases-lanes", "workflow-runtime"],
+      "topology": "Rust HTTP server and scheduler with Python RustRuntimeWorker callbacks and Rust-native steps",
+      "worker_modes": ["sync", "async"],
+      "cells": [
+        {"python_runtime": "CPython 3.12", "backend": "sqlite", "evidence": ["FW-14A-06C-PY312-SQLITE"]},
+        {"python_runtime": "CPython 3.12", "backend": "sqlite-chroma", "evidence": ["FW-14A-06C-PY312-SQLITE-CHROMA"]},
+        {"python_runtime": "CPython 3.12", "backend": "pg", "evidence": ["FW-14A-06C-PY312-PG"]},
+        {"python_runtime": "CPython 3.13", "backend": "sqlite", "evidence": ["FW-14A-06C-PY313-SQLITE"]},
+        {"python_runtime": "CPython 3.13", "backend": "sqlite-chroma", "evidence": ["FW-14A-06C-PY313-SQLITE-CHROMA"]},
+        {"python_runtime": "CPython 3.13", "backend": "pg", "evidence": ["FW-14A-06C-PY313-PG"]},
+        {"python_runtime": "CPython 3.14", "backend": "sqlite", "evidence": ["FW-14A-06C-PY314-SQLITE"]},
+        {"python_runtime": "CPython 3.14", "backend": "sqlite-chroma", "evidence": ["FW-14A-06C-PY314-SQLITE-CHROMA"]},
+        {"python_runtime": "CPython 3.14", "backend": "pg", "evidence": ["FW-14A-06C-PY314-PG"]},
+        {"python_runtime": "PyPy 3.11", "backend": "sqlite", "evidence": ["FW-14A-06C-PY311-SQLITE"]},
+        {"python_runtime": "PyPy 3.11", "backend": "sqlite-chroma", "evidence": ["FW-14A-06C-PY311-SQLITE-CHROMA"]},
+        {"python_runtime": "PyPy 3.11", "backend": "pg", "evidence": ["FW-14A-07-PYPY-PG-SYNC", "FW-14A-07-PYPY-PG-ASYNC"]}
+      ]
+    }
+  ],
   "capabilities": [
     {"id": "deterministic-contracts", "python": {"status": "enabled", "evidence": "DL-05A"}, "rust": {"status": "opt-in", "evidence": "DL-05A"}, "mixed": {"status": "opt-in", "evidence": "DL-05A"}},
     {"id": "sqlite-meta", "python": {"status": "enabled", "evidence": "DL-07A"}, "rust": {"status": "opt-in", "evidence": "DL-18"}, "mixed": {"status": "opt-in", "evidence": "DL-07A"}},

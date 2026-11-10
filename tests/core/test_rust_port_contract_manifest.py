@@ -652,6 +652,48 @@ def test_mixed_opt_in_evidence_rejects_unstarted_or_unproven_gates() -> None:
     assert not _mixed_evidence_is_executable("DL-404", checklist, worklist)
 
 
+def test_mixed_runtime_backend_combinations_are_frozen_to_passing_evidence() -> None:
+    matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    profiles = matrix.get("mixed_execution_profiles")
+    assert isinstance(profiles, list)
+    assert len(profiles) == 1
+    profile = profiles[0]
+    assert profile["id"] == "rust-server-python-worker-v1"
+    assert profile["status"] == "opt-in"
+    assert set(profile["capabilities"]) == {"queues-leases-lanes", "workflow-runtime"}
+    assert profile["worker_modes"] == ["sync", "async"]
+
+    entries = {item["id"]: item for item in matrix["capabilities"]}
+    for capability_id in profile["capabilities"]:
+        assert entries[capability_id]["mixed"]["status"] == "opt-in"
+
+    expected_cells = {
+        (runtime, backend)
+        for runtime in ("CPython 3.12", "CPython 3.13", "CPython 3.14")
+        for backend in ("sqlite", "sqlite-chroma", "pg")
+    } | {
+        ("PyPy 3.11", "sqlite"),
+        ("PyPy 3.11", "sqlite-chroma"),
+        ("PyPy 3.11", "pg"),
+    }
+    cells = profile["cells"]
+    assert {(cell["python_runtime"], cell["backend"]) for cell in cells} == expected_cells
+
+    worklist = {
+        line.split("|", 4)[1].strip(): line.split("|", 4)
+        for line in DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| FW-")
+    }
+    for cell in cells:
+        evidence_ids = cell["evidence"]
+        assert evidence_ids
+        for evidence_id in evidence_ids:
+            columns = worklist[evidence_id]
+            assert columns[2].strip() == "DL-14A"
+            assert columns[3].strip() == "PASS"
+            assert "test_python_worker_and_rust_native_step_interoperate_over_real_server" in columns[4]
+
+
 def test_dual_language_checklist_ids_are_unique() -> None:
     checklist = (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
