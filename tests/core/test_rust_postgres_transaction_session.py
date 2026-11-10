@@ -2716,6 +2716,16 @@ def test_public_rust_postgres_pure_adds_use_native_events_without_fanout_jobs(
 
     assert backend.node_get(ids=[source.id, target.id], include=[])["ids"]
     assert backend.edge_get(ids=[edge.id], include=[])["ids"] == [edge.id]
+    endpoint_rows = backend.edge_endpoints_get(
+        where={"edge_id": edge.id}, include=["metadatas"]
+    )
+    assert {
+        (row["role"], row["endpoint_type"], row["endpoint_id"])
+        for row in endpoint_rows["metadatas"]
+    } == {
+        ("src", "node", source.id),
+        ("tgt", "node", target.id),
+    }
     python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
     assert [
         (kind, entity_id, op)

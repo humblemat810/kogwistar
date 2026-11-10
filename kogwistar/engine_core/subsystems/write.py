@@ -1740,7 +1740,10 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 self._e.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
             if not self._index_reconciliation_is_deferred():
                 self._e.reconcile_indexes(max_jobs=50)
-        else:
+        elif not native_added:
+            # The native graph mutation transaction writes endpoint/reference
+            # projections from the canonical edge payload. Do not re-enter the
+            # Python backend after Rust has owned the transaction.
             self.maybe_reindex_edge_refs(edge)
             rows = self.fanout_endpoints_rows(edge, doc_id)
             if rows:
@@ -1883,7 +1886,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     metadatas=[metadata],
                 )
             )
-        endpoint_rows = self.fanout_endpoints_rows(edge, None)
+        endpoint_rows = (
+            self.fanout_endpoints_rows(edge, None) if not native_added else []
+        )
         if endpoint_rows:
             endpoint_documents = [json.dumps(row) for row in endpoint_rows]
             run_awaitable_blocking(
