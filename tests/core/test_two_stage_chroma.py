@@ -1530,9 +1530,29 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
 
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
+def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path, monkeypatch):
     """Exercise the public worker path, not only direct adapter application."""
+    from kogwistar._rust_bridge import RustExtensionUnavailableError
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    selectors = (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    )
+    for selector in selectors:
+        monkeypatch.setenv(selector, "python")
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise RustExtensionUnavailableError("Python-only Chroma retrieval loaded Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
 
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
