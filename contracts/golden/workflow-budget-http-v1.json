@@ -1,0 +1,13 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "denied_status": 403,
+  "required_fields": ["cost_ledger", "budget_model"],
+  "required_cost_ledger_fields": ["workspace_id", "event_count", "total_amount", "by_kind"],
+  "budget_model": {
+    "token_kind": "token",
+    "time_kind": "ms",
+    "storage_kind": "bytes"
+  },
+  "required_capabilities": ["project_view", "read_security_scope"]
+}

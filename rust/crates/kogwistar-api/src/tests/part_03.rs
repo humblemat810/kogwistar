@@ -131,6 +131,37 @@
             capabilities_contract["allowed_outcome"]
         );
 
+        let budget_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-budget-http-v1.json"
+        ))
+        .unwrap();
+        let budget = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/budget")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            budget.status().as_u16(),
+            budget_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let budget: Value =
+            serde_json::from_slice(&to_bytes(budget.into_body(), 32768).await.unwrap()).unwrap();
+        for field in budget_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(budget.get(field).is_some(), "missing {field}");
+        }
+        for field in budget_contract["required_cost_ledger_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(budget["cost_ledger"].get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(budget["budget_model"], budget_contract["budget_model"]);
+
         let denied_token = token(json!({
             "sub": "denied",
             "role": "ro",
@@ -153,6 +184,29 @@
         assert_eq!(
             denied.status().as_u16(),
             capabilities_contract["denied_status"].as_u64().unwrap() as u16
+        );
+        let budget_missing_scope_token = token(json!({
+            "sub": "budget-reader-without-security-scope",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["project_view"],
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let denied_budget = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/budget")
+                    .header("authorization", format!("Bearer {budget_missing_scope_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            denied_budget.status().as_u16(),
+            budget_contract["denied_status"].as_u64().unwrap() as u16
         );
 
         let admin_token = token(json!({

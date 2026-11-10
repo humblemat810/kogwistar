@@ -3397,6 +3397,20 @@ impl SqliteRunApplicationService {
         {
             let process_table = path == "/api/workflow/process-table";
             let process_listing = process_table || path == "/api/workflow/blocked-runs";
+            if path == "/api/workflow/budget"
+                && !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "read_security_scope"],
+                )
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading budget data requires project_view and read_security_scope capabilities",
+                );
+            }
             if process_listing
                 && !capability_any_allowed(
                     &request,

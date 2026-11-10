@@ -109,6 +109,55 @@ def test_capability_snapshot_route_exposes_effective_caps(monkeypatch, engine_tr
         assert denied.status_code == contract["denied_status"]
 
 
+def test_workflow_budget_route_matches_contract_and_requires_security_scope(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-budget-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        allowed = client.get(
+            "/api/workflow/budget",
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities=",".join(contract["required_capabilities"]),
+            ),
+        )
+        assert allowed.status_code == contract["success_status"], allowed.text
+        payload = allowed.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert set(contract["required_cost_ledger_fields"]).issubset(
+            payload["cost_ledger"]
+        )
+        assert payload["budget_model"] == contract["budget_model"]
+
+        denied = client.get(
+            "/api/workflow/budget",
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities="project_view",
+            ),
+        )
+        assert denied.status_code == contract["denied_status"]
+
+
 
 def test_capability_approval_revocation_and_audit(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet

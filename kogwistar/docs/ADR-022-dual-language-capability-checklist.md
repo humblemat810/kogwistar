@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Capability Checklist
 
-**Updated:** 2026-11-10
+**Updated:** 2026-11-11
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 A `PASS` requires implementation evidence. Each row records the current gate, status, and concise evidence; chronological change history belongs in Git commits.
 
@@ -10,7 +10,7 @@ DL-08C is closed: Python and Rust now have evidenced graph/vector read parity ac
 
 Current inventory: **177 items** (**167 PASS, 10 IN PROGRESS; 94.4% PASS**). The original baseline remains 130 items: 122 PASS and 8 open. The 47 later-added IDs are 45 PASS and 2 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
-Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 12 currently open IDs and do not change this inventory or denominator.
+Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 10 currently open IDs and do not change this inventory or denominator.
 
 Coarse progress is closure-only: a coarse ID becomes `PASS` when its original exit criteria and all mapped fine leaves pass. Partial implementation and verification progress appears in the fine-worklist percentage, not the coarse `PASS` count.
 
