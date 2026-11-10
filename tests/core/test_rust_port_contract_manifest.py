@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
@@ -59,6 +60,56 @@ def _markdown_table_rows(path: Path, row_prefix: str) -> list[list[str]]:
         if line.startswith(row_prefix):
             rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
     return rows
+
+
+def _python_declarations(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    declarations: set[str] = set()
+
+    def add_assignment_targets(target: ast.expr, prefix: str) -> None:
+        if isinstance(target, ast.Name):
+            declarations.add(f"{prefix}.{target.id}" if prefix else target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                add_assignment_targets(element, prefix)
+
+    def visit(body: list[ast.stmt], prefix: str = "") -> None:
+        for statement in body:
+            if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = f"{prefix}.{statement.name}" if prefix else statement.name
+                declarations.add(name)
+                visit(statement.body, name)
+            elif isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    add_assignment_targets(target, prefix)
+            elif isinstance(statement, ast.AnnAssign):
+                add_assignment_targets(statement.target, prefix)
+
+    visit(tree.body)
+    return declarations
+
+
+def test_rust_python_parity_markers_resolve_to_python_declarations() -> None:
+    marker_pattern = re.compile(r"PYTHON_PARITY_V1:.*?python=([^;]+)")
+    marker_count = 0
+    for rust_file in (ROOT / "rust").rglob("*.rs"):
+        for line_number, line in enumerate(
+            rust_file.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            match = marker_pattern.search(line)
+            if match is None:
+                continue
+            marker_count += 1
+            relative_path, separator, declaration = match.group(1).partition("#")
+            assert separator and declaration, f"{rust_file}:{line_number}: missing Python symbol"
+            python_file = ROOT / relative_path
+            assert python_file.is_file(), (
+                f"{rust_file}:{line_number}: missing Python reference file {relative_path}"
+            )
+            assert declaration in _python_declarations(python_file), (
+                f"{rust_file}:{line_number}: {relative_path} has no declaration {declaration}"
+            )
+    assert marker_count > 0, "expected checked-in PYTHON_PARITY_V1 markers"
 
 
 def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
