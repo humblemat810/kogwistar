@@ -1436,16 +1436,20 @@ async fn in_memory_native_receive_claims_visible_event_and_routes_it() {
         runtime_routes: Vec::new(),
         ephemeral_context: Default::default(),
     };
+    let event_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+    )))
+    .unwrap();
+    let provider_event: kogwistar_contracts::ProviderEventV1 =
+        serde_json::from_value(event_fixture["envelope"]["event"].clone()).unwrap();
     service
         .persist_in_memory_native_stream_semantic_event(
             &request,
-            kogwistar_contracts::ProviderEventV1::ResponseStarted {
-                contract_version: "v1".to_owned(),
-                provider_event_id: Some("fixture-started".to_owned()),
-                provider_sequence: Some(1),
-                response_id: Some("memory-response".to_owned()),
-            },
-            "fixture-provider",
+            provider_event,
+            event_fixture["envelope"]["trace"]["provider_id"]
+                .as_str()
+                .unwrap(),
             "fixture-model",
             1,
         )
@@ -1498,7 +1502,7 @@ async fn in_memory_native_receive_claims_visible_event_and_routes_it() {
     .payload;
     assert_eq!(
         state["state"]["agent_event_current"]["event"]["kind"],
-        "response_started"
+        event_fixture["envelope"]["event"]["kind"]
     );
     assert_eq!(state["state"]["agent_event_route"], "no_action");
     let event_id = state["state"]["agent_event_current"]["event_id"]
@@ -1549,9 +1553,23 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
         .with_owner_auth_config(&auth_config)
         .await
         .unwrap();
-    let run_id = "memory-provider-ack-run";
+    let event_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+    )))
+    .unwrap();
+    let run_id = event_fixture["envelope"]["trace"]["run_id"]
+        .as_str()
+        .unwrap();
+    let turn_id = event_fixture["envelope"]["trace"]["turn_id"]
+        .as_str()
+        .unwrap();
     let workflow_id = "memory-provider-ack-workflow";
     let conversation_id = "memory-provider-ack-conversation";
+    let event_id = event_fixture["envelope"]["event_id"]
+        .as_str()
+        .unwrap();
+    let message_id = format!("msg:{event_id}");
     let principal = json!({
         "user_id": "memory-ack-owner", "sub": "memory-ack-owner", "role": "rw",
         "ns": ["workflow", "conversation"], "storage_ns": "conversation",
@@ -1566,7 +1584,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
             conversation_id: conversation_id.to_owned(),
             workflow_id: workflow_id.to_owned(),
             user_id: Some("memory-ack-owner".to_owned()),
-            user_turn_node_id: "turn-1".to_owned(),
+            user_turn_node_id: turn_id.to_owned(),
             status: "running".to_owned(),
         },
     )
@@ -1580,21 +1598,13 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
     )
     .await
     .unwrap();
-    let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_value(json!({
-        "event_id": "memory-provider-ack-event",
-        "trace": {
-            "run_id": run_id, "turn_id": "turn-1", "workflow_node_id": "provider",
-            "step_id": "provider-response", "producer_step_seq": 0,
-            "provider_id": "fixture"
-        },
-        "event": {
-            "kind": "response_started", "provider_event_id": "event-1",
-            "provider_sequence": 1, "response_id": "response-1"
-        }
-    }))
-    .unwrap();
+    let mut raw_event = event_fixture["envelope"].clone();
+    // This synthetic run persists the handler step but not the fixture's producer step 7.
+    raw_event["trace"]["producer_step_seq"] = Value::Null;
+    let event: kogwistar_contracts::DurableProviderEventV1 =
+        serde_json::from_value(raw_event).unwrap();
     let claim = json!({
-        "message_id": "msg:memory-provider-ack-event",
+        "message_id": message_id,
         "claimed_by": "memory-event-consumer#1",
         "event_id": event.event_id
     });
@@ -1656,7 +1666,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
     kogwistar_store::LaneMessageWriteStore::project_lane_message(
         &service.store,
         NewProjectedLaneMessage {
-            message_id: "msg:memory-provider-ack-event".to_owned(),
+            message_id: message_id.clone(),
             namespace: "conversation".to_owned(),
             purpose: "agent_event".to_owned(),
             inbox_id: "agent-provider-events".to_owned(),
@@ -1668,7 +1678,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
             created_at: 1,
             available_at: 1,
             run_id: Some(run_id.to_owned()),
-            step_id: Some("provider-response".to_owned()),
+            step_id: Some(event.trace.step_id.clone()),
             correlation_id: Some(event.event_id.clone()),
             payload_json: Some(serde_json::to_string(&event).unwrap()),
             error_json: None,
@@ -1682,7 +1692,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
             namespace: "conversation".to_owned(),
             inbox_id: "agent-provider-events".to_owned(),
             claimed_by: "memory-event-consumer#1".to_owned(),
-            message_ids: Some(vec!["msg:memory-provider-ack-event".to_owned()]),
+            message_ids: Some(vec![message_id.clone()]),
             run_id: Some(run_id.to_owned()),
             msg_type: Some("agent.provider_event".to_owned()),
             recipient_id: Some("agent-event-consumer".to_owned()),
@@ -1752,7 +1762,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
             workflow_id: workflow_id.to_owned(),
             node_id: "ack-step".to_owned(),
             conversation_id: conversation_id.to_owned(),
-            turn_node_id: Some("turn-1".to_owned()),
+            turn_node_id: Some(turn_id.to_owned()),
             token_id: run_id.to_owned(),
             parent_token_id: None,
             step_seq: 1,

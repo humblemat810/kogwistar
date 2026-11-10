@@ -4,10 +4,15 @@ import asyncio
 import json
 import time
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
-from kogwistar.agent.event_journal import EventTraceMetadata, LaneProviderEventJournal
+from kogwistar.agent.event_journal import (
+    DurableProviderEventPublication,
+    EventTraceMetadata,
+    LaneProviderEventJournal,
+)
 from kogwistar.agent.event_tool_dispatch import NamedProjectionToolCallIdempotency
 from kogwistar.agent.streaming import (
     ProviderResponseStarted,
@@ -97,12 +102,21 @@ def _trace() -> EventTraceMetadata:
 
 
 def test_event_journal_persists_semantic_event_then_acknowledges_after_handler() -> None:
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/agent-durable-provider-event-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    publication = DurableProviderEventPublication.model_validate(
+        fixture["publication"]
+    )
     messaging = FakeMessaging()
     journal = LaneProviderEventJournal(messaging, claimed_by="event-worker")
     journal.publish(
-        ProviderResponseStarted(response_id="resp-1", provider_sequence=3),
-        trace=_trace(),
-        conversation_id="conv-1",
+        publication.event.event,
+        trace=publication.event.trace,
+        conversation_id=publication.conversation_id,
         sender_id="agent-1",
         security_scope="private",
     )
@@ -111,7 +125,9 @@ def test_event_journal_persists_semantic_event_then_acknowledges_after_handler()
     async def handler(event: object) -> None:
         handled.append(str(getattr(event, "event_id")))
 
-    result = asyncio.run(journal.handle_one(run_id="run-1", handler=handler))
+    result = asyncio.run(
+        journal.handle_one(run_id=publication.event.trace.run_id, handler=handler)
+    )
     assert result is not None
     assert handled == [result.event_id]
     assert [name for name, _ in messaging.calls] == ["publish", "claim", "ack"]
@@ -119,6 +135,9 @@ def test_event_journal_persists_semantic_event_then_acknowledges_after_handler()
     assert isinstance(payload, dict)
     assert payload["purpose"] == "agent_event"
     assert payload["idempotency_key"] == result.event_id
+    assert result.event_id == fixture["computed_event_id"]
+    assert payload["payload"]["event"] == fixture["envelope"]["event"]
+    assert payload["payload"]["trace"] == fixture["envelope"]["trace"]
     claim_kwargs = messaging.calls[1][1]
     ack_kwargs = messaging.calls[2][1]
     assert isinstance(claim_kwargs, dict) and isinstance(ack_kwargs, dict)
