@@ -1566,9 +1566,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
         .unwrap();
     let workflow_id = "memory-provider-ack-workflow";
     let conversation_id = "memory-provider-ack-conversation";
-    let event_id = event_fixture["envelope"]["event_id"]
-        .as_str()
-        .unwrap();
+    let event_id = event_fixture["computed_event_id"].as_str().unwrap();
     let message_id = format!("msg:{event_id}");
     let principal = json!({
         "user_id": "memory-ack-owner", "sub": "memory-ack-owner", "role": "rw",
@@ -1601,6 +1599,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
     let mut raw_event = event_fixture["envelope"].clone();
     // This synthetic run persists the handler step but not the fixture's producer step 7.
     raw_event["trace"]["producer_step_seq"] = Value::Null;
+    raw_event["event_id"] = json!(event_id);
     let event: kogwistar_contracts::DurableProviderEventV1 =
         serde_json::from_value(raw_event).unwrap();
     let claim = json!({
