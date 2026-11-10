@@ -6,7 +6,7 @@
     "python": "Presence in the frozen OpenAPI or MCP catalog records the public Python contract, not independent proof of every backend configuration.",
     "rust_http": "Application routes are classified by the Rust cutover inventory; transport-owned routes and pending routes are explicit. This is not behavioral parity evidence.",
     "rust_mcp": "Allowlist status is necessary but not sufficient: backend capability, ACL, namespace, and runtime checks still apply.",
-    "syscalls": "Advertised Python and Rust syscall catalogs are extracted from their public declarations. Backend support is a separate inventory; pending names do not imply that no partial implementation exists."
+    "syscalls": "Advertised catalogs and Rust backend dispatch are extracted from declarations and service routing. Dispatch coverage does not prove behavioral parity; deferred names may have partial implementations."
   },
   "counts": {
     "http_operations": 84,
@@ -939,5 +939,101 @@
     "rust_only": [
       "create_conversation"
     ]
+  },
+  "rust_backend_syscalls": {
+    "postgresql": {
+      "source": "rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#syscall_effect",
+      "dispatches": [
+        "checkpoint",
+        "create_conversation",
+        "invoke_tool",
+        "mount_memory",
+        "project_view",
+        "receive_message",
+        "request_approval",
+        "resume",
+        "send_message",
+        "spawn_process",
+        "terminate_process"
+      ],
+      "unavailable": [],
+      "cutover_deferred": [
+        "invoke_tool",
+        "mount_memory",
+        "receive_message",
+        "send_message"
+      ],
+      "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
+    },
+    "sqlite-metadata": {
+      "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteRunApplicationService.syscall_effect",
+      "dispatches": [
+        "checkpoint",
+        "project_view",
+        "request_approval",
+        "resume",
+        "spawn_process",
+        "terminate_process"
+      ],
+      "unavailable": [
+        "create_conversation",
+        "invoke_tool",
+        "mount_memory",
+        "receive_message",
+        "send_message"
+      ],
+      "explicit_unavailable": [
+        "mount_memory",
+        "receive_message"
+      ],
+      "cutover_deferred": [],
+      "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
+    },
+    "sqlite-chroma": {
+      "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteChromaRunApplicationService.execute",
+      "dispatches": [
+        "checkpoint",
+        "create_conversation",
+        "invoke_tool",
+        "mount_memory",
+        "project_view",
+        "receive_message",
+        "request_approval",
+        "resume",
+        "send_message",
+        "spawn_process",
+        "terminate_process"
+      ],
+      "unavailable": [],
+      "cutover_deferred": [
+        "invoke_tool",
+        "mount_memory",
+        "receive_message",
+        "send_message"
+      ],
+      "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
+    },
+    "in-memory": {
+      "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
+      "dispatches": [
+        "receive_message"
+      ],
+      "unavailable": [
+        "checkpoint",
+        "create_conversation",
+        "invoke_tool",
+        "mount_memory",
+        "project_view",
+        "request_approval",
+        "resume",
+        "send_message",
+        "spawn_process",
+        "terminate_process"
+      ],
+      "cutover_deferred": [
+        "receive_message"
+      ],
+      "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
+    }
   }
 }

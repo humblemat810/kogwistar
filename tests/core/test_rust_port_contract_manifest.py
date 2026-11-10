@@ -612,6 +612,40 @@ def test_dual_language_surface_inventory_is_current() -> None:
         "server_operation_deferrals"
     ]["syscall_group"]["operations"]
     assert set(deferred_syscalls) <= set(rust_syscalls)
+    backend_syscalls = inventory["rust_backend_syscalls"]
+    assert set(backend_syscalls) == {
+        "postgresql",
+        "sqlite-metadata",
+        "sqlite-chroma",
+        "in-memory",
+    }
+    for backend in backend_syscalls.values():
+        dispatched = set(backend["dispatches"])
+        unavailable = set(backend["unavailable"])
+        assert dispatched.isdisjoint(unavailable)
+        assert dispatched | unavailable == set(rust_syscalls)
+        assert set(backend["cutover_deferred"]) <= set(deferred_syscalls)
+        assert set(backend.get("explicit_unavailable", [])) <= unavailable
+        source_path = ROOT / backend["source"].split("#", 1)[0]
+        assert source_path.is_file()
+        assert backend["dispatch_scope"] == (
+            "source-level dispatch only; not behavioral parity evidence"
+        )
+    assert set(backend_syscalls["postgresql"]["dispatches"]) == set(rust_syscalls)
+    assert set(backend_syscalls["sqlite-chroma"]["dispatches"]) == set(rust_syscalls)
+    assert set(backend_syscalls["sqlite-metadata"]["dispatches"]) == {
+        "spawn_process",
+        "terminate_process",
+        "checkpoint",
+        "project_view",
+        "resume",
+        "request_approval",
+    }
+    assert backend_syscalls["sqlite-metadata"]["explicit_unavailable"] == [
+        "mount_memory",
+        "receive_message",
+    ]
+    assert backend_syscalls["in-memory"]["dispatches"] == ["receive_message"]
 
     result = subprocess.run(
         ["python", str(generator), "--check"],

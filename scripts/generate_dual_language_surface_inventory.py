@@ -20,6 +20,9 @@ RUST_MCP = RUST_API / "sections" / "contracts_and_runtime.rs"
 RUST_PORT_MANIFEST = ROOT / "contracts" / "rust-port-v1.json"
 PYTHON_SYSCALLS = ROOT / "kogwistar" / "server" / "syscall_api.py"
 RUST_SYSCALLS = RUST_API / "sections" / "response_policy.rs"
+RUST_SQLITE_SERVICE = RUST_API / "sections" / "application_services.rs"
+RUST_MEMORY_SERVICE = RUST_API / "sections" / "in_memory_service.rs"
+RUST_POSTGRES_SERVICE = RUST_API / "sections" / "postgres_graph_service.rs"
 
 
 def _string_pairs(source: str, constant: str) -> list[list[str]]:
@@ -86,6 +89,94 @@ def _rust_syscall_operations(source: str) -> list[str]:
     return re.findall(r'"([a-z][a-z0-9_]*)"', match.group(1))
 
 
+def _rust_method_region(source: str, method: str, occurrence: int = 0) -> str:
+    pattern = re.compile(rf"(?m)^    (?:async )?fn {re.escape(method)}\s*\(")
+    matches = list(pattern.finditer(source))
+    if occurrence >= len(matches):
+        raise ValueError(f"could not find Rust method {method} occurrence {occurrence}")
+    start = matches[occurrence].start()
+    next_method = pattern.search(source, matches[occurrence].end())
+    if next_method is None:
+        next_method = re.search(r"(?m)^    (?:async )?fn [A-Za-z_][A-Za-z0-9_]*\s*\(", source[matches[occurrence].end():])
+    end = (
+        matches[occurrence].end() + next_method.start()
+        if next_method is not None
+        else len(source)
+    )
+    return source[start:end]
+
+
+def _rust_syscall_match_arms(region: str, operations: set[str]) -> set[str]:
+    return {
+        operation
+        for operation in re.findall(r'^\s*"([a-z][a-z0-9_]*)"\s*=>', region, flags=re.MULTILINE)
+        if operation in operations
+    }
+
+
+def _rust_syscall_route_literals(region: str, operations: set[str]) -> set[str]:
+    return {
+        operation
+        for operation in re.findall(r"/api/syscall/v1/([a-z][a-z0-9_]*)", region)
+        if operation in operations
+    }
+
+
+def _rust_backend_syscall_inventory(operations: list[str]) -> dict[str, Any]:
+    operation_set = set(operations)
+    sqlite_source = RUST_SQLITE_SERVICE.read_text(encoding="utf-8")
+    postgres_source = RUST_POSTGRES_SERVICE.read_text(encoding="utf-8")
+    memory_source = RUST_MEMORY_SERVICE.read_text(encoding="utf-8")
+
+    sqlite_generic = _rust_syscall_match_arms(
+        _rust_method_region(sqlite_source, "syscall_effect"), operation_set
+    )
+    sqlite_explicitly_unavailable = {"receive_message", "mount_memory"}
+    sqlite_metadata = sqlite_generic - sqlite_explicitly_unavailable
+    chroma_routes = _rust_syscall_route_literals(
+        _rust_method_region(sqlite_source, "execute", occurrence=1), operation_set
+    )
+    sqlite_chroma = sqlite_metadata | chroma_routes
+    postgres = _rust_syscall_match_arms(
+        _rust_method_region(postgres_source, "syscall_effect"), operation_set
+    )
+    memory_routes = _rust_syscall_route_literals(
+        _rust_method_region(memory_source, "execute"), operation_set
+    )
+    backends = {
+        "postgresql": {
+            "source": "rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#syscall_effect",
+            "dispatches": sorted(postgres),
+            "unavailable": sorted(operation_set - postgres),
+        },
+        "sqlite-metadata": {
+            "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteRunApplicationService.syscall_effect",
+            "dispatches": sorted(sqlite_metadata),
+            "unavailable": sorted(operation_set - sqlite_metadata),
+            "explicit_unavailable": sorted(sqlite_explicitly_unavailable & operation_set),
+        },
+        "sqlite-chroma": {
+            "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteChromaRunApplicationService.execute",
+            "dispatches": sorted(sqlite_chroma),
+            "unavailable": sorted(operation_set - sqlite_chroma),
+        },
+        "in-memory": {
+            "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
+            "dispatches": sorted(memory_routes),
+            "unavailable": sorted(operation_set - memory_routes),
+        },
+    }
+    deferred = set(
+        json.loads(RUST_PORT_MANIFEST.read_text(encoding="utf-8"))[
+            "server_operation_deferrals"
+        ]["syscall_group"]["operations"]
+    )
+    for backend in backends.values():
+        backend["cutover_deferred"] = sorted(deferred & set(backend["dispatches"]))
+        backend["dispatch_scope"] = "source-level dispatch only; not behavioral parity evidence"
+    return backends
+
+
 def build_inventory() -> dict[str, Any]:
     openapi = json.loads(OPENAPI.read_text(encoding="utf-8"))
     mcp = json.loads(MCP.read_text(encoding="utf-8"))
@@ -113,6 +204,7 @@ def build_inventory() -> dict[str, Any]:
     )
     python_syscall_set = set(python_syscalls)
     rust_syscall_set = set(rust_syscalls)
+    rust_backend_syscalls = _rust_backend_syscall_inventory(rust_syscalls)
 
     http_operations: list[dict[str, str]] = []
     for path, path_item in sorted(openapi["paths"].items()):
@@ -154,7 +246,7 @@ def build_inventory() -> dict[str, Any]:
             "python": "Presence in the frozen OpenAPI or MCP catalog records the public Python contract, not independent proof of every backend configuration.",
             "rust_http": "Application routes are classified by the Rust cutover inventory; transport-owned routes and pending routes are explicit. This is not behavioral parity evidence.",
             "rust_mcp": "Allowlist status is necessary but not sufficient: backend capability, ACL, namespace, and runtime checks still apply.",
-            "syscalls": "Advertised Python and Rust syscall catalogs are extracted from their public declarations. Backend support is a separate inventory; pending names do not imply that no partial implementation exists.",
+            "syscalls": "Advertised catalogs and Rust backend dispatch are extracted from declarations and service routing. Dispatch coverage does not prove behavioral parity; deferred names may have partial implementations.",
         },
         "counts": {
             "http_operations": len(http_operations),
@@ -180,6 +272,7 @@ def build_inventory() -> dict[str, Any]:
             "python_only": sorted(python_syscall_set - rust_syscall_set),
             "rust_only": sorted(rust_syscall_set - python_syscall_set),
         },
+        "rust_backend_syscalls": rust_backend_syscalls,
     }
 
 
