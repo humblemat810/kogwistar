@@ -158,6 +158,60 @@ def test_workflow_budget_route_matches_contract_and_requires_security_scope(
         assert denied.status_code == contract["denied_status"]
 
 
+def test_workflow_budget_history_matches_contract_and_requires_security_scope(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    service.cost_ledger.add_event(kind="token", amount=7, source="first")
+    service.cost_ledger.add_event(kind="time", amount=11, source="last")
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-budget-history-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        allowed = client.get(
+            "/api/workflow/budget/history",
+            params={"limit": contract["limit"]},
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities=",".join(contract["required_capabilities"]),
+            ),
+        )
+        assert allowed.status_code == contract["success_status"], allowed.text
+        payload = allowed.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert set(contract["required_cost_ledger_fields"]).issubset(
+            payload["cost_ledger"]
+        )
+        assert len(payload["events"]) == contract["limit"]
+        assert set(contract["required_event_fields"]).issubset(payload["events"][0])
+        assert payload["events"][0]["source"] == "last"
+
+        denied = client.get(
+            "/api/workflow/budget/history",
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities="project_view",
+            ),
+        )
+        assert denied.status_code == contract["denied_status"]
+
+
 
 def test_capability_approval_revocation_and_audit(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet

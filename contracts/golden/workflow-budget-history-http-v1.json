@@ -1,0 +1,10 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "denied_status": 403,
+  "required_fields": ["cost_ledger", "events"],
+  "required_cost_ledger_fields": ["workspace_id", "event_count", "total_amount", "by_kind"],
+  "required_event_fields": ["workspace_id", "kind", "amount", "source"],
+  "required_capabilities": ["project_view", "read_security_scope"],
+  "limit": 1
+}

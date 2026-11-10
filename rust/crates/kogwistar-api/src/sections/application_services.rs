@@ -3397,7 +3397,7 @@ impl SqliteRunApplicationService {
         {
             let process_table = path == "/api/workflow/process-table";
             let process_listing = process_table || path == "/api/workflow/blocked-runs";
-            if path == "/api/workflow/budget"
+            if matches!(path, "/api/workflow/budget" | "/api/workflow/budget/history")
                 && !capability_allowed(
                     &request,
                     &self.capabilities,

@@ -162,6 +162,51 @@
         }
         assert_eq!(budget["budget_model"], budget_contract["budget_model"]);
 
+        let budget_history_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-budget-history-http-v1.json"
+        ))
+        .unwrap();
+        let budget_history = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/budget/history?limit=1")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            budget_history.status().as_u16(),
+            budget_history_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let budget_history: Value = serde_json::from_slice(
+            &to_bytes(budget_history.into_body(), 32768).await.unwrap(),
+        )
+        .unwrap();
+        for field in budget_history_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(budget_history.get(field).is_some(), "missing {field}");
+        }
+        for field in budget_history_contract["required_cost_ledger_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(budget_history["cost_ledger"].get(field).is_some(), "missing {field}");
+        }
+        assert!(budget_history["events"].is_array());
+        for event in budget_history["events"].as_array().unwrap() {
+            for field in budget_history_contract["required_event_fields"]
+                .as_array()
+                .unwrap()
+            {
+                let field = field.as_str().unwrap();
+                assert!(event.get(field).is_some(), "event missing {field}: {event}");
+            }
+        }
+
         let denied_token = token(json!({
             "sub": "denied",
             "role": "ro",
@@ -207,6 +252,21 @@
         assert_eq!(
             denied_budget.status().as_u16(),
             budget_contract["denied_status"].as_u64().unwrap() as u16
+        );
+        let denied_budget_history = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/budget/history")
+                    .header("authorization", format!("Bearer {budget_missing_scope_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            denied_budget_history.status().as_u16(),
+            budget_history_contract["denied_status"].as_u64().unwrap() as u16
         );
 
         let admin_token = token(json!({
