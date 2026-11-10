@@ -1834,6 +1834,88 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
         assert run_id not in denied.text
 
 
+def test_resume_route_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run resume attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    captured_requests = []
+
+    def capture_resume_request(request):
+        captured_requests.append(request)
+        return {
+            "workflow_status": "succeeded",
+            "final_state": {"resumed_value": request.client_result["resumed_value"]},
+            "budget": {},
+        }
+
+    monkeypatch.setattr(
+        service._run_execution, "_default_resume_runner", capture_resume_request
+    )
+    request_body = {
+        "suspended_node_id": "approval-step",
+        "suspended_token_id": "approval-token",
+        "client_result": {"status": "success", "resumed_value": "approved"},
+        "workflow_id": "python-only-workflow",
+        "conversation_id": "python-only-conversation",
+        "turn_node_id": "python-only-turn",
+        "user_id": "python-only-user",
+    }
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="rw", ns="workflow")
+        denied_headers = _token_header(client, role="rw", ns="wisdom")
+        response = client.post(
+            "/api/runs/python-only-resume-run/resume",
+            json=request_body,
+            headers=workflow_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "workflow_status": "succeeded",
+            "final_state": {"resumed_value": "approved"},
+            "budget": {},
+        }
+        assert len(captured_requests) == 1
+        request = captured_requests[0]
+        assert request.run_id == "python-only-resume-run"
+        assert request.suspended_node_id == request_body["suspended_node_id"]
+        assert request.suspended_token_id == request_body["suspended_token_id"]
+        assert request.client_result == request_body["client_result"]
+        assert request.workflow_id == request_body["workflow_id"]
+        assert request.conversation_id == request_body["conversation_id"]
+        assert request.turn_node_id == request_body["turn_node_id"]
+        assert request.user_id == request_body["user_id"]
+
+        denied = client.post(
+            "/api/runs/python-only-resume-run/resume",
+            json=request_body,
+            headers=denied_headers,
+        )
+        assert denied.status_code == 403
+        assert "python-only-resume-run" not in denied.text
+        assert len(captured_requests) == 1
+
+
 def test_run_replay_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
