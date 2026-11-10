@@ -60,6 +60,58 @@ def test_python_latest_acl_version_is_scoped_to_truth_graph() -> None:
     assert wisdom_owner.visible is True
 
 
+def test_wisdom_edge_acl_does_not_override_same_id_node_acl() -> None:
+    acl = ACLGraph(cache_enabled=True)
+    entity_id = "same-id-in-wisdom"
+    acl.add_record(
+        grain="node", truth_graph="wisdom", entity_id=entity_id, version=1, mode="public"
+    )
+    acl.add_record(
+        grain="edge",
+        truth_graph="wisdom",
+        entity_id=entity_id,
+        version=1,
+        mode="private",
+        owner_id="edge-owner",
+    )
+
+    node = acl.decide(
+        grain="node", truth_graph="wisdom", entity_id=entity_id, principal_id="reader"
+    )
+    edge = acl.decide(
+        grain="edge", truth_graph="wisdom", entity_id=entity_id, principal_id="reader"
+    )
+
+    assert node.visible is True
+    assert edge.visible is False
+
+
+def test_wisdom_node_acl_does_not_override_same_id_edge_acl() -> None:
+    acl = ACLGraph(cache_enabled=True)
+    entity_id = "same-id-in-wisdom"
+    acl.add_record(
+        grain="node",
+        truth_graph="wisdom",
+        entity_id=entity_id,
+        version=1,
+        mode="private",
+        owner_id="node-owner",
+    )
+    acl.add_record(
+        grain="edge", truth_graph="wisdom", entity_id=entity_id, version=1, mode="public"
+    )
+
+    node = acl.decide(
+        grain="node", truth_graph="wisdom", entity_id=entity_id, principal_id="reader"
+    )
+    edge = acl.decide(
+        grain="edge", truth_graph="wisdom", entity_id=entity_id, principal_id="reader"
+    )
+
+    assert node.visible is False
+    assert edge.visible is True
+
+
 def test_python_acl_visibility_matches_shared_golden_contract() -> None:
     fixture = json.loads(
         (ROOT / "contracts/golden/graph-acl-v1.json")

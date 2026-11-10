@@ -5544,6 +5544,51 @@ mod tests {
     }
 
     #[test]
+    fn wisdom_node_acl_does_not_override_same_id_edge_acl() {
+        let entity_id = "same-id-in-wisdom";
+        let acl = |grain: &str, mode: &str| {
+            let mut record = GraphRecord::new(format!("acl-{grain}"));
+            record.metadata.extend(
+                serde_json::json!({
+                    "entity_type": "acl_record",
+                    "acl_truth_graph": "wisdom",
+                    "acl_target_entity_id": entity_id,
+                    "acl_target_grain": grain,
+                    "acl_version": 1,
+                    "acl_mode": mode
+                })
+                .as_object()
+                .expect("ACL metadata")
+                .clone(),
+            );
+            record
+        };
+        let node = GraphRecord::new(entity_id);
+        let mut edge = GraphRecord::new(entity_id);
+        edge.metadata
+            .insert("source_ids".into(), serde_json::json!([]));
+        edge.metadata
+            .insert("target_ids".into(), serde_json::json!([]));
+        let records = vec![node, acl("node", "private"), acl("edge", "public")];
+        let reader = GraphAclPrincipal {
+            principal_id: "reader".into(),
+            ..Default::default()
+        };
+
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&records, &[edge], "wisdom", &reader);
+
+        assert!(visible_nodes.is_empty());
+        assert_eq!(
+            visible_edges
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            [entity_id]
+        );
+    }
+
+    #[test]
     fn wisdom_shared_and_group_acl_grants_are_truth_graph_scoped() {
         let direct_id = "wisdom-direct-share-node";
         let group_id = "wisdom-group-share-node";
