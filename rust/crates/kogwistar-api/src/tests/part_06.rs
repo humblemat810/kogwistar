@@ -7498,6 +7498,11 @@
         assert_eq!(response.status, StatusCode::OK.as_u16());
         let response: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(response["op"], "receive_message");
+        let receive_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/receive-message-result-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(response["result"], receive_contract);
         assert_eq!(response["result"]["conversation_id"], "c1");
         assert_eq!(
             response["result"]["messages"].as_array().map(Vec::len),

@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **163/177 PASS (92.1%)**.
-- **Fine worklist:** **318/791 PASS (40.2%)**; **0 IN PROGRESS**, **473 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **319/791 PASS (40.3%)**; **0 IN PROGRESS**, **472 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -768,7 +768,7 @@
 | FW-16BQ-01-SYSCALL | DL-16BQ | NOT STARTED | Inventory advertised syscall operations against Python contracts and backend support. |
 | FW-16BQ-01-REST | DL-16BQ | NOT STARTED | Inventory advertised REST operations against Python contracts and backend support. |
 | FW-16BQ-01-MCP | DL-16BQ | NOT STARTED | Inventory advertised MCP operations against Python contracts and backend support. |
-| FW-16BQ-01A | DL-16BQ | NOT STARTED | Verify syscall request/response parity for SQLite+Chroma on one operation family. |
+| FW-16BQ-01A | DL-16BQ | PASS | Invariant: Python and Rust SQLite+Chroma `receive_message` return the same scoped transcript wire result; cell: authenticated conversation syscall; oracle: both language paths equal `contracts/golden/receive-message-result-v1.json` for the same two-turn conversation; checks: Python contract/syscall tests (**9 passed**) and Rust `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` (**1 passed**). ACL visibility, denial, and restart remain covered in the Rust integration test. |
 | FW-16BQ-01B | DL-16BQ | NOT STARTED | Verify syscall request/response parity for PostgreSQL on one operation family. |
 | FW-16BQ-01C | DL-16BQ | NOT STARTED | Verify syscall request/response parity for in-memory on one operation family. |
 | FW-16BQ-03 | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-03-AUTH,FW-16BQ-03-NAMESPACE,FW-16BQ-03-SCOPE |

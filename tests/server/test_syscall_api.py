@@ -219,7 +219,7 @@ def test_syscall_receive_message_matches_shared_wire_fixture():
             json={
                 "version": "v1",
                 "op": "receive_message",
-                "args": {"conversation_id": "conversation-1", "limit": 0},
+                "args": {"conversation_id": fixture["conversation_id"], "limit": 0},
             },
         )
     assert response.status_code == 200

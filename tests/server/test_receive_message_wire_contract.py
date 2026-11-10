@@ -14,9 +14,16 @@ class _ConversationOwner:
             SimpleNamespace(
                 id="turn-1",
                 metadata={"entity_type": "conversation_turn"},
-                turn_index=0,
+                turn_index=1,
                 role="user",
-                summary="hello",
+                summary="first",
+            ),
+            SimpleNamespace(
+                id="turn-2",
+                metadata={"entity_type": "conversation_turn"},
+                turn_index=2,
+                role="assistant",
+                summary="second",
             )
         ]
         return SimpleNamespace(
@@ -34,8 +41,8 @@ def test_python_receive_message_result_matches_shared_wire_fixture() -> None:
     queries = _ConversationQueryService(cast(Any, _ConversationOwner()))
 
     result = {
-        "conversation_id": "conversation-1",
-        "messages": queries.list_transcript("conversation-1"),
+        "conversation_id": "c1",
+        "messages": queries.list_transcript("c1"),
     }
 
     assert result == fixture
