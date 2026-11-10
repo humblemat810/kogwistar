@@ -423,6 +423,55 @@
         .unwrap();
         assert_eq!(blocked_approval["status"], "blocked");
         assert_eq!(blocked_approval["error"]["reason"], "manual deny");
+        let syscall_audit_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-audit-http-v1.json"
+        ))
+        .unwrap();
+        let approval_audit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/syscall/v1/audit?limit={}",
+                        syscall_audit_contract["limit"].as_u64().unwrap()
+                    ))
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            approval_audit.status().as_u16(),
+            syscall_audit_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let approval_audit: Value = serde_json::from_slice(
+            &to_bytes(approval_audit.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        for field in syscall_audit_contract["required_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(approval_audit.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(approval_audit["version"], "v1");
+        let events = approval_audit["events"].as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        for field in syscall_audit_contract["required_event_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(events[0].get(field).is_some(), "missing event field {field}");
+        }
+        for (field, expected) in syscall_audit_contract["expected_event"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&events[0][field], expected);
+        }
         let unsupported = app
             .clone()
             .oneshot(

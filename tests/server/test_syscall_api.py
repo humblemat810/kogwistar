@@ -622,6 +622,14 @@ def test_syscall_audit_endpoint_records_dispatches(monkeypatch, engine_triplet):
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "syscall-audit-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     with TestClient(server.app) as client:
         headers = _token_header(
             client,
@@ -629,9 +637,29 @@ def test_syscall_audit_endpoint_records_dispatches(monkeypatch, engine_triplet):
             ns="workflow",
             capabilities="approve_action,project_view,read_security_scope",
         )
-        client.get("/api/syscall/v1", headers=headers).raise_for_status()
-        audit = client.get("/api/syscall/v1/audit", headers=headers)
-        audit.raise_for_status()
+        dispatched = client.post(
+            "/api/syscall/v1/request_approval",
+            json={
+                "version": "v1",
+                "op": "request_approval",
+                "args": {"action": "deny", "reason": "manual deny"},
+            },
+            headers=headers,
+        )
+        assert dispatched.status_code == 200
+        assert dispatched.json()["status"] == "blocked"
+
+        audit = client.get(
+            f"/api/syscall/v1/audit?limit={contract['limit']}", headers=headers
+        )
+        assert audit.status_code == contract["success_status"], audit.text
         payload = audit.json()
+        for field in contract["required_fields"]:
+            assert field in payload
         assert payload["version"] == "v1"
-        assert payload["events"]
+        assert len(payload["events"]) == 1
+        event = payload["events"][0]
+        for field in contract["required_event_fields"]:
+            assert field in event
+        for field, expected in contract["expected_event"].items():
+            assert event[field] == expected

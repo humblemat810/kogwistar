@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "limit": 1,
+  "required_fields": [
+    "version",
+    "events"
+  ],
+  "required_event_fields": [
+    "ts_ms",
+    "version",
+    "op",
+    "status"
+  ],
+  "expected_event": {
+    "version": "v1",
+    "op": "request_approval",
+    "status": "blocked"
+  }
+}
