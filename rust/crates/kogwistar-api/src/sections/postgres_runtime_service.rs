@@ -4891,7 +4891,7 @@ impl PostgresRunApplicationService {
                                 &graph_scope,
                                 &causal_mutations,
                                 "conversation",
-                                ack_owner_id,
+                                &graph_acl_principal_id(&current_principal),
                                 current_scope["security_scope"].as_str(),
                                 &acknowledgement.event_id,
                             )

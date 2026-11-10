@@ -583,7 +583,7 @@ impl InMemoryGraphApplicationService {
             targets,
             existing_acl,
             "conversation",
-            &owner_id,
+            &graph_acl_principal_id(&principal),
             security_scope["security_scope"].as_str(),
             &acknowledgement.event_id,
         )?;
@@ -975,7 +975,7 @@ impl InMemoryGraphApplicationService {
             acl_targets_for_graph_mutations(&mutations).0,
             existing_acl,
             "conversation",
-            &owner_id,
+            &graph_acl_principal_id(&commit_principal),
             security_scope["security_scope"].as_str(),
             &durable.event_id,
         )?;

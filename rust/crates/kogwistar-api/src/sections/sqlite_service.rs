@@ -4137,7 +4137,7 @@ impl SqliteRunApplicationService {
         let owner_id = authenticated_run_owner_id(&principal)
             .ok_or_else(|| "provider event publication requires an authenticated owner".to_owned())?
             .to_owned();
-        let owner_acl_id = owner_id.to_ascii_lowercase();
+        let owner_acl_id = graph_acl_principal_id(&principal);
         let acl_scope = principal
             .get("security_scope")
             .and_then(Value::as_str)
@@ -8186,7 +8186,7 @@ fn apply_sqlite_provider_event_acknowledgement(
         targets,
         existing,
         "conversation",
-        &owner_id.to_ascii_lowercase(),
+        &graph_acl_principal_id(principal),
         security_scope["security_scope"].as_str(),
         &acknowledgement.event_id,
     )

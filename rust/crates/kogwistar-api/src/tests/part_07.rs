@@ -3516,6 +3516,10 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         )
         .collect::<Vec<_>>();
     assert!(!canonical_graph_rows.is_empty());
+    assert!(canonical_graph_rows.iter().any(|row| {
+        row["metadata"]["entity_type"] == "acl_record"
+            && row["metadata"]["owner_id"] == "causal-owner@example.test"
+    }));
     canonical_graph_rows.sort_by_key(|row| serde_json::to_string(row).unwrap());
     let graph_digest = format!(
         "{:x}",
@@ -7467,6 +7471,10 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
         }
     }
     let canonical_graph_rows = canonical_graph_state.into_values().collect::<Vec<_>>();
+    assert!(canonical_graph_rows.iter().any(|row| {
+        row["metadata"]["entity_type"] == "acl_record"
+            && row["metadata"]["owner_id"] == "sqlite-ack-owner@example.test"
+    }));
     let graph_digest = format!(
         "{:x}",
         {

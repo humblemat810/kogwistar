@@ -2050,6 +2050,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
     assert!(nodes.iter().any(|node| {
         node.metadata["entity_type"] == "acl_record"
             && node.metadata["acl_target_entity_id"] == format!("wf_step|{run_id}|1")
+            && node.metadata["owner_id"] == "memory-ack-owner@example.test"
     }));
     assert!(kogwistar_store::IndexJobReadStore::index_jobs(
         &service.store,

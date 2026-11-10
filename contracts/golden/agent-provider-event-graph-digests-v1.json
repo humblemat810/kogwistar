@@ -4,15 +4,15 @@
   "projection": "Backend-authoritative final graph state, serialized canonically and hashed with SHA-256; embeddings and backend-specific vector projections excluded",
   "digests": {
     "in_memory": {
-      "sha256": "6b73186bb36654a33904605918764424ba3a4c6ca5904460300cfb4b822e6ea1",
+      "sha256": "f3241bfac8096e569807abea5dfd28242d6ec460fb6f3de521f52a28e725a38d",
       "source": "scoped gke_nodes and gke_edges records"
     },
     "sqlite_chroma": {
-      "sha256": "eb133a7c2749faa8095d83e281d9348f9d85c33fcaa9498ec48f7fd891a5ab27",
+      "sha256": "28e992558f504954a645469939afbb1558d41a65f3aa656bc6223ff80f74a7cc",
       "source": "final state folded from canonical SQLite graph events; Chroma remains eventual projection"
     },
     "postgresql": {
-      "sha256": "071816d44dc7ef1ba3639163e235c3f6da0457d1ad27c8c4cf4b0ec4b54d1b4d",
+      "sha256": "23f941e0ee9c0ecb1d8ac9c03bb968cb3131235d793e7568a7bb26d59da6dec7",
       "source": "scoped PostgreSQL gke_nodes and gke_edges rows created by the fixture trace"
     }
   }
