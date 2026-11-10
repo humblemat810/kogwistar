@@ -236,7 +236,10 @@ uvicorn.run(
 
 
 @pytest.mark.asyncio
-async def test_python_only_rest_upsert_to_authenticated_mcp_http(monkeypatch, tmp_path):
+@pytest.mark.parametrize("selector_mode", ["explicit", "legacy-default"])
+async def test_python_only_rest_upsert_to_authenticated_mcp_http(
+    monkeypatch, tmp_path, selector_mode
+):
     selectors = (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -246,8 +249,12 @@ async def test_python_only_rest_upsert_to_authenticated_mcp_http(monkeypatch, tm
         "KOGWISTAR_IMPL_RUNTIME",
         "KOGWISTAR_IMPL_SERVER",
     )
-    for selector in selectors:
-        monkeypatch.setenv(selector, "python")
+    if selector_mode == "explicit":
+        for selector in selectors:
+            monkeypatch.setenv(selector, "python")
+    else:
+        for selector in selectors:
+            monkeypatch.delenv(selector, raising=False)
 
     port = _free_port()
     data_dir = tmp_path / "authenticated-python-server"
@@ -264,8 +271,12 @@ async def test_python_only_rest_upsert_to_authenticated_mcp_http(monkeypatch, tm
         "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT": (
             "tests._helpers.embeddings:build_default_test_embedding_function"
         ),
-        **{selector: "python" for selector in selectors},
     }
+    if selector_mode == "explicit":
+        env.update({selector: "python" for selector in selectors})
+    else:
+        for selector in selectors:
+            env.pop(selector, None)
     python_only_bootstrap = f"""
 import kogwistar._rust_bridge as bridge
 def unavailable():
