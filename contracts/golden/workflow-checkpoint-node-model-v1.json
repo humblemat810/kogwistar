@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "model_class": "workflow_checkpoint_node",
+  "payload": {
+    "label": "Workflow checkpoint parity",
+    "type": "entity",
+    "summary": "Cross-language workflow checkpoint contract fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": null,
+    "mentions": [
+      {
+        "spans": [
+          {
+            "collection_page_url": "https://example.test/checkpoint",
+            "document_page_url": "https://example.test/checkpoint#span",
+            "doc_id": "doc:rust-python-parity",
+            "insertion_method": "contract-test",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 17,
+            "excerpt": "Checkpoint evidence",
+            "context_before": "",
+            "context_after": "",
+            "source_cluster_id": null,
+            "verification": {
+              "method": "heuristic",
+              "is_verified": false,
+              "score": null,
+              "notes": "no explicit verification from LLM"
+            }
+          }
+        ],
+        "multimodal_spans": []
+      }
+    ],
+    "id": "workflow-checkpoint:cross-language",
+    "embedding": [1.0, 0.0, 0.0],
+    "doc_id": "doc:rust-python-parity",
+    "metadata": {
+      "entity_type": "workflow_checkpoint",
+      "run_id": "run:parity-001",
+      "workflow_id": "wf:cross-language",
+      "step_seq": 2,
+      "state_json": "{\"cursor\":\"section-2\",\"items\":3}",
+      "vendor_extension": {"checkpoint_kind": "resume", "version": 1},
+      "lifecycle_status": "active",
+      "redirect_to_id": null
+    },
+    "level_from_root": null
+  }
+}

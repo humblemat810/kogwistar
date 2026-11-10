@@ -572,6 +572,27 @@ def test_python_workflow_step_exec_node_round_trips_shared_wire_fixture() -> Non
     }
 
 
+def test_python_workflow_checkpoint_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-checkpoint-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = runtime_models.WorkflowCheckpointNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["step_seq"] == 2
+    assert payload["metadata"]["state_json"] == "{\"cursor\":\"section-2\",\"items\":3}"
+    assert payload["metadata"]["vendor_extension"] == {
+        "checkpoint_kind": "resume",
+        "version": 1,
+    }
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",
