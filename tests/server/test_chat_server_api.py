@@ -1681,6 +1681,73 @@ def test_checkpoint_list_uses_python_defaults_and_checks_namespace(
         assert run_id not in denied.text
 
 
+def test_run_replay_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run replay attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-run-replay"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"counter": 1},
+    )
+    _seed_step(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=1,
+        op="increment",
+        state_update=[["u", {"counter": 2}]],
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-replay-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/replay?target_step_seq=1",
+            headers=workflow_headers,
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        assert payload["target_step_seq"] == 1
+        assert payload["state"] == {"counter": 2}
+
+        denied = client.get(
+            f"/api/runs/{run_id}/replay?target_step_seq=1", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_resume_contract_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
