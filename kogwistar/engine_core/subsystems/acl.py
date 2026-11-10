@@ -251,11 +251,13 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         entity_id: str,
         target_item_id: str | None = None,
     ) -> int:
+        metadata = getattr(self._e, "metadata", None)
         previous = self._latest_persisted_acl_record(
             grain=grain,
             truth_graph=truth_graph,
             entity_id=entity_id,
             target_item_id=target_item_id,
+            for_update=bool(getattr(metadata, "transaction_active", False)),
         )
         return 1 if previous is None else previous.version + 1
 
@@ -616,6 +618,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         truth_graph: str,
         entity_id: str,
         target_item_id: str | None = None,
+        for_update: bool = False,
     ) -> tuple[ACLRecord, ...]:
         # Canonical ACL read path. Used by ACLGraph cache miss and by repair/rebuild.
         metadata_filter: JsonObject = {
@@ -633,9 +636,8 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         metadata = getattr(self._e, "metadata", None)
         if isinstance(metadata, RustEnginePostgresMetaStore):
-            # ACL supersession lookup runs under the Rust-owned UoW. Read the
-            # authoritative projection through that owner rather than opening
-            # a Python SQL transaction on the shared PostgreSQL database.
+            # Row-locking ACL writes stay inside the Rust-owned UoW. Ordinary
+            # authorization reads must not request FOR UPDATE or open a UoW.
             projection_rows = metadata.graph_projection_records(
                 namespace=str(getattr(self._e, "namespace", "default")),
                 workspace_id=None,
@@ -644,7 +646,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 ids=None,
                 metadata=metadata_filter,
                 limit=400,
-                for_update=True,
+                for_update=for_update,
             )
             got: JsonObject = {
                 "ids": [str(row["id"]) for row in projection_rows],
@@ -681,8 +683,9 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         truth_graph: str,
         entity_id: str,
         target_item_id: str | None = None,
+        for_update: bool = False,
     ) -> ACLRecord | None:
-        records = self._e.acl_graph._load_records(
+        records = () if for_update else self._e.acl_graph._load_records(
             truth_graph=truth_graph,
             grain=_as_acl_grain(grain),
             entity_id=entity_id,
@@ -694,6 +697,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 truth_graph=truth_graph,
                 entity_id=entity_id,
                 target_item_id=target_item_id,
+                for_update=for_update,
             )
         if not records:
             return None
@@ -777,6 +781,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 truth_graph=truth_graph,
                 entity_id=entity_id,
                 target_item_id=target_item_id,
+                for_update=True,
             )
             record = ACLRecord(
                 target=ACLTarget(

@@ -634,7 +634,9 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
 
     meta = engine.meta_sqlite
     original_apply = meta.apply_graph_mutation
+    original_projection_records = meta.graph_projection_records
     envelopes: list[dict[str, object]] = []
+    projection_lock_requests: list[bool] = []
 
     def capture_envelope(**values):
         envelope = values.get("model_envelope")
@@ -642,13 +644,19 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         envelopes.append(envelope)
         return original_apply(**values)
 
+    def capture_projection_lock(**values):
+        projection_lock_requests.append(bool(values.get("for_update", False)))
+        return original_projection_records(**values)
+
     monkeypatch.setattr(meta, "apply_graph_mutation", capture_envelope)
+    monkeypatch.setattr(meta, "graph_projection_records", capture_projection_lock)
     await engine.write.add_node_async(run_node)
     await engine.write.add_node_async(target)
     await engine.write.add_edge_async(runtime_edge)
     await engine.write.add_node_async(acl_previous)
     await engine.write.add_node_async(acl_current)
     await engine.write.add_edge_async(acl_edge)
+    assert True in projection_lock_requests
 
     assert [envelope["model_class"] for envelope in envelopes] == [
         "workflow_run_node",
@@ -695,6 +703,7 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert python_acl_edge[0].relation == "acl_supersedes"
     assert python_acl_edge[0].source_ids == [acl_current.id]
     assert python_acl_edge[0].target_ids == [acl_previous.id]
+    projection_lock_requests.clear()
     authorized = engine.decide_acl(
         truth_graph=engine.kg_graph_type,
         entity_id=target.id,
@@ -706,6 +715,7 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         principal_id="user:outsider",
     )
     assert authorized.visible is True
+    assert projection_lock_requests and not any(projection_lock_requests)
     assert authorized.record is not None and authorized.record.version == 2
     assert authorized.reason == "principal_share"
     assert denied.visible is False
