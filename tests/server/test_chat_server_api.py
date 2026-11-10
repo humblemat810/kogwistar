@@ -1548,6 +1548,66 @@ def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
         assert conversation_id not in denied.text
 
 
+def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only checkpoint read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-checkpoint-run"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"counter": 7},
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoint-detail-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        assert payload["step_seq"] == 0
+        assert payload["state"] == {"counter": 7}
+
+        denied = client.get(
+            f"/api/runs/{run_id}/checkpoints/0", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
