@@ -1608,6 +1608,70 @@ def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
         assert run_id not in denied.text
 
 
+def test_resume_contract_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only resume-contract read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-resume-contract-run"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"answer": "persisted"},
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-resume-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
+        )
+        assert response.status_code == fixture["success_status"], response.text
+        payload = response.json()
+        assert set(fixture["required_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        assert payload["latest_checkpoint_step_seq"] == 0
+        assert payload["checkpoint_schema_version"] == 1
+        assert "checkpoint_schema_version" in payload["persisted_keys"]
+        assert payload["supported_wait_reasons"] == fixture[
+            "supported_wait_reasons"
+        ]
+
+        denied = client.get(
+            f"/api/runs/{run_id}/resume-contract", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
