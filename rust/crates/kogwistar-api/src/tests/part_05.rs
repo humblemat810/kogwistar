@@ -1776,7 +1776,10 @@
             for field in steps_contract["required_step_fields"].as_array().unwrap() {
                 assert!(steps_value["steps"][0].get(field.as_str().unwrap()).is_some());
             }
-            assert_eq!(steps_value["steps"][0]["result"]["answer"], "worker");
+            assert_eq!(
+                steps_value["steps"][0]["result"],
+                steps_contract["successful_result"]
+            );
 
             let checkpoints = app
                 .clone()

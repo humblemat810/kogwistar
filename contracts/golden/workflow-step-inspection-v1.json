@@ -12,5 +12,14 @@
     "duration_ms",
     "result"
   ],
+  "successful_result": {
+    "conversation_node_id": null,
+    "state_update": [["u", {"answer": "worker"}]],
+    "update": null,
+    "next_step_names": [],
+    "workflow_invocations": [],
+    "status": "success",
+    "answer": "worker"
+  },
   "legacy_step_omits_trace_context": true
 }

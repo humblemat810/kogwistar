@@ -58,8 +58,7 @@ pytestmark = pytest.mark.ci_full
 def test_server_health_matches_shared_contract() -> None:
     contract = json.loads(
         (
-            Path(__file__).resolve().parents[2]
-            / "contracts/golden/health-v1.json"
+            Path(__file__).resolve().parents[2] / "contracts/golden/health-v1.json"
         ).read_text(encoding="utf-8")
     )
     with TestClient(server.app) as client:
@@ -76,6 +75,7 @@ def test_server_health_matches_shared_contract() -> None:
     assert payload["pg_schema_base"] is None or isinstance(
         payload["pg_schema_base"], str
     )
+
 
 _token_header = token_header
 
@@ -447,7 +447,12 @@ def test_workflow_namespace_scope_isolated_across_concurrent_threads(
 
 
 def _assert_workflow_design_entities_use_scoped_namespace(
-    service, workflow_engine, *, workflow_id: str, node_ids: set[str], edge_ids: set[str]
+    service,
+    workflow_engine,
+    *,
+    workflow_id: str,
+    node_ids: set[str],
+    edge_ids: set[str],
 ) -> None:
     expected_namespace = service._workflow_namespace(workflow_id)
     with service._workflow_namespace_scope(workflow_id) as scoped_engine:
@@ -786,9 +791,7 @@ def test_default_runtime_runner_uses_async_or_sync_runtime_by_kind(
                 status="succeeded",
             )
 
-    monkeypatch.setattr(
-        "kogwistar.runtime.runtime.WorkflowRuntime", _FakeSyncRuntime
-    )
+    monkeypatch.setattr("kogwistar.runtime.runtime.WorkflowRuntime", _FakeSyncRuntime)
     monkeypatch.setattr(
         "kogwistar.runtime.async_runtime.AsyncWorkflowRuntime", _FakeAsyncRuntime
     )
@@ -877,8 +880,18 @@ def _seed_step(
     step_seq: int,
     op: str,
     state_update: list,
+    result_fields: dict | None = None,
     trace_context: dict | None = None,
 ):
+    result = {
+        "conversation_node_id": None,
+        "state_update": state_update,
+        "update": None,
+        "next_step_names": [],
+        "workflow_invocations": [],
+        "status": "success",
+    }
+    result.update(result_fields or {})
     node = WorkflowStepExecNode(
         id=f"wf_step|{run_id}|{step_seq}",
         label=f"Step {step_seq}",
@@ -896,14 +909,7 @@ def _seed_step(
             "op": op,
             "status": "ok",
             "duration_ms": 1,
-            "result_json": json.dumps(
-                {
-                    "conversation_node_id": None,
-                    "state_update": state_update,
-                    "next_step_names": [],
-                    "status": "success",
-                }
-            ),
+            "result_json": json.dumps(result),
         },
         level_from_root=0,
         domain_id=None,
@@ -1107,7 +1113,11 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
             for index, line in enumerate(lines)
             if line == f"event: {sse_contract['event_name']}"
         )
-        frame_start = event_line - 1 if event_line > 0 and lines[event_line - 1].startswith("id: ") else event_line
+        frame_start = (
+            event_line - 1
+            if event_line > 0 and lines[event_line - 1].startswith("id: ")
+            else event_line
+        )
         frame_end = next(
             (index for index in range(frame_start + 1, len(lines)) if not lines[index]),
             len(lines),
@@ -1300,9 +1310,13 @@ def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
         assert set(contract["required_event_fields"]).issubset(payload["events"][0])
 
 
-def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(monkeypatch, engine_triplet):
+def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
@@ -1345,7 +1359,9 @@ def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(monkeypatch, engine
         assert body == ""
 
 
-def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engine_triplet):
+def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     _seed_knowledge_node(
         engine,
@@ -1558,7 +1574,8 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             workflow_id=workflow_id,
             step_seq=0,
             op="prepare",
-            state_update=[["u", {"counter": 1}]],
+            state_update=[["u", {"answer": "worker"}]],
+            result_fields={"answer": "worker"},
             trace_context={
                 "trace_id": "trace-seed",
                 "span_id": "span-step-0",
@@ -1591,6 +1608,9 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             assert field in steps_payload["steps"][0]
         assert steps_payload["steps"][0]["op"] == "prepare"
         assert steps_payload["steps"][0]["status"] == steps_contract["step_status"]
+        assert (
+            steps_payload["steps"][0]["result"] == steps_contract["successful_result"]
+        )
         assert isinstance(steps_payload["steps"][0]["duration_ms"], int)
         trace_fixture = json.loads(
             (
@@ -1598,12 +1618,12 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
                 / "contracts/golden/workflow-step-trace-context-v1.json"
             ).read_text(encoding="utf-8")
         )
-        assert steps_payload["steps"][0]["trace_context"] == trace_fixture[
-            "trace_context"
-        ]
         assert (
-            "trace_context" not in steps_payload["steps"][1]
-        ) is steps_contract["legacy_step_omits_trace_context"]
+            steps_payload["steps"][0]["trace_context"] == trace_fixture["trace_context"]
+        )
+        assert ("trace_context" not in steps_payload["steps"][1]) is steps_contract[
+            "legacy_step_omits_trace_context"
+        ]
 
         checkpoints = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
@@ -1677,9 +1697,10 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         )
         for key, expected in resume_contract_fixture["no_checkpoint"].items():
             assert empty_resume_payload[key] == expected
-        assert empty_resume_payload["supported_wait_reasons"] == resume_contract_fixture[
-            "supported_wait_reasons"
-        ]
+        assert (
+            empty_resume_payload["supported_wait_reasons"]
+            == resume_contract_fixture["supported_wait_reasons"]
+        )
 
         resume_contract = client.get(
             f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
@@ -3022,7 +3043,9 @@ def test_runtime_design_graph_reports_ready_materialization_status(
         payload = graph.json()
         assert payload["materialization_status"] == "ready"
         assert payload["current_version"] == 3
-        assert [str(node.get("metadata", {}).get("wf_op")) for node in payload["nodes"]] == [
+        assert [
+            str(node.get("metadata", {}).get("wf_op")) for node in payload["nodes"]
+        ] == [
             "start",
             "end",
         ]
@@ -3448,7 +3471,9 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
         assert "wf_multiplicity" in edge_props
 
 
-def test_designer_capabilities_requires_explicit_capability(monkeypatch, engine_triplet):
+def test_designer_capabilities_requires_explicit_capability(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -3511,7 +3536,9 @@ def test_admin_delete_doc_uses_engine_rollback_lifecycle(monkeypatch):
         server,
         "engine",
         _FixedResource(
-            SimpleNamespace(rollback=SimpleNamespace(rollback_document=rollback_document))
+            SimpleNamespace(
+                rollback=SimpleNamespace(rollback_document=rollback_document)
+            )
         ),
         raising=False,
     )
@@ -3537,7 +3564,9 @@ def test_admin_delete_doc_maps_rollback_failure(monkeypatch):
         server,
         "engine",
         _FixedResource(
-            SimpleNamespace(rollback=SimpleNamespace(rollback_document=rollback_document))
+            SimpleNamespace(
+                rollback=SimpleNamespace(rollback_document=rollback_document)
+            )
         ),
         raising=False,
     )

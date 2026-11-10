@@ -32,6 +32,46 @@
     }
 
     #[test]
+    fn reduced_transition_preserves_step_updates_and_reads_legacy_events() {
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        start.initial_state = Some(Map::new());
+        start.frontier = Some(RuntimeFrontier {
+            pending: vec![("node".to_owned(), 0, "token".to_owned(), None)],
+            ..RuntimeFrontier::default()
+        });
+        let started = reduce_recorded_transition(None, &start).unwrap();
+
+        let mut completed = transition(
+            RecordedTransitionKind::RecordedStepSuccess,
+            "step",
+            1,
+            1,
+        );
+        completed.state_update = vec![RecordedStateUpdate::Pair((
+            "u".to_owned(),
+            Map::from_iter([("answer".to_owned(), json!("worker"))]),
+        ))];
+        completed.frontier = Some(RuntimeFrontier::default());
+        completed.result = Some(json!({"answer": "worker"}));
+        let reduced = reduce_recorded_transition(Some(&started.state), &completed).unwrap();
+        assert_eq!(
+            serde_json::to_value(&reduced.state_update).unwrap(),
+            json!([["u", {"answer": "worker"}]])
+        );
+        assert!(reduced.update.is_none());
+
+        let mut legacy_event = serde_json::to_value(&reduced).unwrap();
+        let legacy_object = legacy_event.as_object_mut().unwrap();
+        legacy_object.remove("state_update");
+        legacy_object.remove("update");
+        legacy_object.remove("kind");
+        let legacy = serde_json::from_value::<ReducedRecordedTransition>(legacy_event).unwrap();
+        assert_eq!(legacy.kind, RecordedTransitionKind::RecordedStepSuccess);
+        assert!(legacy.state_update.is_empty());
+        assert!(legacy.update.is_none());
+    }
+
+    #[test]
     fn step_execute_payload_preserves_runtime_identity_and_resume_effect() {
         let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
         let mut initial_state = Map::new();

@@ -3162,13 +3162,39 @@ fn recorded_step_snapshots_matches_python_fixture() {
         steps[0].trace_context.as_ref().unwrap(),
         &fixture["trace_context"]
     );
-    let legacy_steps = recorded_step_snapshots(vec![recorded]);
+    let legacy_steps = recorded_step_snapshots(vec![recorded.clone()]);
     assert!(legacy_steps[0].trace_context.is_none());
     assert!(
         fixture["legacy_step_omits_trace_context"]
             .as_bool()
             .unwrap()
     );
+
+    let completion = ServerRunEvent {
+        seq: 6,
+        run_id: "run-1".to_owned(),
+        event_type: "workflow.recorded_transition.v1".to_owned(),
+        payload_json: json!({
+            "transition_id": "complete-transition-1",
+            "reduced": {
+                "kind": "complete",
+                "state": {
+                    "last_step_seq": 0,
+                    "workflow_id": "workflow-1",
+                    "last_node_id": "node-1",
+                    "state": {}
+                },
+                "result": {"ok": true},
+                "errors": [],
+                "server_status": "succeeded"
+            }
+        })
+        .to_string(),
+        created_at_ms: 12,
+    };
+    let steps = recorded_step_snapshots(vec![recorded, completion]);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].transition_id, "transition-1");
 }
 
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type

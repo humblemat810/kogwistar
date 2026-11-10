@@ -1480,10 +1480,14 @@ struct RecordedInspectionSnapshot {
     event_seq: i64,
     created_at_ms: i64,
     transition_id: String,
+    transition_kind: String,
     step_seq: i64,
     workflow_id: String,
     workflow_node_id: String,
     state: Value,
+    state_update: Value,
+    update: Value,
+    next_step_names: Vec<String>,
     result: Value,
     errors: Vec<Value>,
     server_status: String,
@@ -1504,6 +1508,11 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
                 event_seq: event.seq,
                 created_at_ms: event.created_at_ms,
                 transition_id: payload["transition_id"].as_str()?.to_owned(),
+                transition_kind: reduced
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("recorded_step_success")
+                    .to_owned(),
                 step_seq: state["last_step_seq"].as_i64()?,
                 workflow_id: state["workflow_id"].as_str()?.to_owned(),
                 workflow_node_id: state["last_node_id"]
@@ -1511,6 +1520,18 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
                     .unwrap_or_default()
                     .to_owned(),
                 state: state.get("state").cloned().unwrap_or_else(|| json!({})),
+                state_update: reduced
+                    .get("state_update")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                update: reduced.get("update").cloned().unwrap_or(Value::Null),
+                next_step_names: state["frontier"]["pending"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|pending| pending.as_array()?.first()?.as_str())
+                    .map(str::to_owned)
+                    .collect(),
                 result: reduced.get("result").cloned().unwrap_or(Value::Null),
                 errors: reduced["errors"].as_array().cloned().unwrap_or_default(),
                 server_status: reduced["server_status"]
@@ -1560,7 +1581,7 @@ fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectio
         .collect::<Vec<_>>();
     let mut steps = Vec::<RecordedInspectionSnapshot>::new();
     for snapshot in recorded_inspection_snapshots(events) {
-        if snapshot.step_seq < 0 {
+        if snapshot.step_seq < 0 || snapshot.transition_kind == "complete" {
             continue;
         }
         let mut snapshot = snapshot;
@@ -1599,6 +1620,36 @@ fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectio
     steps
 }
 
+fn python_step_result(snapshot: &RecordedInspectionSnapshot) -> Value {
+    let status = if !snapshot.errors.is_empty() {
+        "failure"
+    } else if snapshot.server_status == "suspended" {
+        "suspended"
+    } else {
+        "success"
+    };
+    let mut result = json!({
+        "conversation_node_id": null,
+        "state_update": snapshot.state_update,
+        "update": snapshot.update,
+        "next_step_names": snapshot.next_step_names,
+        "workflow_invocations": [],
+        "status": status,
+    });
+    if !snapshot.errors.is_empty() {
+        result["errors"] = json!(snapshot.errors);
+    }
+    if let Some(fields) = snapshot.result.as_object() {
+        let projected = result.as_object_mut().expect("result is an object");
+        for (key, value) in fields {
+            projected.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    } else if !snapshot.result.is_null() {
+        result["result"] = snapshot.result.clone();
+    }
+    result
+}
+
 fn runtime_inspection_effect(
     request: &ApiEffectRequest,
     run_id: &str,
@@ -1618,6 +1669,7 @@ fn runtime_inspection_effect(
             let steps = steps
                 .into_iter()
                 .map(|step| {
+                    let result = python_step_result(&step);
                     let mut value = json!({
                         "node_id": format!("wf_step|{}|{}", run_id, step.step_seq),
                         "step_seq": step.step_seq,
@@ -1626,7 +1678,7 @@ fn runtime_inspection_effect(
                         "op": step.operation.unwrap_or_else(|| step.workflow_node_id.clone()),
                         "status": if step.errors.is_empty() { "ok" } else { "error" },
                         "duration_ms": step.duration_ms.unwrap_or(0),
-                        "result": step.result,
+                        "result": result,
                         "event_seq": step.event_seq,
                         "created_at_ms": step.created_at_ms,
                         "transition_id": step.transition_id,

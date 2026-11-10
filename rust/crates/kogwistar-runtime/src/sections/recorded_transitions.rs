@@ -9,6 +9,10 @@ pub enum RecordedTransitionKind {
     Complete,
     Fail,
 }
+
+fn default_recorded_transition_kind() -> RecordedTransitionKind {
+    RecordedTransitionKind::RecordedStepSuccess
+}
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecordedRunStatus {
@@ -283,6 +287,10 @@ pub struct RecordedRuntimeState {
 #[serde(deny_unknown_fields)]
 pub struct ReducedRecordedTransition {
     pub contract_version: u32,
+    /// The transition's semantic role, retained so inspection does not treat
+    /// terminal control transitions as workflow step executions.
+    #[serde(default = "default_recorded_transition_kind")]
+    pub kind: RecordedTransitionKind,
     pub transition_id: String,
     pub transition_digest: String,
     pub state_digest: String,
@@ -293,6 +301,12 @@ pub struct ReducedRecordedTransition {
     pub server_status: String,
     pub checkpoint: Map<String, Value>,
     pub run_status: Map<String, Value>,
+    /// Retain the original transition updates for inspection and replay parity.
+    /// Older persisted events omit these fields and deserialize to empty values.
+    #[serde(default)]
+    pub state_update: Vec<RecordedStateUpdate>,
+    #[serde(default)]
+    pub update: Option<Map<String, Value>>,
     #[serde(default)]
     pub result: Option<Value>,
     #[serde(default)]
@@ -543,6 +557,7 @@ pub fn reduce_recorded_transition(
 
     Ok(ReducedRecordedTransition {
         contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        kind: transition.kind,
         transition_id: transition.transition_id.clone(),
         transition_digest,
         state_digest: state_digest(&next_state)?,
@@ -552,6 +567,8 @@ pub fn reduce_recorded_transition(
         server_status: next_status.server_status().to_owned(),
         checkpoint,
         run_status,
+        state_update: transition.state_update.clone(),
+        update: transition.update.clone(),
         result: transition.result.clone(),
         errors: transition.errors.clone(),
     })
