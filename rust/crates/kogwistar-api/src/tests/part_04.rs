@@ -1579,6 +1579,20 @@
                 assert_eq!(&effect.trace_events[0][field], expected, "field {field}");
             }
             let failed = failed_native_result(handoff, &request, "TEST_FAILURE", "test failure");
+            assert_eq!(failed.handoff.message_id, "message");
+            assert_eq!(failed.handoff.run_id, "run-42");
+            assert_eq!(failed.handoff.step_id, "parse");
+            assert_eq!(failed.handoff.correlation_id, "correlation");
+            let failed_effect = failed.effect.as_ref().unwrap();
+            assert_eq!(
+                failed_effect.status,
+                kogwistar_runtime::RuntimeWorkerEffectStatus::Failed
+            );
+            assert_eq!(failed_effect.errors, ["test failure"]);
+            assert_eq!(
+                failed_effect.trace_events[0]["event"],
+                "runtime.native.step.failed"
+            );
             for (field, expected) in [
                 ("run_id", json!("run-42")),
                 ("workflow_id", json!("workflow")),
@@ -1588,14 +1602,14 @@
                 ("step_seq", json!(3)),
             ] {
                 assert_eq!(
-                    failed.effect.as_ref().unwrap().trace_events[0][field],
+                    failed_effect.trace_events[0][field],
                     expected,
                     "failed trace field {field}"
                 );
             }
             for (field, expected) in retry_case["expected"].as_object().unwrap() {
                 assert_eq!(
-                    &failed.effect.as_ref().unwrap().trace_events[0][field],
+                    &failed_effect.trace_events[0][field],
                     expected,
                     "failed trace field {field}"
                 );
