@@ -1514,8 +1514,7 @@
         assert!(audit.get("schema_version").is_none());
         assert!(audit["items"][0].get("schema_version").is_none());
 
-        let receive_response = service
-            .execute(ApiEffectRequest {
+        let receive_request = |principal: Value| ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: "/api/syscall/v1/receive_message".to_owned(),
@@ -1525,14 +1524,39 @@
                     "args": {"conversation_id": "conversation-1", "limit": 0}
                 }))
                 .unwrap(),
-                principal: json!({
+                principal
+            };
+        let denied_receive = service
+            .execute(receive_request(json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": "conversation",
+                "storage_ns": "conversation",
+                "capabilities": []
+            })))
+            .await;
+        assert_eq!(denied_receive.status, StatusCode::FORBIDDEN.as_u16());
+        let wrong_namespace_receive = service
+            .execute(receive_request(json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": "workflow",
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph"]
+            })))
+            .await;
+        assert_eq!(
+            wrong_namespace_receive.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        let receive_response = service
+            .execute(receive_request(json!({
                     "sub": "alice",
                     "role": "ro",
                     "ns": "conversation",
                     "storage_ns": "conversation",
                     "capabilities": ["read_graph"]
-                }),
-            })
+                })))
             .await;
         assert_eq!(receive_response.status, StatusCode::OK.as_u16());
         let receive_payload: Value = serde_json::from_slice(&receive_response.body).unwrap();

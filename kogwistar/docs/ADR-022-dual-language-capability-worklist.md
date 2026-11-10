@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **163/177 PASS (92.1%)**.
-- **Fine worklist:** **322/791 PASS (40.7%)**; **0 IN PROGRESS**, **469 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **323/791 PASS (40.8%)**; **0 IN PROGRESS**, **468 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -776,7 +776,7 @@
 | FW-16BQ-03-NAMESPACE | DL-16BQ | NOT STARTED | Verify syscall namespace isolation against Python for SQLite+Chroma. |
 | FW-16BQ-03-SCOPE | DL-16BQ | NOT STARTED | Verify syscall scope enforcement against Python for SQLite+Chroma. |
 | FW-16BQ-03A | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-03A-AUTH,FW-16BQ-03A-NAMESPACE,FW-16BQ-03A-SCOPE |
-| FW-16BQ-03A-AUTH | DL-16BQ | NOT STARTED | Verify syscall authorization outcome against Python for PostgreSQL. |
+| FW-16BQ-03A-AUTH | DL-16BQ | PASS | Invariant: PostgreSQL `receive_message` denies callers missing `read_graph` or conversation namespace and still returns the canonical transcript to an authorized caller; cell: Python syscall route and live Rust PostgreSQL service; oracle: unauthorized calls return 403 and authorized result matches the shared fixture; evidence: Python `test_syscall_receive_message_denies_before_service_read` (**2 passed**) and Rust `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` (**1 passed**, local pgvector container) cover denials and success. |
 | FW-16BQ-03A-NAMESPACE | DL-16BQ | NOT STARTED | Verify syscall namespace isolation against Python for PostgreSQL. |
 | FW-16BQ-03A-SCOPE | DL-16BQ | NOT STARTED | Verify syscall scope enforcement against Python for PostgreSQL. |
 | FW-16BQ-03B | DL-16BQ | PARENT | Parent scope; children: FW-16BQ-03B-AUTH,FW-16BQ-03B-NAMESPACE,FW-16BQ-03B-SCOPE |
