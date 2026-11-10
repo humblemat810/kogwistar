@@ -1621,6 +1621,11 @@
             "/../../../contracts/golden/workflow-catalog-ops-http-v1.json"
         )))
         .unwrap();
+        let dead_letters_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-dead-letters-http-v1.json"
+        )))
+        .unwrap();
         for (path, required_keys) in [
             (
                 "/api/workflow/resources",
@@ -1677,10 +1682,20 @@
             } else {
                 assert_eq!(response.status(), StatusCode::OK, "{path}");
             }
+            if path == "/api/workflow/dead-letters?limit=10" {
+                assert_eq!(
+                    response.status().as_u16(),
+                    dead_letters_contract["success_status"]
+                        .as_u64()
+                        .unwrap() as u16
+                );
+            }
             let body = to_bytes(response.into_body(), 65_536).await.unwrap();
             let value = serde_json::from_slice::<Value>(&body).unwrap();
             if path == "/api/workflow/catalog/ops" {
                 assert_eq!(value, workflow_catalog_contract["response_body"]);
+            } else if path == "/api/workflow/dead-letters?limit=10" {
+                assert_eq!(value, dead_letters_contract["response_body"]);
             }
             for key in required_keys {
                 assert!(value.get(key).is_some(), "{path} lacks {key}: {value}");

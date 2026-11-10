@@ -2766,6 +2766,29 @@ def test_workflow_catalog_ops_matches_shared_contract(monkeypatch, engine_triple
     assert response.json() == contract["response_body"]
 
 
+def test_workflow_dead_letters_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-dead-letters-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            "/api/workflow/dead-letters",
+            params={"limit": contract["query_limit"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == contract["response_body"]
+
+
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
