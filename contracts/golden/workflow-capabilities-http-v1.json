@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "route": "GET /api/workflow/capabilities",
+  "success_status": 200,
+  "required_fields": [
+    "specs",
+    "approvals",
+    "revoked",
+    "audit_log",
+    "current_subject",
+    "effective_capabilities"
+  ],
+  "required_effective_capabilities": [
+    "project_view",
+    "read_security_scope"
+  ],
+  "audit_action": "project_view",
+  "allowed_outcome": "allow",
+  "denied_status": 403
+}

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -73,17 +75,38 @@ def test_capability_snapshot_route_exposes_effective_caps(monkeypatch, engine_tr
         workflow_engine,
         _runtime_success_runner,
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-capabilities-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     with TestClient(server.app) as client:
         headers = _token_header(client, role="ro", ns="workflow")
         resp = client.get("/api/workflow/capabilities", headers=headers)
-        resp.raise_for_status()
+        assert resp.status_code == contract["success_status"], resp.text
         payload = resp.json()
+        assert set(contract["required_fields"]).issubset(payload)
         assert payload["current_subject"]
-        assert "workflow.run.read" in payload["effective_capabilities"]
-        assert "project_view" in payload["effective_capabilities"]
+        assert set(contract["required_effective_capabilities"]).issubset(
+            payload["effective_capabilities"]
+        )
         assert payload["audit_log"]
-        assert payload["audit_log"][-1]["action"] == "project_view"
-        assert payload["audit_log"][-1]["outcome"] == "allow"
+        assert payload["audit_log"][-1]["action"] == contract["audit_action"]
+        assert payload["audit_log"][-1]["outcome"] == contract["allowed_outcome"]
+        denied_headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="project_view",
+        )
+        denied = client.get(
+            "/api/workflow/capabilities",
+            headers=denied_headers,
+        )
+        assert denied.status_code == contract["denied_status"]
 
 
 

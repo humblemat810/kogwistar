@@ -85,6 +85,52 @@
             })
         );
 
+        let capabilities = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/capabilities")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let capabilities_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-capabilities-http-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            capabilities.status().as_u16(),
+            capabilities_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let capabilities = serde_json::from_slice::<Value>(
+            &to_bytes(capabilities.into_body(), 32768).await.unwrap(),
+        )
+        .unwrap();
+        for field in capabilities_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(capabilities.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(capabilities["current_subject"], "reader-1");
+        for capability in capabilities_contract["required_effective_capabilities"]
+            .as_array()
+            .unwrap()
+        {
+            assert!(capabilities["effective_capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(capability));
+        }
+        assert_eq!(
+            capabilities["audit_log"].as_array().unwrap().last().unwrap()["action"],
+            capabilities_contract["audit_action"]
+        );
+        assert_eq!(
+            capabilities["audit_log"].as_array().unwrap().last().unwrap()["outcome"],
+            capabilities_contract["allowed_outcome"]
+        );
+
         let denied_token = token(json!({
             "sub": "denied",
             "role": "ro",
@@ -104,7 +150,10 @@
             )
             .await
             .unwrap();
-        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            denied.status().as_u16(),
+            capabilities_contract["denied_status"].as_u64().unwrap() as u16
+        );
 
         let admin_token = token(json!({
             "sub": "admin-1",
