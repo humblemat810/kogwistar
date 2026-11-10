@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 from pydantic_extension.model_slicing.mixin import ModeSlicingMixin
 
 from kogwistar._rust_bridge import (
@@ -1324,6 +1325,36 @@ def test_rust_family_rejection_precedes_embedding_and_persistence(
     writer._e = cast(GraphKnowledgeEngine, engine)
     with pytest.raises(RustParityError, match="Rust graph-model contract validation failed"):
         getattr(writer, "add_pure_edge" if is_edge else "add_pure_node")(entity)
+
+
+def test_conversation_node_rejects_invalid_role_assignment() -> None:
+    """Runtime mutation must preserve the validated ConversationNode contract."""
+    from kogwistar.conversation.models import ConversationNode
+    from kogwistar.engine_core.models import Grounding
+    from kogwistar.engine_core.span_models import Span
+
+    span = Span(
+        collection_page_url="collection/doc",
+        document_page_url="document/doc",
+        doc_id="doc",
+        insertion_method="test",
+        start_char=0,
+        end_char=4,
+        excerpt="test",
+    )
+    node = ConversationNode(
+        label="invalid role",
+        type="entity",
+        summary="conversation node contract probe",
+        mentions=[Grounding(spans=[span])],
+        role="assistant",
+        turn_index=1,
+        conversation_id="conversation:1",
+        user_id="user:1",
+        metadata={"entity_type": "conversation_node", "level_from_root": 0},
+    )
+    with pytest.raises(ValidationError, match="role"):
+        node.role = "not-a-conversation-role"
 
 
 def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:

@@ -357,6 +357,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
     id_kind: ClassVar[str] = "conversation.node"
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
 
     def identity_key(self) -> tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn
