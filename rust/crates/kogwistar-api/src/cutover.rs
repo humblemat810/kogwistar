@@ -19,18 +19,41 @@ impl ImplementationSnapshot {
     // route inventory is deliberately emptied as part of a verified cutover.
     #[allow(clippy::const_is_empty)]
     pub fn effective_server_cutover_ready(&self) -> bool {
-        self.server_cutover_ready
-            && PENDING_SERVER_CUTOVER_ROUTES.is_empty()
-            && pending_server_routes_are_valid()
-            && self.implemented_route_operations == frozen_application_route_operations()
+        effective_server_cutover_ready_for(
+            self.server_cutover_ready,
+            PENDING_SERVER_CUTOVER_ROUTES,
+            FROZEN_OPENAPI_ROUTES,
+            self.implemented_route_operations,
+            frozen_application_route_operations(),
+        )
     }
 }
 
 fn pending_server_routes_are_valid() -> bool {
+    pending_server_routes_are_valid_for(PENDING_SERVER_CUTOVER_ROUTES, FROZEN_OPENAPI_ROUTES)
+}
+
+fn pending_server_routes_are_valid_for(
+    pending_routes: &[(&str, &str)],
+    frozen_routes: &[(&str, &str)],
+) -> bool {
     let mut seen = BTreeSet::new();
-    PENDING_SERVER_CUTOVER_ROUTES
+    pending_routes
         .iter()
-        .all(|route| seen.insert(*route) && FROZEN_OPENAPI_ROUTES.contains(route))
+        .all(|route| seen.insert(*route) && frozen_routes.contains(route))
+}
+
+fn effective_server_cutover_ready_for(
+    declared_ready: bool,
+    pending_routes: &[(&str, &str)],
+    frozen_routes: &[(&str, &str)],
+    implemented_routes: usize,
+    expected_implemented_routes: usize,
+) -> bool {
+    declared_ready
+        && pending_routes.is_empty()
+        && pending_server_routes_are_valid_for(pending_routes, frozen_routes)
+        && implemented_routes == expected_implemented_routes
 }
 
 pub(crate) fn is_pending_server_cutover_route(method: &str, path_and_query: &str) -> bool {
@@ -151,5 +174,48 @@ mod tests {
     #[test]
     fn default_snapshot_cannot_claim_server_cutover() {
         assert!(!ImplementationSnapshot::default().effective_server_cutover_ready());
+    }
+
+    #[test]
+    fn server_cutover_requires_closed_routes_and_reconciled_counts() {
+        let frozen = [("GET", "/health"), ("GET", "/api/items")];
+        let pending = [("GET", "/api/items")];
+
+        assert!(!effective_server_cutover_ready_for(
+            true, &pending, &frozen, 1, 1
+        ));
+        assert!(!effective_server_cutover_ready_for(
+            true,
+            &[],
+            &frozen,
+            0,
+            1
+        ));
+        assert!(!effective_server_cutover_ready_for(
+            false,
+            &[],
+            &frozen,
+            1,
+            1
+        ));
+        assert!(effective_server_cutover_ready_for(true, &[], &frozen, 1, 1));
+    }
+
+    #[test]
+    fn pending_route_inventory_rejects_duplicates_and_unfrozen_routes() {
+        let frozen = [("GET", "/health"), ("GET", "/api/items")];
+
+        assert!(pending_server_routes_are_valid_for(
+            &[("GET", "/api/items")],
+            &frozen
+        ));
+        assert!(!pending_server_routes_are_valid_for(
+            &[("GET", "/api/items"), ("GET", "/api/items")],
+            &frozen
+        ));
+        assert!(!pending_server_routes_are_valid_for(
+            &[("DELETE", "/api/items")],
+            &frozen
+        ));
     }
 }
