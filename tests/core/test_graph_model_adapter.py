@@ -613,6 +613,26 @@ def test_python_workflow_completed_node_round_trips_shared_wire_fixture() -> Non
     }
 
 
+def test_python_workflow_cancelled_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-cancelled-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = runtime_models.WorkflowCancelledNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["accepted_step_seq"] == 2
+    assert payload["metadata"]["vendor_extension"] == {
+        "cancel_reason": "requested",
+        "version": 1,
+    }
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",
