@@ -4951,7 +4951,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri("/api/viz/d3.json?graph_type=knowledge")
+                .uri("/api/viz/d3.json?mode=reify")
                 .header(
                     "authorization",
                     format!(
@@ -4964,10 +4964,28 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         )
         .await
         .unwrap();
-    assert_eq!(owner_response.status(), StatusCode::OK);
+    let d3_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-viz-d3-http-success-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(
+        owner_response.status().as_u16() as u64,
+        d3_contract["success_status"].as_u64().unwrap()
+    );
     let owner_payload: Value =
         serde_json::from_slice(&to_bytes(owner_response.into_body(), 65_536).await.unwrap())
             .unwrap();
+    for field in d3_contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(owner_payload.get(field).is_some(), "missing {field}: {owner_payload}");
+    }
+    for field in d3_contract["array_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(owner_payload[field].is_array(), "{field} must be an array: {owner_payload}");
+    }
+    assert_eq!(owner_payload["mode"], d3_contract["mode"]);
+    assert_eq!(owner_payload["doc_id"], d3_contract["doc_id"]);
     assert!(
         owner_payload["nodes"]
             .as_array()

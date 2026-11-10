@@ -1626,11 +1626,20 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         assert "approval" in contract["supported_wait_reasons"]
         assert "rate_window" in contract["supported_wait_reasons"]
 
-        viz = client.get("/api/viz/d3.json?graph_type=workflow")
-        viz.raise_for_status()
+        viz_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/graph-viz-d3-http-success-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        viz = client.get("/api/viz/d3.json?mode=reify")
+        assert viz.status_code == viz_contract["success_status"]
         payload = viz.json()
-        assert "nodes" in payload
-        assert "links" in payload
+        assert set(viz_contract["required_fields"]).issubset(payload)
+        for field in viz_contract["array_fields"]:
+            assert isinstance(payload[field], list)
+        assert payload["mode"] == viz_contract["mode"]
+        assert payload["doc_id"] is viz_contract["doc_id"]
 
 
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
