@@ -4,6 +4,7 @@
   "cases": [
     {
       "kind": "node",
+      "canonical_json_sha256": "06141bc7c13e0937f86a4252e9eb2a1641ac49e72a90f0f54491faf5fcfc23aa",
       "canonical_json": "{\"canonical_entity_id\":\"entity:parity-node\",\"doc_id\":\"doc:rust-python-parity\",\"domain_id\":null,\"embedding\":[1.0,0.0,0.0],\"id\":\"parity-node\",\"label\":\"Python node\",\"level_from_root\":0,\"mentions\":[{\"multimodal_spans\":[],\"spans\":[{\"collection_page_url\":\"https://example.test/source\",\"context_after\":\"\",\"context_before\":\"\",\"doc_id\":\"doc:rust-python-parity\",\"document_page_url\":\"https://example.test/source#span\",\"end_char\":13,\"excerpt\":\"Node evidence\",\"insertion_method\":\"contract-test\",\"page_number\":1,\"source_cluster_id\":null,\"start_char\":0,\"verification\":{\"is_verified\":false,\"method\":\"heuristic\",\"notes\":\"no explicit verification from LLM\",\"score\":null}}]}],\"metadata\":{\"graph_space\":\"facts\",\"kind\":\"node\",\"level_from_root\":0,\"lifecycle_status\":\"active\",\"redirect_to_id\":null,\"workspace_id\":\"ws\"},\"properties\":{\"attributes\":[\"unicode-雪\",\"nested-payload\"]},\"summary\":\"A complete Pydantic node payload crosses the Rust persistence seam.\",\"type\":\"entity\"}",
       "payload": {
         "canonical_entity_id": "entity:parity-node", "doc_id": "doc:rust-python-parity", "domain_id": null,

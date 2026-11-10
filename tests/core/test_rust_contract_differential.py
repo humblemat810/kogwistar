@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import random
@@ -401,6 +402,28 @@ def test_python_node_edge_backend_payloads_round_trip_through_rust_json(
         assert wire_json == case["canonical_json"]
         restored = type(model).model_validate(json.loads(wire_json))
         assert restored.model_dump(field_mode="backend", dump_format="json") == payload
+
+
+@pytest.mark.requires_rust
+def test_base_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    case = next(item for item in GRAPH_MODEL_FIXTURE["cases"] if item["kind"] == "node")
+    model = Node.model_validate(case["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = case["canonical_json_sha256"]
+
+    assert canonical_json == case["canonical_json"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "node", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
 
 
 @pytest.mark.requires_rust
