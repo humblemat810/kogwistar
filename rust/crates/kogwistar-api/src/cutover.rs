@@ -3,6 +3,15 @@ use std::collections::BTreeSet;
 
 use super::{FROZEN_OPENAPI_ROUTES, PENDING_SERVER_CUTOVER_ROUTES};
 
+const NATIVE_RUNTIME_BUILTIN_OPERATIONS: [(&str, &str); 6] = [
+    ("agent.event.ack", "v1"),
+    ("agent.event.receive", "v1"),
+    ("agent.event.request", "v1"),
+    ("emit-result", "v1"),
+    ("increment-counter", "v1"),
+    ("noop", "v1"),
+];
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ImplementationSnapshot {
     pub mode: String,
@@ -10,11 +19,20 @@ pub struct ImplementationSnapshot {
     pub schema_version: u32,
     pub frozen_route_operations: usize,
     pub implemented_route_operations: usize,
+    /// Built-in native operation matrix readiness; not full runtime ownership cutover.
     pub runtime_cutover_ready: bool,
     pub server_cutover_ready: bool,
 }
 
 impl ImplementationSnapshot {
+    /// Native runtime operation-matrix readiness is narrower than runtime
+    /// ownership cutover in `rust-port-v1`; it never authorizes that cutover.
+    fn native_runtime_cutover_ready() -> bool {
+        let registered =
+            kogwistar_runtime::NativeOperationRegistry::default().registered_operations();
+        native_runtime_registry_is_complete(&registered)
+    }
+
     // Keep this explicit release gate: it becomes true only after the pending
     // route inventory is deliberately emptied as part of a verified cutover.
     #[allow(clippy::const_is_empty)]
@@ -27,6 +45,15 @@ impl ImplementationSnapshot {
             frozen_application_route_operations(),
         )
     }
+}
+
+fn native_runtime_registry_is_complete(registered: &[(String, String)]) -> bool {
+    registered.len() == NATIVE_RUNTIME_BUILTIN_OPERATIONS.len()
+        && NATIVE_RUNTIME_BUILTIN_OPERATIONS.iter().all(|required| {
+            registered
+                .iter()
+                .any(|operation| operation.0 == required.0 && operation.1 == required.1)
+        })
 }
 
 fn pending_server_routes_are_valid() -> bool {
@@ -116,7 +143,7 @@ impl Default for ImplementationSnapshot {
             frozen_route_operations: FROZEN_OPENAPI_ROUTES.len(),
             implemented_route_operations: frozen_application_route_operations()
                 .saturating_sub(PENDING_SERVER_CUTOVER_ROUTES.len()),
-            runtime_cutover_ready: false,
+            runtime_cutover_ready: Self::native_runtime_cutover_ready(),
             server_cutover_ready: false,
         }
     }
@@ -173,7 +200,27 @@ mod tests {
 
     #[test]
     fn default_snapshot_cannot_claim_server_cutover() {
-        assert!(!ImplementationSnapshot::default().effective_server_cutover_ready());
+        let snapshot = ImplementationSnapshot::default();
+        assert!(snapshot.runtime_cutover_ready);
+        assert!(!snapshot.effective_server_cutover_ready());
+    }
+
+    #[test]
+    fn runtime_readiness_requires_every_builtin_operation_version() {
+        let registered =
+            kogwistar_runtime::NativeOperationRegistry::default().registered_operations();
+        assert!(native_runtime_registry_is_complete(&registered));
+
+        let incomplete = registered
+            .into_iter()
+            .filter(|operation| operation.0 != "agent.event.ack")
+            .collect::<Vec<_>>();
+        assert!(!native_runtime_registry_is_complete(&incomplete));
+
+        let mut unexpected =
+            kogwistar_runtime::NativeOperationRegistry::default().registered_operations();
+        unexpected.push(("unverified-operation".to_owned(), "v1".to_owned()));
+        assert!(!native_runtime_registry_is_complete(&unexpected));
     }
 
     #[test]

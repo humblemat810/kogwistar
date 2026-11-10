@@ -965,6 +965,18 @@
         );
         let health_value: Value = serde_json::from_slice(&health_body).unwrap();
         assert!(health_value["embedding_inline_worker_enabled"].is_boolean());
+        assert_eq!(
+            health_value["implementation"]["runtime_cutover_ready"],
+            true
+        );
+        assert_eq!(
+            health_value["implementation"]["server_cutover_ready"],
+            false
+        );
+        assert_eq!(
+            health_value["implementation"]["effective_server_cutover_ready"],
+            false
+        );
         assert_eq!(health_value["graph_authority"]["level"], "unsupported");
         assert_eq!(health_value["graph_authority"]["single_mutation"], false);
         assert_eq!(health_value["document_authority"]["level"], "unsupported");

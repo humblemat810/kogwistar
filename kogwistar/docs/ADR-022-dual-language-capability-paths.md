@@ -15,10 +15,13 @@ composition of the two at supported capability seams.
 
 The mixed-workload benchmark already distinguishes Python authority, Python
 with Rust authority, and a narrow Rust-native HTTP slice. Its results cannot
-be extrapolated into a whole-stack performance ranking. The Rust server still
-reports `runtime_cutover_ready: false` and `server_cutover_ready: false`, and its
-pending-route list remains nonempty. A native Rust HTTP benchmark slice is not
-evidence that every public operation has a native Rust execution path.
+be extrapolated into a whole-stack performance ranking. The Rust health report's
+`runtime_cutover_ready` attests only the complete built-in native operation
+matrix, backed by SQLite, PostgreSQL, and in-memory evidence; it does not grant
+the full workflow-runtime ownership cutover recorded in `rust-port-v1`. The
+server still reports `server_cutover_ready: false` while deferred routes remain.
+A native Rust HTTP benchmark slice is not evidence that every public operation
+has a native Rust execution path.
 
 ## Decision
 
