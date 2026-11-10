@@ -4659,6 +4659,10 @@
         use std::time::{SystemTime, UNIX_EPOCH};
         use tower::ServiceExt;
 
+        let resume_contract_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-resume-contract-v1.json"
+        ))
+        .unwrap();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -4754,6 +4758,20 @@
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        for field in resume_contract_fixture["required_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(contract.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(contract["compatible"], true);
+        assert_eq!(contract["checkpoint_schema_version"], 1);
+        assert_eq!(
+            contract["supported_wait_reasons"],
+            resume_contract_fixture["supported_wait_reasons"]
+        );
+        assert_eq!(contract["resume_options"][0]["suspended_node_id"], "start");
         assert_eq!(contract["wait_reason"], "approval");
         assert_eq!(contract["suspended"][0][0], "start");
         assert_eq!(contract["runtime_routes"], json!([]));

@@ -6940,19 +6940,7 @@ impl PostgresRunApplicationService {
                 .read_recorded_runtime_state(&run_id, &run.workflow_id, &run.conversation_id)
                 .await
             {
-                Ok(Some(state)) if !state.frontier.suspended.is_empty() => {
-                    json_effect(StatusCode::OK, resume_contract_value(state))
-                }
-                Ok(Some(_)) => effect_error(
-                    StatusCode::CONFLICT,
-                    "KOGWISTAR_RUNTIME_NOT_SUSPENDED",
-                    "run has no suspended token",
-                ),
-                Ok(None) => effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_RUNTIME_STATE_NOT_FOUND",
-                    format!("No recorded runtime state for {run_id}"),
-                ),
+                Ok(state) => json_effect(StatusCode::OK, resume_contract_value(state, &run_id)),
                 Err(error) => effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",

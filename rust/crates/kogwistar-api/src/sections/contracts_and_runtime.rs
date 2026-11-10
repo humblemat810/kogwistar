@@ -1694,50 +1694,107 @@ fn is_runtime_inspection_tail(tail: &[&str]) -> bool {
     )
 }
 
-fn resume_contract_value(state: RecordedRuntimeState) -> Value {
-    let node_ops = state
-        .state
-        .get("_rt_node_ops")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let node_versions = state
-        .state
-        .get("_rt_node_versions")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let node_environment_ids = state
-        .state
-        .get("_rt_node_environment_ids")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let node_worker_identities = state
-        .state
-        .get("_rt_node_worker_identities")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let node_executor_targets = state
-        .state
-        .get("_rt_node_executor_targets")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let mut contract = json!({
-        "run_id": state.run_id,
-        "status": state.status,
-        "wait_reason": state.wait_reason,
-        "resume_payload": state.resume_payload,
-        "suspended": state.frontier.suspended,
-        "last_step_seq": state.last_step_seq,
-        "runtime_routes": state.static_routes,
-        "node_ops": node_ops,
-        "node_versions": node_versions,
-        "node_environment_ids": node_environment_ids,
-        "node_worker_identities": node_worker_identities,
+fn resume_contract_value(state: Option<RecordedRuntimeState>, run_id: &str) -> Value {
+    const PERSISTED_KEYS: [&str; 5] = [
+        "run_id",
+        "workflow_id",
+        "step_seq",
+        "state_json",
+        "checkpoint_schema_version",
+    ];
+    const EPHEMERAL_KEYS: [&str; 3] = ["_deps", "_rt_join", "_rt"];
+    const SUPPORTED_WAIT_REASONS: [&str; 6] = [
+        "approval",
+        "message",
+        "schedule_delay",
+        "external_callback",
+        "dependency",
+        "rate_window",
+    ];
+
+    let has_checkpoint = state.as_ref().is_some_and(|state| state.last_step_seq >= 0);
+    let mut state_keys = state
+        .as_ref()
+        .map(|state| state.state.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    state_keys.sort();
+    let resume_options = state
+        .as_ref()
+        .map(|state| {
+            state
+                .frontier
+                .suspended
+                .iter()
+                .map(|(node_id, _, token_id, _)| {
+                    json!({
+                        "suspended_node_id": node_id,
+                        "suspended_token_id": token_id,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let latest_wait_reason = state.as_ref().and_then(|state| {
+        state
+            .state
+            .get("wait_reason")
+            .cloned()
+            .or_else(|| state.wait_reason.clone().map(Value::String))
     });
-    if node_executor_targets
-        .as_object()
-        .is_some_and(|targets| !targets.is_empty())
-    {
-        contract["node_executor_targets"] = node_executor_targets;
+    let mut contract = json!({
+        "run_id": run_id,
+        "latest_checkpoint_step_seq": state.as_ref().filter(|_| has_checkpoint).map(|state| state.last_step_seq),
+        "latest_wait_reason": latest_wait_reason,
+        "checkpoint_schema_version": if has_checkpoint { Value::from(1) } else { Value::Null },
+        "persisted_keys": PERSISTED_KEYS,
+        "ephemeral_keys": EPHEMERAL_KEYS,
+        "supported_wait_reasons": SUPPORTED_WAIT_REASONS,
+        "compatible": has_checkpoint,
+        "state_keys": state_keys,
+        "resume_options": resume_options,
+    });
+    if let Some(state) = state {
+        let node_ops = state
+            .state
+            .get("_rt_node_ops")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_versions = state
+            .state
+            .get("_rt_node_versions")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_environment_ids = state
+            .state
+            .get("_rt_node_environment_ids")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_worker_identities = state
+            .state
+            .get("_rt_node_worker_identities")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_executor_targets = state
+            .state
+            .get("_rt_node_executor_targets")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        contract["status"] = json!(state.status);
+        contract["wait_reason"] = json!(state.wait_reason);
+        contract["resume_payload"] = json!(state.resume_payload);
+        contract["suspended"] = json!(state.frontier.suspended);
+        contract["last_step_seq"] = json!(state.last_step_seq);
+        contract["runtime_routes"] = json!(state.static_routes);
+        contract["node_ops"] = node_ops;
+        contract["node_versions"] = node_versions;
+        contract["node_environment_ids"] = node_environment_ids;
+        contract["node_worker_identities"] = node_worker_identities;
+        if node_executor_targets
+            .as_object()
+            .is_some_and(|targets| !targets.is_empty())
+        {
+            contract["node_executor_targets"] = node_executor_targets;
+        }
     }
     contract
 }

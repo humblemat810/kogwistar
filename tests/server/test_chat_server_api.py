@@ -1623,11 +1623,33 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         assert replay_payload["target_step_seq"] == 1
         assert replay_payload["state"]["counter"] == 2
 
+        resume_contract_fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-resume-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        empty_resume = client.get(
+            "/api/runs/no-checkpoint-run/resume-contract",
+            headers=workflow_headers,
+        )
+        assert empty_resume.status_code == resume_contract_fixture["success_status"]
+        empty_resume_payload = empty_resume.json()
+        assert set(resume_contract_fixture["required_fields"]).issubset(
+            empty_resume_payload
+        )
+        for key, expected in resume_contract_fixture["no_checkpoint"].items():
+            assert empty_resume_payload[key] == expected
+        assert empty_resume_payload["supported_wait_reasons"] == resume_contract_fixture[
+            "supported_wait_reasons"
+        ]
+
         resume_contract = client.get(
             f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
         )
-        resume_contract.raise_for_status()
+        assert resume_contract.status_code == resume_contract_fixture["success_status"]
         contract = resume_contract.json()
+        assert set(resume_contract_fixture["required_fields"]).issubset(contract)
         assert contract["run_id"] == run_id
         assert contract["latest_checkpoint_step_seq"] == 0
         assert contract["checkpoint_schema_version"] == 1

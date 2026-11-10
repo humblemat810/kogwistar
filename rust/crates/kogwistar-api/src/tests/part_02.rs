@@ -3,6 +3,10 @@
     async fn postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let resume_contract_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-resume-contract-v1.json"
+        ))
+        .unwrap();
         let schema = format!("rust_native_runtime_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
@@ -43,6 +47,39 @@
             ))
             .await;
         assert_eq!(submit.status, StatusCode::ACCEPTED.as_u16());
+        let resume_contract = service
+            .execute(request(
+                "GET",
+                "/api/runs/pg-native-run/resume-contract",
+                Value::Null,
+            ))
+            .await;
+        assert_eq!(
+            resume_contract.status,
+            resume_contract_fixture["success_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
+        let resume_contract_body =
+            serde_json::from_slice::<Value>(&resume_contract.body).unwrap();
+        for field in resume_contract_fixture["required_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(resume_contract_body.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(resume_contract_body["run_id"], "pg-native-run");
+        for (field, expected) in resume_contract_fixture["no_checkpoint"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(resume_contract_body[field], *expected);
+        }
+        assert_eq!(
+            resume_contract_body["supported_wait_reasons"],
+            resume_contract_fixture["supported_wait_reasons"]
+        );
 
         let claim = service
             .execute(request(

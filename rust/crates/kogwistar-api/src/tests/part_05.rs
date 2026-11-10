@@ -1289,6 +1289,10 @@
             "../../../../../contracts/golden/run-replay-v1.json"
         ))
         .unwrap();
+        let resume_contract_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-resume-contract-v1.json"
+        ))
+        .unwrap();
 
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1339,6 +1343,44 @@
         let submitted = serde_json::from_slice::<Value>(&submit_body).unwrap();
         let submitted_run_id = submitted["run_id"].as_str().unwrap();
         assert_eq!(submitted_run_id, "caller-run-id");
+        let resume_contract = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/runs/{submitted_run_id}/resume-contract"))
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resume_contract.status().as_u16(),
+            resume_contract_fixture["success_status"].as_u64().unwrap() as u16
+        );
+        let resume_contract_body = to_bytes(resume_contract.into_body(), 16_384)
+            .await
+            .unwrap();
+        let resume_contract_value =
+            serde_json::from_slice::<Value>(&resume_contract_body).unwrap();
+        for field in resume_contract_fixture["required_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(resume_contract_value.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(resume_contract_value["run_id"], submitted_run_id);
+        for (field, expected) in resume_contract_fixture["no_checkpoint"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(resume_contract_value[field], *expected);
+        }
+        assert_eq!(
+            resume_contract_value["supported_wait_reasons"],
+            resume_contract_fixture["supported_wait_reasons"]
+        );
         let queued = store
             .list_projected_lane_messages(LaneMessageFilter {
                 namespace: Some("workflow".to_owned()),
