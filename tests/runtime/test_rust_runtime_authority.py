@@ -1046,6 +1046,12 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
             for step in steps_response.json()["steps"]
             if step["workflow_node_id"] == "end"
         )
+        assert end_step_record["workflow_id"] == "wf-sync-resume-live"
+        assert end_step_record["workflow_node_id"] == "end"
+        assert end_step_record["step_seq"] > 0
+        assert end_step_record["node_id"] == (
+            f"wf_step|run-sync-resume-live|{end_step_record['step_seq']}"
+        )
         trace_context = end_step_record["trace_context"]
         assert callback_traces["end"]["trace_id"] == trace_context["trace_id"]
         assert callback_traces["end"]["span_id"] == trace_context["span_id"]
