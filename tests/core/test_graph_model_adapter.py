@@ -178,6 +178,30 @@ def test_python_acl_edge_round_trips_shared_backend_fixture() -> None:
     assert payload["metadata"]["redirect_to_id"] is None
 
 
+def test_python_conversation_edge_round_trips_shared_backend_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "conversation-edge-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    edge = conversation_models.ConversationEdge.model_validate(fixture["payload"])
+    payload = edge.model_dump(field_mode="backend", dump_format="json")
+
+    assert fixture["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
+    assert fixture["model_class"] == "conversation_edge"
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["causal_type"] == "chain"
+    assert payload["metadata"]["char_distance_from_last_summary"] == 4
+    assert payload["metadata"]["turn_distance_from_last_summary"] == 1
+    assert payload["metadata"]["vendor_extension"] == {"source": "fixture"}
+    assert payload["metadata"]["lifecycle_status"] == "active"
+    assert payload["source_ids"] == ["parity-node"]
+    assert payload["target_ids"] == ["external:target"]
+
+
 @pytest.mark.parametrize("model_kind", ["node", "edge"])
 def test_persistent_graph_models_reject_non_finite_embeddings(model_kind: str) -> None:
     model_type = Node if model_kind == "node" else Edge

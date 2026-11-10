@@ -5699,6 +5699,44 @@ mod tests {
     }
 
     #[test]
+    fn conversation_edge_typed_round_trip_matches_python_backend_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/conversation-edge-model-v1.json"
+        )))
+        .expect("valid shared Python ConversationEdge fixture");
+        let payload = fixture["payload"].clone();
+        let envelope = GraphModelEnvelope::new(GraphModelClass::ConversationEdge, payload);
+
+        envelope
+            .validate_family_v1()
+            .expect("valid conversation-specific edge metadata");
+        let edge = envelope
+            .decode_persistent_edge_shape()
+            .expect("valid typed persistent edge shape");
+        let serialized = serde_json::to_value(edge).expect("serialize typed conversation edge");
+
+        assert_eq!(serialized["metadata"]["causal_type"], "chain");
+        assert_eq!(serialized["metadata"]["char_distance_from_last_summary"], 4);
+        assert_eq!(serialized["metadata"]["turn_distance_from_last_summary"], 1);
+        assert_eq!(
+            serialized["metadata"]["vendor_extension"],
+            serde_json::json!({"source": "fixture"})
+        );
+        assert_eq!(
+            crate::canonical_json(&serialized, false),
+            fixture["canonical_json"]
+                .as_str()
+                .expect("Python canonical conversation edge JSON")
+        );
+        assert_eq!(serialized["source_ids"], serde_json::json!(["parity-node"]));
+        assert_eq!(
+            serialized["target_ids"],
+            serde_json::json!(["external:target"])
+        );
+    }
+
+    #[test]
     fn declared_slice_projects_canonical_payload_and_requires_declaration() {
         let manifest = GraphSliceManifestV1 {
             schema_version: GRAPH_SLICE_MANIFEST_VERSION,
