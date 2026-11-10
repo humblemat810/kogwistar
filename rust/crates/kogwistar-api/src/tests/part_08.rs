@@ -3198,6 +3198,85 @@ fn recorded_step_snapshots_matches_python_fixture() {
     assert_eq!(steps[0].transition_id, "transition-1");
 }
 
+#[tokio::test]
+async fn sqlite_legacy_step_without_trace_survives_reopen_without_invented_context() {
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::ServiceExt;
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("kogwistar-legacy-trace-{nonce}.sqlite3"));
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: "legacy-trace-run".to_owned(),
+                conversation_id: "legacy-trace-conversation".to_owned(),
+                workflow_id: "legacy-trace-workflow".to_owned(),
+                user_id: Some("legacy-trace-owner".to_owned()),
+                user_turn_node_id: "legacy-trace-turn".to_owned(),
+                status: "running".to_owned(),
+            })
+            .unwrap();
+        store
+            .append_server_run_event(
+                "legacy-trace-run",
+                "workflow.recorded_transition.v1",
+                json!({
+                    "transition_id": "legacy-transition",
+                    "reduced": {
+                        "state": {
+                            "last_step_seq": 0,
+                            "workflow_id": "legacy-trace-workflow",
+                            "last_node_id": "legacy-step",
+                            "state": {}
+                        },
+                        "result": {"ok": true},
+                        "errors": [],
+                        "server_status": "running"
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+    }
+
+    let service = SqliteRunApplicationService::open(&path).unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec!["reader".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig::default(),
+        },
+        Arc::new(service),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/runs/legacy-trace-run/steps")
+                .header("x-kogwistar-roles", "reader")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 16_384).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(payload["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["steps"][0]["workflow_node_id"], "legacy-step");
+    assert!(payload["steps"][0].get("trace_context").is_none());
+
+    let _ = std::fs::remove_file(path);
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type
 #[tokio::test]
 async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
