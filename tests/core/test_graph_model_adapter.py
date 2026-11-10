@@ -713,6 +713,25 @@ def test_python_llm_node_extraction_round_trips_flat_excerpt_fixture() -> None:
     assert legacy.mentions[0].end_char == len(legacy.mentions[0].excerpt) - 1
 
 
+def test_python_flattened_llm_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-node-flattened-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = engine_models.FlattenedLLMNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="llm", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["id"] == payload["local_id"] == "nn:flat-node"
+    assert payload["properties"]["vendor_extension"] == {"version": 1}
+    assert payload["mentions"][0]["span_ids"] == ["span:node-1"]
+    assert "multimodal_span_ids" not in payload["mentions"][0]
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",

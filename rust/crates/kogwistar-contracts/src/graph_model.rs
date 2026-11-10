@@ -5121,6 +5121,41 @@ mod tests {
     }
 
     #[test]
+    fn flattened_llm_node_round_trip_preserves_python_evidence_ids() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-node-flattened-model-v1.json"
+        )))
+        .expect("valid Python FlattenedLLMNode fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope =
+            RawGraphModelEnvelopeV1::from_json(&wire).expect("valid flattened-node envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::FlattenedLlmNode);
+        envelope
+            .validate_family_v1()
+            .expect("valid flattened evidence references");
+        let typed: FlattenedLlmNodeV1 =
+            serde_json::from_value(fixture["payload"].clone()).expect("typed flattened node");
+        assert_eq!(typed.mentions.len(), 1);
+        assert_eq!(typed.mentions[0].span_ids, ["span:node-1".to_string()]);
+        assert!(typed.mentions[0].multimodal_span_ids.is_empty());
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], "flattened_llm_node");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+    }
+
+    #[test]
     fn workflow_operation_version_matches_shared_python_contract_fixture() {
         let versions: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
