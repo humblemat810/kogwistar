@@ -38,6 +38,7 @@ from kogwistar.implementation_selection import (
 )
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
+from kogwistar.runtime.telemetry import TraceContext
 from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 
 from .contract import Predicate
@@ -118,6 +119,21 @@ def _json_object_copy(value: object, *, field: str) -> JsonObject:
     if not isinstance(copied, dict):
         raise RustWorkerError(f"{field} must be a JSON object")
     return copied
+
+
+def _claimed_work_trace_context(
+    work: Mapping[str, JsonValue], payload: Mapping[str, JsonValue], node_id: str
+) -> TraceContext:
+    """Build callback trace identity only from scheduler-owned claim fields."""
+    return TraceContext(
+        run_id=str(payload.get("run_id") or work.get("run_id") or ""),
+        token_id=str(payload.get("token_id") or work.get("run_id") or ""),
+        step_seq=_json_int(payload.get("step_seq")),
+        node_id=node_id,
+        attempt=_json_int(payload.get("attempt"), 1),
+        conversation_id=str(payload.get("conversation_id") or "") or None,
+        turn_node_id=str(payload.get("turn_node_id") or "") or None,
+    )
 
 
 def _with_worker_execution_trace(
@@ -592,6 +608,7 @@ class RustStepResolverAdapter:
             cache_dir=self.cache_dir,
             conversation_id=str(payload.get("conversation_id") or "") or None,
             turn_node_id=str(payload.get("turn_node_id") or "") or None,
+            trace_context=_claimed_work_trace_context(work, payload, node_id),
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
             state=state,
@@ -621,6 +638,7 @@ class RustStepResolverAdapter:
             node_id=node_id,
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
+            trace_context=ctx.trace_ctx,
         )
 
     def _effect_from_result(
@@ -633,6 +651,7 @@ class RustStepResolverAdapter:
         node_id: str,
         message_queue: queue.Queue[JsonObject],
         lane_message_attempts: list[JsonObject],
+        trace_context: TraceContext,
     ) -> JsonObject:
         """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
         from kogwistar.runtime.base_runtime import (
@@ -782,6 +801,17 @@ class RustStepResolverAdapter:
             value = getattr(result, field, None)
             if value is not None:
                 effect[field] = _json_copy(value, field=f"result.{field}")
+        trace_events = effect.setdefault("trace_events", [])
+        if not isinstance(trace_events, list):
+            raise RustWorkerError("worker effect trace_events must be an array")
+        trace_events.append(
+            {
+                "schema_version": 1,
+                "event": "step_attempt_completed",
+                "operation": node_id,
+                **trace_context.as_fields(),
+            }
+        )
         extra = getattr(result, "model_extra", None)
         if isinstance(extra, Mapping):
             has_v1 = "graph_mutation_batch" in extra
@@ -921,6 +951,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             cache_dir=self.cache_dir,
             conversation_id=str(payload.get("conversation_id") or "") or None,
             turn_node_id=str(payload.get("turn_node_id") or "") or None,
+            trace_context=_claimed_work_trace_context(work, payload, node_id),
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
             state=state,
@@ -950,6 +981,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             node_id=node_id,
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
+            trace_context=ctx.trace_ctx,
         )
 
 

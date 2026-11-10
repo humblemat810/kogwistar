@@ -44,5 +44,11 @@
       "trace_id": "0123456789abcdef0123456789abcdef",
       "span_id": "0123456789abcdef"
     }
+  },
+  "native_resume_step": {
+    "trace_id": "{run_id}",
+    "span_id": "stp:{run_id}:{token_id}:{step_seq}:{attempt}:{node_id}",
+    "parent_span_id": "tok:{run_id}:{token_id}",
+    "attempt": 1
   }
 }
