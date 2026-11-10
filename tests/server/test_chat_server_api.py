@@ -1608,6 +1608,79 @@ def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
         assert run_id not in denied.text
 
 
+def test_checkpoint_list_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only checkpoint-list read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-checkpoint-list-run"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=3,
+        state={"cursor": "later"},
+    )
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"cursor": "start"},
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoints-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_envelope_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        checkpoints = payload["checkpoints"]
+        assert len(checkpoints) == 2
+        assert [item["step_seq"] for item in checkpoints] == [0, 3]
+        for checkpoint in checkpoints:
+            assert set(contract["required_checkpoint_fields"]).issubset(checkpoint)
+            assert checkpoint["workflow_id"] == "python-only-workflow"
+        assert checkpoints[0]["state"] == {"cursor": "start"}
+        assert checkpoints[1]["state"] == {"cursor": "later"}
+
+        denied = client.get(
+            f"/api/runs/{run_id}/checkpoints", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_resume_contract_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
