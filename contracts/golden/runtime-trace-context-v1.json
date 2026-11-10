@@ -34,5 +34,15 @@
         "attempt": 2
       }
     }
-  ]
+  ],
+  "resume_continuation": {
+    "persisted": {
+      "trace_id": "0123456789abcdef0123456789abcdef",
+      "run_execution_span_id": "0123456789abcdef"
+    },
+    "expected_parent": {
+      "trace_id": "0123456789abcdef0123456789abcdef",
+      "span_id": "0123456789abcdef"
+    }
+  }
 }
