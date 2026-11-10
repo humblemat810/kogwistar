@@ -1626,6 +1626,11 @@
             "/../../../contracts/golden/workflow-dead-letters-http-v1.json"
         )))
         .unwrap();
+        let dead_letter_replay_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-dead-letter-replay-missing-http-v1.json"
+        )))
+        .unwrap();
         for (path, required_keys) in [
             (
                 "/api/workflow/resources",
@@ -1756,21 +1761,27 @@
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/workflow/dead-letters/missing/replay")
+                    .uri(format!(
+                        "/api/workflow/dead-letters/{}/replay",
+                        dead_letter_replay_contract["run_id"].as_str().unwrap()
+                    ))
                     .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(
+            missing_replay.status().as_u16(),
+            dead_letter_replay_contract["success_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
         let missing_replay = serde_json::from_slice::<Value>(
             &to_bytes(missing_replay.into_body(), 16_384).await.unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            missing_replay,
-            json!({"run_id": "missing", "replayed": false})
-        );
+        assert_eq!(missing_replay, dead_letter_replay_contract["response_body"]);
         let checkpoint_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/run-checkpoints-v1.json"
         ))
