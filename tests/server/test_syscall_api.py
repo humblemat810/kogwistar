@@ -61,14 +61,21 @@ def test_syscall_surface_lists_versioned_ops(monkeypatch, engine_triplet):
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "syscall-catalog-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     with TestClient(server.app) as client:
-        resp = client.get("/api/syscall/v1")
-        resp.raise_for_status()
-        payload = resp.json()
-        assert payload["version"] == "v1"
-        assert "spawn_process" in payload["ops"]
-        assert "create_conversation" in payload["ops"]
-        assert "resume" in payload["ops"]
+        resp = client.get(
+            "/api/syscall/v1",
+            headers=_token_header(client, role="ro", ns="workflow"),
+        )
+        assert resp.status_code == contract["success_status"], resp.text
+        assert resp.json() == contract["response_body"]
 
 
 def test_syscall_create_conversation_uses_authenticated_owner(

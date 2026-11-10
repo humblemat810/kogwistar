@@ -131,6 +131,31 @@
             capabilities_contract["allowed_outcome"]
         );
 
+        let syscall_catalog_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-catalog-http-v1.json"
+        ))
+        .unwrap();
+        let syscall_catalog = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/syscall/v1")
+                    .header("authorization", format!("Bearer {read_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            syscall_catalog.status().as_u16(),
+            syscall_catalog_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let syscall_catalog: Value = serde_json::from_slice(
+            &to_bytes(syscall_catalog.into_body(), 32768).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(syscall_catalog, syscall_catalog_contract["response_body"]);
+
         let budget_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/workflow-budget-http-v1.json"
         ))
