@@ -1672,6 +1672,80 @@ def test_resume_contract_uses_python_defaults_and_checks_namespace(
         assert run_id not in denied.text
 
 
+def test_run_steps_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only workflow-step read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-workflow-steps-run"
+    _seed_step(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        op="prepare",
+        state_update=[["u", {"answer": "persisted"}]],
+        result_fields={"answer": "persisted"},
+        trace_context={
+            "trace_id": "trace-seed",
+            "span_id": "span-step-0",
+            "parent_span_id": "span-parent",
+            "attempt": 2,
+        },
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-inspection-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        trace_fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-trace-context-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert payload["run_id"] == run_id
+        assert len(payload["steps"]) == 1
+        step = payload["steps"][0]
+        assert set(contract["required_step_fields"]).issubset(step)
+        assert step["step_seq"] == 0
+        assert step["workflow_id"] == "python-only-workflow"
+        assert step["op"] == "prepare"
+        assert step["status"] == contract["step_status"]
+        assert step["result"]["answer"] == "persisted"
+        assert step["trace_context"] == trace_fixture["trace_context"]
+
+        denied = client.get(f"/api/runs/{run_id}/steps", headers=denied_headers)
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
