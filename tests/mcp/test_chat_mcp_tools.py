@@ -242,9 +242,17 @@ async def test_python_only_mcp_graph_read_does_not_load_rust(monkeypatch, tmp_pa
     engine.write.add_edge(edge)
     monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
 
-    with _claims("rw", "knowledge", sub="python-only-mcp"):
+    with _claims("rw", "wisdom", sub="python-only-mcp-denied"):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "kg_neighbors", {"rid": source.id}, enforce_visibility=True
+            )
+
+    with _claims("rw", "docs", sub="python-only-mcp"):
         neighbors = _structured(
-            await server.mcp.call_tool("kg_neighbors", {"rid": source.id})
+            await server.mcp._execute(
+                "kg_neighbors", {"rid": source.id}, enforce_visibility=True
+            )
         )
 
     assert neighbors == {"nodes": [target.id], "edges": [edge.id]}
