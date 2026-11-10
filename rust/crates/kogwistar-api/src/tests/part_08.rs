@@ -1,4 +1,188 @@
 #[tokio::test]
+async fn in_memory_receive_message_matches_shared_python_contract() {
+    let service = InMemoryGraphApplicationService::default();
+    let path = "/api/syscall/v1/receive_message";
+    assert!(service.supports_http_operation("POST", path));
+
+    let scope = GraphScope {
+        namespace: "scope-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let mut mutations = Vec::new();
+    let mut add_node = |id: &str, metadata: Value, node_scope: GraphScope| {
+        mutations.push(GraphMutation {
+            scope: node_scope,
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":id,"metadata":metadata}),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: Some("{}".to_owned()),
+                metadata: serde_json::from_value(metadata).unwrap(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        });
+    };
+    for (id, turn_index, role, summary) in [
+        ("turn-1", 1, "user", "first"),
+        ("turn-2", 2, "assistant", "second"),
+    ] {
+        add_node(
+            id,
+            json!({
+                "entity_type":"conversation_turn",
+                "conversation_id":"c1",
+                "turn_index":turn_index,
+                "role":role,
+                "summary":summary
+            }),
+            scope.clone(),
+        );
+        add_node(
+            &format!("acl-{id}"),
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"conversation",
+                "acl_target_grain":"node",
+                "acl_target_entity_id":id,
+                "acl_version":1,
+                "acl_mode":"public"
+            }),
+            scope.clone(),
+        );
+    }
+    add_node(
+        "turn-private",
+        json!({
+            "entity_type":"conversation_turn",
+            "conversation_id":"c1",
+            "turn_index":3,
+            "role":"assistant",
+            "summary":"private"
+        }),
+        scope.clone(),
+    );
+    add_node(
+        "acl-turn-private",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":"turn-private",
+            "acl_version":1,
+            "acl_mode":"private",
+            "owner_id":"someone-else"
+        }),
+        scope.clone(),
+    );
+    GraphMutationStore::apply_graph_mutations_atomic(&service.store, mutations)
+        .await
+        .unwrap();
+
+    let mut out_of_scope_mutations = Vec::new();
+    let mut add_out_of_scope_node = |id: &str, metadata: Value, node_scope: GraphScope| {
+        out_of_scope_mutations.push(GraphMutation {
+            scope: node_scope,
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":id,"metadata":metadata}),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: Some("{}".to_owned()),
+                metadata: serde_json::from_value(metadata).unwrap(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        });
+    };
+    let outside_scope = GraphScope {
+        workspace_id: Some("workspace-other".to_owned()),
+        ..scope.clone()
+    };
+    add_out_of_scope_node(
+        "turn-outside-scope",
+        json!({
+            "entity_type":"conversation_turn",
+            "conversation_id":"c1",
+            "turn_index":4,
+            "role":"assistant",
+            "summary":"out of scope"
+        }),
+        outside_scope.clone(),
+    );
+    add_out_of_scope_node(
+        "acl-turn-outside-scope",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":"turn-outside-scope",
+            "acl_version":1,
+            "acl_mode":"public"
+        }),
+        outside_scope,
+    );
+    GraphMutationStore::apply_graph_mutations_atomic(&service.store, out_of_scope_mutations)
+        .await
+        .unwrap();
+
+    let request = |args: Value, principal: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: path.to_owned(),
+        body: json!({"version":"v1","args":args}).to_string().into_bytes(),
+        principal,
+    };
+    let principal = json!({
+        "sub":"reader-1",
+        "role":"ro",
+        "storage_ns":"scope-a",
+        "workspace_id":"workspace-a",
+        "graph_space":"conversation",
+        "ns":["conversation"],
+        "capabilities":["read_graph"]
+    });
+    let denied = service
+        .execute(request(
+            json!({"conversation_id":"c1"}),
+            json!({"ns":["conversation"],"capabilities":[]}),
+        ))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+    let wrong_namespace = service
+        .execute(request(
+            json!({"conversation_id":"c1"}),
+            json!({"ns":["docs"],"capabilities":["read_graph"]}),
+        ))
+        .await;
+    assert_eq!(wrong_namespace.status, StatusCode::FORBIDDEN.as_u16());
+
+    let missing_id = service
+        .execute(request(json!({}), principal.clone()))
+        .await;
+    assert_eq!(missing_id.status, StatusCode::BAD_REQUEST.as_u16());
+
+    let response = service
+        .execute(request(json!({"conversation_id":"c1"}), principal))
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let response: Value = serde_json::from_slice(&response.body).unwrap();
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/receive-message-result-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(response["op"], "receive_message");
+    assert_eq!(response["result"], contract);
+}
+
+#[tokio::test]
 async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
     let service = InMemoryGraphApplicationService::default();
     assert!(service.supports_http_operation("POST", "/api/workflow/runs"));

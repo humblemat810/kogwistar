@@ -2142,6 +2142,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
         let route = path.split('?').next();
+        if method == "POST" && route == Some("/api/syscall/v1/receive_message") {
+            return true;
+        }
         if method == "POST" && route == Some("/api/workflow/runs") {
             return true;
         }
@@ -2188,6 +2191,23 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
             {
                 return self.submit_run_effect(&request).await;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/receive_message")
+            {
+                let input = match syscall_input(&request, "receive_message") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self.in_memory_receive_message_effect(&request, &input).await;
+                syscall_audit(
+                    &self.capabilities,
+                    &input.version,
+                    "receive_message",
+                    syscall_audit_status(&response),
+                );
+                return response;
             }
             if request.method == "GET" && runtime_run_route(&request.path_and_query).is_some() {
                 return self.read_runtime_run_effect(&request).await;
@@ -2251,6 +2271,89 @@ impl ApplicationService for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/messaging/service.py#receive_message; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
+    async fn in_memory_receive_message_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "receive_message",
+            false,
+            &["read_graph"],
+            "conversation",
+        ) {
+            return syscall_forbidden("receive_message");
+        }
+        let Some(conversation_id) = input.args.get("conversation_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let security_scope = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let (nodes, edges) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            security_scope["security_scope"].as_str(),
+        );
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+        let transcript = match conversation_transcript_from_visible_records(
+            &visible_nodes,
+            conversation_id,
+            10_000,
+        ) {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_INVALID_TRANSCRIPT",
+                    error.to_string(),
+                );
+            }
+        };
+        let result = legacy_receive_message_value(transcript);
+        syscall_result(
+            &input.version,
+            "receive_message",
+            json_effect(StatusCode::OK, result),
+        )
+    }
+
     // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_run_admission_is_authenticated_and_atomic, rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_admission_uses_authoritative_design_and_rejects_conflicts; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission validates an exact ready workflow-design snapshot when present, accepts only one unjoined Rust-native v1 step, and atomically admits run/event/transition/lane without language fallback.
     async fn submit_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !principal_strings(&request.principal, "ns")
