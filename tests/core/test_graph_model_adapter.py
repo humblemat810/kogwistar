@@ -732,6 +732,24 @@ def test_python_flattened_llm_node_round_trips_shared_wire_fixture() -> None:
     assert "multimodal_span_ids" not in payload["mentions"][0]
 
 
+def test_python_assoc_flattened_llm_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-node-assoc-flattened-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = engine_models.AssocFlattenedLLMNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="llm", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["id"] == payload["local_id"] == "nn:assoc-flat-node"
+    assert payload["properties"]["vendor_extension"] == {"version": 1}
+    assert "mentions" not in payload
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",

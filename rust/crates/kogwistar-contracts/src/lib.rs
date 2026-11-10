@@ -47,9 +47,9 @@ pub use graph_extraction::{
 pub use graph_kind::normalize_graph_kind;
 pub use graph_model::{
     AclEdgeMetadataV1, AclEdgeTypeV1, AclGrainV1, AclModeV1, AclNodeMetadataV1,
-    ConversationCausalTypeV1, ConversationEdgeMetadataV1, ConversationNodeMetadataV1,
-    ConversationRoleV1, DocumentNodeTypeV1, DocumentNodeV1, EdgeEntity, EdgeId,
-    FlattenedGroundingV1, FlattenedLlmEdgeV1, FlattenedLlmNodeV1, GraphCapabilityProfile,
+    AssocFlattenedLlmNodeV1, ConversationCausalTypeV1, ConversationEdgeMetadataV1,
+    ConversationNodeMetadataV1, ConversationRoleV1, DocumentNodeTypeV1, DocumentNodeV1, EdgeEntity,
+    EdgeId, FlattenedGroundingV1, FlattenedLlmEdgeV1, FlattenedLlmNodeV1, GraphCapabilityProfile,
     GraphEdgePayload, GraphEntity, GraphEntityCoreV1, GraphEntityKind, GraphEntityPayload,
     GraphEntityType, GraphModelCapabilityProfileV1, GraphModelClass, GraphModelEnvelope,
     GraphModelError, GraphModelFamily, GroundingV1, HasExactLevel, HasLevel, HasLifecycle,

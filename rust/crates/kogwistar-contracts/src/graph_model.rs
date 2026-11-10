@@ -1505,6 +1505,11 @@ fn validate_flattened_llm_shape(
     model_class: GraphModelClass,
     payload: &Value,
 ) -> Result<(), GraphModelError> {
+    if model_class == GraphModelClass::AssocFlattenedLlmNode {
+        let _: AssocFlattenedLlmNodeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        return validate_llm_ids(model_class, payload);
+    }
     if model_class.entity_kind() == GraphEntityKind::Edge {
         let edge: FlattenedLlmEdgeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
@@ -2402,6 +2407,14 @@ pub struct FlattenedLlmNodeV1 {
     #[serde(flatten)]
     pub fields: LlmEntityFieldsV1,
     pub mentions: Vec<FlattenedGroundingV1>,
+}
+
+/// Associated-flattened nodes carry entity fields only; grounding relations
+/// live in the separate association tables.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssocFlattenedLlmNodeV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -5152,6 +5165,39 @@ mod tests {
         )
         .expect("valid Rust round-trip JSON");
         assert_eq!(round_trip["model_class"], "flattened_llm_node");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+    }
+
+    #[test]
+    fn assoc_flattened_llm_node_round_trip_has_no_inline_mentions() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-node-assoc-flattened-model-v1.json"
+        )))
+        .expect("valid Python AssocFlattenedLLMNode fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope = RawGraphModelEnvelopeV1::from_json(&wire)
+            .expect("valid associated flattened-node envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::AssocFlattenedLlmNode);
+        envelope
+            .validate_family_v1()
+            .expect("associated grounding belongs to the separate association tables");
+        let typed: AssocFlattenedLlmNodeV1 = serde_json::from_value(fixture["payload"].clone())
+            .expect("typed associated flattened node");
+        assert_eq!(typed.fields.local_id.as_deref(), Some("nn:assoc-flat-node"));
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], "assoc_flattened_llm_node");
         assert_eq!(round_trip["payload"], fixture["payload"]);
     }
 

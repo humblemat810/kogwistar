@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "model_class": "assoc_flattened_llm_node",
+  "payload": {
+    "label": "Associated flattened node parity",
+    "type": "entity",
+    "summary": "Cross-language associated flattened node fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": {"vendor_extension": {"version": 1}},
+    "id": "nn:assoc-flat-node",
+    "local_id": "nn:assoc-flat-node"
+  }
+}
