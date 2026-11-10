@@ -142,6 +142,11 @@ CONVERSATION_GRAPH_METADATA_FIXTURE = json.loads(
         / "conversation-graph-metadata-v1.json"
     ).read_text(encoding="utf-8")
 )
+CONVERSATION_NODE_PAYLOAD_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "conversation-node-payload-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
 WORKFLOW_DESIGN_METADATA_FIXTURE = json.loads(
     (
         ROOT
@@ -443,6 +448,29 @@ def test_base_edge_payload_digest_is_stable_through_rust_envelope(
 
     envelope = stable_json_dumps(
         {"schema_version": 1, "model_class": "edge", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_conversation_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    fixture = CONVERSATION_NODE_PAYLOAD_FIXTURE
+    model = ConversationNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert canonical_json == fixture["canonical_json"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "conversation_node", "payload": payload}
     )
     rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
     rust_payload_json = stable_json_dumps(rust_round_trip["payload"])

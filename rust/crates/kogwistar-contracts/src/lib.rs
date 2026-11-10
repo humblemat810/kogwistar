@@ -1716,6 +1716,30 @@ mod tests {
     }
 
     #[test]
+    fn conversation_node_payload_matches_python_fixture_and_digest() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/conversation-node-payload-v1.json"
+        )))
+        .expect("valid Python ConversationNode fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(fixture["model_class"], "conversation_node");
+
+        let payload = fixture.get("payload").expect("ConversationNode payload");
+        let envelope = GraphModelEnvelope::new(GraphModelClass::ConversationNode, payload.clone());
+        envelope
+            .validate_family_v1()
+            .expect("Python ConversationNode payload validates in Rust");
+
+        let canonical = canonical_json(payload, false);
+        assert_eq!(canonical, fixture["canonical_json"]);
+        assert_eq!(
+            hex::encode(Sha256::digest(canonical.as_bytes())),
+            fixture["canonical_json_sha256"]
+        );
+    }
+
+    #[test]
     fn evidence_hash_matches_python_golden() {
         for case in fixture()["evidence_hashes"].as_array().unwrap() {
             let canonical = canonicalize_evidence_pack_digest(&case["value"]).unwrap();
