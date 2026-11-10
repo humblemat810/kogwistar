@@ -3125,6 +3125,316 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         "completed"
     );
 
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+    )))
+    .unwrap();
+    let fixture_run_id = format!("provider-event-fixture-{}", uuid::Uuid::new_v4());
+    let fixture_workflow_id = "provider-event-fixture-workflow";
+    let fixture_conversation_id = fixture["publication"]["conversation_id"]
+        .as_str()
+        .unwrap();
+    let fixture_turn_id = fixture["envelope"]["trace"]["turn_id"]
+        .as_str()
+        .unwrap();
+    let fixture_principal = json!({
+        "sub": "causal-owner", "user_id": "causal-owner", "role": "rw",
+        "ns": ["alpha"], "storage_ns": "alpha",
+        "capabilities": ["read_graph", "write_graph"]
+    });
+    let fixture_binding = runtime_owner_binding_v1(&fixture_principal, &service.capabilities)
+        .unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: fixture_run_id.clone(),
+            conversation_id: fixture_conversation_id.to_owned(),
+            workflow_id: fixture_workflow_id.to_owned(),
+            user_id: Some("causal-owner".to_owned()),
+            user_turn_node_id: fixture_turn_id.to_owned(),
+            status: "queued".to_owned(),
+        })
+        .await
+        .unwrap();
+    let fixture_admission = service
+        .store
+        .append_server_run_event(
+            &fixture_run_id,
+            "run.created",
+            json!({"runtime_owner_binding": fixture_binding}).to_string(),
+        )
+        .await
+        .unwrap();
+    let fixture_start: kogwistar_runtime::RecordedRuntimeTransition =
+        serde_json::from_value(json!({
+            "contract_version": 1,
+            "transition_id": "fixture-run-start",
+            "expected_event_seq": fixture_admission.seq,
+            "kind": "start",
+            "run_id": fixture_run_id,
+            "workflow_id": fixture_workflow_id,
+            "conversation_id": fixture_conversation_id,
+            "user_id": "causal-owner",
+            "user_turn_node_id": fixture_turn_id,
+            "step_seq": 0,
+            "node_id": "fixture-provider-step",
+            "token_id": fixture_run_id,
+            "initial_state": {},
+            "frontier": {
+                "pending": [["fixture-handler-step", 0, fixture_run_id, null]],
+                "suspended": [], "join_node_ids": [],
+                "join_outstanding": [], "join_waiters": {}
+            }
+        }))
+        .unwrap();
+    let _fixture_started = service
+        .store
+        .apply_recorded_runtime_transition(fixture_start, false)
+        .await
+        .unwrap();
+    let mut fixture_trace: kogwistar_contracts::EventTraceMetadataV1 =
+        serde_json::from_value(fixture["envelope"]["trace"].clone()).unwrap();
+    fixture_trace.run_id = fixture_run_id.clone();
+    fixture_trace.turn_id = fixture_turn_id.to_owned();
+    fixture_trace.workflow_node_id = "fixture-provider-step".to_owned();
+    fixture_trace.producer_step_seq = None;
+    let fixture_event = kogwistar_contracts::durable_provider_event(
+        &fixture_trace,
+        serde_json::from_value(fixture["envelope"]["event"].clone()).unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_value(&fixture_event.event).unwrap()["kind"],
+        "field_completed"
+    );
+    let fixture_message_id = format!("msg:{}", fixture_event.event_id);
+    service
+        .store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: fixture_message_id.clone(),
+            namespace: "alpha".to_owned(),
+            purpose: "agent_event".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            conversation_id: fixture_conversation_id.to_owned(),
+            recipient_id: "agent-event-consumer".to_owned(),
+            sender_id: "agent-runtime".to_owned(),
+            msg_type: "agent.provider_event".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 2,
+            available_at: 2,
+            run_id: Some(fixture_run_id.clone()),
+            step_id: Some(fixture_event.trace.step_id.clone()),
+            correlation_id: Some(fixture_event.event_id.clone()),
+            payload_json: Some(serde_json::to_string(&fixture_event).unwrap()),
+            error_json: None,
+        })
+        .await
+        .unwrap();
+    let fixture_claimed_by = "fixture-event-consumer#1";
+    let fixture_claimed = service
+        .store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "alpha".to_owned(),
+            inbox_id: "agent-provider-events".to_owned(),
+            claimed_by: fixture_claimed_by.to_owned(),
+            message_ids: Some(vec![fixture_message_id.clone()]),
+            run_id: Some(fixture_run_id.clone()),
+            msg_type: Some("agent.provider_event".to_owned()),
+            recipient_id: Some("agent-event-consumer".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        })
+        .await
+        .unwrap();
+    assert_eq!(fixture_claimed.len(), 1);
+    let fixture_claim = json!({
+        "message_id": fixture_message_id,
+        "claimed_by": fixture_claimed_by,
+        "event_id": fixture_event.event_id
+    });
+    let previous_events = service
+        .store
+        .list_server_run_events(&fixture_run_id, 0, usize::MAX)
+        .await
+        .unwrap();
+    let fixture_handler_seq = 1;
+    let fixture_handler: kogwistar_runtime::RecordedRuntimeTransition =
+        serde_json::from_value(json!({
+            "contract_version": 1,
+            "transition_id": "fixture-causal-handler",
+            "expected_event_seq": previous_events.last().unwrap().seq,
+            "kind": "recorded_step_success",
+            "run_id": fixture_run_id,
+            "workflow_id": fixture_workflow_id,
+            "conversation_id": fixture_conversation_id,
+            "step_seq": fixture_handler_seq,
+            "node_id": "fixture-handler-step",
+            "token_id": fixture_run_id,
+            "state_update": [["u", {
+                "agent_event_current": fixture_event.clone(),
+                "agent_event_claim": fixture_claim.clone(),
+                "agent_event_route": "final",
+                "agent_event_handling_step_seq": fixture_handler_seq
+            }]],
+            "frontier": {
+                "pending": [["fixture-ack-step", 0, fixture_run_id, null]],
+                "suspended": [], "join_node_ids": [],
+                "join_outstanding": [], "join_waiters": {}
+            },
+            "result": {"handled": true}
+        }))
+        .unwrap();
+    service
+        .store
+        .apply_recorded_runtime_transition(fixture_handler, false)
+        .await
+        .unwrap();
+
+    let fixture_ack_message_id = "fixture-causal-ack-runtime";
+    service
+        .store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: fixture_ack_message_id.to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: fixture_conversation_id.to_owned(),
+            recipient_id: "rust-native-worker".to_owned(),
+            sender_id: "rust-scheduler".to_owned(),
+            msg_type: "workflow.step.execute".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 2,
+            available_at: 2,
+            run_id: Some(fixture_run_id.clone()),
+            step_id: Some("fixture-ack-step".to_owned()),
+            correlation_id: Some(fixture_run_id.clone()),
+            payload_json: Some(json!({
+                "workflow_id": fixture_workflow_id,
+                "conversation_id": fixture_conversation_id,
+                "token_id": fixture_run_id,
+                "parent_token_id": null,
+                "op": "agent.event.ack"
+            }).to_string()),
+            error_json: None,
+        })
+        .await
+        .unwrap();
+    let fixture_runtime_claim = service
+        .store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "workflow".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            claimed_by: "fixture-runtime-worker#1".to_owned(),
+            message_ids: Some(vec![fixture_ack_message_id.to_owned()]),
+            run_id: Some(fixture_run_id.clone()),
+            msg_type: Some("workflow.step.execute".to_owned()),
+            recipient_id: Some("rust-native-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        })
+        .await
+        .unwrap();
+    assert_eq!(fixture_runtime_claim.len(), 1);
+    let fixture_handoff = kogwistar_runtime::RecordedWorkerHandoff {
+        message_id: fixture_ack_message_id.to_owned(),
+        claimed_by: "fixture-runtime-worker#1".to_owned(),
+        run_id: fixture_run_id.clone(),
+        step_id: "fixture-ack-step".to_owned(),
+        correlation_id: fixture_run_id.clone(),
+    };
+    let fixture_ack_effect = kogwistar_runtime::execute_native_step(
+        &kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.ack".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: fixture_run_id.clone(),
+            workflow_id: fixture_workflow_id.to_owned(),
+            node_id: "fixture-ack-step".to_owned(),
+            conversation_id: fixture_conversation_id.to_owned(),
+            turn_node_id: Some(fixture_turn_id.to_owned()),
+            token_id: fixture_run_id.clone(),
+            parent_token_id: None,
+            step_seq: fixture_handler_seq + 1,
+            state: serde_json::from_value(json!({
+                "agent_event_current": fixture_event.clone(),
+                "agent_event_claim": fixture_claim,
+                "agent_event_route": "final",
+                "agent_event_handling_step_seq": fixture_handler_seq
+            })).unwrap(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        },
+    )
+    .unwrap();
+    let fixture_ack_response = service
+        .apply_runtime_result_input(
+            RuntimeWorkerResultRequest {
+                handoff: fixture_handoff,
+                transition: None,
+                effect: Some(fixture_ack_effect),
+            },
+            None,
+            None,
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        )
+        .await;
+    assert_eq!(
+        fixture_ack_response.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&fixture_ack_response.body)
+    );
+    let fixture_lane = service
+        .store
+        .get_projected_lane_message(&fixture_message_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fixture_lane.status, "completed");
+    let fixture_payload: Value =
+        serde_json::from_str(fixture_lane.payload_json.as_deref().unwrap()).unwrap();
+    assert_eq!(fixture_payload["event"], fixture["envelope"]["event"]);
+    assert_eq!(fixture_payload["trace"]["run_id"], fixture_run_id);
+    let fixture_links = service
+        .conversation_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: GraphScope {
+                namespace: "alpha".to_owned(),
+                workspace_id: None,
+                graph_space: Some("conversation".to_owned()),
+            },
+            table: "gke_edges".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 1000,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|record| {
+            let document = record.document?;
+            let payload = serde_json::from_str::<Value>(&document).ok()?;
+            let targets_fixture_event = payload["source_ids"]
+                .as_array()?
+                .iter()
+                .any(|source| source.as_str() == Some(fixture_message_id.as_str()));
+            targets_fixture_event
+                .then(|| payload["relation"].as_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    assert!(fixture_links.iter().any(|relation| relation == "handled_by_step"));
+    assert_eq!(
+        service
+            .store
+            .get_projected_lane_message(&format!("msg:{}", fixture_event.event_id))
+            .await
+            .unwrap()
+            .unwrap()
+        .status,
+        "completed"
+    );
+
     drop(service);
     let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
         .await
