@@ -1699,13 +1699,17 @@ mod tests {
                 .as_str()
                 .expect("Python-produced canonical JSON");
             assert_eq!(canonical_json(payload, false), expected, "{}", case["kind"]);
-            if case["kind"] == "node" {
+            if matches!(
+                case["kind"].as_str(),
+                Some("node" | "edge" | "edge_with_edge_endpoints")
+            ) {
                 assert_eq!(
                     hex::encode(Sha256::digest(expected.as_bytes())),
                     case["canonical_json_sha256"]
                         .as_str()
-                        .expect("Node canonical JSON SHA-256"),
-                    "base Node canonical JSON digest"
+                        .expect("graph entity canonical JSON SHA-256"),
+                    "{} canonical JSON digest",
+                    case["kind"]
                 );
             }
         }

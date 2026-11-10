@@ -427,6 +427,29 @@ def test_base_node_payload_digest_is_stable_through_rust_envelope(
 
 
 @pytest.mark.requires_rust
+@pytest.mark.parametrize("kind", ["edge", "edge_with_edge_endpoints"])
+def test_base_edge_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    case = next(item for item in GRAPH_MODEL_FIXTURE["cases"] if item["kind"] == kind)
+    model = Edge.model_validate(case["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = case["canonical_json_sha256"]
+
+    assert canonical_json == case["canonical_json"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "edge", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
 def test_acl_node_type_tag_and_extension_metadata_round_trip_through_rust(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
