@@ -6,6 +6,8 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 ## Scope Accounting
 
+Current DL-08C delta: FW-08C-01-REDIRECT now passes for the shared current-vector contract across Python, Rust in-memory, SQLite+Chroma, and PostgreSQL. Ordinary semantic queries exclude tombstoned redirect sources and may return active targets as independent hits; Python historical/as-of redirect following remains a distinct API and is not claimed as Rust parity. DL-08C stays open for its other mapped authorization, provenance, mutation, and backend-runtime requirements.
+
 Current inventory: **177 items** (**159 PASS, 18 IN PROGRESS; 89.8% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
 Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 18 open IDs above and do not change this inventory or denominator.

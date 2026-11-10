@@ -2440,6 +2440,9 @@
                 if let Some(lifecycle_status) = entity["lifecycle_status"].as_str() {
                     metadata.insert("lifecycle_status".to_owned(), json!(lifecycle_status));
                 }
+                if let Some(redirect_to_id) = entity["redirect_to_id"].as_str() {
+                    metadata.insert("redirect_to_id".to_owned(), json!(redirect_to_id));
+                }
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
@@ -2585,6 +2588,12 @@
                     principal["expected"][expected_key],
                     "unexpected {entity_kind} vector results for {subject}"
                 );
+                let redirect = &fixture["current_vector_redirect_contract"][entity_kind];
+                for row in result["ids"].as_array().unwrap() {
+                    let ids = row.as_array().unwrap();
+                    assert!(!ids.contains(&redirect["source_id"]));
+                    assert!(ids.contains(&redirect["target_id"]));
+                }
                 let actual_distances = result["distances"].as_array().unwrap();
                 let expected_distances = principal["expected"]["distances"][expected_key]
                     .as_array()

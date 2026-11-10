@@ -7,6 +7,10 @@
   },
   "metric": "cosine",
   "n_results": 3,
+  "current_vector_redirect_contract": {
+    "node": {"source_id": "tombstoned-public", "target_id": "visible-public"},
+    "edge": {"source_id": "edge-tombstoned-public", "target_id": "edge-public"}
+  },
   "query_embeddings": [[1.0, 0.0], [0.0, 1.0]],
   "nodes": [
     {
@@ -38,7 +42,8 @@
       "id": "tombstoned-public",
       "embedding": [0.99, 0.1],
       "mode": "public",
-      "lifecycle_status": "tombstoned"
+      "lifecycle_status": "tombstoned",
+      "redirect_to_id": "visible-public"
     }
   ],
   "edges": [
@@ -80,7 +85,8 @@
       "mode": "public",
       "source_ids": ["visible-public"],
       "target_ids": ["visible-public"],
-      "lifecycle_status": "tombstoned"
+      "lifecycle_status": "tombstoned",
+      "redirect_to_id": "edge-public"
     }
   ],
   "principals": [

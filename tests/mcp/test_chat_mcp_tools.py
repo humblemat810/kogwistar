@@ -666,6 +666,8 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             metadata["owner_agent_id"] = spec["owner_id"]
         if "lifecycle_status" in spec:
             metadata["lifecycle_status"] = spec["lifecycle_status"]
+        if "redirect_to_id" in spec:
+            metadata["redirect_to_id"] = spec["redirect_to_id"]
         node = build_entity_node(
             node_id=spec["id"],
             doc_id="D-vector-acl",
@@ -684,6 +686,8 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             metadata["owner_agent_id"] = spec["owner_id"]
         if "lifecycle_status" in spec:
             metadata["lifecycle_status"] = spec["lifecycle_status"]
+        if "redirect_to_id" in spec:
+            metadata["redirect_to_id"] = spec["redirect_to_id"]
         edge = build_relationship_edge(
             edge_id=spec["id"],
             src=spec["source_ids"][0],
@@ -717,6 +721,16 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             assert [[node.id for node in batch] for batch in node_results] == principal[
                 "expected"
             ]["nodes"], principal["id"]
+            assert all(
+                fixture["current_vector_redirect_contract"]["node"]["source_id"]
+                not in [node.id for node in batch]
+                for batch in node_results
+            )
+            assert all(
+                fixture["current_vector_redirect_contract"]["node"]["target_id"]
+                in [node.id for node in batch]
+                for batch in node_results
+            )
             edge_results = engine.read.query_edges(
                 query_embeddings=fixture["query_embeddings"],
                 n_results=fixture["n_results"],
@@ -724,6 +738,16 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             assert [[edge.id for edge in batch] for batch in edge_results] == principal[
                 "expected"
             ]["edges"]
+            assert all(
+                fixture["current_vector_redirect_contract"]["edge"]["source_id"]
+                not in [edge.id for edge in batch]
+                for batch in edge_results
+            )
+            assert all(
+                fixture["current_vector_redirect_contract"]["edge"]["target_id"]
+                in [edge.id for edge in batch]
+                for batch in edge_results
+            )
             if principal["id"] == "reader-a":
                 limited = engine.read.query_nodes(
                     query_embeddings=[fixture["query_embeddings"][0]], n_results=1

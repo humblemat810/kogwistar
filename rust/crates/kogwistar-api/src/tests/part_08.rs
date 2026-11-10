@@ -5508,6 +5508,9 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
             if let Some(lifecycle_status) = spec["lifecycle_status"].as_str() {
                 metadata.insert("lifecycle_status".to_owned(), json!(lifecycle_status));
             }
+            if let Some(redirect_to_id) = spec["redirect_to_id"].as_str() {
+                metadata.insert("redirect_to_id".to_owned(), json!(redirect_to_id));
+            }
             mutations.push(json!({
                 "scope": scope,
                 "table": table,
@@ -5623,6 +5626,12 @@ async fn in_memory_vector_query_matches_shared_python_acl_contract() {
                 result["ids"], principal["expected"][expected_key],
                 "unexpected {kind} candidates for {subject}"
             );
+            let redirect = &fixture["current_vector_redirect_contract"][kind];
+            for row in result["ids"].as_array().unwrap() {
+                let ids = row.as_array().unwrap();
+                assert!(!ids.contains(&redirect["source_id"]));
+                assert!(ids.contains(&redirect["target_id"]));
+            }
             let expected_distances = &principal["expected"]["distances"][expected_key];
             let actual_distances = result["distances"].as_array().unwrap();
             assert_eq!(
@@ -6226,6 +6235,12 @@ async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
                 result["ids"], principal_fixture["expected"][expected_key],
                 "unexpected {kind} candidates for {subject}: {result}"
             );
+            let redirect = &fixture["current_vector_redirect_contract"][kind];
+            for row in result["ids"].as_array().unwrap() {
+                let ids = row.as_array().unwrap();
+                assert!(!ids.contains(&redirect["source_id"]));
+                assert!(ids.contains(&redirect["target_id"]));
+            }
             for (actual_query, expected_query) in result["distances"]
                 .as_array()
                 .unwrap()
