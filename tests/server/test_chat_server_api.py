@@ -1035,6 +1035,7 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
+        wrong_ns_headers = _token_header(client, role="ro", ns="wisdom")
 
         created = client.post(
             "/api/conversations", json={"user_id": "u-chat"}, headers=rw_headers
@@ -1109,6 +1110,12 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert "output.delta" in names
         assert "output.completed" in names
         assert names[-1] == "run.completed"
+
+        denied_stream = client.get(
+            f"/api/runs/{run_id}/events", headers=wrong_ns_headers
+        )
+        assert denied_stream.status_code == 403
+        assert run_id not in denied_stream.text
 
         sse_contract = json.loads(
             (
