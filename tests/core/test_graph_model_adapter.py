@@ -871,6 +871,34 @@ def test_python_llm_node_extraction_round_trips_flat_excerpt_fixture() -> None:
     assert legacy.mentions[0].end_char == len(legacy.mentions[0].excerpt) - 1
 
 
+def test_python_llm_edge_extraction_round_trips_flat_excerpt_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-edge-extraction-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    validation_payload = dict(fixture["payload"])
+    validation_payload["mentions"] = [
+        {**span, "insertion_method": "contract-test"}
+        for span in fixture["payload"]["mentions"]
+    ]
+
+    restored = engine_models.LLMEdgeExtraction.model_validate(validation_payload)
+    payload = restored.model_dump(field_mode="llm", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert list(restored.iter_span()) == restored.mentions
+    assert list(restored.iter_evidence()) == restored.mentions
+
+    legacy_payload = dict(validation_payload)
+    legacy_payload["mentions"] = [dict(validation_payload["mentions"][0])]
+    legacy_payload["mentions"][0]["end_char"] = -1
+    legacy = engine_models.LLMEdgeExtraction.model_validate(legacy_payload)
+    assert legacy.mentions[0].end_char == len(legacy.mentions[0].excerpt) - 1
+
+
 def test_python_flattened_llm_node_round_trips_shared_wire_fixture() -> None:
     fixture_path = (
         Path(__file__).resolve().parents[2]

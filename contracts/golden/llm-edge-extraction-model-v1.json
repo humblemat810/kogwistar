@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "model_class": "llm_edge_extraction",
+  "origin": "Python LLMEdgeExtraction.model_dump(field_mode=llm, dump_format=json)",
+  "payload": {
+    "canonical_entity_id": null,
+    "domain_id": null,
+    "id": null,
+    "label": "Extraction edge parity",
+    "local_id": null,
+    "mentions": [
+      {
+        "chunk_id": null,
+        "collection_page_url": "https://example.test/collection",
+        "context_after": " edge",
+        "context_before": "an ",
+        "doc_id": "doc:rust-python-extraction-edge",
+        "document_page_url": "https://example.test/document#extract-edge",
+        "end_char": 13,
+        "excerpt": "extracted",
+        "page_number": 1,
+        "source_cluster_id": null,
+        "start_char": 4
+      }
+    ],
+    "properties": {
+      "vendor_extension": {
+        "version": 1
+      }
+    },
+    "relation": "supports",
+    "source_edge_ids": [
+      "ne:parent"
+    ],
+    "source_ids": [
+      "nn:extract-source"
+    ],
+    "summary": "Cross-language extraction edge fixture",
+    "target_edge_ids": null,
+    "target_ids": [
+      "node:existing"
+    ],
+    "type": "relationship"
+  }
+}

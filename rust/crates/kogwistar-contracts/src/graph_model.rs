@@ -1448,6 +1448,49 @@ fn validate_llm_shape(
         }
         return validate_llm_ids(model_class, payload);
     }
+    if model_class == GraphModelClass::LlmEdgeExtraction {
+        let edge: LlmEdgeExtractionV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if edge.mentions.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "LLM extraction edge requires mentions",
+            });
+        }
+        if edge
+            .source_ids
+            .iter()
+            .chain(&edge.target_ids)
+            .any(|endpoint| endpoint.0.is_empty())
+            || edge
+                .source_edge_ids
+                .as_option()
+                .into_iter()
+                .flatten()
+                .chain(edge.target_edge_ids.as_option().into_iter().flatten())
+                .any(|endpoint| endpoint.0.is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "LLM edge endpoint IDs must not be empty",
+            });
+        }
+        for (index, span) in edge.mentions.iter().enumerate() {
+            if span.end_char <= span.start_char || span.page_number == 0 {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "LLM extraction span bounds or page number are invalid",
+                });
+            }
+            if !payload["mentions"][index]["excerpt"].is_string() {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "LLM extraction spans require excerpt strings",
+                });
+            }
+        }
+        return validate_llm_ids(model_class, payload);
+    }
     if model_class.entity_kind() == GraphEntityKind::Edge {
         let edge: LlmEdgeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
@@ -2382,6 +2425,20 @@ pub struct LlmNodeExtractionV1 {
     pub mentions: Vec<LlmTextSpanV1>,
 }
 
+/// Extraction edges use the same direct excerpt spans as extraction nodes,
+/// while retaining typed node and edge incidence endpoints.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmEdgeExtractionV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub source_ids: Vec<NodeId>,
+    pub target_ids: Vec<NodeId>,
+    pub relation: String,
+    pub source_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub target_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub mentions: Vec<LlmTextSpanV1>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LlmEdgeV1 {
     #[serde(flatten)]
@@ -2845,6 +2902,46 @@ impl GraphEntity for LlmEdgeV1 {
 }
 
 impl EdgeEntity for LlmEdgeV1 {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.source_ids)
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.target_ids)
+    }
+
+    fn relation(&self) -> Option<&str> {
+        Some(&self.relation)
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_option().map(Vec::as_slice)
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_option().map(Vec::as_slice)
+    }
+}
+
+impl GraphEntity for LlmEdgeExtractionV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl EdgeEntity for LlmEdgeExtractionV1 {
     fn source_node_ids(&self) -> Option<&[NodeId]> {
         Some(&self.source_ids)
     }
@@ -4550,6 +4647,7 @@ mod tests {
         assert_edge::<PersistentEdgeV1>();
         assert_node::<LlmNodeV1>();
         assert_edge::<LlmEdgeV1>();
+        assert_edge::<LlmEdgeExtractionV1>();
         assert_node::<AssocFlattenedLlmNodeV1>();
         assert_edge::<AssocFlattenedLlmEdgeV1>();
         assert_node::<FlattenedLlmNodeV1>();
@@ -5219,6 +5317,57 @@ mod tests {
             "schema_version": fixture["schema_version"],
             "model_class": fixture["model_class"],
             "payload": missing_excerpt,
+        })
+        .to_string();
+        assert!(
+            RawGraphModelEnvelopeV1::from_json(&invalid_wire)
+                .expect("valid JSON envelope")
+                .validate_family_v1()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn llm_edge_extraction_round_trip_preserves_flat_spans_and_endpoints() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-edge-extraction-model-v1.json"
+        )))
+        .expect("valid Python LLMEdgeExtraction fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope =
+            RawGraphModelEnvelopeV1::from_json(&wire).expect("valid extraction-edge envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::LlmEdgeExtraction);
+        envelope
+            .validate_family_v1()
+            .expect("valid flat extraction spans and endpoints");
+        let typed: LlmEdgeExtractionV1 =
+            serde_json::from_value(fixture["payload"].clone()).expect("typed extraction edge");
+        assert_eq!(typed.mentions.len(), 1);
+        assert_eq!(typed.mentions[0].excerpt, "extracted");
+        assert_eq!(typed.source_ids[0].0, "nn:extract-source");
+        assert_eq!(typed.source_edge_ids.as_option().unwrap()[0].0, "ne:parent");
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], "llm_edge_extraction");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+
+        let mut empty_endpoint = fixture["payload"].clone();
+        empty_endpoint["source_ids"][0] = Value::String(String::new());
+        let invalid_wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": empty_endpoint,
         })
         .to_string();
         assert!(
