@@ -38,3 +38,24 @@ def test_python_conversation_create_event_payload_matches_shared_golden() -> Non
 
     assert (conversation_id, node_id) == ("conv-create-test", "conv-create-start")
     assert captured["payload"] == fixture["payload"]
+
+
+def test_python_conversation_node_model_round_trips_subtype_fields() -> None:
+    fixture = json.loads(
+        (
+            ROOT
+            / "contracts"
+            / "golden"
+            / "conversation-create-start-node-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    restored = ConversationNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="backend", exclude=["embedding"])
+
+    assert payload == fixture["payload"]
+    assert payload["role"] == "system"
+    assert payload["turn_index"] == -1
+    assert payload["conversation_id"] == "conv-create-test"
+    assert payload["user_id"] == "alice"
+    assert payload["metadata"]["entity_type"] == "conversation_start"
