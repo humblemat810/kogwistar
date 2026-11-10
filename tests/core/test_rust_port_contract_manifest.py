@@ -48,7 +48,14 @@ def _markdown_table_rows(path: Path, row_prefix: str) -> list[list[str]]:
 def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     coarse_rows = _markdown_table_rows(DUAL_LANGUAGE_CHECKLIST_PATH, "| DL-")
     fine_rows = _markdown_table_rows(DUAL_LANGUAGE_WORKLIST_PATH, "| FW-")
-    coarse_status = {row[0]: row[1].split()[0] for row in coarse_rows}
+    coarse_status = {
+        row[0]: next(
+            (status for status in ("IN PROGRESS", "NOT STARTED", "PASS", "FAIL", "BLOCKED")
+             if row[1] == status or row[1].startswith(f"{status} ")),
+            row[1].split()[0],
+        )
+        for row in coarse_rows
+    }
     fine_by_coarse: dict[str, list[str]] = {}
     fine_ids: set[str] = set()
     parents: dict[str, tuple[str, list[str]]] = {}
@@ -96,7 +103,7 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     open_coarse = {
         coarse_id
         for coarse_id, status in coarse_status.items()
-        if status in {"IN", "FAIL", "BLOCKED"}
+        if status in {"IN PROGRESS", "NOT STARTED", "FAIL", "BLOCKED"}
     }
     assert open_coarse <= fine_by_coarse.keys(), (
         "every open coarse gate must have at least one fine task: "
