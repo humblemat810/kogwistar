@@ -726,8 +726,18 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "GKE_PG_SCHEMA": pg_schema,
         }
     )
+    knowledge_schema = python_storage.schema_for(graph_type)
+    request.addfinalizer(lambda: _drop_postgres_schema(sa_engine, knowledge_schema))
     wisdom_schema = python_storage.schema_for("wisdom")
     request.addfinalizer(lambda: _drop_postgres_schema(sa_engine, wisdom_schema))
+    conversation_schema = python_storage.schema_for("conversation")
+    request.addfinalizer(
+        lambda: _drop_postgres_schema(sa_engine, conversation_schema)
+    )
+    conversation_backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, schema=conversation_schema
+    )
+    conversation_backend.ensure_schema()
     doc_id = "D-neighbor-parity"
     id_prefix = uuid.uuid4().hex
     source = build_entity_node(
@@ -811,7 +821,9 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         metadata={"visibility": "public"},
     )
 
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, schema=knowledge_schema
+    )
     backend.ensure_schema()
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "shared_postgres_graph"),
@@ -1054,14 +1066,17 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
+            "RUST_LOG": "warn",
         }
     )
+    server_log_path = tmp_path / "rust-postgres-graph-read.log"
+    server_log = server_log_path.open("w", encoding="utf-8")
     process = subprocess.Popen(
         [str(SERVER)],
         cwd=ROOT,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=server_log,
+        stderr=subprocess.STDOUT,
         text=True,
     )
     base = f"http://127.0.0.1:{port}"
@@ -1089,7 +1104,8 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             response = httpx.post(
                 f"{base}{endpoint}",
                 headers={
-                    "Authorization": f"Bearer {_hs256_token(secret, claims)}"
+                    "Authorization": f"Bearer {_hs256_token(secret, claims)}",
+                    "Accept": "application/json, text/event-stream",
                 },
                 json={
                     "jsonrpc": "2.0",
@@ -1103,7 +1119,21 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 timeout=10,
             )
             assert response.status_code == 200, response.text
-            result = response.json().get("result")
+            if "text/event-stream" in response.headers.get("content-type", ""):
+                data_lines = [
+                    line.removeprefix("data: ")
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                ]
+                assert len(data_lines) == 1, response.text
+                payload = json.loads(data_lines[0])
+            else:
+                payload = response.json()
+            result = payload.get("result")
+            if isinstance(result, dict):
+                structured = result.get("structuredContent")
+                if isinstance(structured, dict):
+                    result = structured
             assert isinstance(result, dict), response.text
             return result
 
@@ -1391,7 +1421,13 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 },
                 timeout=10,
             )
-            assert rust_vector_response.status_code == 200, rust_vector_response.text
+            if rust_vector_response.status_code != 200:
+                server_log.flush()
+                details = server_log_path.read_text(encoding="utf-8", errors="replace")
+                raise AssertionError(
+                    f"Rust PostgreSQL vector query failed: {rust_vector_response.text}; "
+                    f"server log tail:\n{details[-8000:]}"
+                )
             rust_vector_payload = rust_vector_response.json()
             rust_ranked_ids = rust_vector_payload["ids"][0]
             assert rust_ranked_ids == python_ranked_ids, (
@@ -1911,10 +1947,6 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         conversation_id = f"{id_prefix}-python-written-conversation"
         # Rust stores graph types in its configured schema and partitions them
         # by namespace, so the Python producer must target that same schema.
-        conversation_backend = PgVectorBackend(
-            engine=sa_engine, embedding_dim=3, schema=pg_schema
-        )
-        conversation_backend.ensure_schema()
         conversation_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "python_persisted_conversation"),
             backend=conversation_backend,
@@ -2405,6 +2437,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+        server_log.close()
         embedding_server.shutdown()
         embedding_server.server_close()
         embedding_thread.join(timeout=2)
