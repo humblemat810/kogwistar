@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **165/177 PASS (93.2%)**.
-- **Fine worklist:** **390/792 PASS (49.2%)**; **0 IN PROGRESS**, **402 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **391/792 PASS (49.4%)**; **0 IN PROGRESS**, **401 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -450,7 +450,7 @@
 | FW-11-03-SEQUENCE | DL-11 | PASS | Invariant: synchronous resumed step inspection preserves sequence order without duplicates. Cell: Rust-authority SQLite sync suspend/resume, including server restart. Oracle: returned `step_seq` values are strictly increasing and the completed `end` step is last. Check: `tests/runtime/test_rust_runtime_authority.py::test_sync_runtime_client_resume_uses_real_rust_authority[sqlite]` (**1 passed**). |
 | FW-11-03A | DL-11 | PARENT | Parent scope; children: FW-11-03A-PARENTAGE,FW-11-03A-CAUSAL-EDGE |
 | FW-11-03A-PARENTAGE | DL-11 | NOT STARTED | Verify parent-span linkage for one asynchronous runtime transition. |
-| FW-11-03A-CAUSAL-EDGE | DL-11 | NOT STARTED | Verify one asynchronous event-to-step causal edge. |
+| FW-11-03A-CAUSAL-EDGE | DL-11 | PASS | Invariant: provider-event handling is durably linked to its workflow step. Cell: Rust in-memory event acknowledgement graph, with deterministic edge-builder contract. Oracle: the `handled_by_step` edge targets the persisted handler step; acknowledgement graph effects are atomic, and edge IDs/payloads replay identically. Checks: Rust `tests::provider_event_ack_graph_mutations_link_event_to_ack_step` and `tests::in_memory_native_provider_event_ack_persists_causal_graph_atomically` (**1 passed each**). |
 | FW-11-03B | DL-11 | PARENT | Parent scope; children: FW-11-03B-RETRY,FW-11-03B-TERMINAL |
 | FW-11-03B-RETRY | DL-11 | NOT STARTED | Verify retry trace preserves parent span, incremented attempt, and event identity. |
 | FW-11-03B-TERMINAL | DL-11 | NOT STARTED | Verify terminal-failure trace preserves parent span, final attempt, and event identity. |
