@@ -302,6 +302,18 @@ uvicorn.run(
                 )
                 token_response.raise_for_status()
                 headers = {"Authorization": f"Bearer {token_response.json()['token']}"}
+                denied_token_response = await client.post(
+                    f"{base_url}/auth/dev-token",
+                    json={
+                        "username": "python-e2e-wisdom",
+                        "role": "rw",
+                        "ns": "wisdom",
+                    },
+                )
+                denied_token_response.raise_for_status()
+                denied_headers = {
+                    "Authorization": f"Bearer {denied_token_response.json()['token']}"
+                }
 
                 doc_id = f"python-mcp-{uuid.uuid4().hex}"
                 content = "Alpha connects to Beta."
@@ -389,6 +401,34 @@ uvicorn.run(
                         neighbors = json.loads(result.content[0].text)
                         assert persisted["node_ids"][1] in neighbors["nodes"]
                         assert persisted["edge_ids"][0] in neighbors["edges"]
+
+            async with httpx.AsyncClient(
+                headers=denied_headers, timeout=CALL_TIMEOUT_S
+            ) as denied_mcp_http:
+                async with streamable_http_client(
+                    f"{base_url}/mcp", http_client=denied_mcp_http
+                ) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await asyncio.wait_for(session.initialize(), timeout=CALL_TIMEOUT_S)
+                        tools = await asyncio.wait_for(
+                            session.list_tools(), timeout=CALL_TIMEOUT_S
+                        )
+                        assert "kg_neighbors" not in {
+                            tool.name for tool in tools.tools
+                        }
+                        denied_result = await asyncio.wait_for(
+                            session.call_tool(
+                                "kg_neighbors", {"rid": persisted["node_ids"][0]}
+                            ),
+                            timeout=CALL_TIMEOUT_S,
+                        )
+                        assert denied_result.is_error is True
+                        assert all(
+                            node_id not in content.text
+                            for content in denied_result.content
+                            if hasattr(content, "text")
+                            for node_id in persisted["node_ids"]
+                        )
         except (RuntimeError, TimeoutError) as exc:
             raise AssertionError(
                 f"Authenticated Python-only REST-to-MCP smoke failed: {exc}; "
