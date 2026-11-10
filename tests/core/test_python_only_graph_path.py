@@ -12,8 +12,15 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 
 @pytest.mark.parametrize("explicit_python", [True, False], ids=["explicit", "legacy-default"])
+@pytest.mark.parametrize(
+    "graph_type",
+    ["knowledge", "conversation", "workflow", "wisdom", "acl", "custom-role"],
+)
 def test_python_only_graph_path_does_not_load_rust(
-    monkeypatch: pytest.MonkeyPatch, tmp_path, explicit_python: bool
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    explicit_python: bool,
+    graph_type: str,
 ) -> None:
     """Python graph execution remains complete when the native loader is absent."""
 
@@ -37,9 +44,11 @@ def test_python_only_graph_path_does_not_load_rust(
     monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
+        kg_graph_type=graph_type,
         embedding_function=FakeEmbeddingFunction(dim=3),
         backend_factory=build_fake_backend,
     )
+    assert engine.kg_graph_type == graph_type
     source = build_entity_node(
         node_id="python-source",
         doc_id="python-doc",
