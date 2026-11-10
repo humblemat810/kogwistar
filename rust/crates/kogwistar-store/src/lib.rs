@@ -5421,6 +5421,83 @@ mod tests {
     }
 
     #[test]
+    fn wisdom_acl_keeps_same_id_node_and_edge_grains_independent() {
+        let entity_id = "same-id-in-wisdom";
+        let acl = |id: &str, grain: &str, mode: &str, owner: Option<&str>| {
+            let mut record = GraphRecord::new(format!("acl-{grain}"));
+            record
+                .metadata
+                .insert("entity_type".into(), "acl_record".into());
+            record
+                .metadata
+                .insert("acl_truth_graph".into(), "wisdom".into());
+            record
+                .metadata
+                .insert("acl_target_entity_id".into(), id.into());
+            record
+                .metadata
+                .insert("acl_target_grain".into(), grain.into());
+            record
+                .metadata
+                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert("acl_mode".into(), mode.into());
+            if let Some(owner) = owner {
+                record.metadata.insert("owner_id".into(), owner.into());
+            }
+            record
+        };
+        let node = GraphRecord::new(entity_id);
+        let mut edge = GraphRecord::new(entity_id);
+        edge.metadata
+            .insert("source_ids".into(), serde_json::json!([]));
+        edge.metadata
+            .insert("target_ids".into(), serde_json::json!([]));
+        let nodes = vec![
+            node,
+            acl(entity_id, "node", "public", None),
+            acl(entity_id, "edge", "private", Some("alice")),
+        ];
+
+        let reader = GraphAclPrincipal {
+            principal_id: "bob".to_owned(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let (reader_nodes, reader_edges) =
+            graph_records_visible_by_acl(&nodes, &[edge.clone()], "wisdom", &reader);
+        assert_eq!(
+            reader_nodes
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            [entity_id]
+        );
+        assert!(reader_edges.is_empty());
+
+        let owner = GraphAclPrincipal {
+            principal_id: "alice".to_owned(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let (owner_nodes, owner_edges) =
+            graph_records_visible_by_acl(&nodes, &[edge], "wisdom", &owner);
+        assert_eq!(
+            owner_nodes
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            [entity_id]
+        );
+        assert_eq!(
+            owner_edges
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            [entity_id]
+        );
+    }
+
+    #[test]
     fn graph_node_item_usage_matches_shared_python_contract() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

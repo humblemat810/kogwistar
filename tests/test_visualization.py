@@ -296,6 +296,44 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     **workflow_edge_acl,
                 )
 
+        wisdom_edge_id = "wisdom-private-edge"
+        wisdom_edge = Edge(
+            id=wisdom_edge_id,
+            label="Wisdom private edge",
+            type="relationship",
+            summary="Private wisdom edge with no endpoint projection",
+            relation="references",
+            source_ids=[],
+            target_ids=[],
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[_g()],
+            doc_id=None,
+            properties={},
+            metadata={"entity_type": "fixture"},
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        wisdom_engine = graph_engines["wisdom"]
+        wisdom_engine.raw_write.add_edge(wisdom_edge)
+        wisdom_edge_acl = {
+            "truth_graph": "wisdom",
+            "entity_id": wisdom_edge_id,
+            "version": 1,
+            "mode": "private",
+            "owner_id": "wisdom-owner",
+        }
+        wisdom_engine.acl_graph.add_record(grain="edge", **wisdom_edge_acl)
+        grounding_ids, span_ids = wisdom_engine.acl.usage_ids_for_item(wisdom_edge)
+        for grain, target_ids in (("grounding", grounding_ids), ("span", span_ids)):
+            for target_id in target_ids:
+                wisdom_engine.acl_graph.add_record(
+                    grain=grain,
+                    target_item_id=target_id,
+                    **wisdom_edge_acl,
+                )
+
         owner_engine = graph_engines[acl_fixture["truth_graph"]]
         no_acl_node = Node(
             id=no_acl_node_policy["id"],
@@ -523,6 +561,23 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                 claims_ctx.reset(token)
             assert (workflow_edge_id in [
                 node["id"] for node in workflow_payload["nodes"]
+            ]) is expected_visible
+
+        for principal_id, expected_visible in (
+            ("wisdom-reader", False),
+            ("wisdom-owner", True),
+        ):
+            token = claims_ctx.set({"agent_id": principal_id, "ns": "wisdom"})
+            try:
+                wisdom_response = cast(
+                    JSONResponse,
+                    server.api_viz_d3(mode="reify", graph_type="wisdom"),
+                )
+                wisdom_payload = json.loads(bytes(wisdom_response.body))
+            finally:
+                claims_ctx.reset(token)
+            assert (wisdom_edge_id in [
+                node["id"] for node in wisdom_payload["nodes"]
             ]) is expected_visible
 
         for edge_policy_item in (
