@@ -132,6 +132,29 @@ def test_base_graph_models_get_explicit_versioned_envelopes() -> None:
     assert node_envelope["payload"] != node.model_dump(field_mode="llm_in", dump_format="json")
 
 
+def test_python_base_edge_round_trips_shared_backend_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "python-graph-model-payloads-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    case = next(case for case in fixture["cases"] if case["kind"] == "edge")
+
+    edge = Edge.model_validate(case["payload"])
+    payload = edge.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == case["payload"]
+    assert payload["source_ids"] == ["parity-node"]
+    assert payload["target_ids"] == ["external:target"]
+    assert payload["source_edge_ids"] == []
+    assert payload["target_edge_ids"] == []
+    assert payload["metadata"]["lifecycle_status"] == "active"
+    assert payload["metadata"]["redirect_to_id"] is None
+    assert payload["properties"]["confidence_label"] == "high"
+
+
 @pytest.mark.parametrize("model_kind", ["node", "edge"])
 def test_persistent_graph_models_reject_non_finite_embeddings(model_kind: str) -> None:
     model_type = Node if model_kind == "node" else Edge
