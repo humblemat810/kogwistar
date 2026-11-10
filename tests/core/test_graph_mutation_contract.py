@@ -76,6 +76,9 @@ def test_python_graph_mutation_contract_accepts_rust_golden_fixture() -> None:
     assert batch.contract_version == 1
     assert batch.atomic is True
     assert batch.mutations[0].record.embedding == [1.0, 0.0]
+    assert batch.mutations[0].scope.namespace == "tenant-a"
+    assert batch.mutations[0].scope.workspace_id == "ws"
+    assert batch.mutations[0].scope.graph_space == "facts"
     assert batch.index_jobs == []
 
 

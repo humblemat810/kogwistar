@@ -3525,6 +3525,9 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         "kogwistar-sqlite-chroma-graph-mutation-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
+    let metadata_only = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    assert!(!metadata_only.supports_http_operation("POST", INTERNAL_GRAPH_MUTATIONS_ROUTE));
+    drop(metadata_only);
     let embedding_calls = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(FixedEmbeddingProvider {
         profile: kogwistar_engine::embedding::EmbeddingProfile {
@@ -3557,8 +3560,8 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         "/../../../contracts/golden/graph-mutation-batch-v1.json"
     )))
     .unwrap();
-    batch["mutations"][0]["scope"] = json!({
-        "namespace":"docs", "workspace_id":null, "graph_space":null
+    batch["mutations"][0]["record"]["metadata"] = json!({
+        "workspace_id":"ws", "graph_space":"facts"
     });
     let python_models: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -3568,14 +3571,6 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     let mut node_payload = python_models["cases"][0]["payload"].clone();
     node_payload["id"] = json!("node-1");
     node_payload["embedding"] = json!([1.0, 0.0]);
-    node_payload["metadata"]
-        .as_object_mut()
-        .unwrap()
-        .remove("workspace_id");
-    node_payload["metadata"]
-        .as_object_mut()
-        .unwrap()
-        .remove("graph_space");
     batch["mutations"][0]["payload"] = node_payload.clone();
     batch["mutations"][0]["model_envelope"] = json!({
         "schema_version": 1,
@@ -3591,14 +3586,6 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     edge_payload["id"] = json!("edge-1");
     edge_payload["embedding"] = json!([1.0, 0.0]);
     edge_payload["source_ids"] = json!(["node-1"]);
-    edge_payload["metadata"]
-        .as_object_mut()
-        .unwrap()
-        .remove("workspace_id");
-    edge_payload["metadata"]
-        .as_object_mut()
-        .unwrap()
-        .remove("graph_space");
     edge_mutation["payload"] = edge_payload.clone();
     edge_mutation["model_envelope"] = json!({
         "schema_version": 1,
@@ -3611,8 +3598,9 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .push(edge_mutation);
     let body = serde_json::to_vec(&batch).unwrap();
     let principal = json!({
-        "sub":"alice", "user_id":"alice", "role":"rw", "ns":["docs"],
-        "storage_ns":"docs", "capabilities":["write_graph"]
+        "sub":"alice", "user_id":"alice", "role":"rw", "ns":["tenant-a"],
+        "storage_ns":"tenant-a", "workspace":"ws", "graph_space":"facts",
+        "capabilities":["write_graph"]
     });
     let denied = service
         .execute(ApiEffectRequest {
@@ -3620,17 +3608,50 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
             method: "POST".to_owned(),
             path_and_query: INTERNAL_GRAPH_MUTATIONS_ROUTE.to_owned(),
             body: body.clone(),
-            principal: json!({"sub":"alice", "role":"ro", "ns":["docs"], "storage_ns":"docs"}),
+            principal: json!({"sub":"alice", "role":"ro", "ns":["tenant-a"], "storage_ns":"tenant-a", "workspace":"ws", "graph_space":"facts"}),
         })
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
     assert!(
         service
             .store
-            .replay_raw_events("docs", 0, 10)
+            .replay_raw_events("tenant-a", 0, 10)
             .unwrap()
             .is_empty()
     );
+
+    for (scope_key, value) in [
+        ("namespace", "tenant-b"),
+        ("workspace_id", "workspace-b"),
+        ("graph_space", "other"),
+    ] {
+        let mut out_of_scope_batch = batch.clone();
+        for mutation in out_of_scope_batch["mutations"].as_array_mut().unwrap() {
+            mutation["scope"][scope_key] = json!(value);
+            if scope_key != "namespace" {
+                let metadata_key = if scope_key == "workspace_id" {
+                    "workspace_id"
+                } else {
+                    "graph_space"
+                };
+                mutation["record"]["metadata"][metadata_key] = json!(value);
+                mutation["payload"]["metadata"][metadata_key] = json!(value);
+                mutation["model_envelope"]["payload"]["metadata"][metadata_key] =
+                    json!(value);
+            }
+        }
+        let out_of_scope = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_MUTATIONS_ROUTE.to_owned(),
+                body: serde_json::to_vec(&out_of_scope_batch).unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(out_of_scope.status, StatusCode::FORBIDDEN.as_u16(), "{scope_key}");
+        assert!(service.store.replay_raw_events("tenant-a", 0, 10).unwrap().is_empty());
+    }
 
     let request = || ApiEffectRequest {
         contract_version: 1,
@@ -3660,7 +3681,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     );
     let retry_body: Value = serde_json::from_slice(&retry.body).unwrap();
     assert_eq!(retry_body["results"][0]["mutated"], false);
-    let canonical_events = service.store.replay_raw_events("docs", 0, 10).unwrap();
+    let canonical_events = service.store.replay_raw_events("tenant-a", 0, 10).unwrap();
     assert_eq!(canonical_events.len(), 2);
     for event in &canonical_events {
         let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
@@ -3670,10 +3691,12 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
             "Edge"
         };
         assert_eq!(payload["metadata"]["_class_name"], expected_class);
+        assert_eq!(payload["metadata"]["workspace_id"], "ws");
+        assert_eq!(payload["metadata"]["graph_space"], "facts");
     }
     let jobs = service
         .store
-        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
+        .list_index_jobs(Some("tenant-a"), Some("PENDING"), None, None, None, 10)
         .unwrap();
     assert_eq!(jobs.len(), 2);
     assert!(jobs.iter().all(|job| job.index_kind == "node_embedding"));
@@ -3697,7 +3720,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .unwrap()
         .with_chroma_graph(graph)
         .with_embedding_provider(provider.clone());
-    let recovered_events = service.store.replay_raw_events("docs", 0, 10).unwrap();
+    let recovered_events = service.store.replay_raw_events("tenant-a", 0, 10).unwrap();
     assert_eq!(recovered_events.len(), 2);
     for event in &recovered_events {
         let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
@@ -3710,12 +3733,12 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     }
     let recovered_jobs = service
         .store
-        .list_index_jobs(Some("docs"), Some("PENDING"), None, None, None, 10)
+        .list_index_jobs(Some("tenant-a"), Some("PENDING"), None, None, None, 10)
         .unwrap();
     assert_eq!(recovered_jobs.len(), 2);
 
     let failed_projection = service
-        .run_embedding_projection_jobs_once(10, 30, Some("docs"))
+        .run_embedding_projection_jobs_once(10, 30, Some("tenant-a"))
         .await
         .unwrap();
     assert_eq!(failed_projection.claimed, 2);
@@ -3724,14 +3747,14 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(
         service
             .store
-            .replay_raw_events("docs", 0, 10)
+            .replay_raw_events("tenant-a", 0, 10)
             .unwrap()
             .len(),
         2
     );
     let after_failure = service
         .store
-        .list_index_jobs(Some("docs"), None, None, None, None, 10)
+        .list_index_jobs(Some("tenant-a"), None, None, None, None, 10)
         .unwrap();
     assert_eq!(
         after_failure
@@ -3772,13 +3795,13 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         )
         .unwrap();
     let ack_failure = service
-        .run_embedding_projection_jobs_once(10, 1, Some("docs"))
+        .run_embedding_projection_jobs_once(10, 1, Some("tenant-a"))
         .await
         .unwrap_err();
     assert!(ack_failure.contains("injected projection acknowledgement failure"));
     let after_ack_failure = service
         .store
-        .list_index_jobs(Some("docs"), None, None, None, None, 10)
+        .list_index_jobs(Some("tenant-a"), None, None, None, None, 10)
         .unwrap();
     let node_job = after_ack_failure
         .iter()
@@ -3812,7 +3835,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .with_chroma_graph(graph)
         .with_embedding_provider(provider);
     let final_projection = service
-        .run_embedding_projection_jobs_once(10, 30, Some("docs"))
+        .run_embedding_projection_jobs_once(10, 30, Some("tenant-a"))
         .await
         .unwrap();
     assert_eq!(final_projection.claimed, 1);
@@ -3821,14 +3844,14 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(
         service
             .store
-            .replay_raw_events("docs", 0, 10)
+            .replay_raw_events("tenant-a", 0, 10)
             .unwrap()
             .len(),
         2
     );
     let projection_jobs = service
         .store
-        .list_index_jobs(Some("docs"), None, None, None, None, 10)
+        .list_index_jobs(Some("tenant-a"), None, None, None, None, 10)
         .unwrap();
     assert_eq!(projection_jobs.len(), 2);
     assert!(projection_jobs.iter().all(|job| job.status == "DONE"));
@@ -3854,7 +3877,9 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .unwrap();
     assert!(node_upsert.0.contains("collection-nodes"));
     assert_eq!(node_upsert.1["embeddings"][0], json!([0.6, 0.8]));
-    assert_eq!(node_upsert.1["metadatas"][0]["namespace"], "docs");
+    assert_eq!(node_upsert.1["metadatas"][0]["namespace"], "tenant-a");
+    assert_eq!(node_upsert.1["metadatas"][0]["workspace_id"], "ws");
+    assert_eq!(node_upsert.1["metadatas"][0]["graph_space"], "facts");
     assert_eq!(node_upsert.1["metadatas"][0]["_class_name"], "Node");
     let edge_upsert = chroma_upserts
         .iter()
@@ -3862,7 +3887,9 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
         .unwrap();
     assert!(edge_upsert.0.contains("collection-edges"));
     assert_eq!(edge_upsert.1["embeddings"][0], json!([0.6, 0.8]));
-    assert_eq!(edge_upsert.1["metadatas"][0]["namespace"], "docs");
+    assert_eq!(edge_upsert.1["metadatas"][0]["namespace"], "tenant-a");
+    assert_eq!(edge_upsert.1["metadatas"][0]["workspace_id"], "ws");
+    assert_eq!(edge_upsert.1["metadatas"][0]["graph_space"], "facts");
     assert_eq!(edge_upsert.1["metadatas"][0]["_class_name"], "Edge");
 
     drop(service);

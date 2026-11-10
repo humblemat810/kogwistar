@@ -387,10 +387,47 @@ def test_in_memory_vector_mutation_scope_matches_shared_rust_contract(
     )
 
     for case in fixture["queries"]:
+        scoped_filter = {
+            "$and": [{key: value} for key, value in case["scope"].items()]
+        }
         result = backend.node_query(
             query_embeddings=[fixture["query_embedding"]],
             n_results=len(records),
-            where=case["scope"],
+            where=scoped_filter,
+            include=["distances"],
+        )
+        assert result["ids"][0] == case["expected_ids"]
+
+
+@pytest.mark.ci_full
+def test_chroma_vector_mutation_scope_matches_shared_rust_contract(
+    tmp_path, request
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    fixture = json.loads(
+        (root / "contracts/golden/graph-mutation-scope-memory-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert fixture["schema_version"] == 1
+    kg_engine, _conversation_engine = _make_pair("chroma", tmp_path, request)
+    backend = kg_engine.backend
+    records = fixture["records"]
+    backend.node_upsert(
+        ids=[record["id"] for record in records],
+        documents=[record["id"] for record in records],
+        metadatas=[record["scope"] | {"team": "red"} for record in records],
+        embeddings=[record["embedding"] for record in records],
+    )
+
+    for case in fixture["queries"]:
+        scoped_filter = {
+            "$and": [{key: value} for key, value in case["scope"].items()]
+        }
+        result = backend.node_query(
+            query_embeddings=[fixture["query_embedding"]],
+            n_results=len(records),
+            where=scoped_filter,
             include=["distances"],
         )
         assert result["ids"][0] == case["expected_ids"]
