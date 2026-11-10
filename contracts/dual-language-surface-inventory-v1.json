@@ -14,7 +14,7 @@
     "pending_http_operations": 1,
     "allowlisted_mcp_operations": 62,
     "pending_syscalls": 4,
-    "python_syscalls": 10,
+    "python_syscalls": 11,
     "rust_syscalls": 11
   },
   "http_operations": [
@@ -909,6 +909,7 @@
       "operations": [
         "spawn_process",
         "terminate_process",
+        "create_conversation",
         "send_message",
         "receive_message",
         "mount_memory",
@@ -936,9 +937,7 @@
       ]
     },
     "python_only": [],
-    "rust_only": [
-      "create_conversation"
-    ]
+    "rust_only": []
   },
   "rust_backend_syscalls": {
     "postgresql": {

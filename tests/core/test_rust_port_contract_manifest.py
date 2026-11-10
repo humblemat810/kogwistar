@@ -602,12 +602,12 @@ def test_dual_language_surface_inventory_is_current() -> None:
     syscall_catalogs = inventory["syscall_catalogs"]
     python_syscalls = syscall_catalogs["python"]["operations"]
     rust_syscalls = syscall_catalogs["rust"]["operations"]
-    assert inventory["counts"]["python_syscalls"] == len(python_syscalls) == 10
+    assert inventory["counts"]["python_syscalls"] == len(python_syscalls) == 11
     assert inventory["counts"]["rust_syscalls"] == len(rust_syscalls) == 11
     assert len(python_syscalls) == len(set(python_syscalls))
     assert len(rust_syscalls) == len(set(rust_syscalls))
     assert syscall_catalogs["python_only"] == []
-    assert syscall_catalogs["rust_only"] == ["create_conversation"]
+    assert syscall_catalogs["rust_only"] == []
     deferred_syscalls = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))[
         "server_operation_deferrals"
     ]["syscall_group"]["operations"]

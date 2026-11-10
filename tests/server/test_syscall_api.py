@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from jose import jwt
 
+from kogwistar.conversation.models import ConversationNode
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth_middleware import claims_ctx
+from tests.server.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 from tests.server.test_chat_server_api import (
     _configure_server,
     _runtime_success_runner,
@@ -63,7 +67,75 @@ def test_syscall_surface_lists_versioned_ops(monkeypatch, engine_triplet):
         payload = resp.json()
         assert payload["version"] == "v1"
         assert "spawn_process" in payload["ops"]
+        assert "create_conversation" in payload["ops"]
         assert "resume" in payload["ops"]
+
+
+def test_syscall_create_conversation_uses_authenticated_owner(
+    monkeypatch, engine_triplet
+):
+    _engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, _engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "owner-create",
+            "user_id": "owner-create",
+            "role": "rw",
+            "ns": ["conversation"],
+            "capabilities": ["spawn_process"],
+            "iat": now,
+            "exp": now + 3600,
+            "iss": "local",
+        },
+        TEST_JWT_SECRET,
+        algorithm=TEST_JWT_ALG,
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(server.app) as client:
+        request = {
+            "version": "v1",
+            "op": "create_conversation",
+            "args": {
+                "user_id": "spoofed-owner",
+                "conversation_id": "syscall-owner-check",
+                "start_node_id": "syscall-owner-check-start",
+            },
+        }
+        denied = client.post(
+            "/api/syscall/v1/create_conversation", json=request, headers=headers
+        )
+        assert denied.status_code == 403
+        assert not conversation_engine.read.get_nodes(
+            where={"conversation_id": "syscall-owner-check"},
+            node_type=ConversationNode,
+            limit=10,
+        )
+
+        request["args"]["user_id"] = "owner-create"
+        created = client.post(
+            "/api/syscall/v1/create_conversation", json=request, headers=headers
+        )
+
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["version"] == "v1"
+    assert payload["op"] == "create_conversation"
+    assert payload["status"] == "ok"
+    assert payload["result"]["conversation_id"] == "syscall-owner-check"
+    assert payload["result"]["start_node_id"] == "syscall-owner-check-start"
+    assert payload["result"]["user_id"] == "owner-create"
+    assert payload["result"]["turn_count"] == 0
+    starts = conversation_engine.read.get_nodes(
+        where={"conversation_id": "syscall-owner-check"},
+        node_type=ConversationNode,
+        limit=10,
+    )
+    assert len(starts) == 1
+    assert starts[0].id == "syscall-owner-check-start"
+    assert starts[0].user_id == "owner-create"
 
 
 def test_syscall_spawn_process_returns_ok_contract(monkeypatch, engine_triplet):
