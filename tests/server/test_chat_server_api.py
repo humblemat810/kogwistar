@@ -1741,6 +1741,99 @@ def test_run_detail_uses_python_defaults_and_checks_namespace(monkeypatch, engin
         assert run_id not in denied.text
 
 
+def test_run_evidence_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run-evidence read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-run-evidence"
+    conversation_id = "python-only-evidence-conversation"
+
+    with TestClient(server.app) as client:
+        conversation_headers = _token_header(client, role="rw", ns="conversation")
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        created = client.post(
+            "/api/conversations",
+            json={"user_id": "python-only-user", "conversation_id": conversation_id},
+            headers=conversation_headers,
+        )
+        assert created.status_code == 200, created.text
+        start_node_id = created.json()["start_node_id"]
+        registry.create_run(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            workflow_id="python-only-workflow",
+            user_id="python-only-user",
+            user_turn_node_id=start_node_id,
+            status="succeeded",
+        )
+        conversation_service = ConversationService.from_engine(
+            conversation_engine,
+            knowledge_engine=engine,
+            workflow_engine=workflow_engine,
+        )
+        snapshot_id = conversation_service.persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=0,
+            stage="answer",
+            view=SimpleNamespace(
+                messages=[{"role": "user", "content": "evidence test"}],
+                items=[SimpleNamespace(node_id=start_node_id)],
+                cost=None,
+                token_budget=32,
+            ),
+            model_name="test-model",
+            budget_tokens=32,
+            evidence_pack_digest={"fixture_items": 1},
+        )
+        persisted_snapshot_metadata = conversation_engine.read.get_node_metadatas(
+            ids=[snapshot_id], limit=1
+        )[0]
+        assert persisted_snapshot_metadata["used_node_ids"] == [start_node_id]
+
+        response = client.get(
+            f"/api/runs/{run_id}/evidence", headers=workflow_headers
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["version"] == "v1"
+        assert payload["run_id"] == run_id
+        assert payload["conversation_id"] == conversation_id
+        assert payload["snapshot_node_id"] == snapshot_id
+        assert payload["evidence_refs"] == [start_node_id]
+        assert payload["source_summary"] == {
+            "used_node_count": 1,
+            "evidence_pack_digest": {"fixture_items": 1},
+        }
+
+        denied = client.get(
+            f"/api/runs/{run_id}/evidence", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_run_replay_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",

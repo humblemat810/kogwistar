@@ -1128,13 +1128,14 @@ class ConversationService:
         run_id: str | None = None,
         stage: str | None = None,
     ) -> ConversationNode | None:
-        where: dict[str, str] = {
-            "entity_type": "context_snapshot",
-        }
+        filters: list[dict[str, str]] = [{"entity_type": "context_snapshot"}]
         if run_id is not None:
-            where["run_id"] = run_id
+            filters.append({"run_id": run_id})
         if stage is not None:
-            where["stage"] = stage
+            filters.append({"stage": stage})
+        where: dict[str, Any] = (
+            filters[0] if len(filters) == 1 else {"$and": filters}
+        )
         snaps = self.conversation_engine.read.get_nodes(
             where=where,
             node_type=ConversationNode,
@@ -1171,21 +1172,24 @@ class ConversationService:
         ids = got.get("ids") or []
         if not ids:
             raise KeyError(f"context snapshot node not found: {snapshot_node_id!r}")
+        backend_metadata = dict((got.get("metadatas") or [{}])[0] or {})
         doc = (got.get("documents") or [None])[0]
         if isinstance(doc, str):
             try:
                 payload = json.loads(doc)
                 if isinstance(payload, dict):
                     props = payload.get("properties") or {}
+                    metadata = dict(payload.get("metadata") or {})
+                    metadata.update(backend_metadata)
                     return {
                         "properties": props,
-                        "metadata": (payload.get("metadata") or {}),
+                        "metadata": metadata,
                     }
             except Exception:
                 pass
         return {
             "properties": {},
-            "metadata": (got.get("metadatas") or [{}])[0] or {},
+            "metadata": backend_metadata,
         }
 
     def latest_context_snapshot_cost(
