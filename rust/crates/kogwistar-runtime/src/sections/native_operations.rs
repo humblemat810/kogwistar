@@ -1158,6 +1158,7 @@ pub fn execute_native_step_with_registry(
     registry: &NativeOperationRegistry,
 ) -> Result<RecordedWorkerSuccessEffect, RuntimeNativeExecutionError> {
     let handler = native_handler_for_request(request, registry)?;
+    let started_at = std::time::Instant::now();
     let (
         output,
         graph_mutation_batch,
@@ -1256,6 +1257,7 @@ pub fn execute_native_step_with_registry(
                 "token_id": request.token_id,
                 "parent_token_id": request.parent_token_id,
                 "step_seq": request.step_seq,
+                "duration_ms": started_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
             });
             attach_native_trace_context(&mut trace, request);
             attach_rust_native_executor_attestation(&mut trace);

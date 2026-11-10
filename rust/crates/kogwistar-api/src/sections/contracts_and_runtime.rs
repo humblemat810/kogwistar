@@ -1488,6 +1488,8 @@ struct RecordedInspectionSnapshot {
     errors: Vec<Value>,
     server_status: String,
     trace_context: Option<Value>,
+    operation: Option<String>,
+    duration_ms: Option<u64>,
 }
 
 fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
@@ -1516,6 +1518,8 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
                     .unwrap_or_default()
                     .to_owned(),
                 trace_context: None,
+                operation: None,
+                duration_ms: None,
             })
         })
         .collect()
@@ -1544,7 +1548,14 @@ fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectio
                 "parent_span_id": trace.get("parent_span_id"),
                 "attempt": trace.get("attempt"),
             });
-            Some((event.seq, step_seq, node_id, trace_context))
+            Some((
+                event.seq,
+                step_seq,
+                node_id,
+                trace_context,
+                trace.get("operation").and_then(Value::as_str).map(str::to_owned),
+                trace.get("duration_ms").and_then(Value::as_u64),
+            ))
         })
         .collect::<Vec<_>>();
     let mut steps = Vec::<RecordedInspectionSnapshot>::new();
@@ -1553,13 +1564,28 @@ fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectio
             continue;
         }
         let mut snapshot = snapshot;
+        snapshot.operation = snapshot
+            .state
+            .get("_rt_node_ops")
+            .and_then(Value::as_object)
+            .and_then(|node_ops| node_ops.get(&snapshot.workflow_node_id))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         snapshot.trace_context = trace_events
             .iter()
-            .filter(|(_, step_seq, node_id, _)| {
+            .filter(|(_, step_seq, node_id, _, _, _)| {
                 *step_seq == snapshot.step_seq && node_id == &snapshot.workflow_node_id
             })
-            .max_by_key(|(event_seq, _, _, _)| event_seq)
-            .map(|(_, _, _, trace_context)| trace_context.clone());
+            .max_by_key(|(event_seq, _, _, _, _, _)| event_seq)
+            .map(|(_, _, _, trace_context, operation, duration_ms)| {
+                if operation.is_some() {
+                    snapshot.operation.clone_from(operation);
+                }
+                if duration_ms.is_some() {
+                    snapshot.duration_ms = *duration_ms;
+                }
+                trace_context.clone()
+            });
         if steps.last().is_some_and(|previous| {
             previous.step_seq == snapshot.step_seq
                 && previous.workflow_node_id == snapshot.workflow_node_id
@@ -1597,9 +1623,9 @@ fn runtime_inspection_effect(
                         "step_seq": step.step_seq,
                         "workflow_id": step.workflow_id,
                         "workflow_node_id": step.workflow_node_id,
-                        "op": step.workflow_node_id,
-                        "status": if step.errors.is_empty() { "success" } else { "failure" },
-                        "duration_ms": 0,
+                        "op": step.operation.unwrap_or_else(|| step.workflow_node_id.clone()),
+                        "status": if step.errors.is_empty() { "ok" } else { "error" },
+                        "duration_ms": step.duration_ms.unwrap_or(0),
                         "result": step.result,
                         "event_seq": step.event_seq,
                         "created_at_ms": step.created_at_ms,

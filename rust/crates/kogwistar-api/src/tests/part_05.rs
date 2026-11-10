@@ -1293,6 +1293,10 @@
             "../../../../../contracts/golden/run-resume-contract-v1.json"
         ))
         .unwrap();
+        let steps_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-step-inspection-v1.json"
+        ))
+        .unwrap();
 
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1758,11 +1762,20 @@
                 )
                 .await
                 .unwrap();
-            assert_eq!(steps.status(), StatusCode::OK);
+            assert_eq!(
+                steps.status().as_u16(),
+                steps_contract["success_status"].as_u64().unwrap() as u16
+            );
             let steps_body = to_bytes(steps.into_body(), 16_384).await.unwrap();
             let steps_value = serde_json::from_slice::<Value>(&steps_body).unwrap();
             assert_eq!(steps_value["steps"].as_array().unwrap().len(), 1);
             assert_eq!(steps_value["steps"][0]["workflow_node_id"], "entry");
+            assert_eq!(steps_value["steps"][0]["op"], "begin");
+            assert_eq!(steps_value["steps"][0]["status"], steps_contract["step_status"]);
+            assert!(steps_value["steps"][0]["duration_ms"].is_u64());
+            for field in steps_contract["required_step_fields"].as_array().unwrap() {
+                assert!(steps_value["steps"][0].get(field.as_str().unwrap()).is_some());
+            }
             assert_eq!(steps_value["steps"][0]["result"]["answer"], "worker");
 
             let checkpoints = app

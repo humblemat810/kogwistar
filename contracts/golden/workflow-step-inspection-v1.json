@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "step_status": "ok",
+  "required_step_fields": [
+    "node_id",
+    "step_seq",
+    "workflow_id",
+    "workflow_node_id",
+    "op",
+    "status",
+    "duration_ms",
+    "result"
+  ],
+  "legacy_step_omits_trace_context": true
+}

@@ -123,6 +123,7 @@
         );
         assert_eq!(effect.trace_events[0]["schema_version"], 1);
         assert_eq!(effect.trace_events[0]["op_version"], "v1");
+        assert!(effect.trace_events[0]["duration_ms"].is_u64());
         assert_eq!(
             effect.trace_events[0]["implementation_authority"],
             RUST_NATIVE_EXECUTOR_TARGET

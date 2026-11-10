@@ -1554,19 +1554,33 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
 
         steps = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
         steps.raise_for_status()
-        assert [step["step_seq"] for step in steps.json()["steps"]] == [0, 1]
+        steps_payload = steps.json()
+        steps_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-inspection-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert steps.status_code == steps_contract["success_status"]
+        assert steps_payload["run_id"] == run_id
+        assert [step["step_seq"] for step in steps_payload["steps"]] == [0, 1]
+        for field in steps_contract["required_step_fields"]:
+            assert field in steps_payload["steps"][0]
+        assert steps_payload["steps"][0]["op"] == "prepare"
+        assert steps_payload["steps"][0]["status"] == steps_contract["step_status"]
+        assert isinstance(steps_payload["steps"][0]["duration_ms"], int)
         trace_fixture = json.loads(
             (
                 Path(__file__).resolve().parents[2]
                 / "contracts/golden/workflow-step-trace-context-v1.json"
             ).read_text(encoding="utf-8")
         )
-        assert steps.json()["steps"][0]["trace_context"] == trace_fixture[
+        assert steps_payload["steps"][0]["trace_context"] == trace_fixture[
             "trace_context"
         ]
         assert (
-            "trace_context" not in steps.json()["steps"][1]
-        ) is trace_fixture["legacy_step_omits_trace_context"]
+            "trace_context" not in steps_payload["steps"][1]
+        ) is steps_contract["legacy_step_omits_trace_context"]
 
         checkpoints = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
