@@ -6,14 +6,16 @@
     "python": "Presence in the frozen OpenAPI or MCP catalog records the public Python contract, not independent proof of every backend configuration.",
     "rust_http": "Application routes are classified by the Rust cutover inventory; transport-owned routes and pending routes are explicit. This is not behavioral parity evidence.",
     "rust_mcp": "Allowlist status is necessary but not sufficient: backend capability, ACL, namespace, and runtime checks still apply.",
-    "syscalls": "Pending syscall names are the explicit Rust cutover gaps; non-pending names are not thereby proven behaviorally equivalent."
+    "syscalls": "Advertised Python and Rust syscall catalogs are extracted from their public declarations. Backend support is a separate inventory; pending names do not imply that no partial implementation exists."
   },
   "counts": {
     "http_operations": 84,
     "mcp_operations": 62,
     "pending_http_operations": 1,
     "allowlisted_mcp_operations": 62,
-    "pending_syscalls": 4
+    "pending_syscalls": 4,
+    "python_syscalls": 10,
+    "rust_syscalls": 11
   },
   "http_operations": [
     {
@@ -900,5 +902,42 @@
     "receive_message",
     "mount_memory",
     "invoke_tool"
-  ]
+  ],
+  "syscall_catalogs": {
+    "python": {
+      "source": "kogwistar/server/syscall_api.py#create_syscall_router.list_syscalls",
+      "operations": [
+        "spawn_process",
+        "terminate_process",
+        "send_message",
+        "receive_message",
+        "mount_memory",
+        "project_view",
+        "invoke_tool",
+        "checkpoint",
+        "resume",
+        "request_approval"
+      ]
+    },
+    "rust": {
+      "source": "rust/crates/kogwistar-api/src/sections/response_policy.rs#SYSCALL_OPS",
+      "operations": [
+        "spawn_process",
+        "terminate_process",
+        "create_conversation",
+        "send_message",
+        "receive_message",
+        "mount_memory",
+        "project_view",
+        "invoke_tool",
+        "checkpoint",
+        "resume",
+        "request_approval"
+      ]
+    },
+    "python_only": [],
+    "rust_only": [
+      "create_conversation"
+    ]
+  }
 }
