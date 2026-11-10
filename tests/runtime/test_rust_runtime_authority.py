@@ -2072,6 +2072,98 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 timeout=20,
             )
             assert failed.returncode == 0, failed.stderr
+
+            def persisted_step_traces(response_text: str) -> list[dict[str, Any]]:
+                traces: list[dict[str, Any]] = []
+                for frame in response_text.split("\n\n"):
+                    data_line = next(
+                        (
+                            line[6:]
+                            for line in frame.splitlines()
+                            if line.startswith("data: ")
+                        ),
+                        None,
+                    )
+                    if data_line is None:
+                        continue
+                    event_payload = json.loads(data_line)
+                    trace = event_payload.get("trace")
+                    if (
+                        event_payload.get("event_type") == "workflow.trace.v1"
+                        and isinstance(trace, dict)
+                        and trace.get("event") == "step_attempt_completed"
+                    ):
+                        traces.append(
+                            {
+                                "sequence": next(
+                                    (
+                                        line[4:]
+                                        for line in frame.splitlines()
+                                        if line.startswith("id: ")
+                                    ),
+                                    None,
+                                ),
+                                "trace": trace,
+                            }
+                        )
+                return traces
+
+            failure_events_before_restart = httpx.get(
+                f"{base_url}/api/workflow/runs/{failure_run_id}/events?after_seq=0",
+                headers=headers,
+                timeout=10,
+            )
+            assert failure_events_before_restart.status_code == 200, (
+                failure_events_before_restart.text
+            )
+            persisted_failure_traces = persisted_step_traces(
+                failure_events_before_restart.text
+            )
+            assert len(persisted_failure_traces) == 1
+            persisted_failure_trace = persisted_failure_traces[0]["trace"]
+            assert persisted_failure_trace["trace_id"] == failure_run_id
+            assert persisted_failure_trace["operation"] == "python-failure"
+            assert persisted_failure_trace["attempt"] == 1
+            assert persisted_failure_trace["parent_span_id"]
+            if backend == "sqlite":
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+                process = subprocess.Popen(
+                    [str(RUST_SERVER)],
+                    cwd=ROOT,
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(100):
+                    if process.poll() is not None:
+                        stderr = (
+                            process.stderr.read() if process.stderr is not None else ""
+                        )
+                        raise AssertionError(
+                            f"Rust SQLite server failed to reopen for trace read: {stderr}"
+                        )
+                    try:
+                        if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
+                            break
+                    except httpx.HTTPError:
+                        time.sleep(0.05)
+                else:
+                    raise AssertionError("Rust SQLite server did not recover for trace read")
+                reopened_events = httpx.get(
+                    f"{base_url}/api/workflow/runs/{failure_run_id}/events?after_seq=0",
+                    headers=headers,
+                    timeout=10,
+                )
+                assert reopened_events.status_code == 200, reopened_events.text
+                assert persisted_step_traces(reopened_events.text) == (
+                    persisted_failure_traces
+                )
             replayed_failure = subprocess.run(
                 [*failure_probe, "--mode", "recover"],
                 cwd=ROOT,
@@ -2097,6 +2189,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 timeout=10,
             )
             assert failure_events.status_code == 200, failure_events.text
+            assert persisted_step_traces(failure_events.text) == persisted_failure_traces
             terminal_failures = []
             for frame in failure_events.text.split("\n\n"):
                 data_line = next(
