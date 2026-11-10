@@ -7358,11 +7358,15 @@
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
                         ("turn-private", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":3,"role":"assistant","summary":"private"})),
+                        ("turn-other-workspace", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":4,"role":"assistant","summary":"other workspace","workspace_id":"workspace-b"})),
+                        ("turn-other-graph-space", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":5,"role":"assistant","summary":"other graph space","graph_space":"knowledge"})),
                         ("snapshot", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer","snapshot_seq":7})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-2", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-2","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
+                        ("acl-turn-other-workspace", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-workspace","acl_version":1,"acl_mode":"public","workspace_id":"workspace-b"})),
+                        ("acl-turn-other-graph-space", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-graph-space","acl_version":1,"acl_mode":"public","graph_space":"knowledge"})),
                         ("acl-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot","acl_version":1,"acl_mode":"public"})),
                         ("foreign-start", json!({"entity_type":"conversation_start","conversation_id":"c-foreign","user_id":"other-user","status":"active"})),
                         ("acl-foreign-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"foreign-start","acl_version":1,"acl_mode":"public"})),
@@ -7371,12 +7375,18 @@
                         .iter()
                         .map(|(_, metadata)| {
                             let mut original = metadata.as_object().unwrap().clone();
-                            original.insert("workspace_id".to_owned(), json!("workspace-a"));
-                            original.insert("graph_space".to_owned(), json!("conversation"));
+                            let workspace_id = original
+                                .entry("workspace_id".to_owned())
+                                .or_insert_with(|| json!("workspace-a"))
+                                .clone();
+                            let graph_space = original
+                                .entry("graph_space".to_owned())
+                                .or_insert_with(|| json!("conversation"))
+                                .clone();
                             json!({
                                 "_kogwistar_namespace":"scope-a",
-                                "workspace_id":"workspace-a",
-                                "graph_space":"conversation",
+                                "workspace_id":workspace_id,
+                                "graph_space":graph_space,
                                 "_kogwistar_original_metadata":Value::Object(original).to_string()
                             })
                         })
@@ -7391,7 +7401,7 @@
                             }
                         }).collect::<Vec<_>>(),
                         "metadatas": metadatas,
-                        "embeddings": [null,null,null,null,null,null,null,null,null,null,null,null]
+                        "embeddings": nodes.iter().map(|_| Value::Null).collect::<Vec<_>>()
                     })
                 } else {
                     json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})

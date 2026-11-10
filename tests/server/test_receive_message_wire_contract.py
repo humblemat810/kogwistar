@@ -81,7 +81,11 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                 ("turn-1", 1, "user", "first", "public"),
                 ("turn-2", 2, "assistant", "second", "public"),
                 ("turn-private", 3, "assistant", "private", "private"),
+                ("turn-other-scope", 4, "assistant", "other tenant", "scope"),
             ):
+                security_scope = (
+                    "tenant-b" if node_id == "turn-other-scope" else "tenant-a"
+                )
                 engine.write.add_node(
                     ConversationNode(
                         id=node_id,
@@ -98,7 +102,7 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                             "in_conversation_chain": True,
                             "visibility": visibility,
                             "owner_agent_id": "owner",
-                            "security_scope": "tenant-a",
+                            "security_scope": security_scope,
                             "level_from_root": 0,
                         },
                         role=role,
