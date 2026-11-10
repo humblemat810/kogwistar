@@ -1616,6 +1616,11 @@
                 .state["answer"],
             "worker"
         );
+        let workflow_catalog_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-catalog-ops-http-v1.json"
+        )))
+        .unwrap();
         for (path, required_keys) in [
             (
                 "/api/workflow/resources",
@@ -1661,12 +1666,21 @@
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            if path == "/api/workflow/catalog/ops" {
+                assert_eq!(
+                    response.status().as_u16(),
+                    workflow_catalog_contract["success_status"]
+                        .as_u64()
+                        .unwrap() as u16,
+                    "{path}"
+                );
+            } else {
+                assert_eq!(response.status(), StatusCode::OK, "{path}");
+            }
             let body = to_bytes(response.into_body(), 65_536).await.unwrap();
             let value = serde_json::from_slice::<Value>(&body).unwrap();
             if path == "/api/workflow/catalog/ops" {
-                assert_eq!(value[0]["op"], "start");
-                assert_eq!(value[1]["op"], "llm_call");
+                assert_eq!(value, workflow_catalog_contract["response_body"]);
             }
             for key in required_keys {
                 assert!(value.get(key).is_some(), "{path} lacks {key}: {value}");
