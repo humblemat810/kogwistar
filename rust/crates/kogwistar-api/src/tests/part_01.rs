@@ -1280,6 +1280,56 @@
                 .unwrap();
         }
 
+        let mut private_turn_metadata = Map::new();
+        for (key, value) in [
+            ("entity_type", json!("conversation_turn")),
+            ("conversation_id", json!("conversation-1")),
+            ("turn_index", json!(3)),
+            ("role", json!("assistant")),
+            ("summary", json!("private")),
+        ] {
+            private_turn_metadata.insert(key.to_owned(), value);
+        }
+        service
+            .conversation_store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "turn-private".to_owned(),
+                    document: None,
+                    metadata: private_turn_metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+        let private_acl = Map::from_iter([
+            ("entity_type".to_owned(), json!("acl_record")),
+            ("acl_truth_graph".to_owned(), json!("conversation")),
+            ("acl_target_entity_id".to_owned(), json!("turn-private")),
+            ("acl_target_grain".to_owned(), json!("node")),
+            ("acl_version".to_owned(), json!(1)),
+            ("acl_mode".to_owned(), json!("private")),
+            ("owner_id".to_owned(), json!("bob")),
+        ]);
+        service
+            .conversation_store
+            .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "acl-turn-private".to_owned(),
+                    document: None,
+                    metadata: private_acl,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .unwrap();
+
         for (id, entity_type, summary, status, acl_mode) in [
             (
                 "tool-call-1",
