@@ -6,7 +6,7 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 ## Scope Accounting
 
-Current DL-08C delta: FW-08C-01-REDIRECT now passes for the shared current-vector contract across Python, Rust in-memory, SQLite+Chroma, and PostgreSQL. Ordinary semantic queries exclude tombstoned redirect sources and may return active targets as independent hits; Python historical/as-of redirect following remains a distinct API and is not claimed as Rust parity. DL-08C stays open for its other mapped authorization, provenance, mutation, and backend-runtime requirements.
+Current DL-08C delta: FW-08C-01-REDIRECT, FW-08C-01B, and FW-08C-01C now pass. Current vector reads exclude tombstoned redirect sources and may return active targets as independent hits; PostgreSQL also denies a public node whose cited span is private, and SQLite+Chroma passes the equivalent service test. Ordinary semantic queries do not follow redirects; Python historical/as-of redirect following remains a distinct API and is not claimed as Rust parity. DL-08C stays open for stale/foreign evidence-reference behavior and its other mapped authorization, provenance, mutation, and backend-runtime requirements.
 
 Current inventory: **177 items** (**159 PASS, 18 IN PROGRESS; 89.8% PASS**). The original baseline remains 130 items; 47 later-added IDs are 43 PASS and 4 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
