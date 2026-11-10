@@ -645,7 +645,10 @@ def test_dual_language_surface_inventory_is_current() -> None:
         "mount_memory",
         "receive_message",
     ]
-    assert backend_syscalls["in-memory"]["dispatches"] == ["receive_message"]
+    assert backend_syscalls["in-memory"]["dispatches"] == [
+        "create_conversation",
+        "receive_message",
+    ]
 
     result = subprocess.run(
         ["python", str(generator), "--check"],

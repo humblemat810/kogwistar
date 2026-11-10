@@ -1015,11 +1015,11 @@
     "in-memory": {
       "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
       "dispatches": [
+        "create_conversation",
         "receive_message"
       ],
       "unavailable": [
         "checkpoint",
-        "create_conversation",
         "invoke_tool",
         "mount_memory",
         "project_view",

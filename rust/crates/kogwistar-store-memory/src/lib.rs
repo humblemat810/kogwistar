@@ -1004,6 +1004,53 @@ impl InMemoryStore {
         apply_graph_mutation_batch_to_state(&mut state, batch)
     }
 
+    /// Apply a batch only when its namespace-local uniqueness predicates still
+    /// hold. Workspace and graph-space do not weaken canonical entity identity.
+    /// Checks and graph/index-job writes share the same process lock.
+    pub async fn apply_graph_mutations_with_index_jobs_if_absent(
+        &self,
+        batch: GraphMutationBatch,
+        unique_record_ids: &[(GraphScope, String, String)],
+        unique_metadata: &[GraphProjectionRead],
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        for (scope, table, id) in unique_record_ids {
+            if state
+                .graph_projections
+                .iter()
+                .any(|(candidate_scope, projection)| {
+                    candidate_scope.namespace == scope.namespace
+                        && projection
+                            .records
+                            .contains_key(&(table.clone(), id.clone()))
+                })
+            {
+                return Err(StoreError::Backend {
+                    backend: "memory-graph-write".to_owned(),
+                    message: format!("unique graph record already exists: {table}/{id}"),
+                });
+            }
+        }
+        for read in unique_metadata {
+            let exists = state
+                .graph_projections
+                .iter()
+                .any(|(candidate_scope, projection)| {
+                    candidate_scope.namespace == read.scope.namespace
+                        && projection.records.iter().any(|((table, _), record)| {
+                            table == &read.table && read.metadata.matches(&record.metadata)
+                        })
+                });
+            if exists {
+                return Err(StoreError::Backend {
+                    backend: "memory-graph-write".to_owned(),
+                    message: format!("unique graph metadata already exists: {}", read.table),
+                });
+            }
+        }
+        apply_graph_mutation_batch_to_state(&mut state, batch)
+    }
+
     /// Restore an isolated event snapshot without exposing restore semantics on
     /// authoritative store traits. Retained namespace-local sequences may start
     /// above one and contain gaps, but must be positive and strictly increasing.
