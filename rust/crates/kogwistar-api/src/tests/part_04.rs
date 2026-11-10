@@ -1555,16 +1555,44 @@
             assert!(worker_wire.get("attempt_number").is_none());
 
             let (handoff, request) = native_request_for_claimed_work(&work).unwrap();
+            assert_eq!(handoff.message_id, "message");
+            assert_eq!(handoff.run_id, "run-42");
+            assert_eq!(handoff.step_id, "parse");
+            assert_eq!(handoff.correlation_id, "correlation");
             assert_eq!(
                 request.ephemeral_context["_trace_attempt"],
                 retry_case["attempt"]
             );
             let effect = kogwistar_runtime::execute_native_step(&request).unwrap();
             assert_eq!(effect.trace_events[0]["event"], "runtime.native.step.completed");
+            for (field, expected) in [
+                ("run_id", json!("run-42")),
+                ("workflow_id", json!("workflow")),
+                ("conversation_id", json!("conversation")),
+                ("node_id", json!("parse")),
+                ("token_id", json!("token-7")),
+                ("step_seq", json!(3)),
+            ] {
+                assert_eq!(effect.trace_events[0][field], expected, "field {field}");
+            }
             for (field, expected) in retry_case["expected"].as_object().unwrap() {
                 assert_eq!(&effect.trace_events[0][field], expected, "field {field}");
             }
             let failed = failed_native_result(handoff, &request, "TEST_FAILURE", "test failure");
+            for (field, expected) in [
+                ("run_id", json!("run-42")),
+                ("workflow_id", json!("workflow")),
+                ("conversation_id", json!("conversation")),
+                ("node_id", json!("parse")),
+                ("token_id", json!("token-7")),
+                ("step_seq", json!(3)),
+            ] {
+                assert_eq!(
+                    failed.effect.as_ref().unwrap().trace_events[0][field],
+                    expected,
+                    "failed trace field {field}"
+                );
+            }
             for (field, expected) in retry_case["expected"].as_object().unwrap() {
                 assert_eq!(
                     &failed.effect.as_ref().unwrap().trace_events[0][field],
