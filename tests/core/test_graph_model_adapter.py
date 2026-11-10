@@ -551,6 +551,27 @@ def test_python_workflow_run_node_round_trips_shared_wire_fixture() -> None:
     }
 
 
+def test_python_workflow_step_exec_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-step-exec-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = runtime_models.WorkflowStepExecNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["step_seq"] == 2
+    assert payload["metadata"]["result_json"] == "{\"parsed\":true}"
+    assert payload["metadata"]["vendor_extension"] == {
+        "worker": "rust-python",
+        "version": 1,
+    }
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",
