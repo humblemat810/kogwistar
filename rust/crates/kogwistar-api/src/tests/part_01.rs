@@ -1576,6 +1576,35 @@
                 .unwrap(),
                 principal
             };
+        let missing_id_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        let receive_error_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-receive-message-missing-id-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(missing_id_response.status, receive_error_contract["http_status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&missing_id_response.body).unwrap(),
+            receive_error_contract["body"]
+        );
         let denied_receive = service
             .execute(receive_request(json!({
                 "sub": "alice",

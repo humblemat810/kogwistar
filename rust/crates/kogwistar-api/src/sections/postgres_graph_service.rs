@@ -3105,7 +3105,11 @@ impl PostgresRunApplicationService {
                     "conversation",
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(conversation_id) = input.args["conversation_id"].as_str() {
+                } else if let Some(conversation_id) = input
+                    .args
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                {
                     let authorization = match self.authorize_conversation_transcript(request) {
                         Ok(value) => value,
                         Err(response) => return syscall_result(&input.version, op, response),
@@ -3129,10 +3133,9 @@ impl PostgresRunApplicationService {
                         Err(response) => syscall_result(&input.version, op, response),
                     }
                 } else {
-                    effect_error(
-                        StatusCode::BAD_REQUEST,
-                        "KOGWISTAR_INVALID_REQUEST",
-                        "conversation_id is required",
+                    json_effect(
+                        StatusCode::NOT_FOUND,
+                        json!({"detail": "'conversation_id'"}),
                     )
                 }
             }
