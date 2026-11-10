@@ -2125,7 +2125,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             assert persisted_failure_trace["operation"] == "python-failure"
             assert persisted_failure_trace["attempt"] == 1
             assert persisted_failure_trace["parent_span_id"]
-            if backend == "sqlite":
+            if backend in {"sqlite", "pg"}:
                 process.terminate()
                 try:
                     process.wait(timeout=10)
@@ -2146,7 +2146,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                             process.stderr.read() if process.stderr is not None else ""
                         )
                         raise AssertionError(
-                            f"Rust SQLite server failed to reopen for trace read: {stderr}"
+                            f"Rust {backend} server failed to reopen for trace read: {stderr}"
                         )
                     try:
                         if httpx.get(f"{base_url}/health", timeout=0.5).status_code == 200:
@@ -2154,7 +2154,9 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     except httpx.HTTPError:
                         time.sleep(0.05)
                 else:
-                    raise AssertionError("Rust SQLite server did not recover for trace read")
+                    raise AssertionError(
+                        f"Rust {backend} server did not recover for trace read"
+                    )
                 reopened_events = httpx.get(
                     f"{base_url}/api/workflow/runs/{failure_run_id}/events?after_seq=0",
                     headers=headers,
@@ -2416,7 +2418,22 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     assert native_response.status_code == 200, native_response.text
 
                 async_after_work = await worker.claim(run_id="mixed-async-live-run")
-                assert len(async_after_work) == 1
+                if len(async_after_work) != 1:
+                    async with httpx.AsyncClient(
+                        base_url=base_url, headers=headers, timeout=10
+                    ) as diagnostic_client:
+                        run_snapshot = await diagnostic_client.get(
+                            "/api/workflow/runs/mixed-async-live-run"
+                        )
+                        event_snapshot = await diagnostic_client.get(
+                            "/api/workflow/runs/mixed-async-live-run/events?after_seq=0"
+                        )
+                    raise AssertionError(
+                        "expected the Python continuation after the Rust-native step "
+                        f"for backend={backend}; "
+                        f"claimed={async_after_work!r}, native_result={native_response.text}, "
+                        f"run={run_snapshot.text}, events={event_snapshot.text}"
+                    )
                 assert async_after_work[0]["step_id"] == "python-after"
                 async_after_state = async_after_work[0]["payload"]["state"]
                 assert async_after_state["counter"] == 9
