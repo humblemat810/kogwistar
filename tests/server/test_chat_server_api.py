@@ -1376,6 +1376,72 @@ def test_conversation_detail_uses_python_defaults_and_checks_namespace(
         assert "start_node_id" not in denied.text
 
 
+def test_conversation_transcript_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only transcript read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    service._conversation_queries.create_conversation(
+        user_id="owner-transcript", conversation_id="conversation-transcript"
+    )
+
+    now = int(time.time())
+
+    def headers(user_id: str, namespace: str) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "user_id": user_id,
+                "role": "ro",
+                "ns": [namespace],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        response = client.get(
+            "/api/conversations/conversation-transcript/turns",
+            headers=headers("owner-transcript", "conversation"),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "conversation_id": "conversation-transcript",
+            "turns": [],
+        }
+
+        denied = client.get(
+            "/api/conversations/conversation-transcript/turns",
+            headers=headers("foreign-user", "wisdom"),
+        )
+        assert denied.status_code == 403
+        assert "owner-transcript" not in denied.text
+        assert "conversation-transcript" not in denied.text
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
