@@ -1,12 +1,12 @@
 # ADR-022 Remaining Worklist
 
-**Updated:** 2026-11-10
+**Updated:** 2026-11-11
 **Purpose:** Track bounded work beneath the coarse gates in [ADR-022-dual-language-capability-checklist.md](ADR-022-dual-language-capability-checklist.md).
 
 ## Completion Snapshot
 
 - **Coarse checklist:** **165/177 PASS (93.2%)**.
-- **Fine worklist:** **375/792 PASS (47.3%)**; **0 IN PROGRESS**, **417 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **376/792 PASS (47.5%)**; **0 IN PROGRESS**, **416 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -38,7 +38,7 @@
 | FW-02-02C | DL-02 | PASS | In-memory hybrid GET uses shared fusion and canonical ACL filtering; missing dependencies expose neither index route nor durable event. Evidence: `in_memory_search_index_hybrid_is_scoped_and_acl_filtered` (**1 passed**), Rust API suite (**284 passed, 33 ignored**), Python search-index/ACL/auth/replay suite (**10 passed**), parity and checklist verification (**5 passed**). |
 | FW-03-01 | DL-03 | PARENT | Parent scope; children: FW-03-01-DET,FW-03-01-SQLITE,FW-03-01-PG,FW-03-01-PROJ,FW-03-01-QUEUE,FW-03-01-GRAPH,FW-03-01-CHROMA,FW-03-01-WF,FW-03-01-SERVER |
 | FW-03-01-DET | DL-03 | PASS | Python's `stable_json_dumps` matches `contracts/golden/deterministic-primitives.json` in both pure-Python and Rust implementation modes. Evidence: `tests/core/test_rust_contract_differential.py::test_canonical_json_matches_python_golden` (**2 passed**). This verifies canonical serialization only, not the full deterministic-contracts profile. |
-| FW-03-01-SQLITE | DL-03 | NOT STARTED | Link the sqlite-meta capability claim to one Python behavior test. |
+| FW-03-01-SQLITE | DL-03 | PASS | Invariant: a nested SQLite unit of work reuses its active owner connection and cannot commit independently of that owner. Cell: Python `EngineSQLite` transaction nesting and rollback. Oracle: one connection serves both scopes, and an outer exception leaves no nested or outer writes persisted. Check: `python -m pytest tests/test_engine_sqlite_uow_join.py -q -p no:cacheprovider` (**2 passed**). |
 | FW-03-01-PG | DL-03 | NOT STARTED | Link the postgres-sequence-event-log capability claim to one Python behavior test. |
 | FW-03-01-PROJ | DL-03 | NOT STARTED | Link the projections-snapshots-run-registry capability claim to one Python behavior test. |
 | FW-03-01-QUEUE | DL-03 | NOT STARTED | Link the queues-leases-lanes capability claim to one Python behavior test. |
