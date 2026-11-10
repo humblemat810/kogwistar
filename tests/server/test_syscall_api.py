@@ -147,6 +147,79 @@ def test_syscall_create_conversation_uses_authenticated_owner(
     assert starts[0].user_id == "owner-create"
 
 
+def test_syscall_create_conversation_router_rejects_owner_spoof_without_backend():
+    calls = []
+
+    def create_conversation(**kwargs):
+        calls.append(kwargs)
+        return {
+            "conversation_id": kwargs["conversation_id"],
+            "user_id": kwargs["user_id"],
+            "status": "active",
+            "start_node_id": kwargs["start_node_id"],
+            "tail_node_id": kwargs["start_node_id"],
+            "turn_count": 0,
+        }
+
+    service = SimpleNamespace(create_conversation=create_conversation)
+    conversation_namespace = object()
+
+    def require_role(role):
+        if role != "rw":
+            raise HTTPException(status_code=403)
+
+    def require_namespace(namespace):
+        if namespace is not conversation_namespace:
+            raise HTTPException(status_code=403)
+
+    app = FastAPI()
+    app.include_router(
+        create_syscall_router(
+            get_service=lambda: service,
+            require_role=require_role,
+            require_namespace=require_namespace,
+            conversation_namespace=conversation_namespace,
+            workflow_namespaces=object(),
+            get_user_id=lambda: "authenticated-owner",
+        )
+    )
+
+    with TestClient(app) as client:
+        denied = client.post(
+            "/api/syscall/v1/create_conversation",
+            json={
+                "version": "v1",
+                "op": "create_conversation",
+                "args": {"user_id": "spoofed-owner"},
+            },
+        )
+        assert denied.status_code == 403
+        assert calls == []
+
+        created = client.post(
+            "/api/syscall/v1/create_conversation",
+            json={
+                "version": "v1",
+                "op": "create_conversation",
+                "args": {
+                    "user_id": "authenticated-owner",
+                    "conversation_id": "router-owner-check",
+                    "start_node_id": "router-owner-start",
+                },
+            },
+        )
+
+    assert created.status_code == 200
+    assert created.json()["result"]["user_id"] == "authenticated-owner"
+    assert calls == [
+        {
+            "user_id": "authenticated-owner",
+            "conversation_id": "router-owner-check",
+            "start_node_id": "router-owner-start",
+        }
+    ]
+
+
 def test_syscall_spawn_process_returns_ok_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service, _registry = _configure_server(
