@@ -10,6 +10,10 @@
     "sqlite_chroma": {
       "sha256": "eb133a7c2749faa8095d83e281d9348f9d85c33fcaa9498ec48f7fd891a5ab27",
       "source": "final state folded from canonical SQLite graph events; Chroma remains eventual projection"
+    },
+    "postgresql": {
+      "sha256": "071816d44dc7ef1ba3639163e235c3f6da0457d1ad27c8c4cf4b0ec4b54d1b4d",
+      "source": "scoped PostgreSQL gke_nodes and gke_edges rows created by the fixture trace"
     }
   }
 }

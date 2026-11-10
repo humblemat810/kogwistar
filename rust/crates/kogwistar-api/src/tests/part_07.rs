@@ -3130,7 +3130,41 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
         "/../../../contracts/golden/agent-durable-provider-event-v1.json"
     )))
     .unwrap();
-    let fixture_run_id = format!("provider-event-fixture-{}", uuid::Uuid::new_v4());
+    let fixture_scope = GraphScope {
+        namespace: "alpha".to_owned(),
+        workspace_id: None,
+        graph_space: Some("conversation".to_owned()),
+    };
+    let baseline_node_ids = service
+        .conversation_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: fixture_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 1000,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<std::collections::HashSet<_>>();
+    let baseline_edge_ids = service
+        .conversation_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: fixture_scope.clone(),
+            table: "gke_edges".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 1000,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<std::collections::HashSet<_>>();
+    // The disposable schema isolates this fixed run ID, making fixture-derived IDs stable.
+    let fixture_run_id = "provider-event-fixture-run".to_owned();
     let fixture_workflow_id = "provider-event-fixture-workflow";
     let fixture_conversation_id = fixture["publication"]["conversation_id"]
         .as_str()
@@ -3433,6 +3467,74 @@ async fn postgres_provider_event_ack_persists_python_causal_links_atomically() {
             .unwrap()
         .status,
         "completed"
+    );
+    let fixture_nodes = service
+        .conversation_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: fixture_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 1000,
+        })
+        .await
+        .unwrap();
+    let fixture_edges = service
+        .conversation_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: fixture_scope,
+            table: "gke_edges".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 1000,
+        })
+        .await
+        .unwrap();
+    let mut canonical_graph_rows = fixture_nodes
+        .iter()
+        .filter(|record| !baseline_node_ids.contains(&record.id))
+        .map(|record| {
+            json!({
+                "table": "gke_nodes",
+                "id": record.id,
+                "document": record.document,
+                "metadata": record.metadata,
+            })
+        })
+        .chain(
+            fixture_edges
+                .iter()
+                .filter(|record| !baseline_edge_ids.contains(&record.id))
+                .map(|record| {
+                    json!({
+                        "table": "gke_edges",
+                        "id": record.id,
+                        "document": record.document,
+                        "metadata": record.metadata,
+                    })
+                }),
+        )
+        .collect::<Vec<_>>();
+    assert!(!canonical_graph_rows.is_empty());
+    canonical_graph_rows.sort_by_key(|row| serde_json::to_string(row).unwrap());
+    let graph_digest = format!(
+        "{:x}",
+        {
+            use sha2::Digest;
+            sha2::Sha256::digest(serde_json::to_vec(&canonical_graph_rows).unwrap())
+        }
+    );
+    let expected_digests: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-provider-event-graph-digests-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(expected_digests["schema_version"], 1);
+    assert_eq!(
+        graph_digest,
+        expected_digests["digests"]["postgresql"]["sha256"]
+            .as_str()
+            .unwrap()
     );
 
     drop(service);
