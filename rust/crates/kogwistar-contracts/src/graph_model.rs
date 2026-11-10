@@ -1510,6 +1510,29 @@ fn validate_flattened_llm_shape(
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
         return validate_llm_ids(model_class, payload);
     }
+    if model_class == GraphModelClass::AssocFlattenedLlmEdge {
+        let edge: AssocFlattenedLlmEdgeV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if edge
+            .source_ids
+            .iter()
+            .chain(edge.target_ids.iter())
+            .any(|id| id.0.is_empty())
+            || edge
+                .source_edge_ids
+                .as_option()
+                .into_iter()
+                .flatten()
+                .chain(edge.target_edge_ids.as_option().into_iter().flatten())
+                .any(|id| id.0.is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "edge endpoint IDs must not be empty",
+            });
+        }
+        return validate_llm_ids(model_class, payload);
+    }
     if model_class.entity_kind() == GraphEntityKind::Edge {
         let edge: FlattenedLlmEdgeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
@@ -2417,6 +2440,19 @@ pub struct AssocFlattenedLlmNodeV1 {
     pub fields: LlmEntityFieldsV1,
 }
 
+/// Associated-flattened edges carry incidence fields only; grounding links
+/// live in the separate association tables.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AssocFlattenedLlmEdgeV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub source_ids: Vec<NodeId>,
+    pub target_ids: Vec<NodeId>,
+    pub relation: String,
+    pub source_edge_ids: RequiredNullable<Vec<EdgeId>>,
+    pub target_edge_ids: RequiredNullable<Vec<EdgeId>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FlattenedLlmEdgeV1 {
     #[serde(flatten)]
@@ -2809,6 +2845,64 @@ impl GraphEntity for LlmEdgeV1 {
 }
 
 impl EdgeEntity for LlmEdgeV1 {
+    fn source_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.source_ids)
+    }
+
+    fn target_node_ids(&self) -> Option<&[NodeId]> {
+        Some(&self.target_ids)
+    }
+
+    fn relation(&self) -> Option<&str> {
+        Some(&self.relation)
+    }
+
+    fn source_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.source_edge_ids.as_option().map(Vec::as_slice)
+    }
+
+    fn target_edge_ids(&self) -> Option<&[EdgeId]> {
+        self.target_edge_ids.as_option().map(Vec::as_slice)
+    }
+}
+
+impl GraphEntity for AssocFlattenedLlmNodeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Node
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl GraphEntity for AssocFlattenedLlmEdgeV1 {
+    fn graph_entity_kind(&self) -> GraphEntityKind {
+        GraphEntityKind::Edge
+    }
+
+    fn graph_entity_id(&self) -> Option<&str> {
+        self.fields.id.as_deref()
+    }
+
+    fn graph_entity_label(&self) -> Option<&str> {
+        Some(&self.fields.label)
+    }
+
+    fn graph_entity_summary(&self) -> Option<&str> {
+        Some(&self.fields.summary)
+    }
+}
+
+impl EdgeEntity for AssocFlattenedLlmEdgeV1 {
     fn source_node_ids(&self) -> Option<&[NodeId]> {
         Some(&self.source_ids)
     }
@@ -4456,6 +4550,8 @@ mod tests {
         assert_edge::<PersistentEdgeV1>();
         assert_node::<LlmNodeV1>();
         assert_edge::<LlmEdgeV1>();
+        assert_node::<AssocFlattenedLlmNodeV1>();
+        assert_edge::<AssocFlattenedLlmEdgeV1>();
         assert_node::<FlattenedLlmNodeV1>();
         assert_edge::<FlattenedLlmEdgeV1>();
         assert_node::<PureChromaNodeV1>();
@@ -5199,6 +5295,51 @@ mod tests {
         .expect("valid Rust round-trip JSON");
         assert_eq!(round_trip["model_class"], "assoc_flattened_llm_node");
         assert_eq!(round_trip["payload"], fixture["payload"]);
+    }
+
+    #[test]
+    fn assoc_flattened_llm_edge_round_trip_preserves_python_endpoints() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-edge-assoc-flattened-model-v1.json"
+        )))
+        .expect("valid Python AssocFlattenedLLMEdge fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope = RawGraphModelEnvelopeV1::from_json(&wire)
+            .expect("valid associated flattened-edge envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::AssocFlattenedLlmEdge);
+        envelope
+            .validate_family_v1()
+            .expect("associated grounding belongs to separate association tables");
+        let typed: AssocFlattenedLlmEdgeV1 = serde_json::from_value(fixture["payload"].clone())
+            .expect("typed associated flattened edge");
+        assert_eq!(typed.graph_entity_kind(), GraphEntityKind::Edge);
+        assert_eq!(typed.graph_entity_id(), Some("ne:assoc-flat-edge"));
+        assert_eq!(typed.source_node_ids().unwrap()[0].0, "nn:source");
+        assert_eq!(typed.target_node_ids().unwrap()[0].0, "nn:target");
+        assert_eq!(typed.relation(), Some("connects_to"));
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], "assoc_flattened_llm_edge");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+
+        let mut invalid_payload = fixture["payload"].clone();
+        invalid_payload["source_ids"] = serde_json::json!([""]);
+        assert!(
+            GraphModelEnvelope::new(GraphModelClass::AssocFlattenedLlmEdge, invalid_payload)
+                .validate_family_v1()
+                .is_err()
+        );
     }
 
     #[test]

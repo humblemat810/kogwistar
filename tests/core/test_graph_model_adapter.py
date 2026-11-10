@@ -750,6 +750,31 @@ def test_python_assoc_flattened_llm_node_round_trips_shared_wire_fixture() -> No
     assert "mentions" not in payload
 
 
+def test_python_assoc_flattened_llm_edge_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-edge-assoc-flattened-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = engine_models.AssocFlattenedLLMEdge.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="llm", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["id"] == payload["local_id"] == "ne:assoc-flat-edge"
+    assert payload["source_ids"] == ["nn:source"]
+    assert payload["target_ids"] == ["nn:target"]
+    assert payload["properties"]["vendor_extension"] == {"version": 1}
+    assert "mentions" not in payload
+
+    invalid_payload = dict(fixture["payload"])
+    invalid_payload["source_ids"] = [""]
+    with pytest.raises(ValueError, match="endpoint IDs must not be empty"):
+        engine_models.AssocFlattenedLLMEdge.model_validate(invalid_payload)
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",
