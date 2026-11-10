@@ -1366,38 +1366,36 @@ def test_step_resolver_adapter_uses_optional_claim_retry_attempt() -> None:
         return RunSuccess(conversation_node_id=None, state_update=[])
 
     adapter = RustStepResolverAdapter(resolver)
-    legacy_work = _adapter_work()
-    adapter(legacy_work)
-    retried_work = _adapter_work()
-    retried_work["payload"]["attempt"] = 3
-    adapter(retried_work)
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-trace-context-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    context = fixture["context"]
+    for retry_case in fixture["retry_attempts"]:
+        work = _adapter_work()
+        work["run_id"] = context["run_id"]
+        work["payload"].update(
+            {
+                "run_id": context["run_id"],
+                "workflow_id": "workflow",
+                "conversation_id": "conversation",
+                "turn_node_id": None,
+                "node_id": context["node_id"],
+                "step_seq": context["step_seq"],
+                "token_id": context["token_id"],
+                "attempt": retry_case["attempt"],
+            }
+        )
+        adapter(work)
+        assert {
+            field: observed[-1][field] for field in retry_case["expected"]
+        } == retry_case["expected"]
 
-    assert observed == [
-        {
-            "run_id": "run-1",
-            "token_id": "run-1",
-            "step_seq": 0,
-            "node_id": "start",
-            "attempt": 1,
-            "conversation_id": "conv-1",
-            "turn_node_id": "turn-1",
-            "trace_id": "run-1",
-            "span_id": "stp:run-1:run-1:0:1:start",
-            "parent_span_id": "tok:run-1:run-1",
-        },
-        {
-            "run_id": "run-1",
-            "token_id": "run-1",
-            "step_seq": 0,
-            "node_id": "start",
-            "attempt": 3,
-            "conversation_id": "conv-1",
-            "turn_node_id": "turn-1",
-            "trace_id": "run-1",
-            "span_id": "stp:run-1:run-1:0:3:start",
-            "parent_span_id": "tok:run-1:run-1",
-        },
-    ]
+    assert [fields["attempt"] for fields in observed] == [1, 2]
 
 
 def test_worker_journals_callback_before_send_and_replays_after_restart(

@@ -1452,6 +1452,7 @@
             "/../../../contracts/golden/runtime-trace-context-v1.json"
         )))
         .unwrap();
+        let retry_attempts = fixture["retry_attempts"].as_array().unwrap();
         let context = &fixture["context"];
         let payload = json!({
             "contract_version": 1,
@@ -1512,10 +1513,16 @@
             json!({"kind":"workflow.step.execute"}),
             0,
         );
-        assert_eq!(python_retry_work.payload["attempt"], 2);
+        assert_eq!(
+            python_retry_work.payload["attempt"],
+            retry_attempts[1]["attempt"]
+        );
         let python_retry_wire = serde_json::to_value(&python_retry_work).unwrap();
         assert!(python_retry_wire.get("attempt_number").is_none());
-        assert_eq!(python_retry_wire["payload"]["attempt"], 2);
+        assert_eq!(
+            python_retry_wire["payload"]["attempt"],
+            retry_attempts[1]["attempt"]
+        );
 
         let first_python_lane = ProjectedLaneMessage {
             recipient_id: "python-worker".to_owned(),
@@ -1530,31 +1537,41 @@
             0,
         );
         assert!(first_python_work.payload.get("attempt").is_none());
+        assert_eq!(retry_attempts[0]["attempt"], 1);
 
-        let work = runtime_claimed_work(
-            lane,
-            "rust-native-worker",
-            "run-42".to_owned(),
-            payload,
-            0,
-        );
-        let worker_wire = serde_json::to_value(&work).unwrap();
-        assert!(worker_wire.get("attempt_number").is_none());
-
-        let (handoff, request) = native_request_for_claimed_work(&work).unwrap();
-        assert_eq!(request.ephemeral_context["_trace_attempt"], context["attempt"]);
-        let effect = kogwistar_runtime::execute_native_step(&request).unwrap();
-        assert_eq!(effect.trace_events[0]["event"], "runtime.native.step.completed");
-        for (field, expected) in fixture["expected"].as_object().unwrap() {
-            assert_eq!(&effect.trace_events[0][field], expected, "field {field}");
-        }
-        let failed = failed_native_result(handoff, &request, "TEST_FAILURE", "test failure");
-        for (field, expected) in fixture["expected"].as_object().unwrap() {
-            assert_eq!(
-                &failed.effect.as_ref().unwrap().trace_events[0][field],
-                expected,
-                "failed trace field {field}"
+        for retry_case in fixture["retry_attempts"].as_array().unwrap() {
+            let retry_lane = ProjectedLaneMessage {
+                retry_count: retry_case["retry_count"].as_i64().unwrap(),
+                ..lane.clone()
+            };
+            let work = runtime_claimed_work(
+                retry_lane,
+                "rust-native-worker",
+                "run-42".to_owned(),
+                payload.clone(),
+                0,
             );
+            let worker_wire = serde_json::to_value(&work).unwrap();
+            assert!(worker_wire.get("attempt_number").is_none());
+
+            let (handoff, request) = native_request_for_claimed_work(&work).unwrap();
+            assert_eq!(
+                request.ephemeral_context["_trace_attempt"],
+                retry_case["attempt"]
+            );
+            let effect = kogwistar_runtime::execute_native_step(&request).unwrap();
+            assert_eq!(effect.trace_events[0]["event"], "runtime.native.step.completed");
+            for (field, expected) in retry_case["expected"].as_object().unwrap() {
+                assert_eq!(&effect.trace_events[0][field], expected, "field {field}");
+            }
+            let failed = failed_native_result(handoff, &request, "TEST_FAILURE", "test failure");
+            for (field, expected) in retry_case["expected"].as_object().unwrap() {
+                assert_eq!(
+                    &failed.effect.as_ref().unwrap().trace_events[0][field],
+                    expected,
+                    "failed trace field {field}"
+                );
+            }
         }
     }
 

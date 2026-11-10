@@ -12,5 +12,27 @@
     "span_id": "stp:run-42:token-7:3:2:parse",
     "parent_span_id": "tok:run-42:token-7",
     "attempt": 2
-  }
+  },
+  "retry_attempts": [
+    {
+      "retry_count": 0,
+      "attempt": 1,
+      "expected": {
+        "trace_id": "run-42",
+        "span_id": "stp:run-42:token-7:3:1:parse",
+        "parent_span_id": "tok:run-42:token-7",
+        "attempt": 1
+      }
+    },
+    {
+      "retry_count": 1,
+      "attempt": 2,
+      "expected": {
+        "trace_id": "run-42",
+        "span_id": "stp:run-42:token-7:3:2:parse",
+        "parent_span_id": "tok:run-42:token-7",
+        "attempt": 2
+      }
+    }
+  ]
 }
