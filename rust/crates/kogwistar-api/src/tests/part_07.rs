@@ -5412,6 +5412,51 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     assert_eq!(body["start_node_id"], "conversation-create-start");
     assert_eq!(body["turn_count"], 0);
 
+    let syscall_create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/create_conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "version":"v1",
+                        "op":"create_conversation",
+                        "args":{
+                            "user_id":"conversation-owner",
+                            "conversation_id":"conversation-syscall-create-contract",
+                            "start_node_id":"conversation-syscall-create-start"
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(syscall_create_response.status(), StatusCode::OK);
+    let syscall_create_body: Value = serde_json::from_slice(
+        &to_bytes(syscall_create_response.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mut expected_syscall_result: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/conversation-create-syscall-result-v1.json"
+    )))
+    .unwrap();
+    expected_syscall_result["conversation_id"] = json!("conversation-syscall-create-contract");
+    expected_syscall_result["user_id"] = json!("conversation-owner");
+    expected_syscall_result["start_node_id"] = json!("conversation-syscall-create-start");
+    expected_syscall_result["tail_node_id"] = json!("conversation-syscall-create-start");
+    assert_eq!(syscall_create_body["version"], "v1");
+    assert_eq!(syscall_create_body["op"], "create_conversation");
+    assert_eq!(syscall_create_body["status"], "ok");
+    assert_eq!(syscall_create_body["result"], expected_syscall_result);
+
     let events = service
         .store
         .replay_raw_events("conversation", 0, 20)
