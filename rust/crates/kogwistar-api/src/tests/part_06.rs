@@ -7487,6 +7487,21 @@
             ))
             .await;
         assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        let wrong_namespace = service
+            .execute(request(
+                "receive_message",
+                json!({"conversation_id":"c1"}),
+                json!({
+                    "sub":"reader-1",
+                    "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["docs"],
+                    "capabilities":["read_graph"]
+                }),
+            ))
+            .await;
+        assert_eq!(wrong_namespace.status, StatusCode::FORBIDDEN.as_u16());
         let missing_id = service
             .execute(request("receive_message", json!({}), principal.clone()))
             .await;
@@ -7690,13 +7705,13 @@
                 .collect::<Vec<_>>()
         };
         let receive_audit = audit_for("receive_message");
-        assert_eq!(receive_audit.len(), 4);
+        assert_eq!(receive_audit.len(), 5);
         assert_eq!(
             receive_audit
                 .iter()
                 .filter(|event| event["status"] == "error")
                 .count(),
-            2
+            3
         );
         let mount_audit = audit_for("mount_memory");
         assert_eq!(mount_audit.len(), 2);

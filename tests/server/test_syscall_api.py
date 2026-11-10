@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import kogwistar.server_mcp_with_admin as server
@@ -229,6 +229,54 @@ def test_syscall_receive_message_matches_shared_wire_fixture():
     assert payload["status"] == "ok"
     assert payload["result"] == fixture
     assert authorized == [("role", "ro"), ("namespace", "conversation")]
+
+
+@pytest.mark.parametrize(
+    ("role_allowed", "namespace_allowed", "checks"),
+    [
+        (False, True, [("role", "ro")]),
+        (True, False, [("role", "ro"), ("namespace", "conversation")]),
+    ],
+)
+def test_syscall_receive_message_denies_before_service_read(
+    role_allowed: bool,
+    namespace_allowed: bool,
+    checks: list[tuple[str, str]],
+) -> None:
+    service = SimpleNamespace(
+        list_transcript=lambda _conversation_id: pytest.fail(
+            "authorization denial must precede transcript access"
+        )
+    )
+    observed: list[tuple[str, str]] = []
+
+    def require_role(role: str) -> None:
+        observed.append(("role", role))
+        if not role_allowed:
+            raise HTTPException(status_code=403, detail="role denied")
+
+    def require_namespace(namespace: str) -> None:
+        observed.append(("namespace", namespace))
+        if not namespace_allowed:
+            raise HTTPException(status_code=403, detail="namespace denied")
+
+    router = create_syscall_router(
+        get_service=lambda: service,
+        require_role=require_role,
+        require_namespace=require_namespace,
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={"version": "v1", "op": "receive_message", "args": {"conversation_id": "c1"}},
+        )
+
+    assert response.status_code == 403
+    assert observed == checks
 
 
 def test_invoke_builtin_tool_results_match_shared_contract_fixture():
