@@ -2271,7 +2271,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/messaging/service.py#receive_message; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/server/chat_service.py#list_transcript; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
     async fn in_memory_receive_message_effect(
         &self,
         request: &ApiEffectRequest,
