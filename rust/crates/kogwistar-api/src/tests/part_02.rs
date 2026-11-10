@@ -994,13 +994,24 @@
             )
             .await
             .unwrap();
-        assert_eq!(health.status(), StatusCode::OK);
-        let health_body = to_bytes(health.into_body(), 4096).await.unwrap();
+        let health_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/health-v1.json"
+        ))
+        .unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(&health_body).unwrap()["backend"],
+            health.status().as_u16(),
+            health_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let health_body = to_bytes(health.into_body(), 4096).await.unwrap();
+        let health_value: Value = serde_json::from_slice(&health_body).unwrap();
+        assert_eq!(health_value["ok"], health_contract["ok"]);
+        for field in health_contract["required_fields"].as_array().unwrap() {
+            assert!(health_value.get(field.as_str().unwrap()).is_some());
+        }
+        assert_eq!(
+            health_value["backend"],
             "pg"
         );
-        let health_value: Value = serde_json::from_slice(&health_body).unwrap();
         assert!(health_value["embedding_inline_worker_enabled"].is_boolean());
         assert_eq!(
             health_value["implementation"]["runtime_cutover_ready"],

@@ -54,6 +54,29 @@ from tests._helpers.server_http_helpers import token_header
 
 pytestmark = pytest.mark.ci_full
 
+
+def test_server_health_matches_shared_contract() -> None:
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/health-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.get("/health")
+    assert response.status_code == contract["success_status"]
+    payload = response.json()
+    assert payload["ok"] is contract["ok"]
+    assert all(field in payload for field in contract["required_fields"])
+    assert isinstance(payload["backend"], str)
+    assert isinstance(payload["persist_directory"], str)
+    assert isinstance(payload["conversation_persist_directory"], str)
+    assert isinstance(payload["workflow_persist_directory"], str)
+    assert isinstance(payload["wisdom_persist_directory"], str)
+    assert payload["pg_schema_base"] is None or isinstance(
+        payload["pg_schema_base"], str
+    )
+
 _token_header = token_header
 
 
