@@ -1285,6 +1285,10 @@
             "../../../../../contracts/golden/run-events-poll-v1.json"
         ))
         .unwrap();
+        let replay_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-replay-v1.json"
+        ))
+        .unwrap();
 
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1777,6 +1781,21 @@
                 assert_eq!(response.status(), StatusCode::OK);
                 let body = to_bytes(response.into_body(), 16_384).await.unwrap();
                 let value = serde_json::from_slice::<Value>(&body).unwrap();
+                if suffix.starts_with("replay?") {
+                    assert_eq!(
+                        replay_contract["success_status"],
+                        StatusCode::OK.as_u16()
+                    );
+                    for field in replay_contract["required_fields"]
+                        .as_array()
+                        .unwrap()
+                    {
+                        let field = field.as_str().unwrap();
+                        assert!(value.get(field).is_some(), "missing {field}");
+                    }
+                    assert_eq!(value["run_id"], submitted_run_id);
+                    assert_eq!(value["target_step_seq"], 0);
+                }
                 if suffix == "checkpoints/0" {
                     for field in checkpoint_detail_contract["required_fields"]
                         .as_array()

@@ -1610,8 +1610,18 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         replay = client.get(
             f"/api/runs/{run_id}/replay?target_step_seq=1", headers=workflow_headers
         )
-        replay.raise_for_status()
-        assert replay.json()["state"]["counter"] == 2
+        replay_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-replay-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert replay.status_code == replay_contract["success_status"]
+        replay_payload = replay.json()
+        assert set(replay_contract["required_fields"]).issubset(replay_payload)
+        assert replay_payload["run_id"] == run_id
+        assert replay_payload["target_step_seq"] == 1
+        assert replay_payload["state"]["counter"] == 2
 
         resume_contract = client.get(
             f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
