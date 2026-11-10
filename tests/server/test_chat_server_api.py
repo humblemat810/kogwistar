@@ -1157,6 +1157,23 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
 def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
     monkeypatch, engine_triplet
 ):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only conversation list attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     service, _registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
