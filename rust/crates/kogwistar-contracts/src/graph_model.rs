@@ -1423,6 +1423,31 @@ fn validate_llm_shape(
     ) {
         return validate_flattened_llm_shape(model_class, payload);
     }
+    if model_class == GraphModelClass::LlmNodeExtraction {
+        let node: LlmNodeExtractionV1 = serde_json::from_value(payload.clone())
+            .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if node.mentions.is_empty() {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "LLM extraction node requires mentions",
+            });
+        }
+        for (index, span) in node.mentions.iter().enumerate() {
+            if span.end_char <= span.start_char || span.page_number == 0 {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "LLM extraction span bounds or page number are invalid",
+                });
+            }
+            if !payload["mentions"][index]["excerpt"].is_string() {
+                return Err(GraphModelError::InvalidEntityFields {
+                    model_class,
+                    reason: "LLM extraction spans require excerpt strings",
+                });
+            }
+        }
+        return validate_llm_ids(model_class, payload);
+    }
     if model_class.entity_kind() == GraphEntityKind::Edge {
         let edge: LlmEdgeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
@@ -1458,6 +1483,10 @@ fn validate_llm_groundings(
             });
         }
     }
+    validate_llm_ids(model_class, payload)
+}
+
+fn validate_llm_ids(model_class: GraphModelClass, payload: &Value) -> Result<(), GraphModelError> {
     for id_field in ["id", "local_id"] {
         if payload
             .get(id_field)
@@ -2314,6 +2343,15 @@ pub struct LlmNodeV1 {
     #[serde(flatten)]
     pub fields: LlmEntityFieldsV1,
     pub mentions: Vec<LlmGroundingV1>,
+}
+
+/// Extraction output uses direct excerpt spans, unlike `LlmNodeV1`'s grouped
+/// grounding representation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LlmNodeExtractionV1 {
+    #[serde(flatten)]
+    pub fields: LlmEntityFieldsV1,
+    pub mentions: Vec<LlmTextSpanV1>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -5031,6 +5069,58 @@ mod tests {
     }
 
     #[test]
+    fn llm_node_extraction_round_trip_preserves_flat_excerpt_spans() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-node-extraction-model-v1.json"
+        )))
+        .expect("valid Python LLMNodeExtraction fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope =
+            RawGraphModelEnvelopeV1::from_json(&wire).expect("valid extraction-node envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::LlmNodeExtraction);
+        envelope
+            .validate_family_v1()
+            .expect("valid flat extraction spans");
+        let typed: LlmNodeExtractionV1 =
+            serde_json::from_value(fixture["payload"].clone()).expect("typed flat spans");
+        assert_eq!(typed.mentions.len(), 1);
+        assert_eq!(typed.mentions[0].excerpt, "extracted");
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], "llm_node_extraction");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+
+        let mut missing_excerpt = fixture["payload"].clone();
+        missing_excerpt["mentions"][0]
+            .as_object_mut()
+            .expect("span object")
+            .remove("excerpt");
+        let invalid_wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": missing_excerpt,
+        })
+        .to_string();
+        assert!(
+            RawGraphModelEnvelopeV1::from_json(&invalid_wire)
+                .expect("valid JSON envelope")
+                .validate_family_v1()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn workflow_operation_version_matches_shared_python_contract_fixture() {
         let versions: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -5177,6 +5267,15 @@ mod tests {
 
         let mut llm = fixture["cases"][0]["payload"].clone();
         llm.as_object_mut().unwrap().remove("embedding");
+        llm["mentions"] = serde_json::json!([{
+            "collection_page_url": "https://example.test/collection",
+            "document_page_url": "https://example.test/document",
+            "doc_id": "doc:extraction",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 1,
+            "excerpt": "x"
+        }]);
         assert!(
             GraphModelEnvelope::new(GraphModelClass::LlmNodeExtraction, llm)
                 .validate_family_v1()

@@ -368,11 +368,17 @@ class GraphEntityRefBase(GraphEntityBase):
         return _coerce_mentions_payload(mentions)
 
     def iter_span(self) -> Iterator[Span]:
+        if getattr(type(self), "_flat_extraction_mentions", False):
+            yield from cast(Iterator[Span], iter(self.mentions))
+            return
         for g in self.mentions:
             for sp in g.spans:
                 yield sp
 
     def iter_evidence(self) -> Iterator[Span | MultimodalSpan]:
+        if getattr(type(self), "_flat_extraction_mentions", False):
+            yield from cast(Iterator[Span], iter(self.mentions))
+            return
         for g in self.mentions:
             yield from g.iter_evidence()
 
@@ -789,6 +795,8 @@ class GroundginMandatoryExcerpt(Span):
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
 
+    _flat_extraction_mentions: ClassVar[bool] = True
+
     mentions: Annotated[  # pyright: ignore[reportIncompatibleVariableOverride]
         list[GroundginMandatoryExcerpt],
         FrontendField(),
@@ -798,6 +806,39 @@ class LLMNodeExtraction(LLMNode):
     ] = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
         min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def _coerce_mentions(cls, mentions: object) -> object:
+        return mentions
+
+    @field_validator("mentions")
+    @classmethod
+    def _require_non_empty_refs(
+        cls, mentions: list[GroundginMandatoryExcerpt], info: ValidationInfo
+    ) -> list[GroundginMandatoryExcerpt]:
+        if not mentions:
+            raise ValueError("At least one mention is required")
+        return mentions
+
+    @model_validator(mode="before")
+    @classmethod
+    def end_char_minus_1_to_ending_index(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        mentions = data.get("mentions")
+        if isinstance(mentions, str):
+            mentions = json.loads(mentions)
+        if not isinstance(mentions, list):
+            raise TypeError("mentions should be a list of excerpt spans")
+        for span in mentions:
+            if isinstance(span, Span):
+                if span.end_char == -1:
+                    span.end_char += len(span.excerpt)
+            elif isinstance(span, dict) and span.get("end_char") == -1:
+                span["end_char"] += len(span["excerpt"])
+        data["mentions"] = mentions
+        return data
 
 
 class LLMEdgeExtraction(LLMEdge):
