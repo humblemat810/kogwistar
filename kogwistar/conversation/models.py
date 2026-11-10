@@ -312,6 +312,23 @@ class ConversationEdge(Edge):
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, object] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Apply model-copy updates through this subtype's validators."""
+        copied = super().model_copy(deep=deep)
+        if update is None:
+            return copied
+        for name, value in update.items():
+            if name in type(self).model_fields:
+                setattr(copied, name, value)
+            else:
+                copied.__dict__[name] = value
+        return copied
+
     def identity_key(self) -> tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
@@ -359,6 +376,23 @@ class ConversationNode(ConversationRoleMixin, Node):
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
     id_kind: ClassVar[str] = "conversation.node"
     model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, object] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Apply model-copy updates through this subtype's validators."""
+        copied = super().model_copy(deep=deep)
+        if update is None:
+            return copied
+        for name, value in update.items():
+            if name in type(self).model_fields:
+                setattr(copied, name, value)
+            else:
+                copied.__dict__[name] = value
+        return copied
 
     def identity_key(self) -> tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn
