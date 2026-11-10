@@ -5001,6 +5001,36 @@ mod tests {
     }
 
     #[test]
+    fn llm_node_round_trip_preserves_python_grouped_groundings() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-node-model-v1.json"
+        )))
+        .expect("valid Python LLMNode fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope = RawGraphModelEnvelopeV1::from_json(&wire).expect("valid LLMNode envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::LlmNode);
+        envelope
+            .validate_family_v1()
+            .expect("valid typed grouped LLMNode groundings");
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["schema_version"], fixture["schema_version"]);
+        assert_eq!(round_trip["model_class"], "llm_node");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+    }
+
+    #[test]
     fn workflow_operation_version_matches_shared_python_contract_fixture() {
         let versions: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

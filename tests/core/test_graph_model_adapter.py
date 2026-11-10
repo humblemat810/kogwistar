@@ -657,6 +657,34 @@ def test_python_workflow_failed_node_round_trips_shared_wire_fixture() -> None:
     }
 
 
+def test_python_llm_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    validation_payload = dict(fixture["payload"])
+    validation_payload["mentions"] = [
+        {
+            **grounding,
+            "spans": [
+                {**span, "insertion_method": "contract-test"}
+                for span in grounding["spans"]
+            ],
+        }
+        for grounding in fixture["payload"]["mentions"]
+    ]
+
+    restored = engine_models.LLMNode.model_validate(validation_payload)
+    payload = restored.model_dump(field_mode="llm", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["id"] == payload["local_id"] == "nn:llm-node"
+    assert payload["properties"]["vendor_extension"] == {"version": 1}
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",
