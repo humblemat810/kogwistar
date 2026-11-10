@@ -5261,6 +5261,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         "public visualization failed to preserve graph and insertion-method selection: {visualization}"
     );
 
+    let cytoscape_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-viz-cytoscape-http-success-v1.json"
+    )))
+    .unwrap();
     for (path, element_path) in [
         ("/api/viz/d3.json?graph_type=knowledge&mode=reify", "nodes"),
         (
@@ -5283,9 +5288,34 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "route {path}");
+        if path.starts_with("/api/viz/cytoscape.json") {
+            assert_eq!(
+                response.status().as_u16(),
+                cytoscape_contract["success_status"].as_u64().unwrap() as u16,
+                "route {path}"
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::OK, "route {path}");
+        }
         let visualization: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+        if path.starts_with("/api/viz/cytoscape.json") {
+            for field in cytoscape_contract["required_fields"]
+                .as_array()
+                .unwrap()
+            {
+                let field = field.as_str().unwrap();
+                assert!(visualization.get(field).is_some(), "missing {field}");
+            }
+            for field in cytoscape_contract["array_fields"].as_array().unwrap() {
+                let field = field.as_str().unwrap();
+                assert!(visualization[field].is_array(), "{field} must be an array");
+            }
+            assert_eq!(visualization["mode"], cytoscape_contract["mode"]);
+            if cytoscape_contract["doc_id_query_echo"] == true {
+                assert!(visualization["doc_id"].is_null());
+            }
+        }
         let ids = visualization[element_path]
             .as_array()
             .unwrap()

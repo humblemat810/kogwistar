@@ -2726,6 +2726,26 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         assert payload["mode"] == viz_contract["mode"]
         assert payload["doc_id"] is viz_contract["doc_id"]
 
+        cytoscape_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/graph-viz-cytoscape-http-success-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        cytoscape = client.get(
+            "/api/viz/cytoscape.json",
+            params={"mode": cytoscape_contract["mode"]},
+            headers=workflow_headers,
+        )
+        assert cytoscape.status_code == cytoscape_contract["success_status"]
+        cytoscape_payload = cytoscape.json()
+        assert set(cytoscape_contract["required_fields"]).issubset(cytoscape_payload)
+        for field in cytoscape_contract["array_fields"]:
+            assert isinstance(cytoscape_payload[field], list)
+        assert cytoscape_payload["mode"] == cytoscape_contract["mode"]
+        if cytoscape_contract["doc_id_query_echo"]:
+            assert cytoscape_payload["doc_id"] is None
+
 
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
