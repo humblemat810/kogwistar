@@ -918,6 +918,29 @@ def test_python_flattened_llm_node_round_trips_shared_wire_fixture() -> None:
     assert "multimodal_span_ids" not in payload["mentions"][0]
 
 
+def test_python_flattened_llm_edge_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-edge-flattened-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = engine_models.FlattenedLLMEdge.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="llm", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["source_ids"] == ["nn:flat-source"]
+    assert payload["target_edge_ids"] is None
+    assert payload["properties"]["vendor_extension"] == {"version": 1}
+
+    invalid_payload = dict(fixture["payload"])
+    invalid_payload["source_edge_ids"] = [""]
+    with pytest.raises(ValueError, match="endpoint IDs must not be empty"):
+        engine_models.FlattenedLLMEdge.model_validate(invalid_payload)
+
+
 def test_python_assoc_flattened_llm_node_round_trips_shared_wire_fixture() -> None:
     fixture_path = (
         Path(__file__).resolve().parents[2]

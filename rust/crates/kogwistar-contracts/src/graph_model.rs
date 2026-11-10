@@ -1579,6 +1579,24 @@ fn validate_flattened_llm_shape(
     if model_class.entity_kind() == GraphEntityKind::Edge {
         let edge: FlattenedLlmEdgeV1 = serde_json::from_value(payload.clone())
             .map_err(|error| GraphModelError::InvalidPayload(error.to_string()))?;
+        if edge
+            .source_ids
+            .iter()
+            .chain(&edge.target_ids)
+            .any(|endpoint| endpoint.0.is_empty())
+            || edge
+                .source_edge_ids
+                .as_option()
+                .into_iter()
+                .flatten()
+                .chain(edge.target_edge_ids.as_option().into_iter().flatten())
+                .any(|endpoint| endpoint.0.is_empty())
+        {
+            return Err(GraphModelError::InvalidEntityFields {
+                model_class,
+                reason: "edge endpoint IDs must not be empty",
+            });
+        }
         if edge.mentions.is_empty() {
             return Err(GraphModelError::InvalidEntityFields {
                 model_class,
@@ -5411,6 +5429,57 @@ mod tests {
         .expect("valid Rust round-trip JSON");
         assert_eq!(round_trip["model_class"], "flattened_llm_node");
         assert_eq!(round_trip["payload"], fixture["payload"]);
+    }
+
+    #[test]
+    fn flattened_llm_edge_round_trip_matches_python_and_rejects_blank_endpoints() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-edge-flattened-model-v1.json"
+        )))
+        .expect("valid Python FlattenedLLMEdge fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope =
+            RawGraphModelEnvelopeV1::from_json(&wire).expect("valid flattened-edge envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::FlattenedLlmEdge);
+        envelope
+            .validate_family_v1()
+            .expect("valid flattened evidence references and endpoints");
+        let typed: FlattenedLlmEdgeV1 =
+            serde_json::from_value(fixture["payload"].clone()).expect("typed flattened edge");
+        assert_eq!(typed.mentions.len(), 1);
+        assert_eq!(typed.mentions[0].span_ids, ["span:edge-1"]);
+        assert_eq!(typed.source_ids[0].0, "nn:flat-source");
+        assert_eq!(typed.source_edge_ids.as_option().unwrap()[0].0, "ne:parent");
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["model_class"], "flattened_llm_edge");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+
+        let mut invalid_payload = fixture["payload"].clone();
+        invalid_payload["source_edge_ids"][0] = Value::String(String::new());
+        let invalid_wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": invalid_payload,
+        })
+        .to_string();
+        assert!(
+            RawGraphModelEnvelopeV1::from_json(&invalid_wire)
+                .expect("valid JSON envelope")
+                .validate_family_v1()
+                .is_err()
+        );
     }
 
     #[test]
