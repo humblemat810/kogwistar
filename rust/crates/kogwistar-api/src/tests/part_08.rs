@@ -1845,7 +1845,7 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
     assert_eq!(expected_digests["schema_version"], 1);
     assert_eq!(
         graph_digest,
-        expected_digests["digests"]["in_memory"]
+        expected_digests["digests"]["in_memory"]["sha256"]
             .as_str()
             .unwrap()
     );

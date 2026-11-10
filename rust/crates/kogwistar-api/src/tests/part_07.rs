@@ -7293,6 +7293,52 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
             .count(),
         handled_trace_count
     );
+    let mut canonical_graph_state = std::collections::BTreeMap::new();
+    for event in service
+        .store
+        .replay_raw_events("conversation", 0, 100)
+        .unwrap()
+    {
+        let key = format!("{}:{}", event.entity_kind, event.entity_id);
+        match event.op.as_str() {
+            "ADD" | "UPDATE" | "UPSERT" => {
+                let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+                canonical_graph_state.insert(
+                    key,
+                    json!({
+                        "entity_kind": event.entity_kind,
+                        "id": event.entity_id,
+                        "document": payload["document"],
+                        "metadata": payload["metadata"],
+                    }),
+                );
+            }
+            "DELETE" | "TOMBSTONE" => {
+                canonical_graph_state.remove(&key);
+            }
+            other => panic!("unexpected graph event operation in frozen trace: {other}"),
+        }
+    }
+    let canonical_graph_rows = canonical_graph_state.into_values().collect::<Vec<_>>();
+    let graph_digest = format!(
+        "{:x}",
+        {
+            use sha2::Digest;
+            sha2::Sha256::digest(serde_json::to_vec(&canonical_graph_rows).unwrap())
+        }
+    );
+    let expected_digests: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-provider-event-graph-digests-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(expected_digests["schema_version"], 1);
+    assert_eq!(
+        graph_digest,
+        expected_digests["digests"]["sqlite_chroma"]["sha256"]
+            .as_str()
+            .unwrap()
+    );
     drop(service);
     remove_test_sqlite(&path);
     remove_test_sqlite(&auth_path);
