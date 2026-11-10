@@ -1041,11 +1041,15 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
             f"{base_url}/api/workflow/runs/run-sync-resume-live/steps", timeout=10
         )
         assert steps_response.status_code == 200, steps_response.text
+        step_records = steps_response.json()["steps"]
+        step_sequences = [step["step_seq"] for step in step_records]
+        assert step_sequences == sorted(set(step_sequences))
         end_step_record = next(
             step
-            for step in steps_response.json()["steps"]
+            for step in step_records
             if step["workflow_node_id"] == "end"
         )
+        assert end_step_record["step_seq"] == step_sequences[-1]
         assert end_step_record["workflow_id"] == "wf-sync-resume-live"
         assert end_step_record["workflow_node_id"] == "end"
         assert end_step_record["step_seq"] > 0
