@@ -1442,6 +1442,88 @@ def test_conversation_transcript_uses_python_defaults_and_checks_namespace(
         assert "conversation-transcript" not in denied.text
 
 
+def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only snapshot read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    with TestClient(server.app) as client:
+        conv_headers = _token_header(client, role="rw", ns="conversation")
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        created = client.post(
+            "/api/conversations", json={"user_id": "snapshot-owner"}, headers=conv_headers
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+        start_node_id = created.json()["start_node_id"]
+
+        service = ConversationService.from_engine(
+            conversation_engine,
+            knowledge_engine=engine,
+            workflow_engine=workflow_engine,
+        )
+        snapshot_id = service.persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id="python-only-snapshot-run",
+            run_step_seq=0,
+            stage="draft_answer",
+            view=SimpleNamespace(
+                messages=[{"role": "user", "content": "snapshot fixture"}],
+                items=[SimpleNamespace(node_id=start_node_id)],
+                cost=None,
+                token_budget=32,
+            ),
+            model_name="fake-model",
+            budget_tokens=32,
+        )
+
+        response = client.get(
+            f"/api/conversations/{conversation_id}/snapshots/latest",
+            headers=workflow_headers,
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert set(payload) == {
+            "snapshot_node_id",
+            "conversation_id",
+            "metadata",
+            "properties",
+        }
+        assert payload["snapshot_node_id"] == snapshot_id
+        assert payload["conversation_id"] == conversation_id
+        assert isinstance(payload["metadata"], dict)
+        assert isinstance(payload["properties"], dict)
+
+        denied = client.get(
+            f"/api/conversations/{conversation_id}/snapshots/latest",
+            headers=denied_headers,
+        )
+        assert denied.status_code == 403
+        assert snapshot_id not in denied.text
+        assert conversation_id not in denied.text
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
