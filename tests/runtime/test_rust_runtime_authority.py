@@ -1688,7 +1688,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         # Worker A exits with a completed local journal but an unsubmitted
         # result. Restart the durable server/scheduler before worker B reclaims
         # the expired claim, proving recovery is not tied to scheduler memory.
-        if backend == "sqlite":
+        if backend in {"sqlite", "pg"}:
             process.terminate()
             try:
                 process.wait(timeout=10)
