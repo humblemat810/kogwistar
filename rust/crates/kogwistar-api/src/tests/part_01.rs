@@ -1694,7 +1694,7 @@
                 implementation: ImplementationSnapshot::default(),
                 auth,
             },
-            Arc::new(service),
+            Arc::new(service.clone()),
         );
         let http_audit = app
             .clone()
@@ -1735,6 +1735,97 @@
         assert_eq!(mcp_audit["result"]["items"].as_array().unwrap().len(), 2);
         assert_eq!(mcp_audit["result"]["items"][0]["node_id"], "tool-call-1");
         assert_eq!(mcp_audit["result"]["items"][1]["node_id"], "tool-result-1");
+
+        for (id, turn_index, workspace_id, graph_space, summary) in [
+            ("scoped-turn-1", 1, "workspace-a", "conversation", "first scoped"),
+            ("scoped-turn-2", 2, "workspace-a", "conversation", "second scoped"),
+            (
+                "foreign-workspace-turn",
+                3,
+                "workspace-b",
+                "conversation",
+                "foreign workspace",
+            ),
+            (
+                "foreign-graph-space-turn",
+                4,
+                "workspace-a",
+                "knowledge",
+                "foreign graph space",
+            ),
+        ] {
+            let scoped_record = GraphScope {
+                namespace: "conversation".to_owned(),
+                workspace_id: Some(workspace_id.to_owned()),
+                graph_space: Some(graph_space.to_owned()),
+            };
+            for (record_id, metadata) in [
+                (
+                    id.to_owned(),
+                    Map::from_iter([
+                        ("entity_type".to_owned(), json!("conversation_turn")),
+                        ("conversation_id".to_owned(), json!("scoped-conversation")),
+                        ("turn_index".to_owned(), json!(turn_index)),
+                        ("role".to_owned(), json!("assistant")),
+                        ("summary".to_owned(), json!(summary)),
+                    ]),
+                ),
+                (
+                    format!("acl-{id}"),
+                    Map::from_iter([
+                        ("entity_type".to_owned(), json!("acl_record")),
+                        ("acl_truth_graph".to_owned(), json!("conversation")),
+                        ("acl_target_entity_id".to_owned(), json!(id)),
+                        ("acl_target_grain".to_owned(), json!("node")),
+                        ("acl_version".to_owned(), json!(1)),
+                        ("acl_mode".to_owned(), json!("public")),
+                    ]),
+                ),
+            ] {
+                service
+                    .conversation_store
+                    .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                        scope: scoped_record.clone(),
+                        table: "gke_nodes".to_owned(),
+                        record: GraphRecord {
+                            id: record_id,
+                            document: None,
+                            metadata,
+                            embedding: None,
+                        },
+                        embedding_dim: 3,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        let scoped_receive = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": "scoped-conversation", "limit": 0}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "workspace_id": "workspace-a",
+                    "graph_space": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(scoped_receive.status, StatusCode::OK.as_u16());
+        let scoped_receive: Value = serde_json::from_slice(&scoped_receive.body).unwrap();
+        assert_eq!(scoped_receive["result"]["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(scoped_receive["result"]["messages"][0]["node_id"], "scoped-turn-1");
+        assert_eq!(scoped_receive["result"]["messages"][1]["node_id"], "scoped-turn-2");
 
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
