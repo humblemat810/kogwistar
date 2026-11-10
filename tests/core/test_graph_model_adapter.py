@@ -530,6 +530,27 @@ def test_python_workflow_node_model_round_trips_shared_wire_fixture() -> None:
     }
 
 
+def test_python_workflow_run_node_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-run-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = runtime_models.WorkflowRunNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["entity_type"] == "workflow_run"
+    assert payload["metadata"]["workflow_version"] == "v2"
+    assert payload["metadata"]["vendor_extension"] == {
+        "attempt_group": "golden",
+        "version": 1,
+    }
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",

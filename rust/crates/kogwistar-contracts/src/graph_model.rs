@@ -4796,6 +4796,38 @@ mod tests {
     }
 
     #[test]
+    fn workflow_run_node_round_trip_preserves_python_tag_and_extension_metadata() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-run-node-model-v1.json"
+        )))
+        .expect("valid Python WorkflowRunNode fixture");
+        let wire = serde_json::json!({
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": fixture["payload"],
+        })
+        .to_string();
+
+        let envelope =
+            RawGraphModelEnvelopeV1::from_json(&wire).expect("valid WorkflowRunNode envelope");
+        assert_eq!(envelope.model_class, GraphModelClass::WorkflowRunNode);
+        envelope
+            .validate_family_v1()
+            .expect("valid typed WorkflowRunNode metadata");
+
+        let round_trip: Value = serde_json::from_str(
+            &round_trip_raw_graph_model_envelope_from_str(&wire)
+                .expect("lossless Rust envelope round trip"),
+        )
+        .expect("valid Rust round-trip JSON");
+        assert_eq!(round_trip["schema_version"], fixture["schema_version"]);
+        assert_eq!(round_trip["model_class"], "workflow_run_node");
+        assert_eq!(round_trip["payload"], fixture["payload"]);
+        assert_eq!(round_trip["payload"]["metadata"]["status"], "running");
+    }
+
+    #[test]
     fn workflow_operation_version_matches_shared_python_contract_fixture() {
         let versions: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
