@@ -231,6 +231,37 @@ def test_syscall_receive_message_matches_shared_wire_fixture():
     assert authorized == [("role", "ro"), ("namespace", "conversation")]
 
 
+def test_syscall_receive_message_missing_id_matches_shared_error_fixture():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/syscall-receive-message-missing-id-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service = SimpleNamespace(
+        list_transcript=lambda _conversation_id: pytest.fail(
+            "invalid receive_message input must not read the transcript"
+        )
+    )
+    router = create_syscall_router(
+        get_service=lambda: service,
+        require_role=lambda _role: None,
+        require_namespace=lambda _namespace: None,
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={"version": "v1", "op": "receive_message", "args": {}},
+        )
+
+    assert response.status_code == fixture["http_status"]
+    assert response.json() == fixture["body"]
+
+
 @pytest.mark.parametrize(
     ("role_allowed", "namespace_allowed", "checks"),
     [

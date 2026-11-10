@@ -4753,10 +4753,9 @@ impl SqliteRunApplicationService {
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         else {
-            return effect_error(
-                StatusCode::BAD_REQUEST,
-                "KOGWISTAR_INVALID_REQUEST",
-                "conversation_id is required",
+            return json_effect(
+                StatusCode::NOT_FOUND,
+                json!({"detail": "'conversation_id'"}),
             );
         };
         let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {

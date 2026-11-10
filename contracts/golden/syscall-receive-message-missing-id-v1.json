@@ -1,0 +1,6 @@
+{
+  "http_status": 404,
+  "body": {
+    "detail": "'conversation_id'"
+  }
+}

@@ -7515,7 +7515,15 @@
         let missing_id = service
             .execute(request("receive_message", json!({}), principal.clone()))
             .await;
-        assert_eq!(missing_id.status, StatusCode::BAD_REQUEST.as_u16());
+        let error_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-receive-message-missing-id-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(missing_id.status, error_contract["http_status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&missing_id.body).unwrap(),
+            error_contract["body"]
+        );
 
         let response = service
             .execute(request("receive_message", json!({"conversation_id":"c1"}), principal.clone()))
