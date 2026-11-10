@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
@@ -41,6 +42,11 @@ from kogwistar.runtime.rust_runtime_authority import (
     freeze_runtime_plan,
 )
 from kogwistar.implementation_selection import capture_implementation_selection
+from tests._helpers.engine_factories import FakeEmbeddingFunction
+from tests._helpers.server_fixtures import build_engine_triplet
+from tests.server.test_chat_server_api import _configure_server, _token_header
+
+import kogwistar.server_mcp_with_admin as chat_server
 
 ROOT = Path(__file__).resolve().parents[2]
 RUST_SERVER = (
@@ -883,6 +889,10 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         lambda **_kwargs: (start, nodes, adjacency),
     )
     monkeypatch.setattr(
+        "kogwistar.runtime.runtime.validate_workflow_design",
+        lambda **_kwargs: (start, nodes, adjacency),
+    )
+    monkeypatch.setattr(
         "kogwistar.runtime.runtime._compute_may_reach_join_bitsets",
         lambda **_kwargs: {node_id: 0 for node_id in nodes},
     )
@@ -910,7 +920,9 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         visited.append("end")
         callback_traces["end"] = ctx.trace_ctx.as_fields()
         assert ctx.state_view["approved"] is True
-        _assert_worker_dependencies(ctx.state_view, dependencies)
+        resumed_dependencies = ctx.state_view.get("_deps")
+        assert isinstance(resumed_dependencies, dict)
+        assert resumed_dependencies.get("_rust_worker_effects") is True
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"resumed_end": True})],
@@ -1014,23 +1026,70 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
                     time.sleep(0.05)
             else:
                 raise AssertionError("Rust SQLite server did not recover for resume")
-        resumed = runtime.resume_run(
-            run_id="run-sync-resume-live",
-            suspended_node_id="gate",
-            suspended_token_id=token_id,
-            client_result=RunSuccess(
-                conversation_node_id=None,
-                state_update=[("u", {"approved": True})],
-            ),
-            workflow_id="wf-sync-resume-live",
-            conversation_id="conv-sync-resume-live",
-            turn_node_id="turn-sync-resume-live",
-            cache_dir=tmp_path,
+        from kogwistar.conversation.resolvers import default_resolver
+
+        for op, handler in (
+            ("start", start_step),
+            ("gate", gate_step),
+            ("end", end_step),
+        ):
+            monkeypatch.setitem(default_resolver.handlers, op, handler)
+        engine, conversation_engine, workflow_engine = build_engine_triplet(
+            root=tmp_path / "resume-api",
+            embedding_function=FakeEmbeddingFunction(),
         )
-        assert resumed.status == "succeeded"
-        assert resumed.final_state["approved"] is True
-        assert resumed.final_state["resumed_end"] is True
-        assert resumed.final_state["_deps"] is dependencies
+        _configure_server(
+            monkeypatch,
+            engine,
+            conversation_engine,
+            workflow_engine,
+            lambda _request: {},
+        )
+        monkeypatch.setattr(
+            "kogwistar.server.chat_service_run_execution.load_checkpoint",
+            lambda **_kwargs: latest_state,
+        )
+        with TestClient(chat_server.app) as client:
+            headers = _token_header(client, role="rw", ns="workflow")
+            denied_headers = _token_header(client, role="rw", ns="wisdom")
+            denied = client.post(
+                "/api/runs/run-sync-resume-live/resume",
+                headers=denied_headers,
+                json={
+                    "suspended_node_id": "gate",
+                    "suspended_token_id": token_id,
+                    "client_result": {
+                        "status": "success",
+                        "state_update": [["u", {"approved": True}]],
+                    },
+                    "workflow_id": "wf-sync-resume-live",
+                    "conversation_id": "conv-sync-resume-live",
+                    "turn_node_id": "turn-sync-resume-live",
+                },
+            )
+            assert denied.status_code == 403
+            response = client.post(
+                "/api/runs/run-sync-resume-live/resume",
+                headers=headers,
+                json={
+                    "suspended_node_id": "gate",
+                    "suspended_token_id": token_id,
+                    "client_result": {
+                        "status": "success",
+                        "state_update": [["u", {"approved": True}]],
+                    },
+                    "workflow_id": "wf-sync-resume-live",
+                    "conversation_id": "conv-sync-resume-live",
+                    "turn_node_id": "turn-sync-resume-live",
+                },
+            )
+        assert response.status_code == 200, response.text
+        resumed = response.json()
+        assert set(resumed) == {"workflow_status", "final_state", "budget"}
+        assert resumed["workflow_status"] == "succeeded"
+        assert resumed["final_state"]["approved"] is True
+        assert resumed["final_state"]["resumed_end"] is True
+        assert "_deps" not in resumed["final_state"]
         assert visited == ["start", "gate", "end"]
         status = httpx.get(
             f"{base_url}/api/workflow/runs/run-sync-resume-live", timeout=10
