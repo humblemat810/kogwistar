@@ -1218,7 +1218,13 @@
                 "turn-1",
                 "conversation-1",
                 "conversation_turn",
-                json!({"turn_index": 0, "role": "user", "summary": "hello"}),
+                json!({"turn_index": 1, "role": "user", "summary": "first"}),
+            ),
+            (
+                "turn-2",
+                "conversation-1",
+                "conversation_turn",
+                json!({"turn_index": 2, "role": "assistant", "summary": "second"}),
             ),
             (
                 "start-other-user",
@@ -1383,8 +1389,8 @@
         assert_eq!(payload["user_id"], "alice");
         assert_eq!(payload["status"], "active");
         assert_eq!(payload["start_node_id"], "start-1");
-        assert_eq!(payload["tail_node_id"], "turn-1");
-        assert_eq!(payload["turn_count"], 1);
+        assert_eq!(payload["tail_node_id"], "turn-2");
+        assert_eq!(payload["turn_count"], 2);
         assert!(payload.get("schema_version").is_none());
         assert!(payload.get("implementation_authority").is_none());
         assert!(payload.get("seam_attestation_version").is_none());
@@ -1430,7 +1436,7 @@
                     "id": "conversation-1",
                     "start_node_id": "start-1",
                     "status": "active",
-                    "turn_count": 1
+                    "turn_count": 2
                 }]
             })
         );
@@ -1453,15 +1459,22 @@
         assert_eq!(transcript_response.status, StatusCode::OK.as_u16());
         let transcript: Value = serde_json::from_slice(&transcript_response.body).unwrap();
         assert_eq!(transcript["conversation_id"], "conversation-1");
-        assert_eq!(transcript["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(transcript["turns"].as_array().unwrap().len(), 2);
         assert_eq!(transcript["turns"][0]["node_id"], "turn-1");
-        assert_eq!(transcript["turns"][0]["turn_index"], 0);
+        assert_eq!(transcript["turns"][0]["turn_index"], 1);
         assert_eq!(transcript["turns"][0]["role"], "user");
-        assert_eq!(transcript["turns"][0]["content"], "hello");
+        assert_eq!(transcript["turns"][0]["content"], "first");
         assert_eq!(transcript["turns"][0]["entity_type"], "conversation_turn");
+        assert_eq!(transcript["turns"][1]["node_id"], "turn-2");
+        assert_eq!(transcript["turns"][1]["turn_index"], 2);
+        assert_eq!(transcript["turns"][1]["role"], "assistant");
+        assert_eq!(transcript["turns"][1]["content"], "second");
+        assert_eq!(transcript["turns"][1]["entity_type"], "conversation_turn");
         assert!(transcript.get("schema_version").is_none());
         assert!(transcript.get("implementation_authority").is_none());
-        assert!(transcript["turns"][0].get("schema_version").is_none());
+        assert!(transcript["turns"].as_array().unwrap().iter().all(|turn| {
+            turn.get("schema_version").is_none()
+        }));
         assert_eq!(
             transcript
                 .as_object()
@@ -1523,10 +1536,12 @@
             .await;
         assert_eq!(receive_response.status, StatusCode::OK.as_u16());
         let receive_payload: Value = serde_json::from_slice(&receive_response.body).unwrap();
-        let expected_receive = serde_json::from_str::<Value>(include_str!(
+        let mut expected_receive = serde_json::from_str::<Value>(include_str!(
             "../../../../../contracts/golden/receive-message-result-v1.json"
         ))
         .unwrap();
+        // The fixture's conversation ID is illustrative; the response echoes this request ID.
+        expected_receive["conversation_id"] = json!("conversation-1");
         assert_eq!(receive_payload["version"], "v1");
         assert_eq!(receive_payload["op"], "receive_message");
         assert_eq!(receive_payload["status"], "ok");
