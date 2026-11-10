@@ -6665,9 +6665,21 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
         .with_owner_auth_config(&owner_auth)
         .await
         .unwrap();
-    let run_id = "sqlite-provider-ack-run";
+    let event_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+    )))
+    .unwrap();
+    let run_id = event_fixture["envelope"]["trace"]["run_id"]
+        .as_str()
+        .unwrap();
     let workflow_id = "sqlite-provider-ack-workflow";
-    let conversation_id = "sqlite-provider-ack-conversation";
+    let conversation_id = event_fixture["publication"]["conversation_id"]
+        .as_str()
+        .unwrap();
+    let turn_id = event_fixture["envelope"]["trace"]["turn_id"]
+        .as_str()
+        .unwrap();
     let owner_principal = json!({
         "sub": "sqlite-ack-owner", "user_id": "sqlite-ack-owner", "role": "rw",
         "ns": ["conversation"], "storage_ns": "conversation",
@@ -6682,7 +6694,7 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
             conversation_id: conversation_id.to_owned(),
             workflow_id: workflow_id.to_owned(),
             user_id: Some("sqlite-ack-owner".to_owned()),
-            user_turn_node_id: "turn-1".to_owned(),
+            user_turn_node_id: turn_id.to_owned(),
             status: "running".to_owned(),
         })
         .unwrap();
@@ -6740,26 +6752,12 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
         .apply_recorded_runtime_transition(handler, false)
         .unwrap();
 
-    let event: kogwistar_contracts::DurableProviderEventV1 = serde_json::from_value(json!({
-        "event_id": "sqlite-provider-ack-event",
-        "trace": {
-            "run_id": run_id,
-            "turn_id": "turn-1",
-            "workflow_node_id": "provider-step",
-            "step_id": "provider-response",
-            "provider_id": "test-provider"
-        },
-        "event": {
-            "contract_version": "v1",
-            "provider_event_id": "response:1",
-            "provider_sequence": 1,
-            "response_id": "response",
-            "kind": "field_completed",
-            "field_name": "text",
-            "value": "durable answer"
-        }
-    }))
-    .unwrap();
+    let mut raw_event = event_fixture["envelope"].clone();
+    // This synthetic run persists the handler step but not the fixture's producer step 7.
+    raw_event["trace"]["producer_step_seq"] = Value::Null;
+    raw_event["event_id"] = event_fixture["computed_event_id"].clone();
+    let event: kogwistar_contracts::DurableProviderEventV1 =
+        serde_json::from_value(raw_event).unwrap();
     let event_message_id = format!("msg:{}", event.event_id);
     service
         .store
@@ -6776,7 +6774,7 @@ async fn sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_a
             created_at: 1,
             available_at: 1,
             run_id: Some(run_id.to_owned()),
-            step_id: Some("provider-response".to_owned()),
+            step_id: Some(event.trace.step_id.clone()),
             correlation_id: Some(event.event_id.clone()),
             payload_json: Some(serde_json::to_string(&event).unwrap()),
             error_json: None,
