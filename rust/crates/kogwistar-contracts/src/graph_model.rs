@@ -5776,6 +5776,48 @@ mod tests {
     }
 
     #[test]
+    fn workflow_runtime_edge_typed_round_trip_matches_python_backend_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-runtime-edge-model-v1.json"
+        )))
+        .expect("valid shared Python WorkflowRuntimeEdge fixture");
+        let payload = fixture["payload"].clone();
+        let envelope = GraphModelEnvelope::new(GraphModelClass::WorkflowRuntimeEdge, payload);
+
+        envelope
+            .validate_family_v1()
+            .expect("valid workflow runtime edge metadata");
+        let edge = envelope
+            .decode_persistent_edge_shape()
+            .expect("valid typed persistent edge shape");
+        let serialized = serde_json::to_value(edge).expect("serialize typed runtime edge");
+
+        assert_eq!(serialized["metadata"]["relation"], "next");
+        assert_eq!(
+            serialized["metadata"]["conversation_id"],
+            "conversation:python-fixture"
+        );
+        assert_eq!(serialized["metadata"]["run_id"], "run:python-fixture");
+        assert_eq!(serialized["metadata"]["entity_type"], "conversation_edge");
+        assert_eq!(
+            serialized["metadata"]["vendor_extension"],
+            serde_json::json!({"source": "fixture"})
+        );
+        assert_eq!(
+            crate::canonical_json(&serialized, false),
+            fixture["canonical_json"]
+                .as_str()
+                .expect("Python canonical workflow runtime edge JSON")
+        );
+        assert_eq!(serialized["source_ids"], serde_json::json!(["parity-node"]));
+        assert_eq!(
+            serialized["target_ids"],
+            serde_json::json!(["external:target"])
+        );
+    }
+
+    #[test]
     fn declared_slice_projects_canonical_payload_and_requires_declaration() {
         let manifest = GraphSliceManifestV1 {
             schema_version: GRAPH_SLICE_MANIFEST_VERSION,

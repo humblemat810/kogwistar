@@ -227,6 +227,31 @@ def test_python_workflow_edge_round_trips_shared_backend_fixture() -> None:
     assert payload["target_ids"] == ["external:target"]
 
 
+def test_python_workflow_runtime_edge_round_trips_shared_backend_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-runtime-edge-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    edge = runtime_models.WorkflowRuntimeEdge.model_validate(fixture["payload"])
+    payload = edge.model_dump(field_mode="backend", dump_format="json")
+
+    assert fixture["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
+    assert fixture["model_class"] == "workflow_runtime_edge"
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["relation"] == "next"
+    assert payload["metadata"]["conversation_id"] == "conversation:python-fixture"
+    assert payload["metadata"]["run_id"] == "run:python-fixture"
+    assert payload["metadata"]["entity_type"] == "conversation_edge"
+    assert payload["metadata"]["vendor_extension"] == {"source": "fixture"}
+    assert payload["metadata"]["lifecycle_status"] == "active"
+    assert payload["source_ids"] == ["parity-node"]
+    assert payload["target_ids"] == ["external:target"]
+
+
 @pytest.mark.parametrize("model_kind", ["node", "edge"])
 def test_persistent_graph_models_reject_non_finite_embeddings(model_kind: str) -> None:
     model_type = Node if model_kind == "node" else Edge

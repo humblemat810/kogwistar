@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "model_class": "workflow_runtime_edge",
+  "origin": "Python WorkflowRuntimeEdge.model_dump(field_mode=backend, dump_format=json)",
+  "payload": {
+    "canonical_entity_id": null,
+    "doc_id": "doc:rust-python-parity",
+    "domain_id": null,
+    "embedding": [0.0, 1.0, 0.0],
+    "id": "parity-edge",
+    "label": "supports",
+    "level_from_root": null,
+    "mentions": [
+      {
+        "multimodal_spans": [],
+        "spans": [
+          {
+            "collection_page_url": "https://example.test/source",
+            "context_after": "",
+            "context_before": "",
+            "doc_id": "doc:rust-python-parity",
+            "document_page_url": "https://example.test/source#span",
+            "end_char": 13,
+            "excerpt": "Edge evidence",
+            "insertion_method": "contract-test",
+            "page_number": 1,
+            "source_cluster_id": null,
+            "start_char": 0,
+            "verification": {
+              "is_verified": false,
+              "method": "heuristic",
+              "notes": "no explicit verification from LLM",
+              "score": null
+            }
+          }
+        ]
+      }
+    ],
+    "metadata": {
+      "conversation_id": "conversation:python-fixture",
+      "entity_type": "conversation_edge",
+      "lifecycle_status": "active",
+      "redirect_to_id": null,
+      "relation": "next",
+      "run_id": "run:python-fixture",
+      "vendor_extension": {"source": "fixture"}
+    },
+    "properties": {"confidence_label": "high"},
+    "relation": "supports",
+    "source_edge_ids": [],
+    "source_ids": ["parity-node"],
+    "summary": "The typed edge preserves both endpoint and source-span data.",
+    "target_edge_ids": [],
+    "target_ids": ["external:target"],
+    "type": "relationship"
+  },
+  "canonical_json": "{\"canonical_entity_id\":null,\"doc_id\":\"doc:rust-python-parity\",\"domain_id\":null,\"embedding\":[0.0,1.0,0.0],\"id\":\"parity-edge\",\"label\":\"supports\",\"level_from_root\":null,\"mentions\":[{\"multimodal_spans\":[],\"spans\":[{\"collection_page_url\":\"https://example.test/source\",\"context_after\":\"\",\"context_before\":\"\",\"doc_id\":\"doc:rust-python-parity\",\"document_page_url\":\"https://example.test/source#span\",\"end_char\":13,\"excerpt\":\"Edge evidence\",\"insertion_method\":\"contract-test\",\"page_number\":1,\"source_cluster_id\":null,\"start_char\":0,\"verification\":{\"is_verified\":false,\"method\":\"heuristic\",\"notes\":\"no explicit verification from LLM\",\"score\":null}}]}],\"metadata\":{\"conversation_id\":\"conversation:python-fixture\",\"entity_type\":\"conversation_edge\",\"lifecycle_status\":\"active\",\"redirect_to_id\":null,\"relation\":\"next\",\"run_id\":\"run:python-fixture\",\"vendor_extension\":{\"source\":\"fixture\"}},\"properties\":{\"confidence_label\":\"high\"},\"relation\":\"supports\",\"source_edge_ids\":[],\"source_ids\":[\"parity-node\"],\"summary\":\"The typed edge preserves both endpoint and source-span data.\",\"target_edge_ids\":[],\"target_ids\":[\"external:target\"],\"type\":\"relationship\"}"
+}
