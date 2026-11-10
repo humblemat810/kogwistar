@@ -334,6 +334,63 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
                     **wisdom_edge_acl,
                 )
 
+        def add_wisdom_shared_node(
+            node_id: str,
+            *,
+            mode: str,
+            shared_with_principals: list[str] | None = None,
+            shared_with_groups: list[str] | None = None,
+        ) -> None:
+            node = Node(
+                id=node_id,
+                label=node_id,
+                type="entity",
+                summary="Wisdom graph role sharing fixture",
+                mentions=[_g()],
+                metadata={"entity_type": "fixture"},
+                embedding=None,
+                doc_id=None,
+                level_from_root=0,
+            )
+            wisdom_engine.raw_write.add_node(node)
+            acl_record: dict[str, Any] = {
+                "truth_graph": "wisdom",
+                "entity_id": node_id,
+                "version": 1,
+                "mode": mode,
+            }
+            if shared_with_principals is not None:
+                acl_record["shared_with_principals"] = shared_with_principals
+            if shared_with_groups is not None:
+                acl_record["shared_with_groups"] = shared_with_groups
+            wisdom_engine.acl_graph.add_record(**acl_record)
+            usage_grounding_ids, usage_span_ids = wisdom_engine.acl.usage_ids_for_item(
+                node
+            )
+            for grain, target_ids in (
+                ("grounding", usage_grounding_ids),
+                ("span", usage_span_ids),
+            ):
+                for target_id in target_ids:
+                    wisdom_engine.acl_graph.add_record(
+                        grain=grain,
+                        target_item_id=target_id,
+                        **acl_record,
+                    )
+
+        wisdom_direct_id = "wisdom-direct-share-node"
+        wisdom_group_id = "wisdom-group-share-node"
+        add_wisdom_shared_node(
+            wisdom_direct_id,
+            mode="shared",
+            shared_with_principals=["wisdom-direct-reader"],
+        )
+        add_wisdom_shared_node(
+            wisdom_group_id,
+            mode="group",
+            shared_with_groups=["wisdom-reviewers"],
+        )
+
         owner_engine = graph_engines[acl_fixture["truth_graph"]]
         no_acl_node = Node(
             id=no_acl_node_policy["id"],
@@ -579,6 +636,30 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             assert (wisdom_edge_id in [
                 node["id"] for node in wisdom_payload["nodes"]
             ]) is expected_visible
+
+        for principal_id, groups, expected_id in (
+            ("wisdom-direct-reader", [], wisdom_direct_id),
+            ("wisdom-group-reader", ["wisdom-reviewers"], wisdom_group_id),
+        ):
+            token = claims_ctx.set(
+                {"agent_id": principal_id, "ns": "wisdom", "groups": groups}
+            )
+            try:
+                sharing_response = cast(
+                    JSONResponse,
+                    server.api_viz_d3(mode="reify", graph_type="wisdom"),
+                )
+                sharing_payload = json.loads(bytes(sharing_response.body))
+            finally:
+                claims_ctx.reset(token)
+            visible_ids = [node["id"] for node in sharing_payload["nodes"]]
+            assert expected_id in visible_ids
+            assert (wisdom_direct_id in visible_ids) is (
+                principal_id == "wisdom-direct-reader"
+            )
+            assert (wisdom_group_id in visible_ids) is (
+                principal_id == "wisdom-group-reader"
+            )
 
         for edge_policy_item in (
             edge_policy,

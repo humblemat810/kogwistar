@@ -5498,6 +5498,64 @@ mod tests {
     }
 
     #[test]
+    fn wisdom_shared_and_group_acl_grants_are_truth_graph_scoped() {
+        let direct_id = "wisdom-direct-share-node";
+        let group_id = "wisdom-group-share-node";
+        let acl = |id: &str, mode: &str, properties: Value| {
+            let mut record = GraphRecord::new(format!("acl-{id}"));
+            record.metadata.extend(
+                serde_json::json!({
+                    "entity_type": "acl_record",
+                    "acl_truth_graph": "wisdom",
+                    "acl_target_entity_id": id,
+                    "acl_target_grain": "node",
+                    "acl_version": 1,
+                    "acl_mode": mode
+                })
+                .as_object()
+                .expect("ACL metadata object")
+                .clone(),
+            );
+            record.document = Some(serde_json::json!({"properties": properties}).to_string());
+            record
+        };
+        let nodes = vec![
+            GraphRecord::new(direct_id),
+            acl(
+                direct_id,
+                "shared",
+                serde_json::json!({"shared_with_principals": ["alice"]}),
+            ),
+            GraphRecord::new(group_id),
+            acl(
+                group_id,
+                "group",
+                serde_json::json!({"shared_with_groups": ["wisdom-reviewers"]}),
+            ),
+        ];
+        let alice = GraphAclPrincipal {
+            principal_id: "alice".to_owned(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let (wisdom_direct_nodes, _) = graph_records_visible_by_acl(&nodes, &[], "wisdom", &alice);
+        assert!(wisdom_direct_nodes.iter().any(|node| node.id == direct_id));
+        assert!(!wisdom_direct_nodes.iter().any(|node| node.id == group_id));
+        let (other_graph_nodes, _) = graph_records_visible_by_acl(&nodes, &[], "knowledge", &alice);
+        assert!(other_graph_nodes.is_empty());
+
+        let reviewer = GraphAclPrincipal {
+            principal_id: "bob".to_owned(),
+            groups: BTreeSet::from(["wisdom-reviewers".to_owned()]),
+            security_scope: None,
+        };
+        let (wisdom_group_nodes, _) =
+            graph_records_visible_by_acl(&nodes, &[], "wisdom", &reviewer);
+        assert!(wisdom_group_nodes.iter().any(|node| node.id == group_id));
+        assert!(!wisdom_group_nodes.iter().any(|node| node.id == direct_id));
+    }
+
+    #[test]
     fn graph_node_item_usage_matches_shared_python_contract() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
