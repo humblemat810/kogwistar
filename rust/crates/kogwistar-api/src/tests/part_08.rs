@@ -167,7 +167,15 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
     let missing_id = service
         .execute(request(json!({}), principal.clone()))
         .await;
-    assert_eq!(missing_id.status, StatusCode::BAD_REQUEST.as_u16());
+    let missing_id_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-receive-message-missing-id-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(missing_id.status, missing_id_contract["http_status"]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&missing_id.body).unwrap(),
+        missing_id_contract["body"]
+    );
 
     let response = service
         .execute(request(json!({"conversation_id":"c1"}), principal))

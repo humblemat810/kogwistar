@@ -2292,10 +2292,9 @@ impl InMemoryGraphApplicationService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         else {
-            return effect_error(
-                StatusCode::BAD_REQUEST,
-                "KOGWISTAR_INVALID_REQUEST",
-                "conversation_id is required",
+            return json_effect(
+                StatusCode::NOT_FOUND,
+                json!({"detail": "'conversation_id'"}),
             );
         };
         let security_scope = security_scope_value(&request.principal);
