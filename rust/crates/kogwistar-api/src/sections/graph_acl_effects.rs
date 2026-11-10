@@ -2,6 +2,7 @@ use kogwistar_contracts::stable_id;
 use kogwistar_store_postgres::{PostgresStoreError, PostgresUnitOfWork};
 
 type AclTargetKey = (String, String, String);
+type AclMutationTarget = (String, AclTargetKey);
 
 async fn resolve_default_acl_graph_effects(
     uow: &PostgresUnitOfWork<'_>,
@@ -69,7 +70,7 @@ async fn resolve_default_acl_graph_effects_with_schema(
 
     let target_entity_ids = targets
         .iter()
-        .map(|(_, entity_id, _)| entity_id.clone())
+        .map(|(_, (_, entity_id, _))| entity_id.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
@@ -103,8 +104,8 @@ async fn resolve_default_acl_graph_effects_with_schema(
 
 fn acl_targets_for_graph_mutations(
     mutations: &[GraphMutation],
-) -> (BTreeSet<AclTargetKey>, BTreeSet<(String, String)>) {
-    let mut targets = BTreeSet::<AclTargetKey>::new();
+) -> (BTreeSet<AclMutationTarget>, BTreeSet<(String, String)>) {
+    let mut targets = BTreeSet::<AclMutationTarget>::new();
     let mut lock_targets = BTreeSet::<(String, String)>::new();
     for mutation in mutations {
         if mutation.record.metadata.get("entity_type")
@@ -113,20 +114,36 @@ fn acl_targets_for_graph_mutations(
             continue;
         }
         lock_targets.insert((mutation.entity_kind.clone(), mutation.record.id.clone()));
-        targets.insert((mutation.entity_kind.clone(), mutation.record.id.clone(), String::new()));
+        targets.insert((
+            mutation.entity_kind.clone(),
+            (
+                mutation.entity_kind.clone(),
+                mutation.record.id.clone(),
+                String::new(),
+            ),
+        ));
         if let Some(mentions) = mutation.payload.get("mentions").and_then(Value::as_array) {
             for (grounding_index, grounding) in mentions.iter().enumerate() {
-                let grounding_id = format!("{}::mention::{grounding_index}", mutation.record.id);
-                targets.insert(("grounding".to_owned(), mutation.record.id.clone(), grounding_id));
+                let grounding_id = format!(
+                    "__kogwistar_acl_usage_v2__:{}:{}::mention::{grounding_index}",
+                    mutation.entity_kind, mutation.record.id
+                );
+                targets.insert((
+                    mutation.entity_kind.clone(),
+                    ("grounding".to_owned(), mutation.record.id.clone(), grounding_id),
+                ));
                 let Some(spans) = grounding.get("spans").and_then(Value::as_array) else {
                     continue;
                 };
                 for span_index in 0..spans.len() {
                     let span_id = format!(
-                        "{}::mention::{grounding_index}::span::{span_index}",
-                        mutation.record.id
+                        "__kogwistar_acl_usage_v2__:{}:{}::mention::{grounding_index}::span::{span_index}",
+                        mutation.entity_kind, mutation.record.id,
                     );
-                    targets.insert(("span".to_owned(), mutation.record.id.clone(), span_id));
+                    targets.insert((
+                        mutation.entity_kind.clone(),
+                        ("span".to_owned(), mutation.record.id.clone(), span_id),
+                    ));
                 }
             }
         }
@@ -134,10 +151,10 @@ fn acl_targets_for_graph_mutations(
     (targets, lock_targets)
 }
 
-fn acl_target_entity_ids(targets: &BTreeSet<AclTargetKey>) -> Vec<String> {
+fn acl_target_entity_ids(targets: &BTreeSet<AclMutationTarget>) -> Vec<String> {
     targets
         .iter()
-        .map(|(_, entity_id, _)| entity_id.clone())
+        .map(|(_, (_, entity_id, _))| entity_id.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -146,7 +163,7 @@ fn acl_target_entity_ids(targets: &BTreeSet<AclTargetKey>) -> Vec<String> {
 fn derive_default_acl_graph_effects_from_records(
     scope: &GraphScope,
     mutations: &[GraphMutation],
-    targets: BTreeSet<AclTargetKey>,
+    targets: BTreeSet<AclMutationTarget>,
     existing: Vec<GraphRecord>,
     truth_graph: &str,
     owner_id: &str,
@@ -168,7 +185,11 @@ fn derive_default_acl_graph_effects_from_records(
             continue;
         }
         let (mode, shared_principals, shared_groups) = acl_defaults_from_mutation(mutation);
-        for (grain, entity_id, target_item_id) in targets.iter().filter(|(_, id, _)| id == &mutation.record.id) {
+        for (_, (grain, entity_id, target_item_id)) in targets.iter().filter(
+            |(entity_kind, (_, id, _))| {
+                entity_kind == &mutation.entity_kind && id == &mutation.record.id
+            },
+        ) {
             let key = (grain.clone(), entity_id.clone(), target_item_id.clone());
             let previous = latest.get(&key);
             if previous.is_some_and(|record| {
@@ -689,6 +710,70 @@ mod graph_acl_effects_unit_tests {
         )
         .unwrap();
         assert!(unchanged.is_empty());
+    }
+
+    #[test]
+    fn acl_usage_targets_remain_kind_scoped_for_same_string_ids() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let make_mutation = |kind: &str, mode: &str| GraphMutation {
+            scope: scope.clone(),
+            table: if kind == "node" { "gke_nodes" } else { "gke_edges" }.to_owned(),
+            entity_kind: kind.to_owned(),
+            event_id: format!("event-{kind}"),
+            op: "ADD".to_owned(),
+            payload: json!({
+                "id":"same-id",
+                "metadata":{"visibility":mode},
+                "mentions":[{"spans":[{"doc_id":"doc-1"}]}]
+            }),
+            record: GraphRecord {
+                id: "same-id".to_owned(),
+                document: Some(
+                    r#"{"mentions":[{"spans":[{"doc_id":"doc-1"}]}]}"#.to_owned(),
+                ),
+                metadata: Map::from_iter([("visibility".to_owned(), json!(mode))]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let mutations = vec![make_mutation("node", "public"), make_mutation("edge", "private")];
+        let (targets, _) = acl_targets_for_graph_mutations(&mutations);
+        let (derived, _) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            &mutations,
+            targets,
+            Vec::new(),
+            "knowledge",
+            "writer",
+            None,
+            "effect-same-id",
+        )
+        .unwrap();
+
+        let usage_records = derived
+            .iter()
+            .filter(|mutation| {
+                matches!(
+                    mutation.record.metadata.get("acl_target_grain").and_then(Value::as_str),
+                    Some("grounding" | "span")
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(usage_records.len(), 4);
+        assert!(usage_records.iter().any(|mutation| {
+            mutation.record.metadata["acl_target_item_id"]
+                == "__kogwistar_acl_usage_v2__:node:same-id::mention::0"
+                && mutation.record.metadata["acl_mode"] == "public"
+        }));
+        assert!(usage_records.iter().any(|mutation| {
+            mutation.record.metadata["acl_target_item_id"]
+                == "__kogwistar_acl_usage_v2__:edge:same-id::mention::0"
+                && mutation.record.metadata["acl_mode"] == "private"
+        }));
     }
 
     #[test]

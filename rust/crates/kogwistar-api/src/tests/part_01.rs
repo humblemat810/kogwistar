@@ -2929,6 +2929,10 @@
             ),
             ("control-root", json!([])),
             ("control-target", json!([])),
+            (
+                "same-id",
+                json!([{"spans":[{"doc_id":"shared-source"}]}]),
+            ),
         ] {
             records.push((
                 "gke_nodes",
@@ -2942,10 +2946,17 @@
                 json!({"id":id,"label":id,"mentions":mentions}),
             ));
         }
-        for (id, source_id, target_id) in [
-            ("project-edge", "project-root", "project-target"),
-            ("evidence-edge", "evidence-root", "evidence-target"),
-            ("control-edge", "control-root", "control-target"),
+        for (id, source_id, target_id, mentions) in [
+            ("project-edge", "project-root", "project-target", json!([])),
+            ("evidence-edge", "evidence-root", "evidence-target", json!([])),
+            ("control-edge", "control-root", "control-target", json!([])),
+            ("same-node-link", "control-root", "same-id", json!([])),
+            (
+                "same-id",
+                "control-root",
+                "same-id",
+                json!([{"spans":[{"doc_id":"shared-source"}]}]),
+            ),
         ] {
             records.push((
                 "gke_edges",
@@ -2954,6 +2965,7 @@
                     "entity_type":"edge",
                     "workspace_id":"workspace-a",
                     "graph_space":"facts",
+                    "mentions":mentions,
                     "source_ids":[source_id],
                     "target_ids":[target_id]
                 }),
@@ -2992,6 +3004,14 @@
             acl_cases.push((format!("acl-{id}"), "edge", id.to_owned(), None, "public", None));
         }
         acl_cases.push((
+            "acl-same-node-link".to_owned(),
+            "edge",
+            "same-node-link".to_owned(),
+            None,
+            "public",
+            None,
+        ));
+        acl_cases.push((
             "acl-project-target".to_owned(),
             "node",
             "project-target".to_owned(),
@@ -3015,6 +3035,56 @@
             "private",
             Some("another-principal"),
         ));
+        acl_cases.extend([
+            (
+                "acl-same-node".to_owned(),
+                "node",
+                "same-id".to_owned(),
+                None,
+                "public",
+                None,
+            ),
+            (
+                "acl-same-edge".to_owned(),
+                "edge",
+                "same-id".to_owned(),
+                None,
+                "public",
+                None,
+            ),
+            (
+                "acl-same-node-grounding".to_owned(),
+                "grounding",
+                "same-id".to_owned(),
+                Some("__kogwistar_acl_usage_v2__:node:same-id::mention::0"),
+                "public",
+                None,
+            ),
+            (
+                "acl-same-node-span".to_owned(),
+                "span",
+                "same-id".to_owned(),
+                Some("__kogwistar_acl_usage_v2__:node:same-id::mention::0::span::0"),
+                "public",
+                None,
+            ),
+            (
+                "acl-same-edge-grounding".to_owned(),
+                "grounding",
+                "same-id".to_owned(),
+                Some("__kogwistar_acl_usage_v2__:edge:same-id::mention::0"),
+                "public",
+                None,
+            ),
+            (
+                "acl-same-edge-span".to_owned(),
+                "span",
+                "same-id".to_owned(),
+                Some("__kogwistar_acl_usage_v2__:edge:same-id::mention::0::span::0"),
+                "private",
+                Some("another-principal"),
+            ),
+        ]);
         for (acl_id, grain, entity_id, item_id, mode, security_scope) in acl_cases {
             let mut metadata = json!({
                 "entity_type":"acl_record",
@@ -3077,8 +3147,28 @@
             .await;
         assert_eq!(control.status, StatusCode::OK.as_u16());
         let control: Value = serde_json::from_slice(&control.body).unwrap();
-        assert_eq!(control["nodes"], json!(["control-target"]));
-        assert_eq!(control["edges"], json!(["control-edge"]));
+        assert_eq!(control["nodes"], json!(["control-target", "same-id"]));
+        assert_eq!(control["edges"], json!(["control-edge", "same-node-link"]));
+
+        let mut owner_request = read_neighbors("control-root");
+        let owner_principal = json!({
+            "sub":"another-principal",
+            "storage_ns":namespace,
+            "workspace":"workspace-a",
+            "workspace_id":"workspace-a",
+            "graph_space":"facts",
+            "security_scope":"project-a",
+            "capabilities":["read_graph"]
+        });
+        owner_request.principal = owner_principal;
+        let same_id_owner = service.graph_neighbors_effect(&owner_request).await;
+        assert_eq!(same_id_owner.status, StatusCode::OK.as_u16());
+        let same_id_owner: Value = serde_json::from_slice(&same_id_owner.body).unwrap();
+        assert_eq!(same_id_owner["nodes"], json!(["control-target", "same-id"]));
+        assert_eq!(
+            same_id_owner["edges"],
+            json!(["control-edge", "same-id", "same-node-link"])
+        );
 
         drop(service);
         let cleanup_dsn = dsn

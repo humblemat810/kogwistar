@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 
 ACLItem = Node | Edge | PureChromaNode | PureChromaEdge
+_ACL_USAGE_ID_PREFIX = "__kogwistar_acl_usage_v2__"
 
 
 def _acl_entity_id(item: ACLItem) -> str:
@@ -98,11 +99,23 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         groundings: list[str] = []
         spans: list[str] = []
         item_id = _acl_entity_id(item)
+        entity_kind = "edge" if isinstance(item, (Edge, PureChromaEdge)) else "node"
+        usage_id = f"{_ACL_USAGE_ID_PREFIX}:{entity_kind}:{item_id}"
         for i, grounding in enumerate(getattr(item, "mentions", None) or []):
-            groundings.append(f"{item_id}::mention::{i}")
+            groundings.append(f"{usage_id}::mention::{i}")
             for j, _span in enumerate(getattr(grounding, "spans", None) or []):
-                spans.append(f"{item_id}::mention::{i}::span::{j}")
+                spans.append(f"{usage_id}::mention::{i}::span::{j}")
         return tuple(groundings), tuple(spans)
+
+    @staticmethod
+    def _legacy_usage_id(target_item_id: str | None) -> str | None:
+        if target_item_id is None:
+            return None
+        for entity_kind in ("node", "edge"):
+            prefix = f"{_ACL_USAGE_ID_PREFIX}:{entity_kind}:"
+            if target_item_id.startswith(prefix):
+                return f"{target_item_id[len(prefix):]}"
+        return None
 
     def _metadata_acl_defaults(
         self, item: ACLItem
@@ -1013,12 +1026,20 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             entity_id=entity_id,
             target_item_id=target_item_id,
         )
+        legacy_target_item_id = self._legacy_usage_id(target_item_id)
+        if record is None and legacy_target_item_id is not None:
+            record = self._latest_persisted_acl_record(
+                grain=grain,
+                truth_graph=truth_graph,
+                entity_id=entity_id,
+                target_item_id=legacy_target_item_id,
+            )
         if record is None:
             return self._e.acl_graph.decide(
                 grain=grain,  # type: ignore[arg-type]
                 truth_graph=truth_graph,
                 entity_id=entity_id,
-                target_item_id=target_item_id,
+                target_item_id=(legacy_target_item_id or target_item_id),
                 principal_id=principal_id,
                 principal_groups=principal_groups,
                 security_scope=security_scope,

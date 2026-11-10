@@ -573,6 +573,7 @@ fn record_string_array_field(record: &GraphRecord, field: &str) -> Option<Vec<St
 
 fn graph_entity_usage_acl_visible(
     record: &GraphRecord,
+    entity_kind: &str,
     index: &GraphAclIndex,
     principal: &GraphAclPrincipal,
 ) -> bool {
@@ -584,24 +585,58 @@ fn graph_entity_usage_acl_visible(
         let Some(span_values) = mention.get("spans").and_then(Value::as_array) else {
             return false;
         };
-        let grounding_id = format!("{}::mention::{mention_index}", record.id);
-        if !indexed_acl_visible(
+        let grounding_id = format!(
+            "__kogwistar_acl_usage_v2__:{entity_kind}:{}::mention::{mention_index}",
+            record.id
+        );
+        let legacy_grounding_id = format!("{}::mention::{mention_index}", record.id);
+        if !indexed_acl_usage_visible(
             index,
             "grounding",
             &record.id,
-            Some(&grounding_id),
+            &grounding_id,
+            &legacy_grounding_id,
             principal,
         ) {
             return false;
         }
         for span_index in 0..span_values.len() {
             let span_id = format!("{grounding_id}::span::{span_index}");
-            if !indexed_acl_visible(index, "span", &record.id, Some(&span_id), principal) {
+            let legacy_span_id = format!("{legacy_grounding_id}::span::{span_index}");
+            if !indexed_acl_usage_visible(
+                index,
+                "span",
+                &record.id,
+                &span_id,
+                &legacy_span_id,
+                principal,
+            ) {
                 return false;
             }
         }
     }
     true
+}
+
+fn indexed_acl_usage_visible(
+    index: &GraphAclIndex,
+    grain: &str,
+    entity_id: &str,
+    versioned_item_id: &str,
+    legacy_item_id: &str,
+    principal: &GraphAclPrincipal,
+) -> bool {
+    let versioned_key = (
+        grain.to_owned(),
+        entity_id.to_owned(),
+        Some(versioned_item_id.to_owned()),
+    );
+    if index.rules.contains_key(&versioned_key) {
+        return indexed_acl_visible(index, grain, entity_id, Some(versioned_item_id), principal);
+    }
+    // Persisted Python ACL rows used untyped mention IDs before v2. Continue
+    // reading them unless a v2 row exists for this exact graph entity.
+    indexed_acl_visible(index, grain, entity_id, Some(legacy_item_id), principal)
 }
 
 /// Filter a complete graph snapshot using the same fail-closed ACL rules as Python.
@@ -639,7 +674,7 @@ pub fn graph_records_visible_by_acl_with_index(
             return false;
         }
         indexed_acl_visible(index, grain, &record.id, None, principal)
-            && graph_entity_usage_acl_visible(record, index, principal)
+            && graph_entity_usage_acl_visible(record, grain, index, principal)
     };
     let visible_nodes = nodes
         .iter()

@@ -549,6 +549,87 @@ async def test_mcp_neighbors_hide_private_endpoint_of_visible_edge(monkeypatch, 
     assert async_neighbors == {"nodes": set(), "edges": set()}
 
 
+@pytest.mark.asyncio
+async def test_mcp_neighbors_keep_same_id_node_and_edge_acl_isolated(
+    monkeypatch, tmp_path
+):
+    from kogwistar.server import mcp_tools
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "same_id_acl_grains"),
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        embedding_function=build_test_embedding_function("constant", dim=3),
+        acl_enabled=True,
+    )
+    shared_id = "same-id-node-edge"
+    shared_node = build_entity_node(
+        node_id=shared_id,
+        doc_id="D-same-id",
+        metadata={"visibility": "public"},
+    )
+    source = build_entity_node(
+        node_id="same-id-source",
+        doc_id="D-same-id",
+        metadata={"visibility": "public"},
+    )
+    target = build_entity_node(
+        node_id="same-id-target",
+        doc_id="D-same-id",
+        metadata={"visibility": "public"},
+    )
+    shared_edge = build_relationship_edge(
+        edge_id=shared_id,
+        src=shared_node.id,
+        tgt=target.id,
+        doc_id="D-same-id",
+        metadata={"visibility": "private", "owner_agent_id": "edge-owner"},
+    )
+    parent_edge = build_relationship_edge(
+        edge_id="same-id-parent-edge",
+        src=shared_node.id,
+        tgt=source.id,
+        doc_id="D-same-id",
+        metadata={"visibility": "public"},
+    )
+    with _claims("rw", "knowledge", sub="edge-owner"):
+        engine.write.add_node(shared_node)
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(shared_edge)
+        engine.write.add_edge(parent_edge)
+
+    node_grounding_ids, node_span_ids = engine.acl.usage_ids_for_item(shared_node)
+    edge_grounding_ids, edge_span_ids = engine.acl.usage_ids_for_item(shared_edge)
+    assert set(node_grounding_ids).isdisjoint(edge_grounding_ids)
+    assert set(node_span_ids).isdisjoint(edge_span_ids)
+
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    with _claims("ro", "knowledge", sub="reader"):
+        reader_node = engine.read.get_nodes(ids=[shared_id])
+        reader_neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": shared_id, "doc_id": "D-same-id"}
+            )
+        )
+    with _claims("ro", "knowledge", sub="edge-owner"):
+        owner_neighbors = _structured(
+            await server.mcp.call_tool(
+                "kg_neighbors", {"rid": shared_id, "doc_id": "D-same-id"}
+            )
+        )
+
+    assert [node.id for node in reader_node] == [shared_id]
+    assert reader_neighbors == {
+        "nodes": [source.id],
+        "edges": [parent_edge.id],
+    }
+    assert owner_neighbors == {
+        "nodes": sorted([shared_id, source.id, target.id]),
+        "edges": sorted([parent_edge.id, shared_id]),
+    }
+
+
 def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
     fixture = json.loads(
         (

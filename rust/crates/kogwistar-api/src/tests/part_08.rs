@@ -3531,26 +3531,41 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         cross_kind_id,
         "gke_nodes",
         "node",
-        json!({"label":"shared node identity"}),
-        Some(r#"{"label":"shared node identity"}"#),
+        json!({"label":"shared node identity","visibility":"public"}),
+        Some(r#"{"label":"shared node identity","mentions":[{"spans":[{"doc_id":"D-cross-kind"}]}]}"#),
     );
+    cross_kind_node["payload"]["mentions"] =
+        json!([{"spans":[{"doc_id":"D-cross-kind"}]}]);
     cross_kind_node["event_id"] = json!("event-cross-kind-node");
     let mut cross_kind_edge = mutation(
         cross_kind_id,
         "gke_edges",
         "edge",
-        json!({"source_ids":[],"target_ids":[],"relation":"shared edge identity"}),
-        Some(r#"{"source_ids":[],"target_ids":[],"relation":"shared edge identity"}"#),
+        json!({"source_ids":[cross_kind_id],"target_ids":[cross_kind_id],"relation":"shared edge identity","visibility":"private","owner_id":"writer"}),
+        Some(r#"{"source_ids":["shared-id"],"target_ids":["shared-id"],"relation":"shared edge identity","mentions":[{"spans":[{"doc_id":"D-cross-kind"}]}]}"#),
     );
+    cross_kind_edge["payload"]["mentions"] =
+        json!([{"spans":[{"doc_id":"D-cross-kind"}]}]);
     cross_kind_edge["event_id"] = json!("event-cross-kind-edge");
+    let mut public_parent_edge = parent_edge.clone();
+    public_parent_edge["source_edge_ids"] = json!([]);
     let mut parent_edge_mutation = mutation(
         parent_edge_id,
         "gke_edges",
         "edge",
-        json!(parent_edge),
-        Some(&parent_edge.to_string()),
+        public_parent_edge.clone(),
+        Some(&public_parent_edge.to_string()),
     );
+    parent_edge_mutation["record"]["metadata"]["visibility"] = json!("public");
     parent_edge_mutation["event_id"] = json!("event-cross-kind-parent-edge");
+    let node_grounding_id = format!(
+        "__kogwistar_acl_usage_v2__:node:{cross_kind_id}::mention::0"
+    );
+    let node_span_id = format!("{node_grounding_id}::span::0");
+    let edge_grounding_id = format!(
+        "__kogwistar_acl_usage_v2__:edge:{cross_kind_id}::mention::0"
+    );
+    let edge_span_id = format!("{edge_grounding_id}::span::0");
     let cross_kind_mutations = vec![
         cross_kind_node,
         cross_kind_edge,
@@ -3563,10 +3578,38 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             None,
         ),
         mutation(
+            "acl-cross-kind-node-grounding",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":cross_kind_id,"acl_target_item_id":node_grounding_id,"acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
+            "acl-cross-kind-node-span",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":cross_kind_id,"acl_target_item_id":node_span_id,"acl_version":1,"acl_mode":"public"}),
+            None,
+        ),
+        mutation(
             "acl-cross-kind-edge",
             "gke_nodes",
             "node",
-            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":cross_kind_id,"acl_version":1,"acl_mode":"public"}),
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"edge","acl_target_entity_id":cross_kind_id,"acl_version":1,"acl_mode":"private","owner_id":"writer"}),
+            None,
+        ),
+        mutation(
+            "acl-cross-kind-edge-grounding",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"grounding","acl_target_entity_id":cross_kind_id,"acl_target_item_id":edge_grounding_id,"acl_version":1,"acl_mode":"private","owner_id":"writer"}),
+            None,
+        ),
+        mutation(
+            "acl-cross-kind-edge-span",
+            "gke_nodes",
+            "node",
+            json!({"entity_type":"acl_record","acl_truth_graph":"knowledge","acl_target_grain":"span","acl_target_entity_id":cross_kind_id,"acl_target_item_id":edge_span_id,"acl_version":1,"acl_mode":"private","owner_id":"writer"}),
             None,
         ),
         mutation(
@@ -3600,6 +3643,89 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         .await
         .unwrap();
     assert_eq!(cross_kind_write.status(), StatusCode::OK);
+    let cross_kind_reader_neighbors = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject("reader", "docs", &["read_graph"], "facts")
+                    ),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"cross-kind-reader-neighbors",
+                        "method":"tools/call",
+                        "params":{"name":"kg_neighbors","arguments":{
+                            "rid":parent_edge_id,
+                            "truth_graph":"knowledge"
+                        }}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_kind_reader_neighbors.status(), StatusCode::OK);
+    let cross_kind_reader_neighbors: Value = serde_json::from_slice(
+        &to_bytes(cross_kind_reader_neighbors.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        cross_kind_reader_neighbors["result"]["nodes"],
+        cross_kind_fixture["expected"]["node_ids"]
+    );
+    assert_eq!(cross_kind_reader_neighbors["result"]["edges"], json!([]));
+    let cross_kind_reader_by_node_id = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token_for_subject("reader", "docs", &["read_graph"], "facts")
+                    ),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"cross-kind-reader-by-node-id",
+                        "method":"tools/call",
+                        "params":{"name":"kg_neighbors","arguments":{
+                            "rid":cross_kind_id,
+                            "truth_graph":"knowledge"
+                        }}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cross_kind_reader_by_node_id: Value = serde_json::from_slice(
+        &to_bytes(cross_kind_reader_by_node_id.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cross_kind_reader_by_node_id["result"]["nodes"], json!([]));
+    assert_eq!(
+        cross_kind_reader_by_node_id["result"]["edges"],
+        json!([parent_edge_id])
+    );
     let cross_kind_neighbors = app
         .clone()
         .oneshot(
@@ -3617,7 +3743,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                         "id":"cross-kind-neighbors",
                         "method":"tools/call",
                         "params":{"name":"kg_neighbors","arguments":{
-                            "rid":parent_edge_id,
+                            "rid":cross_kind_id,
                             "truth_graph":"knowledge"
                         }}
                     })
@@ -3645,11 +3771,11 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(cross_kind_neighbors["result"]["seam_crossings"], json!([]));
     assert_eq!(
         cross_kind_neighbors["result"]["nodes"],
-        cross_kind_fixture["expected"]["node_ids"]
+        json!([cross_kind_id])
     );
     assert_eq!(
         cross_kind_neighbors["result"]["edges"],
-        cross_kind_fixture["expected"]["edge_ids"]
+        cross_kind_fixture["edge_ids"]
     );
 
     let redirect_mutations = [
