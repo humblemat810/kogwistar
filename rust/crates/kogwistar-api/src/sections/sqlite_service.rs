@@ -5614,17 +5614,6 @@ impl SqliteRunApplicationService {
         let namespace = scope_value["storage_namespace"]
             .as_str()
             .unwrap_or("default");
-        if !matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
-            || !principal_strings(&request.principal, "ns")
-                .iter()
-                .any(|actual| actual == "docs" || actual == "*")
-        {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_SCOPE_FORBIDDEN",
-                "Text semantic graph retrieval requires an authorized docs namespace",
-            );
-        }
         let mut metadata = MetadataFilter::default();
         if let Some(workspace) = request
             .principal

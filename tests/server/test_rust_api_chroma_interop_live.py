@@ -155,6 +155,36 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    embedding_requests: list[list[str]] = []
+
+    class EmbeddingHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/api/embed":
+                self.send_error(404)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(size))
+            texts = request.get("input")
+            if not isinstance(texts, list):
+                self.send_error(400)
+                return
+            embedding_requests.append([str(text) for text in texts])
+            body = json.dumps({"embeddings": [[0.01, 0.01] for _ in texts]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    embedding_server = ThreadingHTTPServer(("127.0.0.1", 0), EmbeddingHandler)
+    embedding_thread = threading.Thread(target=embedding_server.serve_forever, daemon=True)
+    embedding_thread.start()
+    embedding_endpoint = f"http://127.0.0.1:{embedding_server.server_port}"
+    rust_log_path = tmp_path / "rust-semantic-chroma.log"
+    rust_log = rust_log_path.open("wb")
     try:
         _wait_for_http_process(
             chroma_process, f"{chroma_endpoint}/api/v2/heartbeat", "Chroma"
@@ -312,6 +342,9 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                     source_id, private_target_id
                 )
                 python_layers = python_graph.k_hop([source_id], k=1)
+                python_semantic = python_graph.semantic_seed_then_expand_text(
+                    "source concept", top_k=10, hops=0
+                )
                 assert not writer.read.get_nodes(ids=[private_target_id])
                 assert not writer.read.get_edges(ids=[private_endpoint_edge_id])
             finally:
@@ -334,17 +367,22 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                     "KOGWISTAR_BACKEND": "sqlite",
                     "KOGWISTAR_META_SQLITE_PATH": str(data_path / "meta.sqlite"),
                     "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
+                    "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
+                    "KOGWISTAR_EMBEDDING_MODEL": "fixture-embedding-v1",
+                    "KOGWISTAR_EMBEDDING_DIMENSION": "2",
+                    "KOGWISTAR_EMBEDDING_ENDPOINT": embedding_endpoint,
                     "KOGWISTAR_SERVER_HOST": "127.0.0.1",
                     "KOGWISTAR_SERVER_PORT": str(rust_port),
                     "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+                    "RUST_LOG": "debug",
                 }
             )
             process = subprocess.Popen(
                 [str(SERVER)],
                 cwd=ROOT,
                 env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=rust_log,
+                stderr=subprocess.STDOUT,
             )
             base = f"http://127.0.0.1:{rust_port}"
             _wait_for_http_process(process, f"{base}/health", "Rust API")
@@ -446,6 +484,27 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                     "edges": sorted(python_layers[0]["edges"]),
                 }
             ]
+            try:
+                rust_semantic = _rust_graph_tool(
+                    base=rust_base,
+                    secret=rust_secret,
+                    namespace=namespace,
+                    tool_name="kg_semantic_seed_then_expand_text",
+                    arguments={"text": "source concept", "top_k": 10, "hops": 0},
+                )
+            except AssertionError as error:
+                rust_log.flush()
+                details = rust_log_path.read_text(encoding="utf-8", errors="replace")
+                raise AssertionError(f"Rust semantic Chroma request failed: {details[-8000:]}") from error
+            python_semantic_ids = {
+                json.loads(document)["id"] for document in python_semantic["seeds"]
+            }
+            rust_semantic_ids = {
+                json.loads(document)["id"] for document in rust_semantic["seeds"]
+            }
+            assert rust_semantic_ids == python_semantic_ids == {source_id, target_id}
+            assert private_target_id not in rust_semantic_ids
+            assert embedding_requests == [["source concept"]]
         finally:
             stop(rust_process)
 
@@ -502,6 +561,10 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
         finally:
             writer.close()
     finally:
+        rust_log.close()
+        embedding_server.shutdown()
+        embedding_server.server_close()
+        embedding_thread.join(timeout=5)
         chroma_process.terminate()
         chroma_process.wait(timeout=10)
 
