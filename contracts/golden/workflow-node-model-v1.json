@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "model_class": "workflow_node",
+  "payload": {
+    "label": "Python node",
+    "type": "entity",
+    "summary": "Cross-language workflow node contract fixture",
+    "domain_id": null,
+    "canonical_entity_id": "entity:parity-node",
+    "properties": {
+      "attributes": [
+        "unicode-雪",
+        "nested-payload"
+      ]
+    },
+    "mentions": [
+      {
+        "spans": [
+          {
+            "collection_page_url": "https://example.test/source",
+            "document_page_url": "https://example.test/source#span",
+            "doc_id": "doc:rust-python-parity",
+            "insertion_method": "contract-test",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 13,
+            "excerpt": "Node evidence",
+            "context_before": "",
+            "context_after": "",
+            "source_cluster_id": null,
+            "verification": {
+              "method": "heuristic",
+              "is_verified": false,
+              "score": null,
+              "notes": "no explicit verification from LLM"
+            }
+          }
+        ],
+        "multimodal_spans": []
+      }
+    ],
+    "id": "wf-node:cross-language",
+    "embedding": [
+      1.0,
+      0.0,
+      0.0
+    ],
+    "doc_id": "doc:rust-python-parity",
+    "metadata": {
+      "entity_type": "workflow_node",
+      "workflow_id": "wf:cross-language",
+      "wf_op": "parse",
+      "wf_version": "v2",
+      "wf_start": true,
+      "vendor_extension": {
+        "mode": "preserve",
+        "version": 2
+      },
+      "lifecycle_status": "active",
+      "redirect_to_id": null,
+      "wf_terminal": false,
+      "wf_fanout": false,
+      "wf_join": false,
+      "level_from_root": 0
+    },
+    "level_from_root": 0
+  }
+}

@@ -509,6 +509,27 @@ def test_graph_model_capability_contract_matches_shared_fixture() -> None:
         assert "EdgeMixin" in edge_mixins, edge_name
 
 
+def test_python_workflow_node_model_round_trips_shared_wire_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    restored = runtime_models.WorkflowNode.model_validate(fixture["payload"])
+    payload = restored.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["wf_version"] == "v2"
+    assert payload["metadata"]["wf_start"] is True
+    assert payload["metadata"]["vendor_extension"] == {
+        "mode": "preserve",
+        "version": 2,
+    }
+
+
 def test_python_slice_envelope_accepts_all_extension_modes() -> None:
     node = Node(
         label="node",
@@ -689,6 +710,7 @@ def test_pure_graph_writes_honor_contract_mode_before_persistence(
         lambda **kwargs: mutation_kwargs.append(kwargs) or False,
     )
     if model_class.endswith("Edge"):
+        monkeypatch.setattr(writer, "fanout_endpoints_rows", lambda _edge, _doc_id: [])
         monkeypatch.setattr(
             writer,
             "enrich_edge_meta",
