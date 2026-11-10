@@ -1299,6 +1299,83 @@ def test_conversation_create_uses_authenticated_owner_and_persists_start_node(
     assert starts[0].user_id == "owner-create"
 
 
+def test_conversation_detail_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only conversation detail attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    service._conversation_queries.create_conversation(
+        user_id="owner-detail", conversation_id="conversation-detail"
+    )
+
+    now = int(time.time())
+
+    def headers(user_id: str, namespace: str) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "user_id": user_id,
+                "role": "ro",
+                "ns": [namespace],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        response = client.get(
+            "/api/conversations/conversation-detail",
+            headers=headers("owner-detail", "conversation"),
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert set(payload) == {
+            "conversation_id",
+            "user_id",
+            "status",
+            "start_node_id",
+            "tail_node_id",
+            "turn_count",
+        }
+        assert payload["conversation_id"] == "conversation-detail"
+        assert payload["user_id"] == "owner-detail"
+        assert payload["status"] == "active"
+        assert payload["start_node_id"]
+        assert payload["tail_node_id"] == payload["start_node_id"]
+        assert payload["turn_count"] == 0
+
+        denied = client.get(
+            "/api/conversations/conversation-detail",
+            headers=headers("foreign-user", "wisdom"),
+        )
+        assert denied.status_code == 403
+        assert "owner-detail" not in denied.text
+        assert "start_node_id" not in denied.text
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
