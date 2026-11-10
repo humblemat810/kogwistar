@@ -5433,6 +5433,123 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
 }
 
 #[tokio::test]
+async fn in_memory_vector_query_requires_exact_source_span_acl_reference() {
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-vector-source-acl-v1.json"
+    )))
+    .unwrap();
+    let service = InMemoryGraphApplicationService::default();
+    let scope = json!({
+        "namespace": fixture["scope"]["namespace"],
+        "workspace_id": fixture["scope"]["workspace_id"],
+        "graph_space": null
+    });
+    let mut mutations = Vec::new();
+    for case in fixture["cases"].as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let item_id = format!("{id}::mention::0");
+        let node_metadata = json!({
+            "entity_type":"node",
+            "label":id,
+            "lifecycle_status":"active",
+            "mentions":[{"spans":[{"doc_id":"source-doc"}]}]
+        });
+        mutations.push(json!({
+            "scope":scope, "table":"gke_nodes", "entity_kind":"node",
+            "event_id":format!("node-{id}"), "op":"ADD", "payload":{"id":id},
+            "record":{"id":id,"document":id,"metadata":node_metadata,
+                "embedding":fixture["query_embedding"]},
+            "embedding_dim":2
+        }));
+
+        for (grain, target_entity, target_item) in [
+            ("node", id.to_owned(), None),
+            ("grounding", id.to_owned(), Some(item_id)),
+            (
+                "span",
+                case["span_acl_entity_id"].as_str().unwrap().to_owned(),
+                Some(case["span_acl_target_item_id"].as_str().unwrap().to_owned()),
+            ),
+        ] {
+            let acl_id = format!("acl-{id}-{grain}");
+            let mut acl_metadata = json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":fixture["truth_graph"],
+                "acl_target_entity_id":target_entity,
+                "acl_target_grain":grain,
+                "acl_version":1,
+                "acl_mode":"public"
+            });
+            if let Some(target_item_id) = target_item {
+                acl_metadata["acl_target_item_id"] = json!(target_item_id);
+            }
+            mutations.push(json!({
+                "scope":scope, "table":"gke_nodes", "entity_kind":"node",
+                "event_id":format!("event-{acl_id}"), "op":"ADD",
+                "payload":{"id":acl_id},
+                "record":{"id":acl_id,"document":null,"metadata":acl_metadata,
+                    "embedding":null},
+                "embedding_dim":0
+            }));
+        }
+    }
+    let write = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/graph/mutations".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "contract_version":1,"atomic":true,"mutations":mutations,"index_jobs":[]
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"writer", "role":"rw", "storage_ns":fixture["scope"]["namespace"],
+                "ns":["docs"],
+                "workspace_id":fixture["scope"]["workspace_id"],
+                "capabilities":["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(write.status, StatusCode::OK.as_u16());
+
+    for case in fixture["cases"].as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "entity_kind":"node",
+                    "query_embeddings":[fixture["query_embedding"]],
+                    "metric":"cosine",
+                    "truth_graph":fixture["truth_graph"],
+                    "where":{"label":id},
+                    "n_results":1,
+                    "include":["distances"]
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"reader", "role":"ro", "storage_ns":fixture["scope"]["namespace"],
+                    "ns":["docs"],
+                    "workspace_id":fixture["scope"]["workspace_id"],
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&response.body).unwrap();
+        let expected = if case["expected_visible"].as_bool().unwrap() {
+            json!([[id]])
+        } else {
+            json!([[]])
+        };
+        assert_eq!(result["ids"], expected, "case {id}");
+    }
+}
+
+#[tokio::test]
 async fn in_memory_vector_query_matches_shared_python_acl_contract() {
     let fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

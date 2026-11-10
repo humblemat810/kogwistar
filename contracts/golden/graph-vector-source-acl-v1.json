@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "scope": {
+    "namespace": "source-acl-query-test",
+    "workspace_id": "workspace-source-acl"
+  },
+  "query_embedding": [1.0, 0.0],
+  "cases": [
+    {
+      "id": "source-acl-valid",
+      "span_acl_entity_id": "source-acl-valid",
+      "span_acl_target_item_id": "source-acl-valid::mention::0::span::0",
+      "expected_visible": true
+    },
+    {
+      "id": "source-acl-stale-item",
+      "span_acl_entity_id": "source-acl-stale-item",
+      "span_acl_target_item_id": "source-acl-stale-item::mention::0::span::9",
+      "expected_visible": false
+    },
+    {
+      "id": "source-acl-foreign-entity",
+      "span_acl_entity_id": "unrelated-entity",
+      "span_acl_target_item_id": "source-acl-foreign-entity::mention::0::span::0",
+      "expected_visible": false
+    }
+  ]
+}

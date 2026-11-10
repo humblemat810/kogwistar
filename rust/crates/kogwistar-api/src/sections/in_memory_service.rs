@@ -1787,6 +1787,7 @@ impl InMemoryGraphApplicationService {
         )
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_vector_query_effect; python=kogwistar/engine_core/subsystems/acl.py#ACLAwareReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-source-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_vector_query_requires_exact_source_span_acl_reference; python_test=tests/mcp/test_chat_mcp_tools.py#test_vector_query_requires_exact_source_span_acl_reference
     async fn graph_vector_query_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,

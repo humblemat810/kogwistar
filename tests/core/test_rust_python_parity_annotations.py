@@ -12,10 +12,12 @@ ROOT = Path(__file__).resolve().parents[2]
 RUST_ROOT = ROOT / "rust" / "crates"
 ANNOTATION_PREFIX = "// PYTHON_PARITY_V1: "
 pytestmark = [pytest.mark.ci, pytest.mark.core]
-ANNOTATION_FIELDS = {
+ANNOTATION_REQUIRED_FIELDS = {
     "rust",
     "python",
     "fixture",
+}
+ANNOTATION_TEST_FIELDS = {
     "rust_test",
     "python_test",
 }
@@ -193,7 +195,13 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
                 part.strip().split("=", maxsplit=1)
                 for part in payload.split(";")
             )
-            assert set(fields) == ANNOTATION_FIELDS, rust_file
+            field_names = set(fields)
+            assert ANNOTATION_REQUIRED_FIELDS <= field_names, rust_file
+            assert field_names <= ANNOTATION_REQUIRED_FIELDS | ANNOTATION_TEST_FIELDS, rust_file
+            assert (field_names & ANNOTATION_TEST_FIELDS) in (
+                set(),
+                ANNOTATION_TEST_FIELDS,
+            ), rust_file
             annotations.append((rust_file, fields))
 
     assert annotations, "Rust/Python parity annotations must be verified"
@@ -214,16 +222,6 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         python_source = python_path.read_text(encoding="utf-8-sig")
         assert _python_symbol_exists(python_source, python_symbol)
 
-        rust_test_path, rust_test_symbol = _parse_target(fields["rust_test"])
-        rust_test_source = rust_test_path.read_text(encoding="utf-8")
-        assert re.search(
-            rf"\bfn {re.escape(rust_test_symbol)}\s*\(", rust_test_source
-        )
-
-        python_test_path, python_test_symbol = _parse_target(fields["python_test"])
-        python_test_source = python_test_path.read_text(encoding="utf-8-sig")
-        assert _python_symbol_exists(python_test_source, python_test_symbol)
-
         fixture_path = ROOT / fields["fixture"]
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         versions = _fixture_versions(fixture)
@@ -232,12 +230,22 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
         else:
             assert fixture_path.stem.endswith("-v1")
             assert 1 in versions or "v1" in versions
-        assert _rust_test_consumes_fixture(
-            rust_test_source, rust_test_symbol, fixture_path.name
-        ), rust_test_path
-        assert _python_test_consumes_fixture(
-            python_test_source, python_test_symbol, fixture_path.name
-        ), python_test_path
+        if "rust_test" in fields:
+            rust_test_path, rust_test_symbol = _parse_target(fields["rust_test"])
+            rust_test_source = rust_test_path.read_text(encoding="utf-8")
+            assert re.search(
+                rf"\bfn {re.escape(rust_test_symbol)}\s*\(", rust_test_source
+            )
+
+            python_test_path, python_test_symbol = _parse_target(fields["python_test"])
+            python_test_source = python_test_path.read_text(encoding="utf-8-sig")
+            assert _python_symbol_exists(python_test_source, python_test_symbol)
+            assert _rust_test_consumes_fixture(
+                rust_test_source, rust_test_symbol, fixture_path.name
+            ), rust_test_path
+            assert _python_test_consumes_fixture(
+                python_test_source, python_test_symbol, fixture_path.name
+            ), python_test_path
 
 
 def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:

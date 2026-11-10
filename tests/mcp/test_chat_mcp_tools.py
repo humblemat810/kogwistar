@@ -814,6 +814,77 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
     assert [[node.id for node in batch] for batch in source_restricted_hits] == [[]]
 
 
+def test_vector_query_requires_exact_source_span_acl_reference(tmp_path):
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-source-acl-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "source_acl_query"),
+        backend_factory=build_fake_backend,
+        kg_graph_type=fixture["truth_graph"],
+        embedding_function=build_test_embedding_function("constant", dim=2),
+        acl_enabled=True,
+    )
+    for case in fixture["cases"]:
+        node = build_entity_node(
+            node_id=case["id"],
+            doc_id="D-source-acl",
+            label=case["id"],
+            metadata={"visibility": "public"},
+        )
+        node.mentions = [Grounding(spans=[Span.from_dummy_for_conversation()])]
+        node.embedding = fixture["query_embedding"]
+        item_id = f"{case['id']}::mention::0"
+        current_span_id = f"{item_id}::span::0"
+        with _claims("rw", fixture["truth_graph"], sub="writer"):
+            engine.raw_write.add_node(node)
+            engine.acl.record_acl(
+                grain="node",
+                truth_graph=fixture["truth_graph"],
+                entity_id=case["id"],
+                version=1,
+                mode="public",
+            )
+            engine.acl.record_acl(
+                grain="grounding",
+                truth_graph=fixture["truth_graph"],
+                entity_id=case["id"],
+                target_item_id=item_id,
+                version=1,
+                mode="public",
+            )
+            engine.acl.record_acl(
+                grain="span",
+                truth_graph=fixture["truth_graph"],
+                entity_id=case["span_acl_entity_id"],
+                target_item_id=case["span_acl_target_item_id"],
+                version=1,
+                mode="public",
+            )
+
+        raw_hits = engine.raw_read.query_nodes(
+            query_embeddings=[fixture["query_embedding"]],
+            where={"label": case["id"]},
+            n_results=1,
+        )
+        assert [[candidate.id for candidate in batch] for batch in raw_hits] == [
+            [case["id"]]
+        ]
+        with _claims("ro", fixture["truth_graph"], sub="reader"):
+            visible_hits = engine.read.query_nodes(
+                query_embeddings=[fixture["query_embedding"]],
+                where={"label": case["id"]},
+                n_results=1,
+            )
+        expected = [case["id"]] if case["expected_visible"] else []
+        assert [[candidate.id for candidate in batch] for batch in visible_hits] == [
+            expected
+        ], {"case": case["id"], "span_id": current_span_id}
+
+
 def _success_runner(req: AnswerRunRequest) -> dict:
     assistant_text = f"Assistant reply: {req.user_text}"
     assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
