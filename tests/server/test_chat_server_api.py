@@ -1681,6 +1681,66 @@ def test_checkpoint_list_uses_python_defaults_and_checks_namespace(
         assert run_id not in denied.text
 
 
+def test_run_detail_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run-detail read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-run-detail"
+    expected_ids = {
+        "run_id": run_id,
+        "conversation_id": "python-only-conversation",
+        "workflow_id": "python-only-workflow",
+        "user_id": "python-only-user",
+        "user_turn_node_id": "python-only-turn",
+    }
+    registry.create_run(**expected_ids, status="succeeded")
+
+    with TestClient(server.app) as client:
+        conversation_headers = _token_header(client, role="ro", ns="conversation")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-status-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}", headers=conversation_headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert {key: payload[key] for key in expected_ids} == expected_ids
+        assert payload["status"] == "succeeded"
+        assert payload["terminal"] is True
+        assert payload["cancel_requested"] is False
+        assert payload["result"] is None
+        assert payload["error"] is None
+
+        denied = client.get(f"/api/runs/{run_id}", headers=denied_headers)
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
 def test_run_replay_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
