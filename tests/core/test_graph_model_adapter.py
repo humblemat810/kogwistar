@@ -1357,6 +1357,25 @@ def test_conversation_node_rejects_invalid_role_assignment() -> None:
         node.role = "not-a-conversation-role"
 
 
+def test_conversation_edge_rejects_invalid_endpoint_assignment() -> None:
+    """Runtime mutation must preserve the validated ConversationEdge contract."""
+    from kogwistar.conversation.models import ConversationEdge
+
+    edge = ConversationEdge(
+        label="invalid endpoint",
+        type="relationship",
+        summary="conversation edge contract probe",
+        relation="next_turn",
+        source_ids=["source"],
+        target_ids=["target"],
+        source_edge_ids=None,
+        target_edge_ids=None,
+        mentions=_mentions("edge evidence"),
+    )
+    with pytest.raises(ValidationError, match="endpoint IDs must not be empty"):
+        edge.source_ids = [""]
+
+
 def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:
     run_node = WorkflowRunNode(
         label="run",

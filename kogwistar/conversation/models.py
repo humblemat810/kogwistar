@@ -307,6 +307,7 @@ class ConversationEdge(Edge):
     metadata: dict[str, JsonValue] = Field(
         default_factory=dict, description="conversation edge metadata"
     )
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
