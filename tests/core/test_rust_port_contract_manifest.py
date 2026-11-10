@@ -130,7 +130,6 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     )
     assert coarse_snapshot is not None
     assert fine_snapshot is not None
-
     coarse_pass_count = sum(status == "PASS" for status in coarse_status.values())
     fine_statuses = [row[2] for row in fine_rows if row[2] != "PARENT"]
     fine_pass_count = sum(status == "PASS" for status in fine_statuses)
@@ -154,6 +153,87 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
         sum(status == "BLOCKED" for status in fine_statuses),
     )
 
+
+def test_native_operation_backend_evidence_matrix_is_complete() -> None:
+    inventory = json.loads(
+        (
+            ROOT
+            / "contracts"
+            / "golden"
+            / "runtime-native-operation-inventory-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    worklist_rows = _markdown_table_rows(DUAL_LANGUAGE_WORKLIST_PATH, "| FW-")
+    rows_by_id = {row[0]: row for row in worklist_rows}
+    operation_suffix = {
+        "noop": "NOOP",
+        "increment-counter": "COUNTER",
+        "emit-result": "RESULT",
+        "agent.event.request": "REQUEST",
+        "agent.event.receive": "RECEIVE",
+        "agent.event.ack": "ACK",
+    }
+    assert {item["operation"] for item in inventory["operations"]} == set(
+        operation_suffix
+    )
+    test_by_backend_and_operation = {
+        ("SQLITE", "NOOP"): "sqlite_native_noop_result_is_durable_through_runtime_route",
+        ("SQLITE", "COUNTER"): "sqlite_native_runtime_route_uses_shared_result_reducer",
+        ("SQLITE", "RESULT"): "sqlite_native_runtime_route_uses_shared_result_reducer",
+        ("SQLITE", "REQUEST"): "sqlite_native_provider_event_request_persists_semantic_events",
+        ("SQLITE", "RECEIVE"): "sqlite_native_provider_event_request_persists_semantic_events",
+        ("SQLITE", "ACK"): "sqlite_provider_event_ack_commits_handler_transition_and_causal_graph_atomically",
+        ("02A", "NOOP"): "postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available",
+        ("02A", "COUNTER"): "postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available",
+        ("02A", "RESULT"): "postgres_native_runtime_route_uses_shared_result_reducer_when_dsn_available",
+        ("02A", "REQUEST"): "postgres_provider_event_ack_persists_python_causal_links_atomically",
+        ("02A", "RECEIVE"): "postgres_provider_event_ack_persists_python_causal_links_atomically",
+        ("02A", "ACK"): "postgres_provider_event_ack_persists_python_causal_links_atomically",
+        ("02B", "NOOP"): "in_memory_inline_native_noop_completes_claimed_run_atomically",
+        ("02B", "COUNTER"): "in_memory_inline_native_counter_matches_shared_effect_atomically",
+        ("02B", "RESULT"): "in_memory_inline_native_result_is_persisted_and_completes_run",
+        ("02B", "REQUEST"): "in_memory_native_provider_request_persists_semantic_events_and_keeps_deltas_transient",
+        ("02B", "RECEIVE"): "in_memory_native_receive_claims_visible_event_and_routes_it",
+        ("02B", "ACK"): "provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent",
+    }
+    rust_test_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "rust" / "crates").rglob("*.rs")
+    )
+
+    def leaf_evidence(task: list[str]) -> list[list[str]]:
+        if task[2] != "PARENT":
+            return [task]
+        children = re.search(r"Parent scope; children: (FW-[A-Za-z0-9,-]+)", task[3])
+        assert children is not None, f"{task[0]} has no declared children"
+        return [
+            leaf
+            for child_id in children.group(1).split(",")
+            for leaf in leaf_evidence(rows_by_id[child_id])
+        ]
+
+    for item in inventory["operations"]:
+        suffix = operation_suffix[item["operation"]]
+        for backend in ("SQLITE", "02A", "02B"):
+            prefix = (
+                "FW-13-02-SQLITE"
+                if backend == "SQLITE"
+                else f"FW-13-{backend}"
+            )
+            task_id = f"{prefix}-{suffix}"
+            task = rows_by_id.get(task_id)
+            assert task is not None, f"missing native matrix tasklet {task_id}"
+            evidence_rows = leaf_evidence(task)
+            assert evidence_rows and all(row[2] == "PASS" for row in evidence_rows), (
+                f"native matrix tasklet {task_id} has unfinished leaves"
+            )
+            test_name = test_by_backend_and_operation[(backend, suffix)]
+            assert test_name in rust_test_sources, (
+                f"{task_id} references missing Rust test {test_name}"
+            )
+            assert any(test_name in " ".join(row[3:]) for row in evidence_rows), (
+                f"{task_id} does not link the Rust test {test_name}"
+            )
 
 def test_dual_language_open_tasklets_use_one_bounded_work_unit() -> None:
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
