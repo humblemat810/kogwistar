@@ -7422,6 +7422,45 @@
         )
         .await
         .unwrap();
+        // ACL decisions are canonical SQLite events; Chroma contains only the graph projection.
+        for (target, mode, owner) in [
+            ("start", "public", None),
+            ("turn-1", "public", None),
+            ("turn-2", "public", None),
+            ("turn-private", "private", Some("someone-else")),
+            ("snapshot", "public", None),
+            ("foreign-start", "public", None),
+        ] {
+            let acl_id = format!("acl-{target}");
+            let mut metadata = json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"conversation",
+                "acl_target_entity_id":target,
+                "acl_target_grain":"node",
+                "acl_version":1,
+                "acl_mode":mode,
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation"
+            });
+            if let Some(owner) = owner {
+                metadata["owner_id"] = json!(owner);
+            }
+            service.store.append_raw_entity_event(
+                "scope-a",
+                SqliteNewRawEntityEvent {
+                    event_id: format!("canonical-{acl_id}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id":acl_id,
+                        "document":null,
+                        "metadata":metadata
+                    })
+                    .to_string(),
+                },
+            ).unwrap();
+        }
         let request = |operation: &str, args: Value, principal: Value| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
@@ -7460,6 +7499,11 @@
         let response: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(response["op"], "receive_message");
         assert_eq!(response["result"]["conversation_id"], "c1");
+        assert_eq!(
+            response["result"]["messages"].as_array().map(Vec::len),
+            Some(2),
+            "unexpected transcript payload: {response}"
+        );
         assert_eq!(response["result"]["messages"][0]["node_id"], "turn-1");
         assert_eq!(response["result"]["messages"][1]["node_id"], "turn-2");
 
@@ -7573,6 +7617,13 @@
         assert_invoke_result_shape("latest_snapshot", &invoked_snapshot["result"]);
         assert_eq!(invoked_snapshot["result"]["tool_name"], "latest_snapshot");
         assert_eq!(invoked_snapshot["result"]["snapshot"]["snapshot_node_id"], "snapshot");
+        let initial_snapshot_digest = format!(
+            "{:x}",
+            sha2::Sha256::digest(
+                kogwistar_contracts::canonical_json(&invoked_snapshot["result"], false)
+                    .as_bytes(),
+            ),
+        );
 
         let denied_builtin = service
             .execute(request(
@@ -7982,6 +8033,31 @@
             )),
             initial_transcript_digest,
             "the same scoped syscall result survives retry after service restart"
+        );
+        let retried_snapshot = service
+            .execute(request(
+                "invoke_tool",
+                json!({"tool_name":"latest_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer"}),
+                json!({
+                    "sub":"reader-1", "role":"rw", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation",
+                    "ns":["conversation"], "capabilities":["invoke_tool","project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(retried_snapshot.status, StatusCode::OK.as_u16());
+        let retried_snapshot: Value = serde_json::from_slice(&retried_snapshot.body).unwrap();
+        assert_invoke_result_shape("latest_snapshot", &retried_snapshot["result"]);
+        assert_eq!(
+            format!(
+                "{:x}",
+                sha2::Sha256::digest(
+                    kogwistar_contracts::canonical_json(&retried_snapshot["result"], false)
+                        .as_bytes(),
+                ),
+            ),
+            initial_snapshot_digest,
+            "the same ACL-filtered snapshot syscall result survives service restart"
         );
         let _ = stop_chroma.send(());
         let requests = fake.await.unwrap();
