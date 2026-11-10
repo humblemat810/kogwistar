@@ -11,6 +11,22 @@ import pytest
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
+
+def _mixed_evidence_is_executable(
+    evidence_id: str,
+    checklist_statuses: dict[str, str],
+    fine_rows: dict[str, list[tuple[str, str, str]]],
+) -> bool:
+    gate_status = checklist_statuses.get(evidence_id)
+    has_passing_fine_evidence = any(
+        status == "PASS" and evidence.strip()
+        for _, status, evidence in fine_rows.get(evidence_id, [])
+    )
+    return gate_status == "PASS" or (
+        gate_status == "IN PROGRESS" and has_passing_fine_evidence
+    )
+
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"
 DUAL_LANGUAGE_MANIFEST_PATH = (
@@ -584,6 +600,22 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
         for line in checklist_path.read_text(encoding="utf-8").splitlines()
         if line.startswith("| DL-")
     }
+    checklist_statuses = {
+        evidence_id: status.split(" (", 1)[0]
+        for evidence_id, status in checklist_entries.items()
+    }
+    worklist_rows = [
+        line.split("|", 4)
+        for line in DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8").splitlines()
+        if line.startswith("| FW-")
+    ]
+    fine_statuses_by_gate: dict[str, list[tuple[str, str, str]]] = {}
+    for columns in worklist_rows:
+        if len(columns) >= 5:
+            fine_statuses_by_gate.setdefault(columns[2].strip(), []).append(
+                (columns[1].strip(), columns[3].strip(), columns[4].strip(" |"))
+            )
+
     for capability in entries.values():
         for lane in ("python", "rust", "mixed"):
             decision = capability[lane]
@@ -591,11 +623,33 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
             assert evidence_id in checklist_entries, (
                 f"{capability['id']}/{lane} references missing evidence {evidence_id}"
             )
+            if lane == "mixed" and decision["status"] == "opt-in":
+                assert _mixed_evidence_is_executable(
+                    evidence_id, checklist_statuses, fine_statuses_by_gate
+                ), (
+                    f"{capability['id']}/mixed is opt-in but {evidence_id} "
+                    "has no passing executable fine-grained evidence"
+                )
             if decision["status"] == "enabled":
                 assert lane == "python"
                 assert ownership[capability["id"]][
                     "current_authoritative_writer"
                 ] == "python"
+
+
+def test_mixed_opt_in_evidence_rejects_unstarted_or_unproven_gates() -> None:
+    checklist = {
+        "DL-14": "IN PROGRESS",
+        "DL-15": "NOT STARTED",
+    }
+    worklist = {
+        "DL-14": [("FW-14-01A", "PASS", "test_runtime.py::test_mixed_path")],
+        "DL-15": [("FW-15-01", "NOT STARTED", "")],
+    }
+
+    assert _mixed_evidence_is_executable("DL-14", checklist, worklist)
+    assert not _mixed_evidence_is_executable("DL-15", checklist, worklist)
+    assert not _mixed_evidence_is_executable("DL-404", checklist, worklist)
 
 
 def test_dual_language_checklist_ids_are_unique() -> None:
