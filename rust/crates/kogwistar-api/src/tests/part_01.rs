@@ -2036,11 +2036,11 @@
         );
         let created: Value = serde_json::from_slice(&created.body).unwrap();
         assert_eq!(created["status"], "ok");
-        assert_eq!(created["result"]["conversation_id"], "conv-create-test");
-        assert_eq!(created["result"]["user_id"], "alice");
-        assert_eq!(created["result"]["start_node_id"], "conv-create-start");
-        assert_eq!(created["result"]["tail_node_id"], "conv-create-start");
-        assert_eq!(created["result"]["turn_count"], 0);
+        let syscall_result_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-create-syscall-result-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(created["result"], syscall_result_fixture);
         let start_projection = service
             .conversation_store
             .graph_projection_records(GraphProjectionRead {

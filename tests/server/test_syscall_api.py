@@ -124,10 +124,19 @@ def test_syscall_create_conversation_uses_authenticated_owner(
     assert payload["version"] == "v1"
     assert payload["op"] == "create_conversation"
     assert payload["status"] == "ok"
-    assert payload["result"]["conversation_id"] == "syscall-owner-check"
-    assert payload["result"]["start_node_id"] == "syscall-owner-check-start"
-    assert payload["result"]["user_id"] == "owner-create"
-    assert payload["result"]["turn_count"] == 0
+    expected_result = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-create-syscall-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected_result.update(
+        conversation_id="syscall-owner-check",
+        user_id="owner-create",
+        start_node_id="syscall-owner-check-start",
+        tail_node_id="syscall-owner-check-start",
+    )
+    assert payload["result"] == expected_result
     starts = conversation_engine.read.get_nodes(
         where={"conversation_id": "syscall-owner-check"},
         node_type=ConversationNode,
