@@ -3179,10 +3179,12 @@ def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("backend", ["sqlite", "pg"])
+@pytest.mark.parametrize("end_failure", [False, True], ids=["success", "terminal-error"])
 def test_async_runtime_client_resume_uses_real_rust_authority(
     monkeypatch,
     tmp_path,
     backend: str,
+    end_failure: bool,
 ) -> None:
     """Exercise async callbacks and client resume through Rust HTTP/storage."""
     from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
@@ -3268,6 +3270,12 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
         callback_traces["end"] = ctx.trace_ctx.as_fields()
         assert ctx.state_view["approved"] is True
         _assert_worker_dependencies(ctx.state_view, dependencies)
+        if end_failure:
+            return RunFailure(
+                conversation_node_id="end",
+                state_update=[],
+                errors=["deterministic terminal error"],
+            )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[("u", {"resumed_end": True})],
@@ -3362,21 +3370,24 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
 
         suspended, resumed = asyncio.run(execute())
         assert suspended.status == "suspended"
-        assert resumed.status == "succeeded"
+        assert resumed.status == ("failure" if end_failure else "succeeded")
         assert resumed.final_state["approved"] is True
-        assert resumed.final_state["resumed_end"] is True
+        if end_failure:
+            assert "resumed_end" not in resumed.final_state
+        else:
+            assert resumed.final_state["resumed_end"] is True
         assert resumed.final_state["_deps"] is dependencies
         assert visited == ["start", "gate", "end"]
         status = httpx.get(
             f"{base_url}/api/workflow/runs/run-async-resume-live", timeout=10
         )
         assert status.status_code == 200, status.text
-        assert status.json()["status"] == "succeeded"
+        assert status.json()["status"] == ("failed" if end_failure else "succeeded")
         steps_response = httpx.get(
             f"{base_url}/api/workflow/runs/run-async-resume-live/steps", timeout=10
         )
         assert steps_response.status_code == 200, steps_response.text
-        end_step = next(
+        end_step_record = next(
             step
             for step in steps_response.json()["steps"]
             if step["workflow_node_id"] == "end"
@@ -3386,7 +3397,7 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
                 encoding="utf-8"
             )
         )["native_resume_step"]
-        trace_context = end_step["trace_context"]
+        trace_context = end_step_record["trace_context"]
         assert callback_traces["end"]["trace_id"] == trace_context["trace_id"]
         assert callback_traces["end"]["span_id"] == trace_context["span_id"]
         assert callback_traces["end"]["parent_span_id"] == trace_context[
@@ -3402,7 +3413,7 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
         assert trace_context["span_id"] == trace_fixture["span_id"].format(
             run_id="run-async-resume-live",
             token_id=resumed_token_id,
-            step_seq=end_step["step_seq"],
+            step_seq=end_step_record["step_seq"],
             attempt=trace_fixture["attempt"],
             node_id="end",
         )
