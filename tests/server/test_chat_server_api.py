@@ -1916,6 +1916,111 @@ def test_resume_route_uses_python_defaults_and_checks_namespace(
         assert len(captured_requests) == 1
 
 
+def test_resume_route_preserves_response_contract_with_rust_runtime_selection(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_URL", "http://rust-runtime")
+
+    engine, conversation_engine, workflow_engine = build_engine_triplet(
+        root=tmp_path / "rust-selected-resume",
+        embedding_function=FakeEmbeddingFunction(),
+    )
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    monkeypatch.setattr(
+        "kogwistar.server.chat_service_run_execution.load_checkpoint",
+        lambda **_kwargs: {"budget": {}},
+    )
+    authority_calls = []
+
+    class _FakeRustRuntimeAuthority:
+        def __init__(self, *, runtime, base_url, cache_dir):
+            authority_calls.append(("init", base_url))
+
+        def resume(self, **kwargs):
+            authority_calls.append(("resume", kwargs))
+            return RunResult(
+                run_id=kwargs["run_id"],
+                final_state={"approved": True},
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+        def close(self):
+            authority_calls.append(("close", None))
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.RustRuntimeAuthority",
+        _FakeRustRuntimeAuthority,
+    )
+    request_body = {
+        "suspended_node_id": "approval-step",
+        "suspended_token_id": "approval-token",
+        "client_result": {"status": "success", "state_update": []},
+        "workflow_id": "rust-selected-workflow",
+        "conversation_id": "rust-selected-conversation",
+        "turn_node_id": "rust-selected-turn",
+        "user_id": "not-an-authority-source",
+    }
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="rw", ns="workflow")
+        denied_headers = _token_header(client, role="rw", ns="wisdom")
+        response = client.post(
+            "/api/runs/rust-selected-resume-run/resume",
+            json=request_body,
+            headers=workflow_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "workflow_status": "succeeded",
+            "final_state": {"approved": True},
+            "budget": {
+                "token_used": 0,
+                "time_used_ms": 0,
+                "cost_budget": 0.0,
+                "cost_used": 0.0,
+                "budget_kind": "token",
+                "budget_scope": "run",
+            },
+        }
+        assert [name for name, _value in authority_calls] == [
+            "init",
+            "resume",
+            "close",
+        ]
+        resumed = authority_calls[1][1]
+        assert resumed["run_id"] == "rust-selected-resume-run"
+        assert resumed["client_result"].model_dump()["status"] == "success"
+        assert resumed["workflow_id"] == request_body["workflow_id"]
+        assert resumed["conversation_id"] == request_body["conversation_id"]
+        assert resumed["turn_node_id"] == request_body["turn_node_id"]
+
+        denied = client.post(
+            "/api/runs/rust-selected-resume-run/resume",
+            json=request_body,
+            headers=denied_headers,
+        )
+        assert denied.status_code == 403
+        assert "rust-selected-resume-run" not in denied.text
+        assert [name for name, _value in authority_calls] == [
+            "init",
+            "resume",
+            "close",
+        ]
+
+
 def test_run_replay_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
