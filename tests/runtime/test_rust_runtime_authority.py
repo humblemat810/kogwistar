@@ -888,6 +888,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
     )
     resolver = MappingStepResolver()
     visited: list[str] = []
+    callback_traces: dict[str, dict[str, Any]] = {}
     dependencies = {"opaque_service": object()}
 
     @resolver.register("start")
@@ -907,6 +908,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
     @resolver.register("end")
     def end_step(ctx):
         visited.append("end")
+        callback_traces["end"] = ctx.trace_ctx.as_fields()
         assert ctx.state_view["approved"] is True
         _assert_worker_dependencies(ctx.state_view, dependencies)
         return RunSuccess(
@@ -1035,6 +1037,44 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         )
         assert status.status_code == 200
         assert status.json()["status"] == "succeeded", status.text
+        steps_response = httpx.get(
+            f"{base_url}/api/workflow/runs/run-sync-resume-live/steps", timeout=10
+        )
+        assert steps_response.status_code == 200, steps_response.text
+        end_step_record = next(
+            step
+            for step in steps_response.json()["steps"]
+            if step["workflow_node_id"] == "end"
+        )
+        trace_context = end_step_record["trace_context"]
+        assert callback_traces["end"]["trace_id"] == trace_context["trace_id"]
+        assert callback_traces["end"]["span_id"] == trace_context["span_id"]
+        assert callback_traces["end"]["parent_span_id"] == trace_context[
+            "parent_span_id"
+        ]
+        assert callback_traces["end"]["attempt"] == trace_context["attempt"]
+        trace_fixture = json.loads(
+            (ROOT / "contracts" / "golden" / "runtime-trace-context-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )["native_resume_step"]
+        span_parts = trace_context["span_id"].split(":")
+        assert len(span_parts) == 6
+        resumed_token_id = span_parts[2]
+        assert trace_context["trace_id"] == trace_fixture["trace_id"].format(
+            run_id="run-sync-resume-live"
+        )
+        assert trace_context["span_id"] == trace_fixture["span_id"].format(
+            run_id="run-sync-resume-live",
+            token_id=resumed_token_id,
+            step_seq=end_step_record["step_seq"],
+            attempt=trace_fixture["attempt"],
+            node_id="end",
+        )
+        assert trace_context["parent_span_id"] == trace_fixture[
+            "parent_span_id"
+        ].format(run_id="run-sync-resume-live", token_id=resumed_token_id)
+        assert trace_context["attempt"] == trace_fixture["attempt"]
     finally:
         process.terminate()
         try:
