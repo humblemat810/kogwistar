@@ -3850,14 +3850,15 @@
             "kogwistar-sqlite-chroma-reconcile-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
+        let graph_config = SqliteChromaGraphConfig {
+            endpoint,
+            metric: DistanceMetric::Cosine,
+            node_collection: "reconcile-nodes".to_owned(),
+            edge_collection: "reconcile-edges".to_owned(),
+        };
         let service = open_sqlite_application_service(
             &path,
-            Some(SqliteChromaGraphConfig {
-                endpoint,
-                metric: DistanceMetric::Cosine,
-                node_collection: "reconcile-nodes".to_owned(),
-                edge_collection: "reconcile-edges".to_owned(),
-            }),
+            Some(graph_config.clone()),
         )
         .await
         .unwrap();
@@ -3936,6 +3937,12 @@
             )
             .unwrap();
 
+        // Reconciliation must recover from durable SQLite state after process
+        // restart; Chroma remains an external, eventually consistent projection.
+        drop(service);
+        let service = open_sqlite_application_service(&path, Some(graph_config))
+            .await
+            .unwrap();
         assert_eq!(
             ApplicationService::reconcile_eventual_projection_once(
                 &service,
