@@ -98,3 +98,94 @@ def test_add_index_entries_requires_write_role_and_keeps_payload(
     assert response.json() == {"ok": True}
     assert len(submitted) == 2
     assert submitted[1] == payload.index
+
+
+@pytest.mark.ci
+def test_search_index_hybrid_route_matches_shared_success_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "search-index-hybrid-http-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    calls: list[tuple[str, int, bool]] = []
+    hit = {
+        "index_key": "node-a|Alpha|section 1",
+        "node_id": "node-a",
+        "canonical_title": "Alpha",
+        "provision": "section 1",
+        "document_id": "doc-a",
+        "fts_score": 1.0,
+        "vec_score": 0.75,
+        "hybrid_score": 0.9,
+        "documents": "source text",
+        "metadatas": {"workspace_id": "docs"},
+    }
+
+    def search_hybrid(*, q: str, limit: int, resolve_node: bool) -> dict[str, object]:
+        calls.append((q, limit, resolve_node))
+        return {
+            "query": q,
+            "results": [
+                {
+                    key: value
+                    for key, value in hit.items()
+                    if resolve_node or key not in fixture["resolved_hit_fields"]
+                }
+            ],
+        }
+
+    fake_engine = SimpleNamespace(
+        search_index=SimpleNamespace(search_hybrid=search_hybrid)
+    )
+    monkeypatch.setattr(server, "engine", SimpleNamespace(get=lambda: fake_engine))
+
+    @asynccontextmanager
+    async def noop_lifespan(_app):
+        yield
+
+    monkeypatch.setattr(
+        server.app.router, "lifespan_context", noop_lifespan, raising=False
+    )
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "index-reader",
+            "role": "ro",
+            "ns": ["docs"],
+            "capabilities": ["read_graph"],
+            "iat": now,
+            "exp": now + 3600,
+            "iss": "local",
+        },
+        TEST_JWT_SECRET,
+        algorithm=TEST_JWT_ALG,
+    )
+    with TestClient(server.app) as client:
+        for resolve_node in (False, True):
+            response = client.get(
+                "/api/search_index_hybrid",
+                params={"q": fixture["query"], "resolve_node": resolve_node},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == fixture["success_status"]
+            payload = response.json()
+            assert set(fixture["required_response_fields"]) <= payload.keys()
+            assert payload["query"] == fixture["query"]
+            assert len(payload["results"]) == 1
+            assert set(fixture["required_hit_fields"]) <= payload["results"][0].keys()
+            if resolve_node:
+                assert (
+                    set(fixture["resolved_hit_fields"]) <= payload["results"][0].keys()
+                )
+            else:
+                assert (
+                    not set(fixture["resolved_hit_fields"])
+                    & payload["results"][0].keys()
+                )
+    assert calls == [(fixture["query"], 10, False), (fixture["query"], 10, True)]

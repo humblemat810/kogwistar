@@ -2831,9 +2831,18 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
         )
         .await
         .unwrap();
-    assert_eq!(search.status(), StatusCode::OK);
+    let http_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/search-index-hybrid-http-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(search.status().as_u16(), http_fixture["success_status"]);
     let search_payload: Value =
         serde_json::from_slice(&to_bytes(search.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(search_payload["query"], http_fixture["query"]);
+    for field in http_fixture["required_response_fields"].as_array().unwrap() {
+        assert!(search_payload.get(field.as_str().unwrap()).is_some());
+    }
     let results = search_payload["results"].as_array().unwrap();
     assert_eq!(
         results.len(),
@@ -2841,6 +2850,12 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
         "private indexed nodes must be ACL-filtered: {search_payload}"
     );
     assert_eq!(results[0]["node_id"], "in-memory-index-node");
+    for field in http_fixture["required_hit_fields"].as_array().unwrap() {
+        assert!(results[0].get(field.as_str().unwrap()).is_some());
+    }
+    for field in http_fixture["resolved_hit_fields"].as_array().unwrap() {
+        assert!(results[0].get(field.as_str().unwrap()).is_some());
+    }
     assert_eq!(
         results[0]["documents"],
         "Canonical source for in-memory-index-node"
