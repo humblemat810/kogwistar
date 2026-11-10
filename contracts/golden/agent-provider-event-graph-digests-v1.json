@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "operation_trace": "agent-durable-provider-event-v1: publish fixture event, claim, handle, acknowledge, and persist causal graph effects",
+  "projection": "SHA-256 of sorted scoped gke_nodes and gke_edges records serialized as id, document, and metadata; embeddings excluded",
+  "digests": {
+    "in_memory": "6b73186bb36654a33904605918764424ba3a4c6ca5904460300cfb4b822e6ea1"
+  }
+}

@@ -1818,6 +1818,37 @@ async fn in_memory_native_provider_event_ack_persists_causal_graph_atomically() 
     )
     .await
     .unwrap();
+    let mut canonical_graph_rows = nodes
+        .iter()
+        .chain(graph.iter())
+        .map(|record| {
+            json!({
+                "id": record.id,
+                "document": record.document,
+                "metadata": record.metadata,
+            })
+        })
+        .collect::<Vec<_>>();
+    canonical_graph_rows.sort_by_key(|row| serde_json::to_string(row).unwrap());
+    let graph_digest = format!(
+        "{:x}",
+        {
+            use sha2::Digest;
+            sha2::Sha256::digest(serde_json::to_vec(&canonical_graph_rows).unwrap())
+        }
+    );
+    let expected_digests: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/agent-provider-event-graph-digests-v1.json"
+    )))
+    .unwrap();
+    assert_eq!(expected_digests["schema_version"], 1);
+    assert_eq!(
+        graph_digest,
+        expected_digests["digests"]["in_memory"]
+            .as_str()
+            .unwrap()
+    );
     assert!(nodes.iter().any(|node| {
         node.id == format!("wf_step|{run_id}|1")
             && node.metadata["entity_type"] == "workflow_step_exec"
