@@ -252,6 +252,44 @@ def test_python_workflow_runtime_edge_round_trips_shared_backend_fixture() -> No
     assert payload["target_ids"] == ["external:target"]
 
 
+def test_python_llm_edge_projects_shared_llm_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "llm-edge-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    source_payload = dict(fixture["payload"])
+    source_payload["mentions"] = [
+        {
+            **mention,
+            "spans": [
+                {**span, "insertion_method": "contract-test"}
+                for span in mention["spans"]
+            ],
+        }
+        for mention in fixture["payload"]["mentions"]
+    ]
+    # Backend-only provenance is injected before projecting the provider payload.
+    edge = engine_models.LLMEdge.model_validate(source_payload)
+    payload = edge.model_dump(field_mode="llm", dump_format="json")
+
+    assert fixture["schema_version"] == GRAPH_MODEL_ENVELOPE_VERSION
+    assert fixture["model_class"] == "llm_edge"
+    assert payload == fixture["payload"]
+    assert payload["id"] == payload["local_id"] == "ne:llm-edge"
+    assert payload["source_ids"] == ["nn:source"]
+    assert payload["target_ids"] == ["node:existing"]
+    assert payload["source_edge_ids"] == ["ne:parent"]
+    assert payload["target_edge_ids"] is None
+    assert payload["properties"]["confidence_label"] == "high"
+    assert "embedding" not in payload
+    assert "metadata" not in payload
+    assert "lifecycle_status" not in payload
+
+
 @pytest.mark.parametrize("model_kind", ["node", "edge"])
 def test_persistent_graph_models_reject_non_finite_embeddings(model_kind: str) -> None:
     model_type = Node if model_kind == "node" else Edge

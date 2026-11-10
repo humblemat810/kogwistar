@@ -1918,7 +1918,7 @@ pub struct LlmTextSpanV1 {
 pub struct LlmGroundingV1 {
     #[serde(default)]
     pub spans: Vec<LlmTextSpanV1>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub multimodal_spans: Vec<Value>,
 }
 
@@ -2362,7 +2362,7 @@ pub struct LlmEntityFieldsV1 {
     pub canonical_entity_id: Option<String>,
     #[serde(default)]
     pub properties: Option<Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_id: Option<String>,
 }
 
@@ -5339,6 +5339,69 @@ mod tests {
             GraphModelEnvelope::new(GraphModelClass::AssocFlattenedLlmEdge, invalid_payload)
                 .validate_family_v1()
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn llm_edge_typed_round_trip_matches_python_llm_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-edge-model-v1.json"
+        )))
+        .expect("valid shared Python LLMEdge fixture");
+        let payload = fixture["payload"].clone();
+        let envelope = GraphModelEnvelope::new(GraphModelClass::LlmEdge, payload.clone());
+
+        envelope
+            .validate_family_v1()
+            .expect("valid LLM edge payload and grounding");
+        let edge: LlmEdgeV1 = serde_json::from_value(payload).expect("typed Rust LLM edge");
+        let serialized = serde_json::to_value(edge).expect("serialize typed LLM edge");
+
+        assert_eq!(serialized["id"], "ne:llm-edge");
+        assert_eq!(serialized["local_id"], "ne:llm-edge");
+        assert_eq!(serialized["source_ids"], serde_json::json!(["nn:source"]));
+        assert_eq!(
+            serialized["target_ids"],
+            serde_json::json!(["node:existing"])
+        );
+        assert_eq!(
+            serialized["source_edge_ids"],
+            serde_json::json!(["ne:parent"])
+        );
+        assert_eq!(serialized["target_edge_ids"], Value::Null);
+        assert_eq!(serialized["properties"]["confidence_label"], "high");
+        assert!(serialized.get("embedding").is_none());
+        assert!(serialized.get("metadata").is_none());
+        assert_eq!(
+            crate::canonical_json(&serialized, false),
+            fixture["canonical_json"]
+                .as_str()
+                .expect("Python canonical LLM edge JSON")
+        );
+
+        let mut legacy_payload = fixture["payload"].clone();
+        legacy_payload["doc_id"] = serde_json::json!("doc:legacy-top-level");
+        let legacy_edge: LlmEdgeV1 =
+            serde_json::from_value(legacy_payload).expect("legacy optional document ID");
+        let legacy_serialized =
+            serde_json::to_value(legacy_edge).expect("serialize legacy-compatible LLM edge");
+        assert_eq!(legacy_serialized["doc_id"], "doc:legacy-top-level");
+    }
+
+    #[test]
+    fn llm_node_typed_serialization_matches_python_llm_slice_omissions() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/llm-node-model-v1.json"
+        )))
+        .expect("valid shared Python LLMNode fixture");
+        let node: LlmNodeV1 =
+            serde_json::from_value(fixture["payload"].clone()).expect("typed Rust LLM node");
+
+        assert_eq!(
+            serde_json::to_value(node).expect("serialize typed LLM node"),
+            fixture["payload"]
         );
     }
 
