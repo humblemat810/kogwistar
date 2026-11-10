@@ -5288,6 +5288,52 @@ mod tests {
     }
 
     #[test]
+    fn graph_acl_latest_version_is_scoped_to_selected_truth_graph() {
+        let entity_id = "shared-entity-id";
+        let acl = |record_id: &str, truth_graph: &str, version: i64, mode: &str| {
+            let mut record = GraphRecord::new(record_id);
+            record.metadata.extend(
+                serde_json::json!({
+                    "entity_type": "acl_record",
+                    "acl_truth_graph": truth_graph,
+                    "acl_target_entity_id": entity_id,
+                    "acl_target_grain": "node",
+                    "acl_version": version,
+                    "acl_mode": mode,
+                    "owner_id": if mode == "private" { Some("wisdom-owner") } else { None },
+                })
+                .as_object()
+                .expect("ACL metadata")
+                .clone(),
+            );
+            record
+        };
+        let records = vec![
+            GraphRecord::new(entity_id),
+            acl("knowledge-v1", "knowledge", 1, "public"),
+            acl("wisdom-v1", "wisdom", 1, "public"),
+            acl("wisdom-v2", "wisdom", 2, "private"),
+        ];
+        let reader = GraphAclPrincipal {
+            principal_id: "reader".into(),
+            ..Default::default()
+        };
+        let owner = GraphAclPrincipal {
+            principal_id: "wisdom-owner".into(),
+            ..Default::default()
+        };
+
+        let (knowledge_reader, _) =
+            graph_records_visible_by_acl(&records, &[], "knowledge", &reader);
+        let (wisdom_reader, _) = graph_records_visible_by_acl(&records, &[], "wisdom", &reader);
+        let (wisdom_owner, _) = graph_records_visible_by_acl(&records, &[], "wisdom", &owner);
+
+        assert!(knowledge_reader.iter().any(|record| record.id == entity_id));
+        assert!(!wisdom_reader.iter().any(|record| record.id == entity_id));
+        assert!(wisdom_owner.iter().any(|record| record.id == entity_id));
+    }
+
+    #[test]
     fn graph_acl_matches_shared_golden_contract() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

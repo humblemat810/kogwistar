@@ -6,6 +6,60 @@ from pathlib import Path
 from kogwistar.acl.graph import ACLGraph
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_python_latest_acl_version_is_scoped_to_truth_graph() -> None:
+    acl = ACLGraph(cache_enabled=True)
+    entity_id = "shared-entity-id"
+    acl.add_record(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id=entity_id,
+        version=1,
+        mode="public",
+    )
+    acl.add_record(
+        grain="node",
+        truth_graph="wisdom",
+        entity_id=entity_id,
+        version=1,
+        mode="public",
+    )
+    acl.add_record(
+        grain="node",
+        truth_graph="wisdom",
+        entity_id=entity_id,
+        version=2,
+        mode="private",
+        owner_id="wisdom-owner",
+    )
+
+    knowledge = acl.decide(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id=entity_id,
+        principal_id="reader",
+    )
+    wisdom = acl.decide(
+        grain="node",
+        truth_graph="wisdom",
+        entity_id=entity_id,
+        principal_id="reader",
+    )
+    wisdom_owner = acl.decide(
+        grain="node",
+        truth_graph="wisdom",
+        entity_id=entity_id,
+        principal_id="wisdom-owner",
+    )
+
+    assert knowledge.visible is True
+    assert knowledge.record is not None and knowledge.record.version == 1
+    assert wisdom.visible is False
+    assert wisdom.record is not None and wisdom.record.version == 2
+    assert wisdom_owner.visible is True
+
+
 def test_python_acl_visibility_matches_shared_golden_contract() -> None:
     fixture = json.loads(
         (ROOT / "contracts/golden/graph-acl-v1.json")
