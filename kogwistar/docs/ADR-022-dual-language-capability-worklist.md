@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **166/177 PASS (93.8%)**.
-- **Fine worklist:** **399/794 PASS (50.3%)**; **0 IN PROGRESS**, **395 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **400/794 PASS (50.4%)**; **0 IN PROGRESS**, **394 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -469,7 +469,7 @@
 | FW-12-03A | DL-12 | NOT STARTED | Verify unsupported/missing Rust extension does not alter Python-only REST behavior or trigger an implicit Rust load. |
 | FW-12-04 | DL-12 | NOT STARTED | Verify Python-only MCP in-process authorization and response/error shape without Rust import. |
 | FW-12-04A | DL-12 | NOT STARTED | Verify Python-only MCP HTTP transport authorization and response/error shape without Rust import. |
-| FW-12-02 | DL-12 | NOT STARTED | Verify Python-only indexing emits durable job state through a public interface. |
+| FW-12-02 | DL-12 | PASS | Invariant: Python-only public graph upsert produces durable index jobs completed by the Python worker. Cell: authenticated `/api/graph/upsert` with SQLite metadata and fake vector backend. Oracle: jobs reopen as `DONE`, vectors and visualization expose the upserted records, and Rust loading is forbidden. Check: `tests/primitives/test_graph_upsert.py::test_graph_upsert_llm_batch_with_references` (**1 passed**). |
 | FW-12-02A | DL-12 | PARENT | Parent scope; children: FW-12-02A-RETRIEVAL,FW-12-02A-VISUALIZATION |
 | FW-12-02A-RETRIEVAL | DL-12 | NOT STARTED | Verify Python-only retrieval reads back one indexed result on a supported backend. |
 | FW-12-02A-VISUALIZATION | DL-12 | NOT STARTED | Verify Python-only visualization reads back one indexed result on a supported backend. |
