@@ -1476,6 +1476,36 @@ async def test_mcp_workflow_service_list_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_service_repair_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-repair-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[str] = []
+
+    def repair_service_projection(service_id):
+        calls.append(service_id)
+        return contract["result"]
+
+    monkeypatch.setattr(service, "repair_service_projection", repair_service_projection)
+
+    with _claims("rw", "workflow"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert calls == [contract["python_service_arguments"]["service_id"]]
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
