@@ -3787,8 +3787,18 @@
         assert_eq!(mcp_status.status(), StatusCode::OK);
         let mcp_body = to_bytes(mcp_status.into_body(), 8192).await.unwrap();
         let mcp_value = serde_json::from_slice::<Value>(&mcp_body).unwrap();
+        let run_status_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-status-http-v1.json"
+        ))
+        .unwrap();
         assert_eq!(mcp_value["id"], 7);
         assert_eq!(mcp_value["result"]["run_id"], "run-1");
+        for field in run_status_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(mcp_value["result"].get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(mcp_value["result"]["status"], "cancelling");
+        assert_eq!(mcp_value["result"]["terminal"], false);
 
         let mcp_steps = app
             .clone()

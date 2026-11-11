@@ -1938,6 +1938,12 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
 
 @pytest.mark.asyncio
 async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
+    run_status_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-status-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch,
@@ -1981,6 +1987,9 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
             time.sleep(0.05)
         else:
             raise AssertionError("Workflow run did not reach cancelled status")
+        assert set(run_status_contract["required_fields"]).issubset(status)
+        assert status["status"] in run_status_contract["terminal_statuses"]
+        assert status["terminal"] is True
 
         events = _structured(
             await server.mcp.call_tool("workflow.run_events", {"run_id": run_id})
