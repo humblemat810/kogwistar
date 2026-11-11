@@ -783,3 +783,33 @@ def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):
             for node in dashboard["blocked_flow_graph"]["nodes"]
         )
         assert dashboard["resources"]["services"]["total_services"] >= 1
+
+    with TestClient(server.app) as client:
+        view_only_headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="project_view",
+        )
+        denied = client.get(
+            "/api/workflow/operator/dashboard?limit=20",
+            headers=view_only_headers,
+        )
+        assert denied.status_code == 403
+        headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        response = client.get("/api/workflow/operator/dashboard?limit=20", headers=headers)
+    assert response.status_code == 200, response.text
+    http_dashboard = response.json()
+    assert all(field in http_dashboard for field in contract["dashboard_fields"])
+    assert {row["status"] for row in http_dashboard["blocked_runs"]} == set(
+        contract["blocked_statuses"]
+    )
+    assert all(
+        set(node) == set(contract["blocked_flow_node_fields"])
+        for node in http_dashboard["blocked_flow_graph"]["nodes"]
+    )

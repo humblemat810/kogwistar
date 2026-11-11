@@ -6372,6 +6372,24 @@ impl PostgresRunApplicationService {
             {
                 return error;
             }
+            if path == "/api/workflow/operator/dashboard"
+                && !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "project_view",
+                    &[
+                        "project_view",
+                        "workflow.run.read",
+                        "read_security_scope",
+                    ],
+                )
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading operator dashboard requires project_view, workflow.run.read, and read_security_scope capabilities",
+                );
+            }
             if process_listing
                 && !capability_any_allowed(
                     &request,

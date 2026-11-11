@@ -1975,6 +1975,22 @@ impl ApplicationService for SqliteRunApplicationService {
                 if let Some(error) = operator_inbox_authorization_error(&request, &self.capabilities) {
                     return error;
                 }
+                if !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "project_view",
+                    &[
+                        "project_view",
+                        "workflow.run.read",
+                        "read_security_scope",
+                    ],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "Reading operator dashboard requires project_view, workflow.run.read, and read_security_scope capabilities",
+                    );
+                }
                 let dashboard = self.execute_sync(request.clone());
                 if dashboard.status != StatusCode::OK.as_u16() {
                     return dashboard;

@@ -517,7 +517,12 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
 
-    let allowed = service.execute(request(json!(["project_view"]))).await;
+    let view_only = service.execute(request(json!(["project_view"]))).await;
+    assert_eq!(view_only.status, StatusCode::FORBIDDEN.as_u16());
+
+    let allowed = service
+        .execute(request(json!(dashboard_contract["required_capabilities"])))
+        .await;
     assert_eq!(allowed.status, StatusCode::OK.as_u16());
     let dashboard: Value = serde_json::from_slice(&allowed.body).unwrap();
     assert_eq!(dashboard["process_table"].as_array().unwrap().len(), 4);

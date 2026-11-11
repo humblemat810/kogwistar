@@ -1,5 +1,10 @@
 {
   "schema_version": 1,
+  "required_capabilities": [
+    "project_view",
+    "workflow.run.read",
+    "read_security_scope"
+  ],
   "dashboard_fields": [
     "process_table",
     "operator_inbox",
