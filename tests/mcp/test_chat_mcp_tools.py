@@ -1106,6 +1106,34 @@ async def test_mcp_workflow_run_status_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_events_denies_wrong_namespace_before_read(
+    monkeypatch, engine_triplet
+):
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        service, "list_run_events", lambda run_id, **_kwargs: reads.append(run_id)
+    )
+
+    with _claims("ro", "conversation", sub="outsider"):
+        result = await server.mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_events", arguments={"run_id": "private-run"}
+            ),
+        )
+
+    assert result.is_error is True
+    assert "403 Forbidden" in result.content[0].text
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

@@ -6669,7 +6669,9 @@ impl PostgresRunApplicationService {
             return unavailable_effect(request);
         };
         let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
-        if request.method == "GET" && tail.is_empty() {
+        if request.method == "GET"
+            && (tail.is_empty() || tail.as_slice() == ["events", "poll"])
+        {
             let required_namespace =
                 runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
             if !principal_strings(&request.principal, "ns")

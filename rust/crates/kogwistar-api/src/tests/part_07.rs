@@ -34,6 +34,42 @@ async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
 }
 
 #[tokio::test]
+async fn workflow_run_events_denies_wrong_scope_before_storage_access() {
+    let service = PostgresRunApplicationService::from_dsn(
+        "postgres://unused:unused@127.0.0.1:1/unused",
+        "run_events_authorization",
+    )
+    .unwrap();
+
+    for (principal, expected_code) in [
+        (
+            json!({"role":"ro", "ns":["workflow"], "capabilities":[]}),
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+        ),
+        (
+            json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
+            "KOGWISTAR_NAMESPACE_FORBIDDEN",
+        ),
+    ] {
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query:
+                    "/api/workflow/runs/private-run/events/poll?after_seq=0&limit=10".to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            expected_code
+        );
+    }
+}
+
+#[tokio::test]
 async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-process-table-{}.sqlite",
