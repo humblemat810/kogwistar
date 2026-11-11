@@ -508,6 +508,57 @@ def test_server_resume_runner_uses_conversation_engine_selection(
     assert runtime_implementation_mode() == "rust"
 
 
+def test_checkpoint_resume_cannot_switch_transaction_owner_mid_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    store = EngineSQLite(tmp_path / "resume-owner.sqlite")
+    store.ensure_initialized()
+    store.set_user_seq("resume-owner", 7)
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.delenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", raising=False)
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime._implementation_selection_snapshot = capture_implementation_selection()
+    checkpoint = SimpleNamespace(
+        metadata={
+            "workflow_id": "workflow",
+            "step_seq": 3,
+            "state_json": "{}",
+        }
+    )
+
+    def latest_checkpoint(**_kwargs: object) -> object:
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+        return checkpoint
+
+    observed: list[str] = []
+
+    def run(**_kwargs: object) -> str:
+        observed.append(runtime_implementation_mode())
+        with pytest.raises(
+            RuntimeError,
+            match="frozen Rust transaction authority",
+        ):
+            store.set_user_seq("resume-owner", 8)
+        return "resumed"
+
+    runtime._latest_checkpoint_for_run = latest_checkpoint
+    runtime.run = run
+    result = runtime.resume_from_latest_checkpoint(
+        run_id="run",
+        workflow_id="workflow",
+        conversation_id="conversation",
+        turn_node_id="turn",
+    )
+
+    assert result == "resumed"
+    assert observed == ["python"]
+    assert runtime_implementation_mode() == "python"
+    assert store.current_user_seq("resume-owner") == 7
+
+
 def test_resume_contract_keeps_conversation_engine_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
