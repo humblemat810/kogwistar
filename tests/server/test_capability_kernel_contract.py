@@ -109,6 +109,46 @@ def test_capability_snapshot_route_exposes_effective_caps(monkeypatch, engine_tr
         assert denied.status_code == contract["denied_status"]
 
 
+def test_capability_approve_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-capability-approve-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/workflow/capabilities/approve",
+            json=contract["request"],
+            headers=_token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username=contract["expected_subject"],
+                capabilities="approve_action,project_view,read_security_scope",
+            ),
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert set(contract["required_body_fields"]).issubset(payload)
+    assert payload["current_subject"] == contract["expected_subject"]
+    assert contract["expected_approval"] in payload["approvals"]
+    assert set(contract["effective_capabilities_include"]).issubset(
+        payload["effective_capabilities"]
+    )
+
+
 def test_workflow_budget_route_matches_contract_and_requires_security_scope(
     monkeypatch, engine_triplet
 ):

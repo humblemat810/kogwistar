@@ -298,10 +298,14 @@
             "sub": "admin-1",
             "role": "rw",
             "ns": ["workflow"],
-            "capabilities": ["project_view", "approve_action"],
+            "capabilities": ["project_view", "read_security_scope", "approve_action"],
             "iss": "local",
             "exp": now + 300,
         }));
+        let capability_approve_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-capability-approve-http-v1.json"
+        ))
+        .unwrap();
         let approve = app
             .clone()
             .oneshot(
@@ -310,17 +314,44 @@
                     .uri("/api/workflow/capabilities/approve")
                     .header("authorization", format!("Bearer {admin_token}"))
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"action":"spawn_process","capabilities":["spawn_process","workflow.run.write"]}"#,
-                    ))
+                    .body(Body::from(capability_approve_contract["request"].to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(approve.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            approve.status().as_u16(),
+            capability_approve_contract["http_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
         let approve =
             serde_json::from_slice::<Value>(&to_bytes(approve.into_body(), 32768).await.unwrap())
                 .unwrap();
+        for field in capability_approve_contract["required_body_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(approve.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(
+            approve["current_subject"],
+            capability_approve_contract["expected_subject"]
+        );
+        assert!(approve["approvals"]
+            .as_array()
+            .unwrap()
+            .contains(&capability_approve_contract["expected_approval"]));
+        for capability in capability_approve_contract["effective_capabilities_include"]
+            .as_array()
+            .unwrap()
+        {
+            assert!(approve["effective_capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(capability));
+        }
         assert!(
             approve["effective_capabilities"]
                 .as_array()
