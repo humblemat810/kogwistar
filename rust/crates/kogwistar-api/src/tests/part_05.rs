@@ -227,6 +227,10 @@
             "../../../../../contracts/golden/workflow-run-events-mcp-v1.json"
         ))
         .unwrap();
+        let process_timeline_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-process-timeline-mcp-v1.json"
+        ))
+        .unwrap();
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use std::future::Future;
@@ -476,6 +480,7 @@
         assert_eq!(parsed_query.get("limit").map(|value| value.as_ref()), Some("7"));
         assert!(request.body.is_empty());
 
+        let timeline_arguments = process_timeline_contract["arguments"].clone();
         let response = make_app()
             .oneshot(
                 Request::builder()
@@ -483,7 +488,16 @@
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow.process_timeline","arguments":{"run_id":"run-2","after_seq":4}}}"#,
+                        serde_json::to_vec(&json!({
+                            "jsonrpc":"2.0",
+                            "id":2,
+                            "method":"tools/call",
+                            "params":{
+                                "name":process_timeline_contract["operation"],
+                                "arguments":timeline_arguments,
+                            }
+                        }))
+                        .unwrap(),
                     ))
                     .unwrap(),
             )
@@ -495,7 +509,15 @@
         assert_eq!(value["result"]["method"], "GET");
         assert_eq!(
             value["result"]["path_and_query"],
-            "/api/runs/run%2D2/events/poll?after_seq=4&limit=200"
+            "/api/workflow/runs/mcp%2Dtimeline%2Dcontract%2Drun/events/poll?after_seq=4&limit=200"
+        );
+        assert_eq!(
+            process_timeline_contract["route"],
+            "GET /api/workflow/runs/{run_id}/events/poll"
+        );
+        assert_eq!(
+            process_timeline_contract["response_fields"],
+            json!(["run_id", "events"])
         );
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);

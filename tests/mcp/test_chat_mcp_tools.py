@@ -1210,6 +1210,99 @@ async def test_mcp_workflow_run_events_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_process_timeline_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-process-timeline-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    event = {
+        "seq": 9,
+        "run_id": contract["arguments"]["run_id"],
+        "event_type": "run.stage",
+        "payload": {"stage": "execute"},
+        "created_at_ms": 1700000000000,
+    }
+    calls: list[tuple[str, int, int]] = []
+
+    def list_events(run_id: str, *, after_seq: int, limit: int) -> list[dict]:
+        calls.append((run_id, after_seq, limit))
+        return [event]
+
+    monkeypatch.setattr(
+        service,
+        "_execution_meta_store",
+        lambda: SimpleNamespace(list_server_run_events=list_events),
+    )
+    with _claims(
+        "ro",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        result = _structured(
+            await server.mcp.call_tool(contract["operation"], contract["arguments"])
+        )
+
+    assert set(contract["response_fields"]).issubset(result)
+    assert result == {"run_id": event["run_id"], "events": [event]}
+    assert set(contract["required_event_fields"]).issubset(result["events"][0])
+    assert calls == [(event["run_id"], 4, 200)]
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_process_timeline_denies_wrong_scope_before_read(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[bool] = []
+    monkeypatch.setattr(
+        service,
+        "_execution_meta_store",
+        lambda: reads.append(True),
+    )
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="outsider",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "workflow.process_timeline",
+                {"run_id": "private-run"},
+                enforce_visibility=True,
+            )
+
+    with _claims("ro", "workflow", sub="outsider", scope_parts={"capabilities": []}):
+        with pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(
+                "workflow.process_timeline",
+                {"run_id": "private-run"},
+                enforce_visibility=True,
+            )
+    assert denied.value.status_code == 403
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_steps_denies_wrong_namespace_before_read(
     monkeypatch, engine_triplet
 ):

@@ -965,7 +965,7 @@ async fn mcp_dispatch(
                         contract_version: 1,
                         method: "GET".to_owned(),
                         path_and_query: format!(
-                            "/api/runs/{encoded_run_id}/events/poll?after_seq={after_seq}&limit={limit}"
+                            "/api/workflow/runs/{encoded_run_id}/events/poll?after_seq={after_seq}&limit={limit}"
                         ),
                         body: Vec::new(),
                         principal: principal.clone(),
