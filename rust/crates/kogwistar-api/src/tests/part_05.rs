@@ -223,6 +223,10 @@
 
     #[tokio::test]
     async fn mcp_run_event_timeline_tools_build_the_canonical_application_effect_route() {
+        let run_events_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-events-mcp-v1.json"
+        ))
+        .unwrap();
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use std::future::Future;
@@ -269,6 +273,7 @@
         }
 
         let seen = Arc::new(Mutex::new(None));
+        let fixture_arguments = run_events_contract["arguments"].clone();
         let make_app = || {
             router_with_application(
                 ApiState {
@@ -287,7 +292,16 @@
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow.run_events","arguments":{"run_id":"run-1","after_seq":7,"limit":25}}}"#,
+                        serde_json::to_vec(&json!({
+                            "jsonrpc":"2.0",
+                            "id":1,
+                            "method":"tools/call",
+                            "params":{
+                                "name":run_events_contract["operation"],
+                                "arguments":fixture_arguments,
+                            }
+                        }))
+                        .unwrap(),
                     ))
                     .unwrap(),
             )
@@ -299,12 +313,37 @@
         assert_eq!(value["result"]["method"], "GET");
         assert_eq!(
             value["result"]["path_and_query"],
-            "/api/runs/run-1/events/poll?after_seq=7&limit=25"
+            "/api/workflow/runs/mcp%2Devents%2Dcontract%2Drun/events/poll?after_seq=4&limit=200"
+        );
+        assert_eq!(run_events_contract["route"], "GET /api/workflow/runs/{run_id}/events/poll");
+        assert_eq!(
+            run_events_contract["response_fields"],
+            json!(["run_id", "events"])
         );
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);
         assert_eq!(request.method, "GET");
         assert!(request.body.is_empty());
+
+        let default_response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow.run_events","arguments":{"run_id":"run-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let default_body = to_bytes(default_response.into_body(), 4096).await.unwrap();
+        let default_value: Value = serde_json::from_slice(&default_body).unwrap();
+        assert_eq!(
+            default_value["result"]["path_and_query"],
+            "/api/workflow/runs/run%2D1/events/poll?after_seq=0&limit=200"
+        );
 
         let response = make_app()
             .oneshot(

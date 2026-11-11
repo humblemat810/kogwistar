@@ -154,7 +154,9 @@ def build_workflow_mcp(
     def workflow_run_events(
         run_id: str, after_seq: int = 0, limit: int = 200
     ) -> dict[str, Any]:
-        events = get_service().list_run_events(run_id, after_seq=after_seq)
+        events = get_service().list_run_events(
+            run_id, after_seq=after_seq, limit=limit
+        )
         if limit > 0:
             events = events[: int(limit)]
         return {

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "operation": "workflow.run_events",
+  "route": "GET /api/workflow/runs/{run_id}/events/poll",
+  "arguments": {"run_id": "mcp-events-contract-run", "after_seq": 4, "limit": 200},
+  "request_fields": ["run_id", "after_seq", "limit"],
+  "defaults": {"after_seq": 0, "limit": 200},
+  "response_fields": ["run_id", "events"],
+  "required_event_fields": ["seq", "run_id", "event_type", "payload", "created_at_ms"]
+}

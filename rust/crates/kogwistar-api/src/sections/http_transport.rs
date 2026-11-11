@@ -919,12 +919,16 @@ async fn mcp_dispatch(
                 let limit = arguments
                     .get("limit")
                     .and_then(Value::as_i64)
-                    .unwrap_or(500);
+                    .unwrap_or(200);
+                let encoded_run_id = percent_encoding::utf8_percent_encode(
+                    run_id,
+                    percent_encoding::NON_ALPHANUMERIC,
+                );
                 Some(ApiEffectRequest {
                     contract_version: 1,
                     method: "GET".to_owned(),
                     path_and_query: format!(
-                        "/api/runs/{run_id}/events/poll?after_seq={after_seq}&limit={limit}"
+                        "/api/workflow/runs/{encoded_run_id}/events/poll?after_seq={after_seq}&limit={limit}"
                     ),
                     body: Vec::new(),
                     principal: principal.clone(),
