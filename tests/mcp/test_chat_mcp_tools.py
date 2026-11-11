@@ -1608,6 +1608,47 @@ async def test_mcp_workflow_visibility_snapshot_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_visibility_snapshot_denies_missing_capability_and_namespace(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    scope_reads: list[None] = []
+    original_scope_snapshot = service._scope_snapshot
+
+    def track_scope_snapshot():
+        scope_reads.append(None)
+        return original_scope_snapshot()
+
+    monkeypatch.setattr(service, "_scope_snapshot", track_scope_snapshot)
+
+    with _claims("ro", "workflow", sub="visibility-no-cap", scope_parts={"capabilities": ["project_view"]}):
+        with pytest.raises(HTTPException) as missing_capability:
+            await server.mcp._execute(
+                "workflow.visibility_snapshot", {}, enforce_visibility=True
+            )
+        assert missing_capability.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="visibility-wrong-namespace",
+        scope_parts={"capabilities": ["project_view", "read_security_scope"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "workflow.visibility_snapshot", {}, enforce_visibility=True
+            )
+
+    assert scope_reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_trigger_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

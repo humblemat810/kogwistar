@@ -956,6 +956,26 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
+        // Python counterpart: chat_mcp.workflow_visibility_snapshot's role/namespace decorators
+        // and ChatService.visibility_snapshot's read_security_scope + project_view requirement.
+        if name == "workflow.visibility_snapshot" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return capabilities.contains("read_security_scope")
+                && capabilities.contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
         if matches!(name, "workflow.process_table" | "workflow.blocked_runs") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

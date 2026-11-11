@@ -53,6 +53,24 @@
             "iss": "local",
             "exp": now + 300,
         }));
+        let denied_tokens = [
+            token(json!({
+                "sub": "reader-no-visibility-capability",
+                "role": "ro",
+                "ns": ["workflow"],
+                "capabilities": ["project_view"],
+                "iss": "local",
+                "exp": now + 300,
+            })),
+            token(json!({
+                "sub": "reader-wrong-visibility-namespace",
+                "role": "ro",
+                "ns": ["conversation"],
+                "capabilities": ["project_view", "read_security_scope"],
+                "iss": "local",
+                "exp": now + 300,
+            })),
+        ];
         let visibility = app
             .clone()
             .oneshot(
@@ -433,6 +451,32 @@
         let mcp = serde_json::from_slice::<Value>(&to_bytes(mcp.into_body(), 32768).await.unwrap())
             .unwrap();
         assert_eq!(mcp["result"]["current_subject"], "reader-1");
+
+        for denied_token in denied_tokens {
+            let denied = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("authorization", format!("Bearer {denied_token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workflow.visibility_snapshot","arguments":{}}}"#,
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), StatusCode::OK);
+            let denied = serde_json::from_slice::<Value>(
+                &to_bytes(denied.into_body(), 32768).await.unwrap(),
+            )
+            .unwrap();
+            assert_eq!(denied["error"]["code"], -32602);
+            assert!(denied.get("result").is_none());
+            assert!(!denied.to_string().contains("tenant-a"));
+        }
 
         let syscall_list = app
             .clone()

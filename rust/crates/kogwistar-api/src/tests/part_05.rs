@@ -1853,6 +1853,41 @@
         );
     }
 
+    #[test]
+    fn postgres_visibility_snapshot_mcp_admission_matches_python_policy() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "visibility_snapshot_mcp_admission",
+        )
+        .unwrap();
+        let authorized = json!({
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["project_view", "read_security_scope"]
+        });
+
+        assert!(service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.visibility_snapshot",
+            &authorized
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.visibility_snapshot",
+            &json!({"role": "ro", "ns": ["workflow"], "capabilities": ["project_view"]})
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.visibility_snapshot",
+            &json!({"role": "ro", "ns": ["conversation"], "capabilities": ["project_view", "read_security_scope"]})
+        ));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "workflow.visibility_snapshot",
+            &authorized
+        ));
+    }
+
     #[tokio::test]
     async fn mcp_workflow_tool_audit_matches_shared_contract() {
         use axum::body::{Body, to_bytes};
