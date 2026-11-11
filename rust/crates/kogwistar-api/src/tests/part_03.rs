@@ -852,6 +852,60 @@
             let field = field.as_str().unwrap();
             assert!(node_upsert.get(field).is_none(), "field {field}");
         }
+        let node_delete_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-node-delete-http-v1.json"
+        )))
+        .unwrap();
+        let node_delete_create = public_call!(
+            "POST",
+            "/api/workflow/design/wf-node-delete-contract/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-delete-contract",
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(node_delete_create.status(), StatusCode::OK);
+        let node_delete_response = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-node-delete-contract/nodes/node-delete-contract",
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            node_delete_response.status().as_u16(),
+            node_delete_contract["success_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
+        let node_delete: Value = serde_json::from_slice(
+            &to_bytes(node_delete_response.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        for (field, expected) in node_delete_contract["fixed_response_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&node_delete[field], expected, "field {field}");
+        }
+        for field in node_delete_contract["integer_response_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(node_delete[field].as_i64().is_some(), "field {field}");
+        }
+        for field in node_delete_contract["absent_response_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(node_delete.get(field).is_none(), "field {field}");
+        }
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {
